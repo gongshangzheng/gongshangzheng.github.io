@@ -1,0 +1,363 @@
+---
+title: "An introduction to Flow Matching and Diffusion Models"
+description: ""
+date: 2026-05-04
+tags: [note]
+source: hugo-blog
+---
+
+
+
+<h2>相关内容 </h2>
+
+<p>-   [EDM]()<br>-   [扩散模型]()<br>-   [Rectified Flow]()<br>-   [【论文解读】流匹配（Flow Matching）：生成模型的新范式 - 知乎](https://zhuanlan.zhihu.com/p/11194467268)<br>-   [【AI知识分享】你一定能听懂的扩散模型Flow Matching流匹配基本原理深度解析_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1Wv3xeNEds/?spm_id_from=333.337.search-card.all.click&vd_source=d7b10c0ca36c4b6b86802074ebcc17ad)</p>
+
+
+<h3>[Linqi Zhou --- Terminal Velocity Matching](https://arxiv.org/abs/2511.19797) </h3>
+
+<p>Terminal Velocity Matching<br>终端速度匹配<br>Linqi Zhou, Mathias Parger, Ayaan Haque, Jiaming Song<br>[https://arxiv.org/abs/2511.19797](https://arxiv.org/abs/2511.19797)<br>We propose Terminal Velocity Matching (TVM), a generalization of flow matching that enables high-fidelity one- and few-step generative modeling. TVM models the transition between any two diffusion timesteps and regularizes its behavior at its terminal time rather than at the initial time. We prove that TVM provides an upper bound on the \\(2\\)-Wasserstein distance between data and model distributions when the model is Lipschitz continuous. However, since Diffusion Transformers lack this property, we introduce minimal architectural changes that achieve stable, single-stage training. To make TVM efficient in practice, we develop a fused attention kernel that supports backward passes on Jacobian-Vector Products, which scale well with transformer architectures. On ImageNet-256x256, TVM achieves 3.29 FID with a single function evaluation (NFE) and 1.99 FID with 4 NFEs. It similarly achieves 4.32 1-NFE FID and 2.94 4-NFE FID on ImageNet-512x512, representing state-of-the-art performance for one/few-step models from scratch.<br>我们提出了终端速度匹配 (TVM)，这是一种流量匹配的概括，可以实现高保真的一步和几步生成建模。TVM对任何两个扩散时间步长之间的过渡进行建模，并在其终止时间而不是初始时间对其行为进行正则化。我们证明，当模型为Lipschitzyc连续时，TVM为数据和模型分布之间的 \\(2 \\)-Wasserstein距离提供了上限。但是，由于扩散变压器缺乏此属性，因此我们引入了最小的体系结构更改，以实现稳定的单级培训。为了使TVM在实践中高效，我们开发了一个融合的注意力内核，该内核支持Jacobian矢量乘积的后向传递，该乘积可与transformer架构很好地扩展。在ImageNet-256x256上，TVM通过单功能评估 (NFE) 实现了3.29 FID，通过4个NFE实现了1.99 FID。它同样在ImageNet-512x512上实现了4.32个1-NFE FID和2.94个4-NFE FID，代表了从头开始的一步/几步模型的最新性能。</p>
+
+
+<h2>面临问题 </h2>
+
+<p>扩散模型（Diffusion Models）限制了采样概率路径的选择，导致训练时间过长，且采样效率低。<br>扩散模型中的概率分布是易于求解的正态分布。但是其积分问题难以处理。在DDPM中通过求解 ELBO 的方式来规避积分问题。来近似真实分布。但 ELBO 只是一个边界，与真实分布远不够接近。</p>
+
+
+<h2>前置知识 </h2>
+
+
+<h3>归一化流 </h3>
+
+<p>归一化流（Normalizing Flows）是一种通过一系列可逆变换将简单分布（如高斯分布）转换为复杂分布的方法。其核心思想是利用变量变换公式（Change of Variables Formula）来精确计算变换后的概率密度。</p>
+
+
+<h4>变量变换公式 </h4>
+
+<p>假设有一个随机变量 \\( z \sim p\_z(z) \\)，通过一个可逆映射 \\( f: \mathbb{R}^d \to \mathbb{R}^d \\) 得到新变量 \\( x = f(z) \\)。那么 \\( x \\) 的概率密度为：<br>\\[<br>p\_x(x) = p\_z(f^{-1}(x)) \left| \det \left( \frac{\partial f^{-1}(x)}{\partial x} \right) \right|<br>\\]<br>其中：<br>-   \\( f^{-1} \\) 是 \\( f \\) 的逆映射，<br>-   \\( \det \left( \frac{\partial f^{-1}(x)}{\partial x} \right) \\) 是逆映射的雅可比矩阵的行列式。<br>为了简化计算，通常要求 \\( f \\) 具有易于计算的雅可比行列式，例如使用三角矩阵或行列式直接为1的变换。</p>
+
+
+<h4>流模型的基本结构 </h4>
+
+<p>归一化流通过组合多个简单变换来构建复杂的分布：<br>\\[<br>x = f\_K \circ f\_{K-1} \circ \cdots \circ f\_1(z)<br>\\]<br>对应的概率密度为：<br>\\[<br>\log p(x) = \log p\_z(z) - \sum\_{k=1}^K \log \left| \det \left( \frac{\partial f\_k}{\partial z\_{k-1}} \right) \right|<br>\\]<br>其中 \\( z\_0 = z \\)，\\( z\_k = f\_k(z\_{k-1}) \\)。</p>
+
+
+<h4>优点与局限性 </h4>
+
+<p>-   \<em>优点\</em>：<br>    -   能够精确计算似然，适用于概率密度估计。<br>    -   采样过程简单，只需从基础分布采样并应用变换。<br>-   \<em>局限性\</em>：<br>    -   要求变换可逆且雅可比行列式易于计算，限制了模型表达能力。<br>    -   当数据维度高时，变换的设计和计算成本较高。<br>归一化流为理解流匹配（Flow Matching）提供了理论基础，后者通过更灵活的方式学习概率路径，</p>
+
+
+<h3>Normalizing Flows </h3>
+
+<p>简单分布容易处理，但不能表示复杂的形状；复杂分布可以表示数据，但是计算概率密度很困难。<br>Normalizing Flow 通过一系列可逆变换，把一个简单分布给逐步变换成一个复杂分布。</p>
+
+
+<h4>变量替换公式 </h4>
+
+<p>参考[多元微积分]() 中的[变量替换公式]()。<br>变量替换公式（change of variables formula）是流模型的核心。若 \\( z \sim p\_z(z) \\)，通过可逆映射 \\( x = f(z) \\)，则 \\( x \\) 的分布为：<br>\\[<br>p\_x(x) = p\_z(f^{-1}(x)) \cdot \left| \det \frac{\partial f^{-1}(x)}{\partial x} \right|<br>\\]<br>或等价地：<br>\\[<br>p\_x(x) = p\_z(z) \cdot \left| \det \frac{\partial f(z)}{\partial z} \right|^{-1}<br>\\]<br>其中 \\(\det \frac{\partial f}{\partial z}\\) 是变换 \\( f \\) 的雅可比行列式，保证概率密度在变换下保持归一化。</p>
+
+
+<h4>Flow </h4>
+
+<p>由于单个变换的灵活性有限，我们把多个可逆变换串联起来：<br>串联多个可逆变换 \\( f = f\_1 \circ f\_2 \circ \cdots \circ f\_K \\)，则：<br>\\[<br>x = f(z) = f\_K \circ \cdots \circ f\_2 \circ f\_1(z)<br>\\]<br>概率密度变为：<br>\\[<br>p\_x(x) = p\_z(z) \prod\_{k=1}^K \left| \det \frac{\partial f\_k(z\_{k-1})}{\partial z\_{k-1}} \right|^{-1}<br>\\]<br>其中 \\( z\_0 = z \\)，\\( z\_k = f\_k(z\_{k-1}) \\)，\\( z\_K = x \\)。<br>关键要求：<br>-   每个 \\( f\_k \\) 可逆<br>-   雅可比行列式易计算<br>-   变换足够灵活以拟合复杂分布</p>
+
+
+<h4>连续归一化流 </h4>
+
+<p>在连续时间内对概率密度进行变换</p>
+
+
+<h4>流匹配 </h4>
+
+<p>一种无仿真的 CNF 训练方法，通过匹配模型矢量场与目标矢量场来生成概率路径，绕过了对 ODE 的数值仿真，实现了高效的训练和采样。</p>
+
+
+<h4>条件流匹配 </h4>
+
+
+<h3>流形假设 </h3>
+
+<p>[流形假设 Manifold Hypothesis - AIDIY Wiki](https://inuyashayang.github.io/AIDIY/Mathematical_Foundation/Manifold/Manifold_hypothesis/)<br>流形假设（Manifold Hypothesis）是机器学习和表示学习中的核心假设，认为现实世界中<br>的高维数据通常分布在一个低维流形上。这一假设为降维和特征学习提供了理论基础。</p>
+
+
+<h4>数学定义 </h4>
+
+<p>设观测数据 \\( \mathbf{x} \in \mathbb{R}^D \\) 来自高维空间，流形假设认为存在一个低维流形 \\( \mathcal{M} \subset \mathbb{R}^D \\)（维度 \\( d \ll D \\)）和一个生成过程：<br>\\[<br>\mathbf{x} = f(\mathbf{z}) + \mathbf{\epsilon}<br>\\]<br>这表示，观测数据 \\(x\\) 要么位于 \\(\mathcal{M}\\) 上，要么就距离 \\(\mathcal{M}\\) 距离很小。<br>其中：<br>-   \\( \mathbf{z} \in \mathbb{R}^d \\) 是低维潜在变量<br>-   \\( f: \mathbb{R}^d \to \mathbb{R}^D \\) 是光滑映射<br>-   \\( \mathbf{\epsilon} \\) 是观测噪声<br>-   \\( \mathcal{M} = \\{f(\mathbf{z}) : \mathbf{z} \in \mathcal{Z}\\} \\) 是数据流形</p>
+
+
+<h4>直观理解 </h4>
+
+<p>1.  /局部欧几里得性/：流形上每个点的邻域与欧几里得空间同胚<br>2.  /内在维度/：数据的真实自由度远小于观测维度<br>3.  /连续性/：流形上的邻近点对应语义相似的样本</p>
+
+
+<h4>以手写数字为例 </h4>
+
+<p>数字图像虽然存在于 784 维空间（28×28 像素），但所有可能的数字图像构成一个低维流形，其内在维度远小于 784。<br>现在我们要写一个数字“2”，<br>我们只需要控制几个关键参数：起笔位置、笔画弯曲程度、收笔位置等。这些参数构成了一个低维空间，而所有可能的“2”的数字图像就分布在这个低维空间通过某种映射得到的高维流形上。<br>这表明，对于两种合理的 2 的写法 \\(x\_1\\) 与 \\(x\_2\\)，存在一条连续路径 \\(\gamma(t)\\) 在流形上连接它们，路径上的每个点都对应一个合理的“2”的写法。<br>其中对于 \\(\gamma(t)\\), \\[t \in \left [0, 1\right]\\] 使用 \\[\gamma(0)=x\_1, \gamma(1)=x\_2\\]</p>
+
+
+<h4>代码实现：流形学习算法 </h4>
+
+<p>``<code>python<br>import numpy as np<br>import matplotlib.pyplot as plt<br>from sklearn import datasets<br>from sklearn.manifold import Isomap, LocallyLinearEmbedding, TSNE<br>from sklearn.decomposition import PCA<br>from umap import UMAP<br>def demonstrate_manifold_hypothesis():<br>    """演示流形假设"""<br>    # 1. 生成瑞士卷数据集（经典流形示例）<br>    print("1. 瑞士卷数据集")<br>    n_samples = 1000<br>    noise = 0.1<br>    # 生成瑞士卷<br>    t = 1.5 <em> np.pi </em> (1 + 2 * np.random.rand(1, n_samples))<br>    x = t * np.cos(t)<br>    y = 30 * np.random.rand(1, n_samples)<br>    z = t * np.sin(t)<br>    X_swiss = np.concatenate((x, y, z), axis=0).T<br>    X_swiss += noise * np.random.randn(n_samples, 3)<br>    t = t.squeeze()<br>    print(f"数据形状: {X_swiss.shape}")<br>    print(f"观测维度: 3")<br>    print(f"内在维度: 2 (理论上)")<br>    # 2. 应用不同流形学习算法<br>    methods = {<br>        'PCA': PCA(n_components=2),<br>        'Isomap': Isomap(n_components=2, n_neighbors=10),<br>        'LLE': LocallyLinearEmbedding(n_components=2, n_neighbors=10),<br>        't-SNE': TSNE(n_components=2, random_state=42),<br>        'UMAP': UMAP(n_components=2, random_state=42)<br>    }<br>    # 可视化结果<br>    fig = plt.figure(figsize=(20, 12))<br>    # 原始3D数据<br>    ax1 = fig.add_subplot(2, 3, 1, projection='3d')<br>    ax1.scatter(X_swiss[:, 0], X_swiss[:, 1], X_swiss[:, 2], c=t, cmap='viridis')<br>    ax1.set_title('原始瑞士卷 (3D)')<br>    ax1.set_xlabel('X')<br>    ax1.set_ylabel('Y')<br>    ax1.set_zlabel('Z')<br>    # 不同方法的结果<br>    for i, (name, method) in enumerate(methods.items()):<br>        X_embedded = method.fit_transform(X_swiss)<br>        ax = fig.add_subplot(2, 3, i+2)<br>        scatter = ax.scatter(X_embedded[:, 0], X_embedded[:, 1], c=t, cmap='viridis')<br>        ax.set_title(f'{name}')<br>        ax.set_xlabel('Component 1')<br>        ax.set_ylabel('Component 2')<br>        plt.colorbar(scatter, ax=ax)<br>    plt.tight_layout()<br>    plt.show()<br>    # 3. 内在维度估计<br>    print("\n2. 内在维度估计")<br>    def intrinsic_dimension_estimation(X, k=10):<br>        """使用最近邻距离估计内在维度"""<br>        from sklearn.neighbors import NearestNeighbors<br>        nbrs = NearestNeighbors(n_neighbors=k+1).fit(X)<br>        distances, indices = nbrs.kneighbors(X)<br>        # 使用最大似然估计<br>        r_k = distances[:, k]  # 到第k个最近邻的距离<br>        d_hat = 1 / (np.mean(np.log(r_k[:, None] / distances[:, 1:k+1])) + np.log(k))<br>        return d_hat<br>    dim_estimate = intrinsic_dimension_estimation(X_swiss)<br>    print(f"估计的内在维度: {dim_estimate:.2f}")<br>    return X_swiss, t, methods<br>X_swiss, t, methods = demonstrate_manifold_hypothesis()</p>
+</code>`<code>
+
+
+<h4>流形学习算法分类 </h4>
+
+<!--list-separator-->
+
+<p>-  线性方法<br>    -   /主成分分析/（PCA）：寻找最大方差方向<br>    -   /多维缩放/（MDS）：保持样本间距离</p>
+
+<!--list-separator-->
+
+<p>-  非线性方法<br>    -   /等距映射/（Isomap）：保持测地距离<br>    -   /局部线性嵌入/（LLE）：保持局部线性关系<br>    -   /拉普拉斯特征映射/：基于图拉普拉斯算子<br>    -   /t-SNE/：保持局部相似性概率<br>    -   /UMAP/：基于黎曼几何和代数拓扑</p>
+
+
+<h4>流形假设的理论基础 </h4>
+
+</code>`<code>python
+<p>import torch<br>import torch.nn as nn<br>class ManifoldLearningTheory:<br>    """流形学习理论演示"""<br>    @staticmethod<br>    def tangent_space_estimation(X, point_idx, k=20):<br>        """估计流形在给定点的切空间"""<br>        from sklearn.neighbors import NearestNeighbors<br>        from scipy.linalg import svd<br>        # 找到最近邻<br>        nbrs = NearestNeighbors(n_neighbors=k).fit(X)<br>        distances, indices = nbrs.kneighbors(X[point_idx:point_idx+1])<br>        # 局部邻域<br>        neighborhood = X[indices[0]]<br>        # 中心化<br>        center = neighborhood.mean(axis=0)<br>        centered = neighborhood - center<br>        # SVD 分解找到主方向<br>        U, s, Vt = svd(centered, full_matrices=False)<br>        # 切空间由前d个奇异向量张成<br>        tangent_basis = Vt[:2].T  # 假设内在维度为2<br>        return center, tangent_basis, neighborhood<br>    @staticmethod<br>    def manifold_regularization_loss(encoder, X, lambda_reg=0.1):<br>        """流形正则化损失 - 鼓励编码器保持局部结构"""<br>        from sklearn.neighbors import NearestNeighbors<br>        # 找到每个点的最近邻<br>        nbrs = NearestNeighbors(n_neighbors=5).fit(X)<br>        distances, indices = nbrs.kneighbors(X)<br>        batch_size = X.shape[0]<br>        reg_loss = 0<br>        for i in range(batch_size):<br>            # 原始空间中的邻居<br>            neighbors = X[indices[i]]<br>            # 编码后的表示<br>            z_i = encoder(X[i:i+1])<br>            z_neighbors = encoder(neighbors)<br>            # 保持局部距离<br>            original_dists = torch.cdist(X[i:i+1], neighbors)<br>            encoded_dists = torch.cdist(z_i, z_neighbors)<br>            # 距离保持损失<br>            reg_loss += torch.mean((original_dists - encoded_dists)**2)<br>        return lambda_reg * reg_loss / batch_size<br>def demonstrate_tangent_spaces():<br>    """演示切空间估计"""<br>    # 生成球面数据<br>    n_samples = 500<br>    theta = np.random.uniform(0, 2*np.pi, n_samples)<br>    phi = np.random.uniform(0, np.pi, n_samples)<br>    # 球坐标转笛卡尔坐标<br>    x = np.sin(phi) * np.cos(theta)<br>    y = np.sin(phi) * np.sin(theta)<br>    z = np.cos(phi)<br>    X_sphere = np.column_stack([x, y, z])<br>    # 估计几个点的切空间<br>    test_points = [0, 100, 200]<br>    fig = plt.figure(figsize=(15, 5))<br>    for i, point_idx in enumerate(test_points):<br>        center, tangent_basis, neighborhood = \<br>            ManifoldLearningTheory.tangent_space_estimation(X_sphere, point_idx)<br>        # 3D 可视化<br>        ax = fig.add_subplot(1, 3, i+1, projection='3d')<br>        # 绘制球面<br>        ax.scatter(X_sphere[:, 0], X_sphere[:, 1], X_sphere[:, 2],<br>                  alpha=0.3, s=10, color='blue')<br>        # 绘制局部邻域<br>        ax.scatter(neighborhood[:, 0], neighborhood[:, 1], neighborhood[:, 2],<br>                  color='red', s=50)<br>        # 绘制切平面<br>        u, v = tangent_basis[:, 0], tangent_basis[:, 1]<br>        u, v = u <em> 0.3, v </em> 0.3  # 缩放切向量<br>        # 生成切平面网格<br>        s, t = np.meshgrid(np.linspace(-1, 1, 2), np.linspace(-1, 1, 2))<br>        plane_x = center[0] + s <em> u[0] + t </em> v[0]<br>        plane_y = center[1] + s <em> u[1] + t </em> v[1]<br>        plane_z = center[2] + s <em> u[2] + t </em> v[2]<br>        ax.plot_surface(plane_x, plane_y, plane_z, alpha=0.5, color='orange')<br>        ax.set_title(f'点 {point_idx} 的切空间')<br>        ax.set_xlim(-1, 1)<br>        ax.set_ylim(-1, 1)<br>        ax.set_zlim(-1, 1)<br>    plt.tight_layout()<br>    plt.show()<br>    print("切空间估计完成")<br>    print("每个点的切空间由两个正交向量张成")<br>demonstrate_tangent_spaces()</p>
+</code>`<code>
+
+
+<h4>在深度学习中的应用 </h4>
+
+</code>`<code>python
+<p>class ManifoldAwareAutoencoder(nn.Module):<br>    """考虑流形结构的自编码器"""<br>    def __init__(self, input_dim, hidden_dims, latent_dim):<br>        super(ManifoldAwareAutoencoder, self).__init__()<br>        # 编码器<br>        encoder_layers = []<br>        prev_dim = input_dim<br>        for hidden_dim in hidden_dims:<br>            encoder_layers.extend([<br>                nn.Linear(prev_dim, hidden_dim),<br>                nn.BatchNorm1d(hidden_dim),<br>                nn.LeakyReLU(0.2)<br>            ])<br>            prev_dim = hidden_dim<br>        self.encoder = nn.Sequential(*encoder_layers)<br>        self.fc_mu = nn.Linear(prev_dim, latent_dim)<br>        self.fc_logvar = nn.Linear(prev_dim, latent_dim)<br>        # 解码器<br>        decoder_layers = []<br>        prev_dim = latent_dim<br>        for hidden_dim in reversed(hidden_dims):<br>            decoder_layers.extend([<br>                nn.Linear(prev_dim, hidden_dim),<br>                nn.BatchNorm1d(hidden_dim),<br>                nn.LeakyReLU(0.2)<br>            ])<br>            prev_dim = hidden_dim<br>        decoder_layers.append(nn.Linear(prev_dim, input_dim))<br>        self.decoder = nn.Sequential(*decoder_layers)<br>    def reparameterize(self, mu, logvar):<br>        std = torch.exp(0.5 * logvar)<br>        eps = torch.randn_like(std)<br>        return mu + eps * std<br>    def forward(self, x):<br>        # 编码<br>        h = self.encoder(x)<br>        mu, logvar = self.fc_mu(h), self.fc_logvar(h)<br>        z = self.reparameterize(mu, logvar)<br>        # 解码<br>        x_recon = self.decoder(z)<br>        return x_recon, z, mu, logvar<br>    def manifold_aware_loss(self, x, x_recon, z, mu, logvar, lambda_manifold=0.1):<br>        """包含流形感知的损失函数"""<br>        # 重构损失<br>        recon_loss = F.mse_loss(x_recon, x, reduction='mean')<br>        # KL 散度<br>        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / x.size(0)<br>        # 流形正则化（简化版）<br>        manifold_loss = self.local_structure_preservation_loss(x, z)<br>        total_loss = recon_loss + 0.01 <em> kl_loss + lambda_manifold </em> manifold_loss<br>        return total_loss, recon_loss, kl_loss, manifold_loss<br>    def local_structure_preservation_loss(self, x, z, k=5):<br>        """局部结构保持损失"""<br>        from sklearn.neighbors import NearestNeighbors<br>        import torch.nn.functional as F<br>        # 在原始空间找到最近邻<br>        x_np = x.detach().cpu().numpy()<br>        nbrs = NearestNeighbors(n_neighbors=k+1).fit(x_np)<br>        distances, indices = nbrs.kneighbors(x_np)<br>        batch_size = x.size(0)<br>        loss = 0<br>        for i in range(batch_size):<br>            # 原始空间中的邻居（排除自身）<br>            orig_neighbors = x[indices[i, 1:]]  # 跳过第一个（自身）<br>            # 潜在空间中的对应点<br>            z_i = z[i:i+1]<br>            z_neighbors = z[indices[i, 1:]]<br>            # 计算距离比率的差异<br>            orig_dists = torch.cdist(x[i:i+1], orig_neighbors).squeeze()<br>            latent_dists = torch.cdist(z_i, z_neighbors).squeeze()<br>            # 保持距离顺序<br>            loss += F.mse_loss(orig_dists / orig_dists.max(),<br>                              latent_dists / latent_dists.max())<br>        return loss / batch_size<br>def demonstrate_manifold_learning():<br>    """演示流形学习在深度学习中的应用"""<br>    # 生成同心圆数据集<br>    n_samples = 1000<br>    t = np.linspace(0, 2*np.pi, n_samples)<br>    # 两个同心圆<br>    r1, r2 = 1.0, 2.0<br>    x1 = r1 <em> np.cos(t) + 0.1 </em> np.random.randn(n_samples)<br>    y1 = r1 <em> np.sin(t) + 0.1 </em> np.random.randn(n_samples)<br>    x2 = r2 <em> np.cos(t) + 0.1 </em> np.random.randn(n_samples)<br>    y2 = r2 <em> np.sin(t) + 0.1 </em> np.random.randn(n_samples)<br>    X_circle = np.vstack([np.column_stack([x1, y1]), np.column_stack([x2, y2])])<br>    labels = np.hstack([np.zeros(n_samples), np.ones(n_samples)])<br>    # 转换为PyTorch张量<br>    X_tensor = torch.FloatTensor(X_circle)<br>    # 创建流形感知自编码器<br>    model = ManifoldAwareAutoencoder(<br>        input_dim=2,<br>        hidden_dims=[64, 32],<br>        latent_dim=2<br>    )<br>    # 训练（简化版）<br>    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)<br>    print("训练流形感知自编码器...")<br>    for epoch in range(1000):<br>        optimizer.zero_grad()<br>        x_recon, z, mu, logvar = model(X_tensor)<br>        total_loss, recon_loss, kl_loss, manifold_loss = \<br>            model.manifold_aware_loss(X_tensor, x_recon, z, mu, logvar)<br>        total_loss.backward()<br>        optimizer.step()<br>        if epoch % 200 == 0:<br>            print(f'Epoch {epoch}: Total Loss: {total_loss.item():.4f}, '<br>                  f'Recon: {recon_loss.item():.4f}, Manifold: {manifold_loss.item():.4f}')<br>    # 可视化结果<br>    with torch.no_grad():<br>        x_recon, z, _, _ = model(X_tensor)<br>        plt.figure(figsize=(15, 5))<br>        # 原始数据<br>        plt.subplot(1, 3, 1)<br>        plt.scatter(X_circle[:, 0], X_circle[:, 1], c=labels, cmap='viridis', alpha=0.6)<br>        plt.title('原始数据 (2D)')<br>        plt.xlabel('x1')<br>        plt.ylabel('x2')<br>        # 潜在空间<br>        plt.subplot(1, 3, 2)<br>        z_np = z.numpy()<br>        plt.scatter(z_np[:, 0], z_np[:, 1], c=labels, cmap='viridis', alpha=0.6)<br>        plt.title('潜在空间 (2D)')<br>        plt.xlabel('z1')<br>        plt.ylabel('z2')<br>        # 重构数据<br>        plt.subplot(1, 3, 3)<br>        x_recon_np = x_recon.numpy()<br>        plt.scatter(x_recon_np[:, 0], x_recon_np[:, 1], c=labels, cmap='viridis', alpha=0.6)<br>        plt.title('重构数据 (2D)')<br>        plt.xlabel('x1_recon')<br>        plt.ylabel('x2_recon')<br>        plt.tight_layout()<br>        plt.show()<br>    return model, X_circle, labels<br>model, X_circle, labels = demonstrate_manifold_learning()</p>
+</code>`<code>
+
+
+<h4>理论意义与应用 </h4>
+
+<p>1.  /降维的理论基础/：解释为什么高维数据可以有效降维<br>2.  /泛化能力解释/：数据在流形上的结构性有助于泛化<br>3.  /对抗攻击分析/：对抗样本可能位于流形之外<br>4.  /生成模型/：VAE、GAN 等本质是在学习数据流形</p>
+
+
+<h4>挑战与局限 </h4>
+
+<p>1.  /维度诅咒/：在高维空间中流形学习变得困难<br>2.  /噪声敏感性/：真实数据中的噪声可能破坏流形结构<br>3.  /计算复杂度/：许多流形学习算法计算成本高<br>4.  /理论保证/：对复杂流形的理论理解仍不完善<br>流形假设为理解高维数据的结构和设计有效的机器学习算法提供了重要视角，是现代表示学习的理论基础之一。</p>
+
+
+<h2>流匹配 </h2>
+
+<p>流匹配（Flow Matching）是一种基于连续归一化流（Continuous Normalizing Flows, CNF）<br>的生成模型训练方法，通过模拟概率路径来学习从简单分布到数据分布的变换。</p>
+
+
+<h3>基本思想 </h3>
+
+<p>传统归一化流通过离散的可逆变换序列建模分布变换，而流匹配考虑连续时间动态系统：<br>\\[<br>\frac{dz\_t}{dt} = v\_t<br>(z\_t)<br>\\]<br>其中 \\( z\_t \\) 是时间 \\( t \in [0,1] \\) 的状态，\\( v\_t \\) 是速度场。初始分布 \\( p\_0 \\) 是简单分布（如高斯分布），目标是在 \\( t=1 \\) 时得到数据分布 \\( p\_1 \\)。</p>
+
+
+<h3>概率路径 </h3>
+
+<p>定义概率路径 \\( p\_t(z\_t) \\) 满足：<br>-   \\( p\_0 \\) 是简单先验分布<br>-   \\(<br>     p\_1 \\) 是数据分布<br>-   存在对应的向量场 \\( u\_t(z\_t) \\) 使得 \\( p\_t \\) 满足连续性方程：<br>\\[<br>\frac{\partial p\_t}{\partial t} + \nabla \cdot (p\_t u\_t) = 0<br>\\]</p>
+
+
+<h3>训练目标 </h3>
+
+<p>流匹配的目标是学习一个参数化的向量场 \\( v\_\theta(z\_t, t) \\) 来匹配真实向量场 \\( u\_t(z\_t) \\)：<br>\\[<br>\mathcal{L}\_{FM}(\theta) = \mathbb{E}\_{t \sim U(0,1), z\_t \sim p\_t} \left[ \\| v\_\theta(z\_t, t) - u\_t(z\_t) \\|^2 \right]<br>\\]</p>
+
+
+<h3>条件流匹配 </h3>
+
+<p>实际中直接计算 \\( u\_t \\) 困难，因此使用条件流匹配（Conditional Flow Matching）：<br>\\[<br>\mathcal{L}\_{CFM}(\theta) = \mathbb{E}\_{t \sim U(0,1), x \sim p\_1, z \sim p\_0} \left[ \\| v\_\theta(z\_t, t) - u\_t(z\_t | x) \\|^2 \right]<br>\\]<br>其中 \\( z\_t \\) 是从 \\( z \\) 到 \\( x \\) 的直线路径：<br>\\[<br>z\_t = (1-t)<br>z + tx<br>\\]<br>对应的条件向量场为：<br>\\[<br>u\_t(z\_t | x) = x - z<br>\\]</p>
+
+
+<h3>优势 </h3>
+
+<p>-   避免计算雅可比行列式，训练更高效<br>-   支持灵活的架构设计<br>-   在图像生成、分子设计等领域表现出色<br>-   与扩散模型有深刻联系</p>
+
+
+<h3>实现示例 </h3>
+
+</code>`<code>python
+<p>import torch<br>import torch.nn as nn<br>class SimpleFlowMatching(nn.Module):<br>    def __init__(self, dim, hidden_dim=128):<br>        super().__init__()<br>        self.net = nn.Sequential(<br>            nn.Linear(dim + 1, hidden_dim),  # +1 for time<br>            nn.SiLU(),<br>            nn.Linear(hidden_dim, hidden_dim),<br>            nn.SiLU(),<br>            nn.Linear(hidden_dim, dim)<br>        )<br>    def forward(self, z, t):<br>        # z: [batch, dim], t: [batch, 1]<br>        inputs = torch.cat([z, t], dim=-1)<br>        return self.net(inputs)<br># 训练伪代码<br>def train_step(model, data_loader, optimizer):<br>    model.train()<br>    for batch in data_loader:<br>        # 采样时间<br>        t = torch.rand(batch.size(0), 1)<br>        # 采样噪声<br>        z0 = torch.randn_like(batch)<br>        # 构造插值路径<br>        zt = (1 - t) <em> z0 + t </em> batch<br>        # 目标向量场<br>        ut = batch - z0<br>        # 预测向量场<br>        vt = model(zt, t)<br>        # 计算损失<br>        loss = torch.mean((vt - ut) ** 2)<br>        optimizer.zero_grad()<br>        loss.backward()<br>        optimizer.step()</p>
+</code>``
+
+<p>流匹配为生成模型提供了新的视角，将离散的变换序列推广到连续的动态系统，在许多任务中展现出优越的性能。</p>
+
+
+<h2>Flow and Diffusion Models </h2>
+
+<p>Generation as Sampling<br>: -   生成一个 object 就是从分布中进行一次采样 \\(z\sim p\_\text{data}\\)<br>数据集<br>: -   数据集就是有限数据的样本 \\(z\_1,\cdots,z\_N\sim p\_\text{data}\\)<br>Trajectory<br>: -   \\([0, 1]\rightarrow \mathrm R^d\\)<br>Vector Field<br>: -   \\(u:\mathrm {R}^d\times [0, 1]\rightarrow \mathrm R^d\\)</p>
+
+
+<h3>Ordinary Differential Equation(ODE) </h3>
+
+<strong>\*常微分方程 (ODE)</strong> 描述了轨迹如何由向量场驱动：
+
+<p>给定向量场 \\(u(x, t)\\)，轨迹 \\(\phi: [0,1] \to \mathbb{R}^d\\) 满足：<br>\\[<br>\frac{d}{dt} \phi(t) = u(\phi(t), t), \quad \phi(0) = x\_0<br>\\]<br>即：\<em>轨迹在每一点的瞬时速度等于向量场在该点该时刻的值\</em>。</p>
+
+
+<h3>Flow </h3>
+
+
+
+<strong>\*Flow</strong> 是向量场 \\(u\\) 生成的映射族 \\(\psi\_t: \mathbb{R}^d \to \mathbb{R}^d\\)，满足：
+
+<p>\\[<br>\frac{d}{dt} \psi\_t(x) = u(\psi\_t(x), t), \quad \psi\_0(x) = x<br>\\]<br>即 \\(\psi\_t\\) 将初始点 \\(x\\) 沿 ODE 推到时刻 \\(t\\) 的位置。Flow 是时间相关的微分同胚，用于将简单分布（如高斯）变形为目标分布。<br>它是一个随时间变化的矢量场。<br>ODE/flows 有唯一解。</p>
+
+
+<h4>使用欧拉法模拟 ODE </h4>
+
+
+
+
+<h3>Flow Model </h3>
+
+<p>\\[p\_\text{init}\xrightarrow{\text{ODE}} p\_\text{data}\\]<br>采样一个初始点，通过 ODE 过程，来到 \\(X\_1\\), 而 \\(X\_1\\) 在 \\(p\_\text{data}\\) 上采样得到。</p>
+
+
+
+
+<h3>Diffusion Models </h3>
+
+<p>\\(X\_t\in \mathrm R^d\\) random variable</p>
+
+<strong>Vector Field</strong> \\(u\_t(x)\\)
+<p>: A function that describes the deterministic drift of the process at time \\(t\\) and position \\(x\\).</p>
+
+<strong>Diffusion Coefficient</strong> \\(\sigma\_t(x)\\)
+<p>: A function (often a scalar or matrix) that controls the magnitude and direction of random noise added at each step.<br>\\[d X\_t = \underbrace{u\_t(X\_t)dt}\_{\text{ODE term}} + \underbrace{\sigma\_t dW\_t}\_{\text{stochastic term}}\\]</p>
+
+
+
+
+<h3>Brownian Motion </h3>
+
+<p>Brownian motion \\(W\_t\\) is a continuous-time stochastic process with:<br>-   <strong>Properties:</strong><br>    -   \\(W\_0 = 0\\) almost surely<br>    -   Independent increments: \\(W\_t - W\_s\\) independent of past for \\(t > s\\)<br>    -   Gaussian increments: \\(W\_t - W\_s \sim \mathcal{N}(0, t-s)\\)<br>    -   Continuous paths (almost surely)<br>-   <strong>Key characteristics:</strong><br>    -   Non-differentiable paths (nowhere differentiable)<br>    -   Quadratic variation: \\([W]\_t = t\\)<br>    -   Martingale property: \\(\mathbb{E}[W\_t | \mathcal{F}\_s] = W\_s\\) for \\(t > s\\)<br>In the SDE, \\(\sigma\_t dW\_t\\) injects Gaussian noise scaled by \\(\sigma\_t\\), making the trajectory random rather than purely deterministic.</p>
+
+
+<h3>SDE 与 ODE </h3>
+
+<p>\\[% ODE with error term<br>\frac{dX}{dt} = f(X,t) + \varepsilon(t)\\]<br>\\[% SDE with error term<br>dX\_t = \bigl(f(X\_t, t) + \varepsilon(t)\bigr) dt + \sigma(X\_t, t) dW\_t\\]<br>\\[% Annotated version<br>dX\_t = \underbrace{f(X\_t, t) dt}\_{\text{deterministic drift}} + \underbrace{\varepsilon(t) dt}\_{\text{error term}} + \underbrace{\sigma(X\_t, t) dW\_t}\_{\text{stochastic diffusion}}\\]<br>SDE 有唯一解，指的是轨迹的分布 (distribution) 一致。</p>
+
+
+
+
+<h3>Euler </h3>
+
+<p>前向 SDE 欧拉法<br>\\[X\_{n+1} = X\_n + f(X\_n, t\_n) \Delta t + \sigma(t\_n) \sqrt{\Delta t} \\, \xi\_n\\]<br>从带噪观测中去除随机项（简单去噪）<br>\\[<br>\hat{X}\_{n+1}^{\text{denoised}} = X\_{n+1} - \sigma(t\_n) \sqrt{\Delta t} \\, \mathbb{E}[\xi\_n | X\_{n+1}]\\]<br>逆向时间的去噪欧拉法（扩散模型中的概率流 ODE）<br>\\[%<br>X\_n = X\_{n+1} - \left[ f(X\_{n+1}, t\_{n+1}) - \frac{1}{2} \sigma(t\_{n+1})^2 \nabla \log p\_{t\_{n+1}}(X\_{n+1}) \right] \Delta t\\]<br>实际可用的去噪迭代（用神经网络 s_&theta; 近似得分）<br>\\[%<br>X\_{t-1} = X\_t - \left[ f(X\_t, t) - \frac{1}{2} \sigma(t)^2 s\_\theta(X\_t, t) \right] \Delta t\\]</p>
+
+
+
+
+
+
+<h2>Flow Matching </h2>
+
+
+
+
+
+
+
+
+
+
+<h3>Probability Path </h3>
+
+
+
+
+<h4>Gaussian Probability Path </h4>
+
+
+
+
+
+<p>零时刻是一个 Gaussian Distribution, 随着 t 上升到了，方差下降到0. 此时这是一个 Dirac Distribution, 只能取到固定的值。<br>\\[z\sim p\_\text{data}, x\sim p\_t(\cdot\mid z)\\]<br>\\[p\_t(\cdot\mid z)=\mathrm N(\alpha\_t z, \beta\_t^2 I\_d)\\]<br>其中，我们可以得到边界点的条件：<br>\\[p\_0(\cdot\mid z)=p\_\text{init}\\]<br>\\[p\_1(\cdot\mid z)=\delta\_z\quad \text{Dirac 函数}\\]<br>随着时间上升，\\(\alpha\_t\\)会从0上升到1，而 \\(\beta\_t\\) 会从 1 下降到 0。这是一个噪声逐步消退的过程。</p>
+
+
+<h4>Marginal Prob Path </h4>
+
+<p>\\[p\_t(x)=\int p\_t(x\mid z)p\_\text{data}(z)\text{d} z\\]<br>\\[p\_0=p\_\text{init},\quad p\_1=p\_\text{data}\\]</p>
+
+
+<h3>Vector Field </h3>
+
+
+
+
+<h4>Conditional Vector Field </h4>
+
+<p>\\[u\_t^\text{target}(x\mid z)\quad 0\le t\le 1, x, z\in \mathbb{R}^d\\]<br>A <strong>conditional vector field</strong> \\( u\_t^{\text{target}}(x \mid z) \\) is a time-dependent vector field that depends on a conditioning variable \\( z \\). It appears in flow-based generative modeling, particularly in <strong>conditional flow matching</strong>.<br>Key properties:<br>-   <strong>Domain</strong>: \\( t \in [0,1] \\), \\( x, z \in \mathbb{R}^d \\)<br>-   <strong>Purpose</strong>: Defines a probability path \\( p\_t(x \mid z) \\) that transports a simple base distribution (e.g., Gaussian at \\( t=0 \\)) to a target conditional distribution (e.g., data distribution given \\( z \\) at \\( t=1 \\)).<br>-   <strong>Relation to ODE</strong>: The vector field generates a flow \\( \phi\_t \\) via<br>    \\[<br>      \frac{d}{dt} \phi\_t(x) = u\_t^{\text{target}}(\phi\_t(x) \mid z), \quad \phi\_0(x) = x<br>      \\]<br>    such that \\( x\_1 = \phi\_1(x\_0) \sim p\_1(x \mid z) \\).<br>In conditional flow matching, the model learns to approximate this field by regressing onto a tractable conditional target field (e.g., from a Gaussian conditional probability path).</p>
+
+
+<h4>Cond. Gaussian Vector Field </h4>
+
+<p>This is the <strong>conditional Gaussian vector field</strong> used in diffusion models and score-based generative modeling.<br>The following expression gives the <strong>target velocity field</strong> \\( u\_t^{\text{target}}(x \mid z) \\) that transports a sample \\( x \\) at time \\( t \\) toward the endpoint \\( z \\), given the noise schedule parameters \\( \alpha\_t, \beta\_t \\).<br>\\[u\_t^\text{target}(x\mid z)= \left(\dot \alpha\_t-\frac {\dot \beta\_t}{\beta\_t}\alpha\_t\right)z+\frac{\dot \beta\_t}{\beta\_t}x\quad 0\le t\le 1, x, z\in \mathbb{R}^d\\]<br>Key components:<br>-   \\( \alpha\_t, \beta\_t \\): scalar functions defining the forward noising process (typically \\( \alpha\_t^2 + \beta\_t^2 = 1 \\) for variance-preserving SDEs)<br>-   \\( \dot\alpha\_t, \dot\beta\_t \\): time derivatives<br>-   \\( z \\): the clean target (data point)<br>-   \\( x \\): current noisy sample</p>
+
+
+<h4>Marginal Vector Field </h4>
+
+<p>The <strong>marginal vector field</strong> is obtained by taking expectation over \\( z \sim p(z \mid x) \\):<br>\\[<br>u\_t(x) = \mathbb{E}\_{z \sim p(z \mid x)}[u\_t^{\text{target}}(x \mid z)]=\int u\_t^\text{target}(x\mid z)\frac {p\_t(x\mid z)p\_\text{data}(z)}{p\_t(x)}\text{d} z<br>\\]<br>This marginal field defines the <strong>probability flow ODE</strong> that generates samples from the data distribution.<br>边际矢量场 \\( u\_t(x) \\) 满足：<br>1.  \<em>初始条件\</em>：当 \\( t=0 \\) 时，\\( p\_0(x) \\) 是简单先验分布（如标准高斯），矢量场引导样本从该分布出发。<br>2.  \<em>终值条件\</em>：当 \\( t=1 \\) 时，\\( p\_1(x) \\) 近似数据分布 \\( p\_{\text{data}}(x) \\)，矢量场将初始噪声平滑变换为目标数据。<br>因此，通过求解 ODE \\( dx/dt = u\_t(x) \\)，即可从先验采样生成数据分布中的样本。</p>
+
+
+<h4>Continuity Equation </h4>
+
+
+
+<strong>Definition: Divergence</strong>
+
+<strong>\*Divergence</strong> (∇·F) measures the net "outflow" of a vector field from a point.
+
+<p>-   <strong>Positive divergence</strong>: net source (fluid expanding outward).<br>-   <strong>Negative divergence</strong>: net sink (fluid converging inward).<br>-   <strong>Zero divergence</strong>: incompressible flow (solenoidal).<br>Mathematically: ∇·F = ∂F_x/∂x + ∂F_y/∂y + ∂F_z/∂z (in 3D Cartesian).<br>\\[div(v\_t)(x)=\sum^d\_{i=1}\frac \partial {\partial x\_i} v\_t(x) \quad v\_t:\mathbb{R}^d\rightarrow \mathbb R^d\\]<br>表示一点的流入与流出的量之差。<br>通过 Continuity Equation, 我们证明了，在给定条件分布的情况下，我们的边缘分布也可以成立。</p>
+
+
+<h3>训练 Flow Matching </h3>
+
+
+
+
+<h2>Score Functions and Score Matching </h2>
+
+
+
+
+<h3>Conditional Score </h3>
+
+<strong>\*Conditional Score</strong> extends score matching to model <strong>conditional distributions</strong> \\( p(\mathbf{x} \mid \mathbf{y}) \\).
+
+<strong>Definition:</strong>
+<p>The conditional score is the gradient of the log conditional density:<br>\\[<br>\nabla\_{\mathbf{x}} \log p(\mathbf{x} \mid \mathbf{y})<br>\\]</p>
+
+<strong>Key uses:</strong>
+
+<p>-   <strong>Conditional generation</strong> (e.g., image inpainting, super-resolution, text-to-image)<br>-   <strong>Inverse problems</strong> (denoising, deblurring)<br>-   <strong>Classifier-free guidance</strong> in diffusion models</p>
+
+<strong>Training:</strong>
+<p>Minimize the <strong>conditional score matching objective</strong>:<br>\\[<br>\mathbb{E}\_{p(\mathbf{x},\mathbf{y})} \left[ \\| s\_\theta(\mathbf{x}, \mathbf{y}) - \nabla\_{\mathbf{x}} \log p(\mathbf{x} \mid \mathbf{y}) \\|^2 \right]<br>\\]</p>
+
+<strong>Connection to denoising:</strong>
+<p>The conditional score can be approximated via a <strong>conditional denoising autoencoder</strong>:<br>\\[<br>\nabla\_{\mathbf{x}} \log p(\mathbf{x} \mid \mathbf{y}) \approx \frac{\mathbf{x} - \hat{\mathbf{x}}\_\theta(\mathbf{x}, \mathbf{y})}{\sigma^2}<br>\\]<br>where \\(\hat{\mathbf{x}}\_\theta\\) predicts the clean signal given noisy \\(\mathbf{x}\\) and condition \\(\mathbf{y}\\).</p>
+
+
+<h4>Gaussian Score </h4>
+
+
+
+
+
+
+<h3>Marginal Score </h3>
+
+<strong>Marginal Score</strong> refers to the score of the _marginal distribution_ \\( p(\mathbf{x}) \\), obtained by integrating out latent variables or conditions.
+
+<p>_Definition:_<br>\\[<br>\nabla\_{\mathbf{x}} \log p\_t(\mathbf{x}) = \frac {\nabla p\_t(x)}{p\_t(x)} = \nabla\_{\mathbf{x}} \log \int p\_t(\mathbf{x} \mid \mathbf{z}) p\_\text{data}(\mathbf{z}) \\, d\mathbf{z}=\int \nabla\log p\_t(x\mid z)\frac {p\_t(x\mid z)p\_\text{data}(z)}{p\_t(x)}\text{d} z<br>\\]<br>_Key properties:_<br>-   <strong>No conditioning</strong> — models the data distribution alone<br>-   <strong>Intractable directly</strong> due to the integral over \\(\mathbf{z}\\)<br>-   <strong>Denoising Score Matching</strong> provides a tractable surrogate<br>_Connection to Conditional Score:_<br>By the law of total probability:<br>\\[<br>p(\mathbf{x}) = \mathbb{E}\_{p(\mathbf{y})}[p(\mathbf{x} \mid \mathbf{y})]<br>\\]<br>But the marginal score is _not_ simply the expectation of conditional scores:<br>\\[<br>\nabla\_{\mathbf{x}} \log p(\mathbf{x}) \neq \mathbb{E}\_{p(\mathbf{y} \mid \mathbf{x})}[\nabla\_{\mathbf{x}} \log p(\mathbf{x} \mid \mathbf{y})]<br>\\]<br>_Use in diffusion models:_<br>-   Unconditional diffusion models learn the marginal score<br>-   Classifier-free guidance interpolates between conditional and marginal scores:<br>    \\[<br>      \tilde{s}\_\theta(\mathbf{x}, \mathbf{y}) = s\_\theta(\mathbf{x}, \mathbf{y}) + w \big(s\_\theta(\mathbf{x}, \mathbf{y}) - s\_\theta(\mathbf{x})\big)<br>      \\]<br>    where \\( s\_\theta(\mathbf{x}) \\) is the marginal score and \\( w \\) controls guidance strength.</p>
+
+
+<h3>Sampling with SDE </h3>
+
+
+<h4>SDE Extension Trick </h4>
+
+
+
+<p>SDE extension trick（定理17）指出：<br>对于任意扩散系数 \\(\sigma\_t \ge 0\\)，可以通过在原始ODE的动力学基础上添加随机动力学来构造一个SDE，使得该SDE的轨迹仍然遵循相同的概率路径 \\(p\_t\\)。具体地，该SDE的形式为：<br>\\[X\_0\sim p\_{\text{init}},\qquad dX\_t = u\_t^{\text{target}}(X\_t)dt + \frac{\sigma\_t^2}{2}\nabla\log p\_t(X\_t)dt + \sigma\_t dW\_t\\]<br>其中 \\(u\_t^{\text{target}}(x)\\) 是边际向量场，\\(\nabla\log p\_t(x)\\) 是边际得分函数。该SDE的轨迹满足 \\(X\_t \sim p\_t\\)（\\(0 \le t \le 1\\)），特别地，\\(X\_1 \sim p\_{\text{data}}\\)。该技巧的关键在于，即使添加了随机性，边际分布 \\(p\_t\\) 保持不变。</p>
+
+
+<h2>Guidance </h2>
+
+
+<h2>Building Large-Scale Image or Video Generators </h2>
+
+
+<h2>Discrete Diffusion Models </h2>
