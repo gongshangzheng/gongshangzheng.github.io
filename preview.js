@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PUBLIC = path.join(__dirname, 'public');
-const BASE = '/HtmlBlogs';
+const BASE = '/HtmlBlogs'; // kept for backwards compat (strip old prefix if present)
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -38,7 +38,7 @@ function serve(res, filePath, status = 200) {
 const server = http.createServer((req, res) => {
   let p = req.url;
 
-  // Strip /HtmlBlogs prefix if present
+  // Strip /HtmlBlogs prefix if present (for backwards compat after rename)
   if (p.startsWith(BASE)) p = p.slice(BASE.length);
   if (!p.startsWith('/')) p = '/' + p;
 
