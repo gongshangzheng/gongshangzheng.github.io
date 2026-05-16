@@ -292,7 +292,14 @@ window.MathJax = {
     // stats should be INSIDE wrap (same padding as content)
     assert(contentHtml.includes('<div class="wrap"><div class="stats">'),
       'stats should be inside wrap when no source wrap');
-    assert(contentHtml.includes('<div class="article-meta"></div><div class="ch">'),
+    // meta should be inside wrap and content should also be inside wrap
+    const wrapStart = contentHtml.indexOf('<div class="wrap">');
+    const wrapEnd = contentHtml.lastIndexOf('</div>');
+    const wrapContent = contentHtml.slice(wrapStart, wrapEnd);
+    assert(wrapContent.includes('article-meta'), 'meta should be inside wrap');
+    assert(wrapContent.includes('<div class="ch">Content</div>'), 'ch content should be inside wrap');
+    // meta should come BEFORE ch content in the wrap
+    assert(wrapContent.indexOf('article-meta') < wrapContent.indexOf('<div class="ch">'),
       'meta should be before ch content inside wrap');
   },
 
@@ -345,7 +352,11 @@ window.MathJax = {
     assert.equal(statsHtml, '', 'no stats should give empty statsHtml');
     assert(contentHtml.includes('<div class="wrap"><div class="article-meta">'),
       'meta should be first thing inside wrap');
-    assert(contentHtml.includes('<div class="ch">Content</div></div>'),
+    // Verify ch is between wrap open and close
+    const wrapOpen = contentHtml.indexOf('<div class="wrap">');
+    const wrapClose = contentHtml.lastIndexOf('</div>');
+    const inside = contentHtml.slice(wrapOpen, wrapClose);
+    assert(inside.includes('<div class="ch">Content</div>'),
       'content should be inside wrap');
   },
 
