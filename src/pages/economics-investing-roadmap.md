@@ -1,6 +1,7 @@
 ---
 title: 经济学入门与投资学习路线 — 深度调研报告
 description: 经济学入门与投资学习路线深度调研
+date: 2026-04-25
 tags: [经济学, 投资, 学习路线]
 categories: [方法论]
 page_style: |

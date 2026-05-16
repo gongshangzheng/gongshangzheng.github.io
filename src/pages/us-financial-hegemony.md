@@ -1,6 +1,7 @@
 ---
 title: "美国金融霸权六十年——从布雷顿森林到占领华尔街"
 description: ""
+date: 2026-05-09
 tags: [美国, 金融霸权, 美元, 布雷顿森林]
 categories: [历史]
 page_style: |

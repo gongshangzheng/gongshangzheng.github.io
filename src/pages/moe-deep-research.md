@@ -1,6 +1,7 @@
 ---
 title: 混合专家模型（MoE）——原理、演进与前沿
 description: 把一个大 FFN 拆成多个专家，每次只激活其中一小部分——"参数多、计算少"的悖论是如何实现的？
+date: 2026-05-13
 tags: [MoE, 混合专家, 深度学习]
 categories: [AI]
 page_style: |

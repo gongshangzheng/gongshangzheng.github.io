@@ -1,6 +1,7 @@
 ---
 title: 中国医药十年——集采、国谈与创新药
 description: 中国医药十年改革深度叙事
+date: 2026-04-28
 tags: [医药, 集采, 创新药]
 categories: [行业研究]
 page_style: |

@@ -1,6 +1,7 @@
 ---
 title: 多模态大模型（MLLM）——原理、综述与实践
 description: 多模态大模型原理综述与实践深度分析
+date: 2026-05-14
 tags: [MLLM, 多模态, 大模型]
 categories: [AI]
 page_style: |

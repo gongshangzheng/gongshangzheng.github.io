@@ -1,6 +1,7 @@
 ---
 title: 人工智能编年史——从图灵到 ChatGPT
 description: 从图灵到 ChatGPT 的 AI 发展编年史
+date: 2026-05-11
 tags: [AI, History]
 categories: [AI]
 page_style: |

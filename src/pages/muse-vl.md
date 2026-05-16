@@ -1,6 +1,7 @@
 ---
 title: MUSE-VL：通过语义离散编码建模统一视觉语言模型
 description: 一个简单加法操作，让离散视觉 token 天然携带语义——用 1/58 的数据超越 Chameleon。
+date: 2026-05-15
 tags: [MUSE-VL, 视觉语言模型, Tokenizer]
 categories: [AI]
 page_style: |

@@ -1,6 +1,7 @@
 ---
 title: MAETok — 掩码自编码器是扩散模型的有效 Tokenizer
 description: 用掩码建模让 AE 学习判别性潜空间，替代 VAE，仅 128 token 达到 SOTA 生成质量
+date: 2026-05-16
 tags: [MAETok, Tokenizer, 扩散模型]
 categories: [AI]
 page_style: |

@@ -1,6 +1,7 @@
 ---
 title: 科研大佬开源工作流调研报告
 description: 科研大佬开源工作流调研
+date: 2026-04-22
 tags: [科研, 工作流, 开源]
 categories: [方法论]
 page_style: |
