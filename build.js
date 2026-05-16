@@ -128,12 +128,12 @@ function collectPosts() {
   if (!fs.existsSync(PAGES)) return posts;
 
   for (const file of fs.readdirSync(PAGES)) {
-    if (!file.endsWith('.md')) continue;
-    if (file === 'index.md' || file === 'about.md') continue; // skip non-article pages
+    if (!file.endsWith('.md') && !file.endsWith('.html')) continue;
+    if (file === 'index.md' || file === 'index.html' || file === 'about.md' || file === 'about.html') continue; // skip non-article pages
 
     const raw = fs.readFileSync(path.join(PAGES, file), 'utf8');
     const { data: fm } = parseFrontmatter(raw);
-    const slug = path.basename(file, '.md');
+    const slug = path.basename(file, path.extname(file));
 
     posts.push({
       slug,
@@ -190,17 +190,26 @@ function writePublic(relPath, content) {
 }
 
 // ===========================
-// Build Markdown Pages (individual articles)
+// Build Individual Pages (supports both .md and .html)
 // ===========================
 function buildMarkdownPages(allPosts) {
   for (const file of fs.readdirSync(PAGES)) {
-    if (!file.endsWith('.md')) continue;
+    if (!file.endsWith('.md') && !file.endsWith('.html')) continue;
 
     const raw = fs.readFileSync(path.join(PAGES, file), 'utf8');
-    const { data: fm, content: markdown } = parseFrontmatter(raw);
+    const { data: fm, content: bodyContent } = parseFrontmatter(raw);
+    const ext = path.extname(file);
 
-    let bodyHtml = marked.parse(markdown);
-    // music-player tags
+    let bodyHtml;
+    if (ext === '.md') {
+      // Markdown: parse with marked
+      bodyHtml = marked.parse(bodyContent);
+    } else {
+      // HTML: keep as-is, but process music-player tags
+      bodyHtml = bodyContent;
+    }
+
+    // music-player tags (works for both .md and .html)
     bodyHtml = bodyHtml.replace(
       /<music-player\s+title="([^"]+)"\s+src="([^"]+)"><\/music-player>/g,
       '<div class="music-player"><div class="music-player-title">$1</div><audio controls src="$2">Your browser does not support audio.</audio></div>'
@@ -215,7 +224,7 @@ function buildMarkdownPages(allPosts) {
       heroHtml = `<div class="hero"><div class="hero-inner"><h1>${heroTitle}</h1>${heroSub ? `<div class="sub">${heroSub}</div>` : ''}${heroTagline ? `<div class="tagline">${heroTagline}</div>` : ''}</div></div>`;
     }
 
-    const isIndex = file === 'index.md';
+    const isIndex = file === 'index.md' || file === 'index.html';
     const contentHtml = `${heroHtml}<div class="${isIndex ? 'main-content' : 'wrap'}">${bodyHtml}</div>`;
 
     const context = buildContext({
@@ -232,7 +241,7 @@ function buildMarkdownPages(allPosts) {
     }
 
     const page = assemblePage(finalContent, context);
-    const basename = path.basename(file, '.md') + '.html';
+    const basename = path.basename(file, ext) + '.html';
     writePublic(basename, page);
   }
 }
