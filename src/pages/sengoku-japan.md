@@ -1,0 +1,270 @@
+---
+title: 日本战国时代 — 编年叙事
+description: 乱世百年，刀光剑影中走出一位位枭雄——他们如何用血与火重塑日本？
+tags: [日本, 战国, 编年史]
+categories: [历史]
+page_style: |
+  .hero { height: 55vh; }
+hero_title: 日本战国时代
+hero_sub: 1467–1615 · 群雄并起与天下统一
+hero_tagline: 乱世百年，刀光剑影中走出一位位枭雄——他们如何用血与火重塑日本？
+---
+
+<div class="stats">
+  <div><div class="n">148</div><div class="l">年间战火</div></div>
+  <div><div class="n g">3</div><div class="l g">位天下人</div></div>
+  <div><div class="n b">1467</div><div class="l b">应仁之乱</div></div>
+  <div><div class="n">1615</div><div class="l">大坂夏之阵</div></div>
+  <div><div class="n b">22万</div><div class="l b">小田原围城</div></div>
+</div>
+
+<!-- 第一幕：序幕 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第一幕</div>
+    <div class="ch-title">应仁之乱：战国序章</div>
+    <div class="ch-date">1467 – 1477</div>
+
+    <p>1464年的冬天，京都笼罩在一种不安的气氛中。第八代将军<span class="badge" style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">足利义政</span>已近三十岁，却膝下无子。没有继承人，意味着将军之位将在他死后引发争夺。</p>
+
+    <p>义政做了一个合情合理的决定：召回年轻的弟弟<span class="badge" style="background:#2980b9;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">足利义视</span>还俗，作为养子和继承人。管领<span class="badge" style="background:#27ae60;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">细川胜元</span>担任义视的监护人，细川家与足利将军家世代联姻，胜元成为义视最坚定的支持者。</p>
+
+    <p>然而，命运在1465年11月开了一个天大的玩笑——义政的御台所<span class="badge" style="background:#e74c3c;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">日野富子</span>生下了一个健康的男婴：<span class="badge" style="background:#8b0000;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">足利义尚</span>。</p>
+
+    <p>一瞬间，义视的地位变得微妙起来。日野富子迅速找到了一个强大的盟友——人称"红僧"的<span class="badge" style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">山名宗全</span>。这位统治但马、备前、美作、伯耆、因幡五国的老将，一旦义尚成为将军，他便是幕府背后真正的权力支柱。</p>
+
+    <div class="photo">
+      <img src="assets/media/images/sengoku-japan/onin-war.jpg" alt="应仁之乱战场" loading="lazy">
+      <div class="cap">《应仁之乱战斗图》，月冈芳年绘（1847–1852）。京都化为战场，十年的混乱彻底瓦解了室町幕府的权威。</div>
+    </div>
+
+    <p>1467年5月，细川胜元下令进攻山名方一桥家当主宅邸，战斗正式爆发。将军义政发出通告："第一个在都城发动攻击的人，将被定性为朝敌！"但宣告从来不足以阻挡命运。九月，大内政弘率两万人加入西军——东军约十六万人，西军约十一万人，两军沿着一条深十英尺、宽二十英尺的壕沟将京都一分为二，隔沟对峙整整一年。</p>
+
+    <div class="callout">
+      <strong>历史的荒诞：</strong>在这片废墟之中，将军足利义政在做什么？他在筹备建一座银阁寺——用来与祖父义满所建金阁寺抗衡的"银阁"。他沉迷于茶道与和歌，仿佛京都的火焰与他无关。历史学家玛丽·贝瑞写道："这些争斗者到底想要什么？我认为他们自己也不知道。"
+    </div>
+
+    <p>1473年，山名宗全与细川胜元相继病死——他们活着无法终结的战争，在他们死后延续了四年。1477年12月，大内政弘烧毁京都据点撤离，这座曾经辉煌的古都只剩断壁残垣与流民。</p>
+
+    <p>后世史家将1467年视为日本战国时代的起点，因为在应仁之乱的废墟上，诸侯割据的时代正式开启——守护大名们不再是朝廷的臣子，而是自立门户的诸侯。</p>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider">⁂ ⁂ ⁂</div>
+
+  <!-- 第二幕：群雄割据 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第二幕</div>
+    <div class="ch-title">武田信玄与上杉谦信：龙虎斗</div>
+    <div class="ch-date">1548 – 1564</div>
+
+    <p>战国乱世中，有两位武将的名字至今仍让日本人血脉偾张——<span class="badge" style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">武田信玄</span>（1521-1573）与<span class="badge" style="background:#2980b9;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">上杉谦信</span>（1530-1578）。他们在川中岛展开的五次大会战，被誉为日本战国史上的最高杰作。</p>
+
+    <p>武田信玄，甲斐国领主，人称"甲斐之虎"。他以《孙子兵法》中"其疾如风，其徐如林，侵掠如火，不动如山"为军旗，制成"风林火山"四字旗，每逢出战，麾下骑兵如风卷残云。他的《甲州法度次第》是战国时代最早的分国法典之一，以法律确立了领国内部的绝对秩序。</p>
+
+    <p>上杉谦信，越后国领主，自称毘沙门天化身，以"毘"字军旗为号。他以"义"为核心，坚持"为义而战"的武士道精神，以布衣之身号令群雄，连信玄都不得不承认他是"真正的大敌"。</p>
+
+    <div class="photo">
+      <img src="assets/media/images/sengoku-japan/kawanakajima.jpg" alt="川中岛合战" loading="lazy">
+      <div class="cap">川中岛合战想象图（浮世绘风格 AI 创作）。两军在千曲川与犀川之间的冲积平原反复交锋，骑兵与步兵的浪潮在晨雾中交织。</div>
+    </div>
+
+    <div class="info-box">
+      <strong>川中岛五次会战（1548–1564）</strong>：两军在千曲川与犀川之间反复交锋。其中1561年第四次战役最为惨烈——谦信亲率一万两千人直插武田本阵，信玄被迫执枪迎战，险遭不测。1573年信玄病死于撤军途中，1578年谦信脑溢血猝死——两位绝代英雄同年陨落，留下"龙虎相争"的历史传奇。
+    </div>
+
+    <div class="quote">
+      <p>风林火山。这就是我的军旗。疾如风，徐如林，侵略如火，不动如山。</p>
+      <div class="who">— 武田信玄</div>
+    </div>
+
+    <p>两人的五次交锋，是智慧与武力的极致碰撞。信玄善用计谋与间谍战，谦信则以正面冲锋的勇气著称。最经典的对比，莫过于信玄的"啄木鸟战法"——以佯攻牵制敌军主力，寻找破绽一击致命——与谦信的"毘字旗直冲"——万军之中取敌将首级的无畏气概。两种截然不同的战争哲学，各有胜负，却谁也吃不掉谁。</p>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider">⁂ ⁂ ⁂</div>
+
+  <!-- 第三幕：织田信长 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第三幕</div>
+    <div class="ch-title">织田信长：桶狭间的奇迹</div>
+    <div class="ch-date">1560 – 1582</div>
+
+    <p>1560年五月二十日，尾张国。东海道第一弓<span class="badge" style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">今川义元</span>率两万五千大军北上，志在必得。而织田信长能动用的，不过区区三千人。</p>
+
+    <p>信长做出了让所有人目瞪口呆的决定：不守城，主动出击。深夜，他召集全部士兵，吟唱了一首古老的歌谣："人生五十年，如梦亦如幻。"然后披挂上马，朝着今川军营地疾驰而去。</p>
+
+    <div class="photo">
+      <img src="assets/media/images/sengoku-japan/okehazama.jpg" alt="桶狭间之战" loading="lazy">
+      <div class="cap">《尾州桶狭间合战》，歌川丰宣绘（1882）。浮世绘再现桶狭间之战的场景——信长以三千破两万五千，斩今川义元于马下。</div>
+    </div>
+
+    <p>据说那天天降暴雨，信长利用恶劣天气掩护，从山间小道迂回至今川军侧翼的桶狭间山谷。当义元正在山间设宴饮酒、庆祝进军顺利时，信长的骑兵如天降神兵般杀入——义元还没反应过来，头颅已经落地。两万五千人的大军，顷刻土崩瓦解。</p>
+
+    <div class="callout">
+      <strong>桶狭间的战略意义：</strong>此役之后，德川家康（原松平元康）等原属今川的将领纷纷归顺信长。更重要的是，信长在这场战役中第一次注意到一名足轻出身的小个子——木下藤吉郎，日后成为天下第二号人物：丰臣秀吉。
+    </div>
+
+    <p>桶狭间的胜利将信长从"尾张大傻瓜"变成了天下霸主。1568年进入京都，1573年灭亡室町幕府。"天下布武"——以武力统一天下——成为他毕生的信条。</p>
+
+    <div class="profile">
+      <div class="role">📜 织田信长（1534-1582）</div>
+      <div class="summary">
+        尾张国领主，日本战国三杰之一。桶狭间奇袭以少胜多，本能寺之变中死于家臣明智光秀之手。"第六天魔王"的称号来自他摧毁一切阻挡统一之力量的冷酷手段。他引进火绳枪、鼓励贸易、重用人才，是日本近代化的先驱。
+      </div>
+    </div>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider">⁂ ⁂ ⁂</div>
+
+  <!-- 第四幕：本能寺之变 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第四幕</div>
+    <div class="ch-title">本能寺之变：风起本能寺</div>
+    <div class="ch-date">1582年6月21日</div>
+
+    <p>那是天正十年六月二十一日的清晨。京都本能寺，信长仅带七十余名护卫。他刚刚摧毁武田氏，正志得意满——武田信玄病死于撤军途中，上杉谦信脑溢血猝死，毛利氏奄奄一息，天下统一近在眼前。</p>
+
+    <p>然而他最信任的武将之一——<span class="badge" style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">明智光秀</span>——在这一刻悄然策动了叛乱。光秀以"奉命增援秀吉"为名，率一万三千人从丹波出发。黎明时分，这支军队突然调转方向，直扑本能寺。包围完成时是清晨六点。</p>
+
+    <div class="photo">
+      <img src="assets/media/images/sengoku-japan/honnoji-fire.jpg" alt="本能寺燃烧" loading="lazy">
+      <div class="cap">《真书太阁记 本能寺烧讨之图》，渡边延信绘（1893）。浮世绘再现本能寺化为火海的场景——织田信长在此结束了波澜壮阔的一生。</div>
+    </div>
+
+    <div class="callout">
+      <strong>信长最后的遗言：</strong>"是非に及ばず"——"无需多言了"。他抄起弓箭迎战，弓断换枪，枪折持刀，最终在烈火中被围困。信长切腹自尽，享年四十九岁。
+    </div>
+
+    <p>历史最大的讽刺在于：弑主的光秀两周后便死于逃亡途中。而信长最信任的下属之一——那个出身草履、足轻出身的小个子——正以惊人的速度从毛利前线急行军赶回京都。这个人，将在两周后的山崎之战中为信长复仇，然后接过他未竟的天下。他就是丰臣秀吉。</p>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider">⁂ ⁂ ⁂</div>
+
+  <!-- 第五幕：丰臣秀吉 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第五幕</div>
+    <div class="ch-title">丰臣秀吉：草民到关白</div>
+    <div class="ch-date">1582 – 1590</div>
+
+    <p>1582年六月二十九日，秀吉从备中高松城出发，开始了日本军事史上最惊人的急行军——"中国大返"。仅用四天，跨越一百多公里，于七月二日抵达山崎。</p>
+
+    <p>明智光秀的军队在此布阵。秀吉抢先占领了战略要地——<strong>天王山</strong>。这一位置扼住了通往京都的咽喉，谁先占领，谁就赢得了一半的胜利。</p>
+
+    <div class="info-box">
+      <strong>山崎合战（1582年7月2日）</strong>：秀吉军四万余人对阵光秀军一万三千人。战斗仅持续数小时，光秀军全面崩溃。"天王山"三字从此成为日语中"决定胜负的关键"的代名词。光秀从弑主到身亡，仅仅两周。
+    </div>
+
+    <p>1590年，秀吉集结二十二万大军围攻北条氏的小田原城。这是日本历史上规模最大的围城战。</p>
+
+    <div class="photo">
+      <img src="assets/media/images/sengoku-japan/odawara-siege.jpg" alt="小田原围城" loading="lazy">
+      <div class="cap">小田原围城战想象图（浮世绘风格 AI 创作）。秀吉二十二万大军将北条氏的小田原城团团围住，营地连绵数十里，旌旗蔽日。</div>
+    </div>
+
+    <p>但秀吉的围城方法出人意料：他在营地布置歌姬、艺人、杂技演员，歌舞升平了整整三个月。守军在绝望中煎熬，最终开城投降。</p>
+
+    <div class="photo" style="margin-top: 1rem;">
+      <img src="assets/media/images/sengoku-japan/odawara-castle.jpg" alt="小田原城天守阁" loading="lazy">
+      <div class="cap">现存的小田原城天守阁。经历了战火、地震与明治废城令，这座当年北条氏经营了两百年的要塞，最终在1590年向秀吉敞开城门。</div>
+    </div>
+
+    <p>1590年八月四日，小田原城陷落。日本在应仁之乱后一百二十三年，第一次实现全国统一。秀吉被朝廷任命为关白，成为日本历史上第一位非贵族出身的关白。</p>
+
+    <div class="profile">
+      <div class="role">📜 丰臣秀吉（1537-1591）</div>
+      <div class="summary">
+        出身农民，曾为信长提鞋。日本战国三杰之一，以"中国大返"的急行军传奇闻名天下。山崎合战击败明智光秀后接管信长遗产，1590年小田原之战消灭北条氏，完成全国统一。推行太阁检地、刀狩令等政策。
+      </div>
+    </div>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider">⁂ ⁂ ⁂</div>
+
+  <!-- 第六幕：德川家康 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第六幕</div>
+    <div class="ch-title">德川家康：忍耐者的胜利</div>
+    <div class="ch-date">1598 – 1615</div>
+
+    <p>1598年九月十八日，秀吉病死于伏见城，享年六十一岁。丰臣家的继承问题迅速浮出水面——年仅五岁的秀赖，面临群狼环伺的局面。</p>
+
+    <p>德川家康（1543-1616）在这个关键时刻展现了令人惊叹的耐心。他曾是织田信长的人质，在今川家做过质子，又在三方原之战中被武田信玄大败，骑马逃命时在背后留下了"家康以来，天下布武"——那是对信长最深的致意，也是最隐晦的宣告。</p>
+
+    <p>1599年，家康被任命为五大老之首。他不动声色地调整领地、笼络武将、积蓄力量。1600年，关原之战爆发——西军以<span class="badge" style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:12px;font-size:0.8em;">石田三成</span>为首，东军以家康为首，在关原（今滋贺县）展开决战。</p>
+
+    <div class="callout">
+      <strong>关原之战（1600年9月15日）</strong>：仅用半天便分出胜负。东军最终获胜，石田三成被俘后处死。家康自此掌握了日本的实权。小早川秀秋的临阵倒戈——从西军投向东军——被历史学家视为此役的决定性时刻。
+    </div>
+
+    <p>1603年，德川家康被朝廷任命为征夷大将军，江户幕府正式建立。此后他又花了十二年时间，削弱丰臣家的最后抵抗力量。</p>
+
+    <div class="profile">
+      <div class="role">📜 德川家康（1543-1616）</div>
+      <div class="summary">
+        三河国领主，战国三杰之一。少年时为质子，忍耐数十载。1600年关原之战击败石田三成，1603年任征夷大将军，建立江户幕府。1615年大坂夏之阵消灭丰臣家，战国时代正式落幕。
+      </div>
+    </div>
+
+    <p>1615年，大坂夏之阵。丰臣秀赖在大阪城中，看着德川家康的大军逼近。秀吉曾以二十二万大军围困北条，如今秀赖面对的，是同样强大的德川旗本。大阪城陷落，秀赖与母亲淀殿一同自刃。丰臣家就此灭亡，日本最后一个战国枭雄的传承画上句号。</p>
+
+    <p>家康在1616年病逝于骏府城，享年七十四岁。他用七十三年的隐忍与等待，完成了信长和秀吉未能完成的历史使命——将日本带入两百六十年和平的江户时代。</p>
+  </div>
+
+  <!-- 分隔线 -->
+  <div class="divider">⁂ ⁂ ⁂</div>
+
+  <!-- 结语 -->
+  <div class="section fade-in">
+    <div class="section-title">战国落幕：三位天下人</div>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="photo" style="margin:0 0 0.5rem 0;">
+          <img src="assets/media/images/sengoku-japan/nobunaga.jpg" alt="织田信长肖像" loading="lazy" style="border-radius:8px;max-height:200px;object-fit:cover;">
+        </div>
+        <div class="title">织田信长</div>
+        <div class="desc">以"天下布武"为印，用火与铁碾碎了旧秩序。他是革命者，也是悲剧——在达到权力顶峰时被最信任的人背叛。</div>
+      </div>
+      <div class="card">
+        <div class="photo" style="margin:0 0 0.5rem 0;">
+          <img src="assets/media/images/sengoku-japan/hideyoshi.jpg" alt="丰臣秀吉肖像" loading="lazy" style="border-radius:8px;max-height:200px;object-fit:cover;">
+        </div>
+        <div class="title">丰臣秀吉</div>
+        <div class="desc">从提鞋的草民到关白天下人，他的故事是战国时代最励志的逆袭。"中国大返"四天跨越百公里的急行军，至今仍是军事史传奇。</div>
+      </div>
+      <div class="card">
+        <div class="photo" style="margin:0 0 0.5rem 0;">
+          <img src="assets/media/images/sengoku-japan/ieyasu.jpg" alt="德川家康肖像" loading="lazy" style="border-radius:8px;max-height:200px;object-fit:cover;">
+        </div>
+        <div class="title">德川家康</div>
+        <div class="desc">七十三年的隐忍，换来两百六十五年的太平。他在三方原骑马逃命时留下的"家康以来，天下布武"——是对信长最深的致意。</div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top: 2rem;">
+      <strong>战国的遗产</strong>：1467年应仁之乱至1615年大坂夏之阵，一百四十八年的战火终于熄灭。这段乱世催生了火绳枪的普及、统一货币的发行、城市商业的兴起和基督教的传入。更重要的是，它催生了三位"天下人"——他们相继完成了日本的统一，建立了延续两百六十五年的江户幕府。这段血与火的历史，最终成为日本民族记忆中永不褪色的传说。
+    </div>
+
+    <div class="timeline" style="margin-top:2rem;">
+      <div class="section-title">关键事件时间线</div>
+      <div class="timeline-item"><span class="year">1465</span><span class="event">日野富子生足利义尚，继承权之争爆发</span></div>
+      <div class="timeline-item"><span class="year">1467</span><span class="event">应仁之乱爆发，东军（约16万）vs 西军（约11万）</span></div>
+      <div class="timeline-item"><span class="year">1473</span><span class="event">山名宗全、细川胜元相继病逝，战争延续</span></div>
+      <div class="timeline-item"><span class="year">1477</span><span class="event">大内政弘撤离，战争结束，战国时代开启</span></div>
+      <div class="timeline-item"><span class="year">1560</span><span class="event">桶狭间之战，信长以三千破今川两万五千</span></div>
+      <div class="timeline-item"><span class="year">1561</span><span class="event">川中岛第四次会战，谦信直冲武田本阵</span></div>
+      <div class="timeline-item"><span class="year">1568</span><span class="event">信长进入京都，控制幕府</span></div>
+      <div class="timeline-item"><span class="year">1573</span><span class="event">信长消灭室町幕府；武田信玄病死于撤军途中</span></div>
+      <div class="timeline-item"><span class="year">1578</span><span class="event">上杉谦信脑溢血猝死</span></div>
+      <div class="timeline-item"><span class="year">1582</span><span class="event">本能寺之变（6月21日）；山崎合战（7月2日）</span></div>
+      <div class="timeline-item"><span class="year">1585</span><span class="event">秀吉任关白，成为日本首位非贵族出身的关白</span></div>
+      <div class="timeline-item"><span class="year">1590</span><span class="event">小田原城陷落，日本统一</span></div>
+      <div class="timeline-item"><span class="year">1598</span><span class="event">秀吉病逝，丰臣家继承危机浮现</span></div>
+      <div class="timeline-item"><span class="year">1600</span><span class="event">关原之战，家康击败石田三成，掌握实权</span></div>
+      <div class="timeline-item"><span class="year">1603</span><span class="event">家康任征夷大将军，江户幕府建立</span></div>
+      <div class="timeline-item"><span class="year">1615</span><span class="event">大坂夏之阵，丰臣家灭亡，战国时代正式结束</span></div>
+    </div>
+  </div>

@@ -1,0 +1,275 @@
+---
+title: 多模态大模型（MLLM）——原理、综述与实践
+description: 多模态大模型原理综述与实践深度分析
+tags: [MLLM, 多模态, 大模型]
+categories: [AI]
+page_style: |
+  .hero { height: 55vh; }
+hero_title: 多模态大模型（MLLM）
+hero_sub: 原理、综述与实践 · 基于 6 篇 Survey 全文深度分析
+hero_tagline: Vision Encoder → Connector → LLM —— 三个组件，一个范式的诞生。从 30+ 模型中提炼架构共识。
+---
+
+<div class="stats">
+  <div><div class="n">6</div><div class="l">Survey 全文精读</div></div>
+  <div><div class="n b">3 段</div><div class="l">标准架构</div></div>
+  <div><div class="n">30+</div><div class="l g">模型架构对比</div></div>
+  <div><div class="n">6</div><div class="l">核心挑战</div></div>
+</div>
+
+<div class="wrap">
+
+<div class="section fade-in">
+  <div class="section-title">简介</div>
+  <p>多模态大模型（Multimodal Large Language Model, MLLM）在 LLM 基础上扩展了视觉、听觉等感知能力，让 AI 不再只读文字，而是能"看"图像、"听"声音、"理解"视频。本调研综合了 <strong>6 篇 arXiv survey 全文</strong>（非仅摘要）和 8 篇核心论文，系统梳理了三段式架构、训练范式、代表模型演进、评测基准体系，以及六大核心挑战。</p>
+  <p>MLLM 是当前 AI 最活跃的赛道之一。从 2023 年 LLaVA/GPT-4V 元年到 2025 年 Gemini 3 原生全模态，两年内范式快速收敛。掌握三段论架构和六大挑战，就能把握全局脉络。</p>
+  <p><strong>数据来源</strong>：Caffagni et al. (arXiv:2402.12451, ACL 2024) · Yin et al. (arXiv:2306.13549, IEEE TPAMI) · Bai et al. (arXiv:2404.18930, ACM 2025) · Jin et al. (arXiv:2405.10739) · Wu et al. (arXiv:2311.13165) · Li et al. (arXiv:2408.08632)</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">核心架构：编码-对齐-推理三阶段</div>
+  <p>几乎所有主流 MLLM 遵循 <strong>Vision Encoder → Connector → LLM</strong> 三段式架构。三段的本质是"感知→翻译→推理"。</p>
+
+  <div class="photo">
+    <img src="images/mllm-caffagni-arch.jpeg" alt="MLLM 通用架构图" loading="lazy">
+    <div class="cap">MLLM 通用架构：Visual Encoder + Adapter + LLM。不同 Adapter 类型：MLP、Q-Former、Cross-Attention。来源：Caffagni et al., Figure 1</div>
+  </div>
+
+  <h3>阶段 1：视觉编码（Vision Encoder）</h3>
+  <p>ViT 将输入图像切分为 patch，每个 patch 映射为向量。一张 224×224 图像 → 196 个 16×16 patch。当前最佳实践是混合使用 CLIP/SigLIP（语义特征）+ DINOv2（空间特征）。</p>
+
+  <table>
+    <thead><tr><th>编码器</th><th>预训练数据</th><th>分辨率</th><th>参数量</th><th>优势</th></tr></thead>
+    <tbody>
+      <tr><td>CLIP-ViT-L/14</td><td>WIT (13B)</td><td>224/336</td><td>304M</td><td>语义对齐强，广泛使用</td></tr>
+      <tr><td>EVA-CLIP-ViT-G/14</td><td>LAION+COYO</td><td>224</td><td>1.0B</td><td>MAE 预训练，重建能力</td></tr>
+      <tr><td>OpenCLIP-ViT-bigG/14</td><td>LAION-2B (34B)</td><td>224</td><td>1.8B</td><td>最大开源 CLIP</td></tr>
+      <tr><td>SigLIP-SO</td><td>WebLI</td><td>384</td><td>~400M</td><td>Sigmoid 损失，训练稳定</td></tr>
+      <tr><td>DINOv2</td><td>LVD-142M</td><td>518</td><td>~1.1B</td><td>自监督，空间特征强</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box"><h3>💡 关键发现：分辨率 &gt; 参数量</h3><p>Yin et al. 的经验研究一致验证：VE 分辨率提升带来的性能增益超过单纯增加参数量（7B→13B→70B）。分辨率扩展方法：直接扩展（微调 encoder）、分块法（anyres 切子图）、双编码器（CogAgent 高/低分辨率 cross-attention）。</p></div>
+
+  <h3>阶段 2：投影对齐（Connector）</h3>
+  <p>Caffagni et al. 将 Connector 系统分为四大类：</p>
+
+  <table>
+    <thead><tr><th>类型</th><th>代表模型</th><th>机制</th><th>VT 数</th><th>训练复杂度</th></tr></thead>
+    <tbody>
+      <tr><td>Linear/MLP</td><td>LLaVA-1.5</td><td>线性映射或 2 层 MLP</td><td>256</td><td>极低</td></tr>
+      <tr><td>Q-Former</td><td>BLIP-2</td><td>Learnable queries + cross-attention</td><td>32</td><td>高</td></tr>
+      <tr><td>Cross-Attention</td><td>Flamingo</td><td>Dense XAttn + tanh-gating</td><td>64</td><td>中-高</td></tr>
+      <tr><td>Cross-Attention (单层)</td><td>Qwen-VL</td><td>单层 XAttn + 2D 位置编码</td><td>256</td><td>中</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout"><h3>🔧 Connector 的"简单有效"哲学</h3><p>LLaVA-1.5 证明 2 层 MLP 足以匹配 Q-Former 和 Resampler。Caffagni 的 30+ 模型对比表显示，简单 Linear/MLP 方案被采用最多。Flamingo 的 zero-initialized tanh-gating 机制确保初始化时模型行为 = 原始 LLM，训练中逐渐引入视觉信息。数量哲学：太少(&lt;64)丢细节，太多(&gt;1024)计算暴增，主流 256-729。</p></div>
+
+  <h3>阶段 3：LLM 推理</h3>
+  <p>对齐后的 visual token 与 text token 拼接送入 LLM。主流 LLM 选择：LLaMA/Vicuna 系列（开源首选）、Qwen（中文最佳）、Mixtral MoE（效率导向）。</p>
+
+  <table>
+    <thead><tr><th>模型</th><th>VE</th><th>Connector</th><th>LLM</th><th>参数量</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>LLaVA-1.5</td><td>CLIP-ViT-L</td><td>2-MLP</td><td>Vicuna-13B</td><td>13.3B</td><td>开源标杆，简单有效</td></tr>
+      <tr><td>BLIP-2</td><td>EVA-ViT-g</td><td>Q-Former</td><td>FlanT5-XXL</td><td>14B</td><td>Q-Former 先驱</td></tr>
+      <tr><td>Qwen-VL</td><td>CLIP-bigG</td><td>Cross-att</td><td>Qwen-7B</td><td>8.8B</td><td>中文支持，多语言</td></tr>
+      <tr><td>InternVL</td><td>InternViT-6B</td><td>QLLaMA</td><td>InternLM-20B</td><td>26B</td><td>6B 超大 VE</td></tr>
+      <tr><td>Flamingo</td><td>NFNet-F6</td><td>XAttn+Perceiver</td><td>Chinchilla-70B</td><td>70B+</td><td>少样本先驱</td></tr>
+      <tr><td>SPHINX-X</td><td>Mixture</td><td>Linear</td><td>Mixtral-8×7B</td><td>47B MoE</td><td>全组件训练</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">训练流程</div>
+  <p>基于 Caffagni et al. 全文分析，MLLM 训练分为<strong>两阶段训练</strong>（主流）和<strong>单阶段训练</strong>（少数探索）两类。</p>
+
+  <table>
+    <thead><tr><th>阶段</th><th>目标</th><th>冻结策略</th><th>数据量</th></tr></thead>
+    <tbody>
+      <tr><td>Stage 1：对齐预训练</td><td>Connector 初始化</td><td>冻结 VE+LLM，训 Connector</td><td>558K–1B</td></tr>
+      <tr><td>Stage 2：指令微调</td><td>多模态对话能力</td><td>解冻 LLM（全参或 LoRA）</td><td>150K–665K</td></tr>
+      <tr><td>Stage 3（可选）</td><td>减少幻觉</td><td>RLHF/DPO</td><td>变动</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Stage 1 大规模数据集</h3>
+  <table>
+    <thead><tr><th>数据集</th><th>规模</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>LAION-5B</td><td>5B image-text pairs</td><td>最大公开图文对</td></tr>
+      <tr><td>COYO-700M</td><td>747M pairs</td><td>HTML alt-text 配对</td></tr>
+      <tr><td>DataComp</td><td>12.8B filtered pairs</td><td>Common Crawl 来源</td></tr>
+      <tr><td>WebLI</td><td>10B images</td><td>Google 内部，交错格式</td></tr>
+      <tr><td>OBELICS</td><td>141M docs, 353M images</td><td>交错图文，开源</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Stage 2 指令微调数据</h3>
+  <table>
+    <thead><tr><th>数据集</th><th>规模</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>LLaVA-Instruct</td><td>158K</td><td>GPT-4 生成（58K 对话 + 23K 描述 + 77K 推理）</td></tr>
+      <tr><td>LRV-Instruct</td><td>700K</td><td>含负样本指令，抗幻觉</td></tr>
+      <tr><td>LLaV AR</td><td>422K + 16K</td><td>OCR-rich，text-rich images</td></tr>
+    </tbody>
+  </table>
+
+  <h3>各模型训练策略差异</h3>
+  <table>
+    <thead><tr><th>模型</th><th>Stage 1 训练</th><th>Stage 2 训练</th><th>特殊策略</th></tr></thead>
+    <tbody>
+      <tr><td>LLaVA</td><td>仅训 Linear adapter</td><td>Adapter + LLM</td><td>GPT-4 生成指令数据</td></tr>
+      <tr><td>MiniGPT-4</td><td>仅训 Linear</td><td>仅训 Linear</td><td>模型自过滤数据</td></tr>
+      <tr><td>InstructBLIP</td><td>Q-Former + connection</td><td>同左</td><td>冻结 VE+LLM</td></tr>
+      <tr><td>mPLUG-Owl</td><td>解冻 VE + Connector</td><td>text+multimodal 混合</td><td>VE 可训（有 forgetting 风险）</td></tr>
+      <tr><td>SPHINX-X</td><td colspan="2">单阶段 all-in-one</td><td>全组件更新，含 text-only data</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">架构范式：后期拼接 vs 原生多模态</div>
+  <table>
+    <thead><tr><th>维度</th><th>后期拼接式</th><th>原生多模态</th></tr></thead>
+    <tbody>
+      <tr><td>代表模型</td><td>LLaVA, Qwen-VL, InternVL</td><td>Gemini, ERNIE-5.0</td></tr>
+      <tr><td>训练流程</td><td>先训 LLM → 外挂视觉模块</td><td>所有模态从头联合训练</td></tr>
+      <tr><td>开发成本</td><td>低，复用已有 LLM 权重</td><td>高，从零训练</td></tr>
+      <tr><td>跨模态深度</td><td>有天花板（信息瓶颈）</td><td>理论上更强</td></tr>
+      <tr><td>迭代速度</td><td>快（换 LLM 只需重训 Connector）</td><td>慢（全模型重训）</td></tr>
+      <tr><td>开源生态</td><td>丰富（30+ 开源模型）</td><td>几乎无</td></tr>
+      <tr><td>典型上下文</td><td>4K-131K tokens</td><td>1M+ tokens (Gemini)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">评测基准</div>
+  <p>基于 Li et al. (arXiv:2408.08632) 的系统分类：</p>
+
+  <table>
+    <thead><tr><th>基准</th><th>评测维度</th><th>难度</th><th>典型得分</th><th>人类水平</th></tr></thead>
+    <tbody>
+      <tr><td>MMMU</td><td>大学级多学科</td><td>困难</td><td>50-70%</td><td>~90%</td></tr>
+      <tr><td>MMBench</td><td>多模态理解 20+ 维度</td><td>中等</td><td>75-85%</td><td>~95%</td></tr>
+      <tr><td>MME</td><td>感知+认知综合</td><td>中等</td><td>1800+</td><td>-</td></tr>
+      <tr><td>POPE</td><td>幻觉检测</td><td>中等</td><td>85-90%</td><td>~99%</td></tr>
+      <tr><td>MathVista</td><td>数学视觉推理</td><td>困难</td><td>50-65%</td><td>~80%</td></tr>
+      <tr><td>CHAIR</td><td>对象幻觉率</td><td>中等</td><td>10-30%</td><td>~0%</td></tr>
+      <tr><td>Video-MME</td><td>视频理解</td><td>中等</td><td>55-70%</td><td>-</td></tr>
+      <tr><td>OCRBench</td><td>文字识别</td><td>中等</td><td>70-80%</td><td>~98%</td></tr>
+    </tbody>
+  </table>
+
+  <p>评测维度五分类：<strong>感知</strong>（对象识别、OCR）→ <strong>推理</strong>（逻辑、数学）→ <strong>认知</strong>（常识、专业）→ <strong>生成</strong>（描述、对话）→ <strong>安全</strong>（幻觉、偏见）。</p>
+  <p>开源与闭源差距：2023 年 20-30% → 当前 5-10%，部分基准持平。模型选型参考 <strong>LMArena</strong>（人类盲测）和 <strong>OpenCompass</strong>（学术基准）。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">六大核心挑战</div>
+
+  <h3>1. 多模态幻觉</h3>
+  <p>基于 Bai et al. (arXiv:2404.18930) 全文分析。</p>
+  <p><strong>三类幻觉</strong>：对象存在幻觉（识别不存在的对象）· 属性幻觉（颜色/形状/材质描述错误）· 关系幻觉（对象间关系错误）。</p>
+  <p><strong>四维度根因</strong>：</p>
+  <table>
+    <thead><tr><th>维度</th><th>具体原因</th></tr></thead>
+    <tbody>
+      <tr><td>Data</td><td>长尾分布偏差 · 图文配对噪声 · GPT-4 生成指令的 bias</td></tr>
+      <tr><td>Model</td><td>VE 分辨率不足 · Connector 信息压缩 · LLM 语言先验过强覆盖视觉信号</td></tr>
+      <tr><td>Training</td><td>自回归 exposure bias · 对齐不充分</td></tr>
+      <tr><td>Inference</td><td>生成策略参数 · 缺乏 grounding 机制</td></tr>
+    </tbody>
+  </table>
+  <p><strong>缓解方案</strong>：事前（负样本微调 LRV-Instruct、RLHF/DPO）· 事中（增强 grounding、LURE 特征重采样）· 事后（Woodpecker 外部校验、自我修正）。</p>
+  <p>当前水平：POPE 85-90% vs 人类 99%；尚无根本解决方案。</p>
+
+  <h3>2. 高分辨率理解</h3>
+  <p>主流 336-448 分辨率，细粒度 OCR/文档理解不够。方案：anyres 策略（有效分辨率 672-1344）、双编码器（CogAgent）、ViT 直接扩展。分辨率提升对 OCR 增益 &gt; 增加参数量。</p>
+
+  <h3>3. 多图与视频理解</h3>
+  <p>token 随帧数线性增长。代表：Gemini 1.5 Pro (1M token 上下文 ≈ 1 小时视频)。趋势：关键帧智能选取 + 视频级时序注意力。</p>
+
+  <h3>4. Grounding 与视觉定位</h3>
+  <p>让 MLLM 输出边界框/分割掩码。代表：Ferret、Groma（坐标 token 化）、Qwen2.5-VL（原生定位）。瓶颈：像素级精度 + 细粒度标注数据稀缺。</p>
+
+  <h3>5. Agent 与工具使用</h3>
+  <p>MLLM 三重角色：控制器（编排工具链）、决策者（判断下一步）、语义提炼者（多模态→结构化指令）。代表：OS-Copilot、AppAgent、CogAgent。扩展技术：M-ICL（多模态 few-shot）、M-CoT（分步推理）、LAVR（LLM 编排视觉工具链）。</p>
+
+  <h3>6. 效率与端侧部署</h3>
+  <p>基于 Jin et al. (arXiv:2405.10739) 全文分析。</p>
+  <p>LLaVA-1.5 (Vicuna-13B) 推理：336×336 + 40 token → <strong>18.2T FLOPS, 41.6G 内存</strong>。MiniGPT-v2 训练需 800+ A100 GPU hours。</p>
+
+  <table>
+    <thead><tr><th>优化维度</th><th>代表方案</th><th>效果</th></tr></thead>
+    <tbody>
+      <tr><td>轻量架构</td><td>MobileVLM (2.7B), TinyLLaVA (3B)</td><td>参数量降至 1/5</td></tr>
+      <tr><td>高效 VE</td><td>SigLIP-SO, ViTamin</td><td>编码器参数减半</td></tr>
+      <tr><td>小 LLM</td><td>Phi-2 2.7B, Mamba-2.8B (线性复杂度)</td><td>推理 FLOPs 大幅下降</td></tr>
+      <tr><td>Token 压缩</td><td>FastV, MoVA, LLaVA-PruMerge</td><td>VT 数量减少 50-75%</td></tr>
+      <tr><td>MoE</td><td>MoE-LLaVA-3.6B, DeepSeek-VL2</td><td>总参数大但激活量小</td></tr>
+      <tr><td>PEFT</td><td>LoRA, QLoRA</td><td>训练参数降至 0.1%</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box"><h3>💡 MoE 的一致验证</h3><p>Yin et al. 和 Jin et al. 独立验证：MoE 架构在几乎所有基准上优于同规模 dense 模型。MM1 和 MoE-LLaVA 的实验表明，稀疏激活可以在不增加推理成本的情况下提升总参数量和性能。</p></div>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">消融实验关键发现</div>
+  <table>
+    <thead><tr><th>消融项</th><th>变化</th><th>性能影响</th><th>来源</th></tr></thead>
+    <tbody>
+      <tr><td>去掉 Connector</td><td>直接拼接视觉特征</td><td>↓ 30-40%</td><td>Caffagni</td></tr>
+      <tr><td>Linear → MLP</td><td>增加非线性</td><td>↑ 5-8%</td><td>Caffagni</td></tr>
+      <tr><td>VT 256 → 64</td><td>减少 token</td><td>↓ 10-15%（细粒度任务）</td><td>Caffagni</td></tr>
+      <tr><td>CLIP → CLIP+DINOv2</td><td>混合编码器</td><td>↑ 8-12%（grounding）</td><td>Yin</td></tr>
+      <tr><td>LLM 7B → 13B</td><td>增大 LLM</td><td>全面提升</td><td>Yin</td></tr>
+      <tr><td>LLM → 34B</td><td>进一步增大</td><td>出现 emergent 中文能力</td><td>Yin</td></tr>
+      <tr><td>Dense → MoE</td><td>稀疏激活</td><td>几乎所有基准更优</td><td>Yin, Jin</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">开源项目推荐</div>
+  <table>
+    <thead><tr><th>项目</th><th>GitHub</th><th>学习价值</th></tr></thead>
+    <tbody>
+      <tr><td><strong>LLaVA</strong></td><td>haotian-liu/LLaVA</td><td>⭐⭐⭐ 学习首选，代码结构清晰</td></tr>
+      <tr><td><strong>MiniGPT-4</strong></td><td>Vision-CAIR/MiniGPT-4</td><td>⭐⭐⭐ 源码入门，~500 行核心代码</td></tr>
+      <tr><td><strong>Qwen2.5-VL</strong></td><td>QwenLM/Qwen2.5-VL</td><td>⭐⭐⭐ 中文实用，视频理解+Agent</td></tr>
+      <tr><td><strong>MoE-LLaVA</strong></td><td>MOE-LLaVA/MoE-LLaVA</td><td>⭐⭐ MoE 多模态参考实现</td></tr>
+      <tr><td><strong>MobileVLM</strong></td><td>mobilevlm</td><td>⭐⭐ 端侧部署参考</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout"><h3>🎯 实践路线</h3><p><strong>第一步</strong>：HuggingFace transformers 跑 LLaVA 推理（pip install 即可）<br><strong>第二步</strong>：克隆 MiniGPT-4 读源码（~500 行核心代码）<br><strong>第三步</strong>：LLaVA-Lightning 在自定义数据上微调<br><strong>第四步</strong>：关注 Qwen2.5-VL 视频理解和 Agent 能力<br><strong>研究切入</strong>：视觉 Tokenizer → MLLM visual token 压缩的直接交叉点</p></div>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">未来趋势</div>
+  <table>
+    <thead><tr><th>方向</th><th>描述</th><th>预计成熟</th></tr></thead>
+    <tbody>
+      <tr><td>原生多模态</td><td>从零训练的多模态模型，不依赖拼接</td><td>3-5 年</td></tr>
+      <tr><td>多模态 Agent</td><td>MLLM + 工具调用 + 环境交互</td><td>2-3 年</td></tr>
+      <tr><td>视频原生理解</td><td>视频即 token 序列，无需抽帧</td><td>3-5 年</td></tr>
+      <tr><td>统一理解+生成</td><td>一个模型同时做视觉理解和视觉生成</td><td>5+ 年</td></tr>
+      <tr><td>端侧部署</td><td>量化 + MoE + 轻量架构 + Token 压缩</td><td>1-2 年</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout fade-in">
+  <h3>📚 参考资源</h3>
+  <p><strong>核心 Survey（全文精读）</strong>：Caffagni et al. (arXiv:2402.12451, ACL 2024) · Yin et al. (arXiv:2306.13549, IEEE TPAMI) · Bai et al. (arXiv:2404.18930, ACM 2025) · Jin et al. (arXiv:2405.10739) · Wu et al. (arXiv:2311.13165) · Li et al. (arXiv:2408.08632)</p>
+  <p><strong>关键论文</strong>：CLIP · LLaVA · LLaVA-1.5 · BLIP-2 · Flamingo · Qwen-VL · InternVL · InstructBLIP</p>
+  <p><strong>评测基准</strong>：MMBench (ECCV 2024) · MMMU · MME · POPE · MathVista · CHAIR · SEED-Bench</p>
+  <p>配图来源：Caffagni et al., "The Revolution of MLLM", Figure 1</p>
+</div>
+
+</div>

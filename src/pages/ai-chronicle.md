@@ -1,0 +1,197 @@
+---
+title: 人工智能编年史——从图灵到 ChatGPT
+description: 从图灵到 ChatGPT 的 AI 发展编年史
+tags: [AI, History]
+categories: [AI]
+page_style: |
+  .hero { height: 55vh; }
+hero_title: 人工智能编年史
+hero_sub: 从图灵到 ChatGPT · 1936 — 2024
+hero_tagline: 一段关于思想、泡沫、寒冬与复活的螺旋叙事——每一次绝望之后，总有一条被遗忘的路通向未来
+---
+
+<div class="stats">
+  <div><div class="n">1956</div><div class="l">达特茅斯会议"AI"诞生</div></div>
+  <div><div class="n g">×2</div><div class="l">两次 AI 冬天</div></div>
+  <div><div class="n b">2012</div><div class="l">深度学习引爆</div></div>
+  <div><div class="n">175B</div><div class="l">GPT-3 参数</div></div>
+  <div><div class="n">1 亿</div><div class="l">ChatGPT 两月用户</div></div>
+</div>
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">Prologue · 序幕</div>
+  <div class="ch-title">一个问号，一张纸，一台机器</div>
+  <div class="ch-date">1936 — 1950</div>
+  <p>一切开始于一纸论文。</p>
+  <p>1936年，24岁的剑桥大学研究生艾伦·图灵发表了《论可计算数及其在判定问题上的应用》。在论文中，他构想了一个极其简单的抽象机器——一条无限长的纸带、一个读写头、一套有限的状态规则。这个"通用图灵机"可以计算任何可计算的问题。</p>
+  <p>这个想法原本是为了回答数学基础的问题（希尔伯特的判定问题），但它意外地为"机器能否思考"这个更古老的问题铺平了道路。如果一台极其简单的抽象机器能够计算任何逻辑上可计算的事情，那么智能所需的计算是否也只是某种特殊形式的符号操作？</p>
+  <p>1950年，图灵在《Mind》杂志上发表了那篇划时代的论文《计算机器与智能》。开篇他写道：</p>
+  <div class="quote">
+    <p>"我提议考虑这个问题：'机器能思考吗？'"</p>
+    <div class="who">—— Alan Turing, <em>Computing Machinery and Intelligence</em>, 1950</div>
+  </div>
+  <p>他提出如果一台机器能够在远程对话中让人类无法区分它和真人，那么我们就应该认为它具有智能。这就是图灵测试。这篇文章奠定了AI的哲学地基。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Act I · 1956–1973</div>
+  <div class="ch-title">黄金年代</div>
+  <div class="ch-date">达特茅斯的夏天与第一次冬天前的狂欢</div>
+  <div class="emoji-hero">🏔️</div>
+  <h3>1956年：AI的"出生证明"</h3>
+  <p>1956年夏天，一场为期八周的工作坊在新罕布什尔州的达特茅斯学院举行。组织者是约翰·麦卡锡，参与者包括马文·明斯基、克劳德·香农、纳撒尼尔·罗切斯特等人。麦卡锡在提案中写下了被历史铭记的句子：</p>
+  <div class="quote">
+    <p>"我们提议在1956年夏天举行一场关于人工智能的工作坊……这项研究基于以下猜想：学习的每个方面或智能的任何其他特征，原则上都可以被如此精确地描述，以至于一台机器可以被制造出来模拟它。"</p>
+    <div class="who">—— John McCarthy，达特茅斯会议提案，1955</div>
+  </div>
+  <p>这是"人工智能"这个术语第一次被正式使用。达特茅斯会议被后世视为AI的"出生证明"。</p>
+  <h3>1958年：感知机的崛起</h3>
+  <p>1958年，康奈尔大学的弗兰克·罗森布拉特发明了感知机——一台硬件实现的单层神经网络，能够学会对简单图案进行分类。《纽约时报》报道称这是一台"能思考的机器"。</p>
+  <p>罗森布拉特的乐观不是孤例。1960年代是AI的第一个黄金时代。MIT的AI实验室充斥着乐观主义。明斯基在1967年写道："在一代人的时间内，创造'人工智能'的问题将基本解决。"</p>
+  <h3>1969年：感知机的陨落——第一次冬天</h3>
+  <p>1969年，明斯基和派珀特出版了《感知机》一书，用严格的数学证明单层感知机无法解决XOR这样简单的非线性分类问题。这本书的论证摧毁了资助者对神经网络的信心。政府资助迅速转向符号推理。与此同时，英国莱特希尔报告（1973）对AI做出严苛评价，导致英国AI研究资助大幅削减。</p>
+  <p>第一次AI冬天降临了。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Act II · 1980–2006</div>
+  <div class="ch-title">两次繁荣与两次冬天</div>
+  <div class="ch-date">专家系统·反向传播·深蓝·在谷底等待</div>
+  <div class="emoji-hero">❄️🔥❄️</div>
+  <h3>1980年代：专家系统的黄金时代</h3>
+  <p>AI找到了它的第一种"商业落地"形式——专家系统。MYCIN诊断血液感染疾病，XCON帮助DEC配置计算机系统，每年节省约4000万美元。日本政府发起雄心勃勃的"第五代计算机"计划。LISP机器公司如日中天。</p>
+  <h3>1986年：反向传播的复兴</h3>
+  <p>戴维·鲁梅尔哈特、杰弗里·辛顿和罗纳德·威廉姆斯重新发现了反向传播算法（backpropagation）——一种让多层神经网络能从错误中学习的方法。神经网络研究重新点燃了希望。</p>
+  <h3>1987-1993：第二次AI冬天</h3>
+  <p>专家系统暴露出根本缺陷——规则写不完、维护成本极高、无法处理未知情况。LISP机器市场崩溃，数百家AI初创倒闭。日本五代机计划悄无声息地终结。第二次冬天比第一次更冷、更长。</p>
+  <h3>1997年：深蓝 vs 卡斯帕罗夫</h3>
+  <p>1997年5月11日，IBM的深蓝在六局国际象棋比赛中以3.5比2.5击败世界冠军卡斯帕罗夫。这是计算机首次在正式比赛中击败人类世界冠军。但深蓝用的是暴力搜索——能下棋，但除此之外什么都不会。</p>
+  <h3>2006年：深度学习概念的诞生</h3>
+  <p>杰弗里·辛顿发表了关于深度信念网络的论文，提出逐层预训练方法训练深层神经网络。"深度学习"这个术语正式诞生。当时的AI学界仍对神经网络持怀疑态度——但辛顿实验室里的几个年轻人即将改变一切。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Act III · 2006–2017</div>
+  <div class="ch-title">深度学习革命</div>
+  <div class="ch-date">AlexNet · AlphaGo · Transformer——改变一切的十年</div>
+  <div class="emoji-hero">🧠⚡</div>
+  <h3>2012年9月30日：AlexNet 的冲击</h3>
+  <p>ImageNet挑战赛上，辛顿和他的两名学生亚历克斯·克里热夫斯基、伊利娅·苏茨克弗提交了一个八层卷积神经网络——AlexNet。结果令人震惊：AlexNet的top-5错误率为15.3%，而第二名的传统方法是26.2%。差距超过10个百分点——从马车到飞机的跨越。</p>
+  <div class="info-box">
+    <h3>💡 为什么 AlexNet 能赢？</h3>
+    <p>三样东西的汇聚：ImageNet巨量数据（1400万张图）、GPU并行计算（两块GTX 580）、以及dropout等新训练技巧。每一环单独都不够，三者同时"造"了这场革命。</p>
+  </div>
+  <p>转年，辛顿被Google收购了他的公司DNNresearch。苏茨克弗参与创立的DeepMind更早被Google收购。深度学习之战已经打响。</p>
+  <h3>2014年：GAN——酒吧之夜的天才念头</h3>
+  <p>Ian Goodfellow回忆，2014年的一个晚上，他和朋友们在蒙特利尔一家酒吧讨论机器如何生成逼真图像。当晚回到住处后，Goodfellow在凌晨2点开始在笔记本上编码。12小时后，写出了一个可运行的——它成功了。</p>
+  <p>这就是生成对抗网络（GAN）——两个神经网络博弈：一个生成者（伪造图像）、一个判别者（判断真假）。这个"酒吧之夜"的实验后来被引用超过10万次。</p>
+  <h3>2016年3月：AlphaGo vs 李世石——第37手</h3>
+  <p>首尔，围棋世界冠军李世石对阵DeepMind的AlphaGo。第二局第37手，AlphaGo下出了一步震惊所有人的棋——没有下在传统理论认为的主战场，而是落在棋盘中央。在场的人类顶级棋手纷纷认为是"失误"。直到20步后才意识到：这不是失误，这是一步超越了数千年人类围棋经验的创新落子。</p>
+  <p>AlphaGo以4:1获胜。这场比赛在YouTube上获得超过2.8亿次观看，全球第一次真正意识到AI的力量。</p>
+  <div class="quote">
+    <p>"它不像人类在下围棋——它像上帝。"</p>
+    <div class="who">—— 职业九段棋手 麦克·雷蒙，解说第37手时</div>
+  </div>
+  <h3>2017年6月：Transformer——改变一切的论文</h3>
+  <p>Google研究团队发表了《注意力即一切》（Attention Is All You Need）。标题本身就是一种态度。当时NLP的主流是RNN/LSTM，按顺序处理文本。Google团队提出完全基于注意力机制的架构，每个词直接与句子中所有其他词建立关系——并行训练成为可能，速度提高数十倍。</p>
+  <p>这篇论文后来成为AI史上引用最多的论文之一。ChatGPT、DALL-E、AlphaFold——这些改变世界的系统的底层架构都是Transformer。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Act IV · 2017–2023</div>
+  <div class="ch-title">大语言模型时代</div>
+  <div class="ch-date">BERT · GPT · ChatGPT——当全世界的屏幕都亮起来</div>
+  <div class="emoji-hero">💬🌐</div>
+  <h3>2018年：BERT 与 GPT——两条路</h3>
+  <p>两个关键的大型预训练语言模型几乎同时诞生。Google的BERT——双向编码器，擅长理解文本，在11项NLP基准测试中创下新纪录。OpenAI的GPT——单向解码器，擅长生成文本。GPT-1只有1.17亿参数，在当时看来是个有趣但不够惊艳的实验。</p>
+  <h3>2019年：GPT-2——"太危险了不能发布"</h3>
+  <p>OpenAI训练了GPT-2（15亿参数），能在给定开头后续写出流畅文章。然后OpenAI宣布："由于担心恶意使用，我们不会立即公开发布完整的模型。"这引发了关于AI安全的大规模讨论。"不发布"的声明本身也成为头条——批评者认为这是一种营销策略。</p>
+  <h3>2020年5月：GPT-3——1750亿参数的震撼</h3>
+  <p>GPT-3展现了令人惊叹的少样本学习能力：给它几个例子，它就能完成翻译、写代码、写诗、回答事实性问题——不需要微调。训练成本超过1000万美元。AI研究者开始认真讨论：如果一个更大的语言模型能展示出这种能力，我们还需要针对每个任务训练不同模型吗？</p>
+  <h3>2022年11月30日：ChatGPT——产品遇见了时机</h3>
+  <p>OpenAI发布了一个"研究预览"——ChatGPT。它是GPT-3.5的接口版本，经过了强化学习（RLHF）的微调。事情超出了所有人的预期。</p>
+  <p>五天内用户突破100万。两个月内月活跃用户达到1亿——历史上增长最快的消费者应用（TikTok用了九个月）。</p>
+  <div class="callout">
+    <h3>🔥 ChatGPT 为什么引爆了？</h3>
+    <p>ChatGPT不是技术上最强大的系统（GPT-4已经更强了），但它提供了一个完美的界面——一个对话框。不需要编程，不需要API，任何人都可以打字问问题。AI第一次变得"触手可及"。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Act V · 2014–2024</div>
+  <div class="ch-title">AI学会了看、画和创造</div>
+  <div class="ch-date">GAN · 扩散模型 · DALL-E · Sora</div>
+  <div class="emoji-hero">🎨🎬</div>
+  <h3>2015-2020：从GAN到扩散模型</h3>
+  <p>Goodfellow的GAN开启了AI生成图像的纪元。但GAN训练极不稳定。2015年Sohl-Dickstein等人提出扩散模型——先训练网络学习加噪到去噪的逆过程。2020年Jonathan Ho的DDPM让扩散模型变得实用：生成图像质量首次超越GAN，且训练稳定。</p>
+  <h3>2022年：图像生成爆发年</h3>
+  <p>4月，OpenAI发布DALL-E 2——一张"宇航员在阿尔法半人马座骑骏马"的图像成了这个时代最具辨识度的AI图像之一。</p>
+  <p>8月，Stable Diffusion开源发布——可以运行在消费者的显卡上。全世界数百万人第一次能够无需排队、无需付费就生成他们想象的任何图像。</p>
+  <p>同月，Midjourney v3因其独特的油画般审美迅速走红，"教皇穿羽绒服"、"特朗普被捕"等AI假图引发大范围传播。</p>
+  <h3>2024年2月：Sora——AI让世界动起来</h3>
+  <p>OpenAI发布Sora——文本到视频生成模型。给它一句描述，它能生成最长60秒的连贯视频，画面稳定，物体以合理方式移动。Sora对三维空间的理解暗示了一个更深层的可能性：一个如果能够正确预测视频中物理动态的模型，是否在隐式地"理解"了现实世界的因果结构？</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Epilogue · 尾声</div>
+  <div class="ch-title">冬天的种子，春天的预言</div>
+  <div class="ch-date">AI 历史的四条规律</div>
+  <div class="emoji-hero">🔄♾️</div>
+  <p>人工智能的历史不是一条直线——它是一条螺旋上升的线，每一轮都经历从希望的高峰到失望的谷底，再在更坚实的技术基础上重新崛起。</p>
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="year">规律一</div>
+      <div class="event"><strong>突破来自被低估的小角落。</strong> 感知机诞生时被《纽约时报》捧上天——十一年后连XOR都算不了。AlexNet参赛时被竞争对手当作"一顿操作猛如虎"——结果拉开十年变革大幕。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="year">规律二</div>
+      <div class="event"><strong>繁荣与冬天交替，周期无可避免。</strong> "在一代人内解决AI"的承诺 → 过度失望 → 资助崩塌。今天的热潮是否也会经历类似下行？没有人知道——但历史总是在说：不要太乐观，也不要太绝望。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="year">规律三</div>
+      <div class="event"><strong>"更好的"AI来自完全不同的路线。</strong> 专家系统不能靠加更多规则变成神经网络。RNN不能靠变得更深变成Transformer。突破在于视角切换——不是在这条路上走更远，而是换一条路。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="year">规律四</div>
+      <div class="event"><strong>今天是最好的时机。</strong> 无论在哪个实验室的论文堆里、在哪个被冷落的研究方向上——今天被看作"不可能"或"没有用"的东西，可能正是明天改变世界的起点。</div>
+    </div>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">关键里程碑一览</div>
+  <table>
+    <thead>
+      <tr><th>年份</th><th>事件</th><th>团队</th><th>意义</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1950</td><td>图灵测试提出</td><td>Alan Turing</td><td>AI哲学奠基</td></tr>
+      <tr><td>1956</td><td>达特茅斯会议</td><td>McCarthy等</td><td>AI学科诞生</td></tr>
+      <tr><td>1958</td><td>感知机</td><td>Rosenblatt</td><td>首个神经网络</td></tr>
+      <tr><td>1969</td><td>《感知机》出版</td><td>Minsky & Papert</td><td>→ 第一次冬天</td></tr>
+      <tr><td>1986</td><td>反向传播</td><td>Rumelhart, Hinton</td><td>神经网络训练突破</td></tr>
+      <tr><td>1997</td><td>深蓝击败卡斯帕罗夫</td><td>IBM</td><td>下棋在人类之上</td></tr>
+      <tr><td>2006</td><td>深度信念网络</td><td>Hinton</td><td>"深度学习"概念诞生</td></tr>
+      <tr><td>2012</td><td>AlexNet</td><td>Krizhevsky, Sutskever</td><td>深度学习引爆点</td></tr>
+      <tr><td>2014</td><td>GAN</td><td>Goodfellow</td><td>生成式AI诞生</td></tr>
+      <tr><td>2016</td><td>AlphaGo vs 李世石</td><td>DeepMind</td><td>AI攻克围棋</td></tr>
+      <tr><td>2017</td><td>Transformer</td><td>Google</td><td>架构大一统</td></tr>
+      <tr><td>2020</td><td>GPT-3（1750亿参数）</td><td>OpenAI</td><td>少样本学习震惊世界</td></tr>
+      <tr><td>2022.11</td><td>ChatGPT发布</td><td>OpenAI</td><td>AI的公众爆发时刻</td></tr>
+      <tr><td>2022.8</td><td>Stable Diffusion开源</td><td>Stability AI</td><td>图像生成走向大众</td></tr>
+      <tr><td>2024.2</td><td>Sora发布</td><td>OpenAI</td><td>文本到视频生成</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout fade-in">
+  <h3>📜 最后的话</h3>
+  <p>从1936年图灵的那张设计图到今天无处不在的AI，八十多年的旅程告诉我们的最重要的一件事是——</p>
+  <p><strong>人工智能的历史，不是技术的历史。是人如何理解自己智能的历史。</strong></p>
+  <p>每一次突破，都让"智能"这个概念变得更微妙、更难以定义。图灵测试曾经是黄金标准，但今天没有人觉得ChatGPT通过了图灵测试就等于它有了"意识"。我们不断把"智能"的定义往后退——象棋不重要了，围棋不重要了，画图不重要了——退到只剩那些机器还做不到的事。</p>
+  <p>也许最终，AI最大的贡献不是造出更聪明的机器，而是让我们终于理解了什么是"人"。</p>
+</div>
+
+</div>

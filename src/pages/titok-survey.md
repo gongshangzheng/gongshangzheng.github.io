@@ -1,0 +1,126 @@
+---
+title: TiTok 后续改进方向深度调研——1D Tokenizer 六大演进主线
+description: TiTok 1D Tokenizer 后续改进方向深度调研
+tags: [TiTok, 1D-Tokenizer, 图像生成]
+categories: [AI]
+page_style: |
+  .hero { height: 55vh; }
+hero_title: TiTok 后续改进方向深度调研
+hero_sub: 1D Tokenizer · 六大演进主线 · 2024—2026
+hero_tagline: 基于 TiTok 263 篇引用文献的系统梳理——不再问"能不能压缩"，而是问"压缩后学到的表示够不够好"
+---
+
+<div class="stats">
+  <div><div class="n">263</div><div class="l">TiTok 引用文献</div></div>
+  <div><div class="n">6</div><div class="l b">改进方向</div></div>
+  <div><div class="n g">3B</div><div class="l">GigaTok 参数</div></div>
+  <div><div class="n">768×</div><div class="l">WeTok 压缩比</div></div>
+</div>
+
+<div class="wrap">
+
+<div class="section fade-in">
+  <div class="section-title">背景与动机</div>
+  <p>本调研基于 TiTok（"An Image is Worth 32 Tokens"）在 Semantic Scholar 上的 263 篇引用文献，对 2024—2026 年间 1D tokenizer 的后续改进工作进行系统梳理。核心问题：TiTok 之后，1D-tokenizer 的改进主要围绕什么方向展开？</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">方向一：压缩极限与表示形式的底层创新</div>
+  <p>TiTok 将 256×256 图像压缩为 32 个 token 已属激进，但后续工作在"token 的数学结构"本身上进行了更底层的重新设计。</p>
+  <table>
+    <thead><tr><th>工作</th><th>核心创新</th><th>压缩效果</th></tr></thead>
+    <tbody>
+      <tr><td>Instella-T2I</td><td>1D binary image latents，用二进制向量序列替代 one-hot codebook</td><td>1024×1024 仅需 128 tokens</td></tr>
+      <tr><td>WeTok</td><td>Group-wise Lookup-free Quantization + Generative Decoder</td><td>768×压缩下 rFID 3.49</td></tr>
+      <tr><td>Tokenize Image as a Set</td><td>无序 token 集合表示，动态分配编码容量</td><td>突破固定位置假设</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <h3>💡 关键趋势</h3>
+    <p><strong>one-hot 码本不再是唯一选择。</strong> 从 binary 向量到 lookup-free 量化再到无序集合，token 的数学表示正在被重新发明。</p>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">方向二：连续-离散混合表示成为共识</div>
+  <p>VTBench 的重要发现：<strong>连续 VAE 在视觉表示上显著优于离散 VT</strong>，尤其在空间结构、细粒度纹理、文本保留方面。这推动了"混合表示"成为明确趋势。</p>
+  <table>
+    <thead><tr><th>工作</th><th>混合机制</th></tr></thead>
+    <tbody>
+      <tr><td>HART</td><td>潜在分解为离散 token（大局）+ 连续残差 token（细节），连续部分用 37M 残差扩散模块建模。重建 FID 0.30</td></tr>
+      <tr><td>VQRAE</td><td>同一框架输出连续语义表示 + 离散生成 tokens，分别服务理解与生成</td></tr>
+      <tr><td>Layton</td><td>桥接离散视觉 token 与连续扩散模型：利用预训练 LDM 作为 tokenizer 的重建解码器</td></tr>
+      <tr><td>SoftVQ-VAE</td><td>1D 连续 tokenizer，利用 soft categorical probabilities 替代硬量化</td></tr>
+    </tbody>
+  </table>
+  <div class="info-box">
+    <h3>🎯 本质洞察</h3>
+    <p><strong>离散负责序列建模（AR/LLM 友好），连续负责高保真重建</strong>——各司其职。</p>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">方向三：语义外置化与规模化训练</div>
+  <p>"冻结强语义编码器 + 轻量可学习 bottleneck + 条件化解码器"的路线被进一步验证和扩展。</p>
+  <table>
+    <thead><tr><th>工作</th><th>关键实践</th></tr></thead>
+    <tbody>
+      <tr><td>GigaTok (ICCV 2025)</td><td>视觉 tokenizer scale 到 3B 参数；提出 semantic regularization；优先扩展 decoder；entropy loss 稳定训练</td></tr>
+      <tr><td>MAETok</td><td>Masked Autoencoder 做 tokenizer。核心发现：变分约束非必需。仅用 128 tokens 达 gFID 1.69，训练快 76 倍</td></tr>
+      <tr><td>DINO-Tok / SemHiTok</td><td>冻结 DINO/CLIP/SigLIP 特征作为语义锚点</td></tr>
+    </tbody>
+  </table>
+  <p>GigaTok 特别值得关注：它系统回答了"tokenizer 变大后，重建与生成质量为何往往此消彼长"——根源在于潜在空间复杂度失控，而语义正则化是解药。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">方向四：Tokenization 过程本身的结构创新</div>
+  <p>一些工作不再只关注"编什么"，而是重新设计"怎么编"。</p>
+  <table>
+    <thead><tr><th>工作</th><th>结构创新</th></tr></thead>
+    <tbody>
+      <tr><td>NativeTok</td><td>在 tokenization 阶段强制执行因果依赖——用 MIT + MoCET，每个 expert 基于先前 token 生成当前 token</td></tr>
+      <tr><td>ImageFolder</td><td>可折叠 token（folded tokens）：空间对齐，AR 建模时可平衡效率与质量。双分支乘积量化</td></tr>
+      <tr><td>TA-TiTok / MaskGen</td><td>文本感知 1D tokenizer，解码阶段集成文本信息，一阶段训练替代两阶段蒸馏</td></tr>
+      <tr><td>SFTok</td><td>Multi-step iterative refinement 弥合离散 tokenizer 与连续表示的差距</td></tr>
+    </tbody>
+  </table>
+  <p>共同目标：解决 token 之间缺乏结构约束的问题，避免生成模型从零学习无序分布。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">方向五：重建-生成权衡的再认识</div>
+  <p>TiTok 引用链中出现了一个非常有趣的子方向：<strong>高压缩 1D tokenizer 的 latent space 本身就蕴含了强大的生成先验</strong>。</p>
+  <div class="quote">
+    <p>"Highly Compressed Tokenizer Can Generate Without Training"</p>
+    <div class="who">—— Kaiming He 组, ICML 2025</div>
+  </div>
+  <p>该工作发现 1D tokenizer 的高压缩率使得仅通过启发式 token 操作（复制、替换 token）就能实现细粒度图像编辑。进一步提出梯度优化的 test-time token optimization，用 plug-and-play 损失函数实现 inpainting 和 text-guided editing，<strong>无需训练任何生成模型</strong>。</p>
+  <p>与 GigaTok 和 ImageFolder 的发现相互印证：<strong>tokenizer 的潜在空间质量直接决定了生成任务的上限</strong>。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">方向六：评估体系与基础发现</div>
+  <p><strong>VTBench</strong>——首个系统评估视觉 tokenizer 的基准，覆盖重建、细节保留、文本保留三个维度。核心发现：离散 VT 在空间结构保持、细粒度纹理、文本完整性上全面落后于连续 VAE，为混合表示路线提供了强有力的实证支持。</p>
+  <p><strong>ImageFolder</strong>——tokenizer 的 token 长度增加不一定带来更好的生成质量，重建与生成之间存在明确 trade-off。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">三条演进主线</div>
+  <table>
+    <thead><tr><th>主线</th><th>代表工作</th><th>核心主张</th></tr></thead>
+    <tbody>
+      <tr><td>表示形式的重构</td><td>Instella-T2I, WeTok, TokenSet, NativeTok</td><td>1D token 的数学结构本身可以重新设计，不局限于 VQ</td></tr>
+      <tr><td>连续-离散的融合</td><td>HART, Layton, SoftVQ-VAE, VQRAE</td><td>离散负责序列建模，连续负责高保真重建</td></tr>
+      <tr><td>语义外置与规模化</td><td>GigaTok, MAETok, DINO-Tok, TA-TiTok</td><td>借助预训练 VFM 语义先验，scale 到 billion 级别</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout fade-in">
+  <h3>📖 关键论文速查</h3>
+  <p>GigaTok (ICCV 2025) · MAETok (arXiv 2025) · HART (ICLR 2025) · Layton (arXiv 2025) · WeTok (arXiv 2025) · NativeTok (arXiv 2026) · ImageFolder (ICLR 2026) · TA-TiTok (ICCV 2025) · Highly Compressed Tokenizer (ICML 2025) · VTBench (arXiv 2025) · Instella-T2I (arXiv 2025)</p>
+  <p>详细链接见 org-roam 笔记 <em>articles/TiTok 引用链与 1D Tokenizer 后续改进方向深度调研</em></p>
+</div>
+
+</div>

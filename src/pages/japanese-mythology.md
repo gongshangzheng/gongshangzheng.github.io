@@ -1,0 +1,254 @@
+---
+title: 日本神话详解 · 八百万神明的世界
+description: 混沌初开，天之琼矛拨动原初之海——一个由神明、死亡与王权交织而成的世界
+tags: [日本, 神话, 神道教]
+categories: [历史]
+page_style: |
+  .hero { height: 55vh; }
+hero_title: 日本神话详解
+hero_sub: 八百万神明的世界 · 神代卷 · 天地开辟至天孙降临
+hero_tagline: 混沌初开，天之琼矛拨动原初之海——一个由神明、死亡与王权交织而成的世界
+---
+
+<!-- 统计数据 -->
+  <div class="stats fade-in">
+    <div><div class="n">800万</div><div class="l g">神（Kami）</div></div>
+    <div><div class="n">712年</div><div class="l">《古事记》编年</div></div>
+    <div><div class="n b">4</div><div class="l">ArXiv 相关论文</div></div>
+    <div><div class="n">3</div><div class="l g">三神器体系</div></div>
+  </div>
+
+  <!-- 概述 -->
+  <div class="section fade-in">
+    <div class="section-title">神话的骨架：记纪神话</div>
+    <p>日本神话的核心文本源自两部公元8世纪初的国家典籍——<strong>《古事记》</strong>（712年，太安万侣编）和<strong>《日本书纪》</strong>（720年，舍人亲王等编）。两书合称「记纪」，共同构建了从创世到神武天皇的完整叙事谱系，被称为「<strong>记纪神话</strong>」。</p>
+    <p>神话时代（神代）讲述了高天原（天界）的神明如何创造日本列岛、如何争夺统治权，最终将权力移交给天照大神的后裔——人间天皇。这一叙事不仅塑造了日本的宗教（神道）基础，更为律令国家提供了政治合法性的神话背书。</p>
+  </div>
+
+  <div class="divider-symbol">✦ ✦ ✦</div>
+
+  <!-- 第一幕：开天辟地 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第一幕</div>
+    <div class="ch-title">混沌与神明的诞生</div>
+    <div class="ch-date">天地开辟 · 神世七代</div>
+  </div>
+
+  <div class="section fade-in">
+    <p>宇宙之初，天地一片混沌，形如鸡卵。在这团原始之物的中心，最先诞生的并非人类，而是五位<strong>别天津神</strong>（ことあまつかみ）——它们没有性别、没有伴侣、自发显现后便隐入虚空。它们是：</p>
+    <div class="callout">
+      <strong>天之御中主神</strong>（あめのみなかぬしのかみ）——宇宙中心之主<br>
+      <strong>高御产巢日神</strong>（たかみをむすびのかみ）——高天原的生成之力<br>
+      <strong>神产巢日神</strong>（かむみをむすびのかみ）——神圣的生成之力<br>
+      <strong>宇摩志阿斯诃备比古迟神</strong>——年迈的芦苇之神<br>
+      <strong>天之常立神</strong>（あめのとこたちのかみ）——永恒站立于天
+    </div>
+    <p>接着，神世七代（かみやななよ）的十位神明依次诞生。最后一对，也是最关键的一对——<strong>伊邪那岐</strong>（イザナギ）与<strong>伊邪那美</strong>（イザナミ），这对兄妹神祇将肩负起创造大地的使命。</p>
+
+    <div class="photo fade-in">
+      <img src="assets/media/images/japanese-mythology/izanagi-creation.jpg" alt="伊邪那岐与伊邪那美以天之琼矛拨动原初之海，创造日本列岛" loading="lazy">
+      <div class="cap">伊邪那岐与伊邪那美立于天浮桥，以天之琼矛搅动盐海，滴落之处凝结为岛——日本由此诞生</div>
+    </div>
+
+    <p>伊邪那岐与伊邪那美受命立于天浮桥，以<strong>天之琼矛</strong>（天沼矛）搅动下方漂浮的泥海。滴落的盐水凝结成岛——淤泥岛（おのころじま）。二神降于此岛，以柱子为界，行交合之礼——然而第一次尝试，因女方先行发言（正确的礼仪应为男方先言），产下的是一个无骨无形的畸形肉团。他们向别天津神请教后重新尝试，终于成功。</p>
+    <p>这一次，包括<strong>大八岛</strong>（日本列岛的八个主要岛屿）在内的众多岛屿相继从海中升起。接着，二神继续创造神明——山神、海神、风神、木神……直到伊邪那美生下<strong>火神迦具土</strong>（カグツチ）时，被自己的火焰灼伤，重伤不治，最终前往黄泉国。</p>
+
+    <div class="callout">
+      伊邪那岐悲痛欲绝，追至黄泉国。然而当他见到已成为黄泉女神的伊邪那美时——她全身爬满蛆虫，腐朽不堪——伊邪那岐惊恐万分，拔腿便逃。伊邪那美怒而追击，伊邪那岐以桃木封印黄泉入口，以巨石封堵两界之路。两人隔着冥界之墙永远分离——这便是生与死的第一次决裂。
+    </div>
+
+    <p>为祓除黄泉国沾染的污秽，伊邪那岐在阿歧岐流的河中行<strong>禊</strong>（身を清める）。他在河中净化时，从左眼诞生了<strong>月读</strong>（つくよみ），从右眼诞生了<strong>天照大神</strong>（あまてらす おおかみ），从鼻中诞生了<strong>须佐之男</strong>（すさのおのみこと）——这三位被合称为「<strong>三贵子</strong>」（みはしらのうずのみこ）。</p>
+    <p>天照大神被分配掌管高天原，月读分管夜之世界，须佐之男则被分配到海原。然而须佐之男因思念母亲，请求前往黄泉国探望伊邪那美——但这一去，掀起了滔天大祸。</p>
+  </div>
+
+  <div class="divider-symbol">☀️ ⛩️ 🌙</div>
+
+  <!-- 第二幕：高天原 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第二幕</div>
+    <div class="ch-title">高天原：光明与黑暗的交锋</div>
+    <div class="ch-date">天照大神 · 须佐之男 · 天岩户</div>
+  </div>
+
+  <div class="section fade-in">
+    <p>须佐之男来到高天原后，以「到黄泉去看看母亲」为由请求离去。但当他停留在高天原期间，却四处作乱——最严重的一次，他在天照大神的农田里「方便」，在天之真主场的屋顶上挖洞，让天斑驹（神马）受惊惊叫，并最终<strong>斩杀了掌管食物的神明</strong>。天照大神震怒，认为须佐之男是来抢夺高天原的，便紧闭天之岩户，躲入洞窟，世界顿时陷入永恒的黑暗。</p>
+
+    <div class="photo fade-in">
+      <img src="assets/media/images/japanese-mythology/amaterasu-cave.jpg" alt="天照大神从岩户中现身，光明重新照临高天原" loading="lazy">
+      <div class="cap">天照大神从岩户中现身的一刻——光明重回高天原，世界从永夜中苏醒</div>
+    </div>
+
+    <p>没有了天照大神，高天原和人世间同时陷入黑暗。众神在天安河原（てんやすがわら）召开紧急会议，最终制定了一个大胆的计划：</p>
+    <div class="callout">
+      <strong>计划的核心是一个悖论：</strong>让天照大神因为好奇而自己走出来。众神在天岩户前聚集，以天香山的一棵枫树下为舞台，让<strong>天宇受卖命</strong>（あめのうずめのみこと，亦名「天照大御神」）将树叶塞入胸中，踏着颠倒的桶疯狂起舞——其舞粗俗暴露，举止癫狂。八百万神明哄堂大笑，引起了洞中的天照大神的注意：<br><br>
+      <em>「为何欢乐？本应供奉我的祭典正在进行，却无人理会——你们在为何事欢笑？」</em><br><br>
+      天照大神将洞窟门推开一条缝隙，向外窥视——此时，天手力男神（用力拉住洞门的神）猛然将门拉开，众神以镜光照入，天照大神在光明中现身，重新主宰高天原。
+    </div>
+
+    <p>事后，须佐之男接受了<strong>誓约</strong>（盟誓，ukehi）——与天照大神各执一端，用以验证彼此的诚意。天照大神从须佐之男的物品中生出了<strong>宗像三女神</strong>（三位海神），须佐之男从天照大神的物品中则生出了<strong>天照大神之子</strong>（后来的天孙降临血脉）和<strong>速素戋呜尊</strong>（另一位出云祖先）。</p>
+    <p>然而，须佐之男在高天原的罪行终究无法被原谅。他被驱逐到人间——出云国。在那里，他将迎来自己最辉煌的功绩：<strong>斩杀八岐大蛇</strong>。</p>
+  </div>
+
+  <div class="divider-symbol">🐍 ✕ ⚔️</div>
+
+  <!-- 第三幕：出云传说 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第三幕</div>
+    <div class="ch-title">出云传说：蛇与英雄</div>
+    <div class="ch-date">须佐之男 · 八岐大蛇 · 大国主神</div>
+  </div>
+
+  <div class="section fade-in">
+    <p>须佐之男流落出云国后，遇见了一对老夫妇——<strong>足名椎命</strong>与<strong>媒名田姬</strong>。他们的七个女儿中，已有六人被一个怪物吞噬，原因是一个<strong>七代八头的巨蛇</strong>（八岐大蛇，やまたのおろち）每年都要吃掉一个少女。这头巨蛇身躯巨大，每过一个海峡便留下一道尾巴的痕迹，尾部藏有<strong>天丛云剑</strong>（草薙剑的前身）。</p>
+    <p>须佐之男决定除掉这头怪物。他让老夫妇以糯米酿造烈酒（八珍酿造），置于围墙之内，墙开八门，各置酒缸。当八岐大蛇的八个头分别伸入八个门洞饮酒时，须佐之男以十拳剑（とつかのたち）将八个头逐一斩落。在蛇尾处，他得到了那把闻名后世的神剑——<strong>天丛云剑</strong>（后改名草薙剑）。</p>
+
+    <div class="callout">
+      须佐之男将这把剑献给了天照大神，而天照大神后来又将它传给了自己的孙子琼琼杵尊——这便是三神器中「<strong>草薙剑</strong>」的来历，它最终被供奉于热田神宫。
+    </div>
+
+    <p>须佐之男娶了足名椎命的女儿<strong>栉名田比卖</strong>（奇稻田姬）为妻，他们的曾孙便是<strong>大国主神</strong>（大己贵命，オオナムチ）。大国主神是出云地区最重要的神祇，掌管苇原中国（人间世界）——但他的统治后来将遭到来自高天原的挑战。</p>
+
+    <div class="photo fade-in">
+      <img src="assets/media/images/japanese-mythology/susanoo-orochi.jpg" alt="须佐之男斩杀八岐大蛇的史诗场景" loading="lazy">
+      <div class="cap">须佐之男斩杀八岐大蛇——风暴与雷电之中，神剑斩落八首之蛇</div>
+    </div>
+  </div>
+
+  <div class="divider-symbol">🕊️ ⚡ 👑</div>
+
+  <!-- 第四幕：天孙降临 -->
+  <div class="ch fade-in">
+    <div class="ch-label">第四幕</div>
+    <div class="ch-title">天孙降临：从神到人</div>
+    <div class="ch-date">琼琼杵尊 · 三神器 · 让国</div>
+  </div>
+
+  <div class="section fade-in">
+    <p>高天原的众神经过商议，决定让天照大神的后裔下凡统治人间。为此，他们先将一批使者派往苇原中国（出云地区）谈判，但谈判进展缓慢——出云的国津神们效忠于大国主神，不愿臣服。几番较量后，高天原派出了最强大的武神——<strong>建御雷</strong>（タキミカヅチ）与<strong>天鸟船神</strong>。</p>
+    <p>建御雷神来到出云，站在稻佐之滨（いさなしの海滨）质问大国主神：「高天原的天照大神命我传话：苇原中国将由天照大神的后裔统治。你意如何？」</p>
+
+    <div class="quote">
+      <p>大国主神沉吟片刻，提出了条件：「若我将国土交出，能否保留我的神殿祭祀之权？」</p>
+      <div class="who">——大国主神接受「让国」，换取出云大社的祭祀权</div>
+    </div>
+
+    <p>在「<strong>让国</strong>」（くにゆずり）的传说完成后，天照大神将三件神器赐予自己的孙子——<strong>琼琼杵尊</strong>（ニニギ，邬芦苇名田命），让他降临日向，正式开启人间皇统。这三件神器是：</p>
+
+    <div class="icon-grid fade-in">
+      <div class="card">
+        <div class="icon">🪞</div>
+        <div class="title">八咫镜</div>
+        <div class="desc">天照大神的镜替身，象征「真知」与「在场」，供奉于伊势神宫内宫</div>
+      </div>
+      <div class="card">
+        <div class="icon">⚔️</div>
+        <div class="title">草薙剑</div>
+        <div class="desc">天丛云剑，须佐之男斩蛇所得，象征「勇武」，供奉于热田神宫</div>
+      </div>
+      <div class="card">
+        <div class="icon">📿</div>
+        <div class="title">八咫瓊勾玉</div>
+        <div class="desc">玉之勾玉，象征「慈悲」与「统御」，存放于天皇御所（贤所）</div>
+      </div>
+    </div>
+
+    <p>三神器构成日本皇权的物化核心——「镜·剑·玉」分别对应「知·勇·仁」三德，成为天皇正统性不可或缺的凭证。</p>
+
+    <div class="info-box">
+      <strong>天照→神武的皇统谱系：</strong><br>
+      天照大神 → 孙子琼琼杵尊（降临日向）→ 火远理命 → 彦火火出见命 → 神日本磐余彦尊（神武天皇，传说在位始于公元前660年）。神武天皇从日向出发东征，最终在大和地区建立皇权，日本历史从此从「神话时代」进入「人史时代」。
+    </div>
+  </div>
+
+  <div class="divider-symbol">✦ ✦ ✦</div>
+
+  <!-- ArXiv 学术来源 -->
+  <div class="section fade-in">
+    <div class="section-title">ArXiv 学术视角：日本神话的现代解读</div>
+    <p class="subtitle">ArXiv 上关于神道、日本文化的跨学科研究（4篇）</p>
+
+    <div class="god-card fade-in">
+      <div class="god-name">Shinto Design Fictions <span class="arxiv-tag">arXiv:2003.03207</span></div>
+      <div class="god-sub">William Seymour, Max Van Kleek · 英国布里斯托大学 · cs.HC</div>
+      <p>从人机交互角度解读神道「万物有灵」（animism）哲学，提出神道的泛灵论可为语音助手设计提供批判框架。提出「如果 Siri 有灵魂」的虚构场景，探索技术时代的神道式感知。</p>
+    </div>
+
+    <div class="god-card fade-in">
+      <div class="god-name">Ainu Folklore Speech Corpus <span class="arxiv-tag">arXiv:2002.06675</span></div>
+      <div class="god-sub">京都大学团队 · cs.CL/cs.SD · 2020</div>
+      <p>构建阿伊努民间传说语音语料库（UNESCO 极度濒危语言），开发端到端 ASR 系统。阿伊努神话是日本原住民的独特信仰系统，与北海道自然崇拜深度交织，是大和中心神话叙事之外的重要补充。</p>
+    </div>
+
+    <div class="god-card fade-in">
+      <div class="god-name">Kami of the Commons <span class="arxiv-tag">arXiv:2602.14940</span></div>
+      <div class="god-sub">Botao Amber Hu · cs.CY/cs.HC · 2026</div>
+      <p>受神道泛灵论启发，提出「每个公共资源都有一个 AI 守护者」的思辨设计框架。神道的「关系性守护」哲学——每个存在都有其职守——被重新诠释为现代 AI 治理的伦理基础。</p>
+    </div>
+
+    <div class="god-card fade-in">
+      <div class="god-name">Solving Sangaku <span class="arxiv-tag">arXiv:1701.08815</span></div>
+      <div class="god-sub">Rosalie Hosking · math.HO（数学史） · 2017</div>
+      <p>分析神社悬挂的「算额」（数学还愿匾，17–19世纪），展示如何用关孝和发明的「天元术」传统代数求解几何问题。神社不仅是信仰空间——也是知识生产与数学探索的场所。</p>
+    </div>
+  </div>
+
+  <div class="divider-symbol">✦ ✦ ✦</div>
+
+  <!-- 神明图鉴 -->
+  <div class="section fade-in">
+    <div class="section-title">神明图鉴：神代重要神祇</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>神名</th><th>读音</th><th>职能</th><th>阵营</th><th>关键事迹</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>伊邪那岐</td><td>イザナギ</td><td>创造神</td><td>天津神</td><td>造岛、祓禊、黄泉国逃亡</td></tr>
+          <tr><td>伊邪那美</td><td>イザナミ</td><td>创造神</td><td>天津神</td><td>造岛、火神诞生、黄泉之死</td></tr>
+          <tr><td>天照大神</td><td>あまてらす</td><td>太阳神</td><td>天津神</td><td>掌管高天原、天岩户、三神器授予</td></tr>
+          <tr><td>月读</td><td>つくよみ</td><td>月神</td><td>天津神</td><td>分管夜之世界</td></tr>
+          <tr><td>须佐之男</td><td>すさのお</td><td>风暴神</td><td>天津神</td><td>斩八岐大蛇、获草薙剑、获栉名田比卖</td></tr>
+          <tr><td>大国主</td><td>オオナムチ</td><td>国津主神</td><td>国津神</td><td>出云统治、让国给天津神、建出云大社</td></tr>
+          <tr><td>建御雷</td><td>タキミカヅチ</td><td>武神</td><td>天津神</td><td>苇原中国平定谈判</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="divider-symbol">✦ ✦ ✦</div>
+
+  <!-- 现代神道 -->
+  <div class="section fade-in">
+    <div class="section-title">神话的当代回响：现代神道的日常实践</div>
+    <div class="icon-grid">
+      <div class="card">
+        <div class="icon">⛩️</div>
+        <div class="title">神社参拜</div>
+        <div class="desc">「二礼二拍手一礼」：在鸟居前行礼 → 手水舍净水 → 本殿前二礼二拍一礼</div>
+      </div>
+      <div class="card">
+        <div class="icon">🎋</div>
+        <div class="title">绘马与御守</div>
+        <div class="desc">绘马（许愿木牌）写愿望挂于神前；御守（护身符）随身携带或悬挂于车/家宅</div>
+      </div>
+      <div class="card">
+        <div class="icon">🔥</div>
+        <div class="title">祓与祝词</div>
+        <div class="desc">神官（かんぬし）执行祓（はらえ）仪式，以祝词（のりと）驱除不净、净化身心</div>
+      </div>
+      <div class="card">
+        <div class="icon">🏯</div>
+        <div class="title">伊势神宫·式年迁宫</div>
+        <div class="desc">每20年重建伊势神宫全部建筑，神体迁入新宫，象征宇宙的周期更新与再生</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout fade-in">
+    <strong>神道的核心哲学：</strong>神道（Shinto，直译「神的道」）并非教条式宗教，而是一种<strong>关系性存在论</strong>——相信神（ kami）栖居于万物（岩石、河流、山岳、古树）之中。与其说是「崇拜神明」，不如说是「与万物建立和谐关系」。这一哲学在当代AI伦理、生态保护、以及人机交互设计领域，都正在被重新发现。
+  </div>
+
+  <div class="meta fade-in">
+    <span>信息来源：维基百科 · NDL（日本国立国会图书馆）· 国学院大学</span>
+    <span>ArXiv: 2003.03207 / 2002.06675 / 2602.14940 / 1701.08815</span>
+  </div>
