@@ -187,3 +187,6 @@
   // Initial highlight
   updateActiveToc();
 })();
+
+// Trigger Prism.js code highlighting
+if (window.Prism) Prism.highlightAll();

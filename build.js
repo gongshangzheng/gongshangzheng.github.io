@@ -5,6 +5,7 @@
  */
 
 const fs = require('fs');
+const path = require('path');
 const { CONFIG, RECENT_COUNT, PATHS } = require('./lib/config');
 const { parseFrontmatter, parseListField } = require('./lib/parser');
 const { copyDir } = require('./lib/utils');
@@ -33,9 +34,9 @@ function collectPosts() {
     if (!file.endsWith('.md') && !file.endsWith('.html')) continue;
     if (file.startsWith('index.') || file.startsWith('about.')) continue;
 
-    const raw = fs.readFileSync(require('path').join(PATHS.pages, file), 'utf8');
+    const raw = fs.readFileSync(path.join(PATHS.pages, file), 'utf8');
     const { data: fm } = parseFrontmatter(raw);
-    const slug = require('path').basename(file, require('path').extname(file));
+    const slug = path.basename(file, path.extname(file));
 
     posts.push({
       slug,
@@ -63,8 +64,14 @@ function build() {
   fs.mkdirSync(PATHS.public, { recursive: true });
 
   // Copy assets
-  copyDir(PATHS.assets, require('path').join(PATHS.public, 'assets'));
+  copyDir(PATHS.assets, path.join(PATHS.public, 'assets'));
   console.log('✓ assets/');
+
+  // Copy audio files (if src/audio/ exists)
+  const audioDir = path.join(PATHS.src, 'audio');
+  const audioDest = path.join(PATHS.public, 'audio');
+  copyDir(audioDir, audioDest);
+  console.log('✓ audio/');
 
   // Collect posts
   const allPosts = collectPosts();
