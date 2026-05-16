@@ -16,12 +16,14 @@ const mockFs = {
 
 // Test helpers — reproduce key functions from generator.js inline for isolation
 function extractFirstDiv(html, className) {
-  const openTag = '<div class="' + className + '">';
-  const start = html.indexOf(openTag);
+  const openTagStart = '<div class="' + className + '"';
+  const start = html.indexOf(openTagStart);
   if (start === -1) return { html: '', body: html };
-  let depth = 1, i = start + openTag.length;
+  const gt = html.indexOf('>', start);
+  if (gt === -1) return { html: '', body: html };
+  let depth = 1, i = gt + 1;
   while (i < html.length && depth > 0) {
-    if (html.substring(i, i + 5) === '<div ') { depth++; i = html.indexOf('>', i) + 1; }
+    if (html.substring(i, i + 5) === '<div ') { depth++; const g2 = html.indexOf('>', i); i = g2 + 1; }
     else if (html.substring(i, i + 5) === '<div>') { depth++; i += 5; }
     else if (html.substring(i, i + 6) === '</div>') { depth--; i += 6; }
     else i++;
@@ -233,6 +235,133 @@ window.MathJax = {
   'parseListField: already array returns as-is': () => {
     const arr = ['a', 'b'];
     assert.strictEqual(parseListField(arr), arr);
+  },
+
+  // ===== extractFirstDiv: attribute edge cases =====
+
+  'extractFirstDiv: div with multiple extra attributes': () => {
+    const html = `<div class="stats" id="s1" data-x="y" role="img"><div class="n">1956</div></div><p>Body</p>`;
+    const { html: stats, body } = extractFirstDiv(html, 'stats');
+    assert(stats.includes('1956'), 'should extract content from div with multiple attrs');
+    assert(!body.includes('class="stats"'));
+    assert(body.includes('<p>Body</p>'));
+  },
+
+  'extractFirstDiv: class must match exactly (not partial)': () => {
+    // <div class="stats-extra"> should NOT match 'stats'
+    const html = `<div class="stats-extra"><div>Wrong</div></div><p>Body</p>`;
+    const { html: stats } = extractFirstDiv(html, 'stats');
+    assert.equal(stats, '', 'partial class match should return empty');
+  },
+
+  'extractFirstDiv: deeply nested divs counted correctly': () => {
+    const html = `<div class="stats"><div><div><div>Deep</div></div></div></div><p>After</p>`;
+    const { html: stats, body } = extractFirstDiv(html, 'stats');
+    assert(stats.includes('Deep'), 'should extract all nested content');
+    assert(body.trim().startsWith('<p>After</p>'));
+  },
+
+  'extractFirstDiv: handles newlines and whitespace': () => {
+    const html = `\n  <div class="stats">\n    <div class="n">1956</div>\n  </div>\n<p>Body</p>`;
+    const { html: stats, body } = extractFirstDiv(html, 'stats');
+    assert(stats.includes('1956'));
+    assert(body.includes('<p>Body</p>'));
+    assert(!body.includes('stats'));
+  },
+
+  // ===== layout construction: the core bug fix =====
+
+  'layout: no-source-wrap wraps stats + meta + body together': () => {
+    // Simulates us-financial-hegemony: no .wrap in source, .stats at top
+    const bodyHtml = `\n<div class="stats">\n  <div><div class="n">1944</div></div>\n</div>\n\n<div class="ch">Content</div>\n`;
+
+    const { html: statsHtml, body: bodyAfterStats } = extractFirstDiv(bodyHtml, 'stats');
+    const hasSourceWrap = /^\s*<div class="wrap">/i.test(bodyAfterStats);
+
+    const hero = '<div class="hero"></div>';
+    const meta = '<div class="article-meta"></div>';
+    const footer = '<div class="article-footer"></div>';
+
+    let contentHtml;
+    if (hasSourceWrap) {
+      contentHtml = `${hero}${statsHtml}${meta}${bodyAfterStats}${footer}`;
+    } else {
+      contentHtml = `${hero}<div class="wrap">${statsHtml}${meta}${bodyAfterStats}${footer}</div>`;
+    }
+
+    // stats should be INSIDE wrap (same padding as content)
+    assert(contentHtml.includes('<div class="wrap"><div class="stats">'),
+      'stats should be inside wrap when no source wrap');
+    assert(contentHtml.includes('<div class="article-meta"></div><div class="ch">'),
+      'meta should be before ch content inside wrap');
+  },
+
+  'layout: source-wrap keeps stats outside, meta before wrap': () => {
+    // Simulates ai-chronicle: has .wrap in source after stats
+    const bodyHtml = `\n<div class="stats">\n  <div><div class="n">1956</div></div>\n</div>\n\n<div class="wrap">\n\n<div class="ch">Content</div>\n\n</div>\n`;
+
+    const { html: statsHtml, body: bodyAfterStats } = extractFirstDiv(bodyHtml, 'stats');
+    const hasSourceWrap = /^\s*<div class="wrap">/i.test(bodyAfterStats);
+
+    const hero = '<div class="hero"></div>';
+    const meta = '<div class="article-meta"></div>';
+    const footer = '<div class="article-footer"></div>';
+
+    let contentHtml;
+    if (hasSourceWrap) {
+      contentHtml = `${hero}${statsHtml}${meta}${bodyAfterStats}${footer}`;
+    } else {
+      contentHtml = `${hero}<div class="wrap">${statsHtml}${meta}${bodyAfterStats}${footer}</div>`;
+    }
+
+    // stats should be OUTSIDE wrap (extracted and placed before it)
+    assert(contentHtml.includes('</div><div class="article-meta"></div>'),
+      'meta should be between stats and wrap');
+    assert(contentHtml.includes('<div class="wrap">'),
+      'source wrap should be preserved');
+    // Exactly one wrap div
+    const wrapCount = contentHtml.split('<div class="wrap">').length - 1;
+    assert.equal(wrapCount, 1, 'should have exactly 1 wrap div');
+  },
+
+  'layout: no stats no wrap still wraps correctly': () => {
+    // Article with no .stats and no source .wrap
+    const bodyHtml = `\n<div class="ch">Content</div>\n`;
+
+    const { html: statsHtml, body: bodyAfterStats } = extractFirstDiv(bodyHtml, 'stats');
+    const hasSourceWrap = /^\s*<div class="wrap">/i.test(bodyAfterStats);
+
+    const hero = '<div class="hero"></div>';
+    const meta = '<div class="article-meta"></div>';
+    const footer = '<div class="article-footer"></div>';
+
+    let contentHtml;
+    if (hasSourceWrap) {
+      contentHtml = `${hero}${statsHtml}${meta}${bodyAfterStats}${footer}`;
+    } else {
+      contentHtml = `${hero}<div class="wrap">${statsHtml}${meta}${bodyAfterStats}${footer}</div>`;
+    }
+
+    assert.equal(statsHtml, '', 'no stats should give empty statsHtml');
+    assert(contentHtml.includes('<div class="wrap"><div class="article-meta">'),
+      'meta should be first thing inside wrap');
+    assert(contentHtml.includes('<div class="ch">Content</div></div>'),
+      'content should be inside wrap');
+  },
+
+  'layout: stats extraction does not affect hasSourceWrap detection': () => {
+    // The core bug: after extracting stats, bodyAfterStats should start with .wrap
+    const body = `\n<div class="stats">\n  <div><div class="n">1956</div></div>\n</div>\n\n<div class="wrap">\n\n<div class="ch">Content</div>\n\n</div>\n`;
+
+    // Step 1: extract stats
+    const { html: statsHtml, body: bodyAfterStats } = extractFirstDiv(body, 'stats');
+
+    // Step 2: check hasSourceWrap on bodyAfterStats (NOT on original body)
+    const hasSourceWrap = /^\s*<div class="wrap">/i.test(bodyAfterStats);
+
+    assert(hasSourceWrap, 'after stats extraction, body should start with .wrap');
+    assert(statsHtml.includes('1956'), 'stats should contain the stats content');
+    assert(!bodyAfterStats.includes('class="stats"'), 'body should not contain stats anymore');
   },
 };
 

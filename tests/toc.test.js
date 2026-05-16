@@ -165,6 +165,64 @@ const tests = {
     const { headings } = processHeadings(html);
     assert(headings[0].id.length <= 60);
   },
+
+  // ===== .ch-title edge cases =====
+
+  'processHeadings: .ch-title with special characters': () => {
+    const html = `<div class="ch-title">AI & ML: 深度学习 (2024)</div>`;
+    const { headings } = processHeadings(html);
+    assert.equal(headings.length, 1);
+    assert.equal(headings[0].level, 3);
+    // Colon and parens stripped by slugify, CJK preserved
+    assert(headings[0].id.includes('AI'));
+    assert(headings[0].id.includes('深度学习'));
+  },
+
+  'processHeadings: .ch-title inside .ch fade-in wrapper': () => {
+    const html = `<div class="ch fade-in"><div class="ch-label">Chapter 1</div><div class="ch-title">The Title</div><div class="ch-date">2024</div></div>`;
+    const { html: out, headings } = processHeadings(html);
+    assert.equal(headings.length, 1);
+    assert.equal(headings[0].text, 'The Title');
+    assert(out.includes('id="The-Title"'));
+  },
+
+  // ===== deep heading nesting =====
+
+  'buildTocHtml: deep nesting h2 > h3 > h4 > h5 > h6': () => {
+    const headings = [
+      { level: 2, text: 'H2', id: 'h2' },
+      { level: 3, text: 'H3', id: 'h3' },
+      { level: 4, text: 'H4', id: 'h4' },
+      { level: 5, text: 'H5', id: 'h5' },
+      { level: 6, text: 'H6', id: 'h6' },
+    ];
+    const out = buildTocHtml(headings);
+    assert(out.includes('href="#h2"'));
+    assert(out.includes('href="#h6"'));
+    // Should have nested <ul> elements
+    const ulCount = out.split('<ul>').length - 1;
+    const closeUlCount = out.split('</ul>').length - 1;
+    assert.equal(ulCount, closeUlCount, 'opening and closing <ul> should match');
+  },
+
+  // ===== mixed .ch-title and h2 =====
+
+  'processHeadings: mixed .ch-title and h2 headings': () => {
+    const html = `<h2>Section Title</h2><div class="ch-title">Chapter Title</div><h3>Subsection</h3>`;
+    const { headings } = processHeadings(html);
+    assert.equal(headings.length, 3);
+    assert.equal(headings[0].level, 2);
+    assert.equal(headings[0].text, 'Section Title');
+    assert.equal(headings[1].level, 3);
+    assert.equal(headings[1].text, 'Chapter Title');
+    assert.equal(headings[2].level, 3);
+    assert.equal(headings[2].text, 'Subsection');
+  },
+
+  'buildTocSidebar: sidebar contains closing aside tag': () => {
+    const { sidebar } = buildTocSidebar([{ level: 2, text: 'Test', id: 'Test' }]);
+    assert(sidebar.includes('</aside>'), 'sidebar should be properly closed');
+  },
 };
 
 module.exports = { tests, name: 'toc' };

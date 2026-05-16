@@ -2,8 +2,8 @@
 
 | Module | Tests |
 |--------|-------|
-| generator | 21 |
-| parser | 22 |
-| toc | 18 |
+| generator | 29 |
+| parser | 28 |
+| toc | 23 |
 
-**Total:** 61 tests across 3 modules.
+**Total:** 80 tests across 3 modules.

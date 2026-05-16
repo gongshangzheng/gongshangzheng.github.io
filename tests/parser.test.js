@@ -160,6 +160,55 @@ const tests = {
     const out = render(tmpl, { nav: [] });
     assert(!out.includes('<li>'));
   },
+
+  // ===== YAML edge cases =====
+
+  'parseFrontmatter: YAML with colons in value': () => {
+    const raw = `---
+title: "A:B: C"
+date: 2025-01-01
+---
+\nBody.`;
+    const { data } = parseFrontmatter(raw);
+    assert.equal(data.title, 'A:B: C');
+  },
+
+  'parseFrontmatter: YAML with empty value': () => {
+    const raw = `---
+title:
+date: 2025-01-01
+---
+\nBody.`;
+    const { data } = parseFrontmatter(raw);
+    assert.equal(data.title, '');
+    assert.equal(data.date, '2025-01-01');
+  },
+
+  'parseFrontmatter: YAML with dash in value': () => {
+    const raw = `---
+title: Hello-World
+date: 2025-01-01
+---
+\nBody.`;
+    const { data } = parseFrontmatter(raw);
+    assert.equal(data.title, 'Hello-World');
+  },
+
+  'parseFrontmatter: body preserves newlines': () => {
+    const raw = `---\ntitle: Test\n---\n\nLine 1.\n\nLine 2.`;
+    const { content } = parseFrontmatter(raw);
+    assert(content.includes('Line 1.'));
+    assert(content.includes('Line 2.'));
+    assert.equal(content.trim().split('\n').length, 3);
+  },
+
+  'parseListField: string with spaces': () => {
+    assert.deepEqual(parseListField('[ AI , History , Tech ]'), ['AI', 'History', 'Tech']);
+  },
+
+  'parseListField: single unquoted value': () => {
+    assert.deepEqual(parseListField('AI'), ['AI']);
+  },
 };
 
 module.exports = { tests, name: 'parser' };
