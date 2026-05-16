@@ -188,5 +188,59 @@
   updateActiveToc();
 })();
 
+// Mobile TOC Drawer
+(function() {
+  var btn = document.getElementById('nav-toc-btn');
+  var drawer = document.getElementById('mobile-toc-drawer');
+  var overlay = document.getElementById('mobile-toc-overlay');
+  var closeBtn = document.getElementById('mobile-toc-close');
+  var mobileNav = document.getElementById('mobile-toc-nav');
+  if (!btn || !drawer || !overlay || !mobileNav) return;
+
+  // Populate mobile TOC from desktop TOC
+  var desktopNav = document.getElementById('toc-nav');
+  if (!desktopNav) { btn.style.display = 'none'; return; }
+
+  // Clone links with level classes
+  var items = desktopNav.querySelectorAll('li');
+  var html = '<ul>';
+  items.forEach(function(li) {
+    var a = li.querySelector('a');
+    if (!a) return;
+    var level = 2;
+    for (var i = 2; i <= 6; i++) {
+      if (li.classList.contains('toc-h' + i)) { level = i; break; }
+    }
+    html += '<li class="toc-h' + level + '"><a href="' + a.getAttribute('href') + '">' + a.textContent + '</a></li>';
+  });
+  html += '</ul>';
+  mobileNav.innerHTML = html;
+
+  function openDrawer() {
+    drawer.classList.add('is-open');
+    overlay.classList.add('is-open');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeDrawer() {
+    drawer.classList.remove('is-open');
+    overlay.classList.remove('is-open');
+    document.body.style.overflow = '';
+  }
+
+  btn.addEventListener('click', openDrawer);
+  closeBtn.addEventListener('click', closeDrawer);
+  overlay.addEventListener('click', closeDrawer);
+
+  // Close on link click & smooth scroll
+  mobileNav.addEventListener('click', function(e) {
+    if (e.target.tagName === 'A') {
+      e.preventDefault();
+      closeDrawer();
+      var target = document.getElementById(e.target.getAttribute('href').slice(1));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+})();
+
 // Trigger Prism.js code highlighting
 if (window.Prism) Prism.highlightAll();

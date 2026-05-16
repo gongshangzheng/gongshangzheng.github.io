@@ -48,6 +48,7 @@ function runTests() {
 function buildContext(pageData = {}) {
   return {
     title: CONFIG.site.title,
+    site_title: CONFIG.site.title,
     description: CONFIG.site.description,
     author: CONFIG.site.author,
     url: CONFIG.site.url,
