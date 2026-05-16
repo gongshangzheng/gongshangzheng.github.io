@@ -82,8 +82,8 @@ const tests = {
     assert(body.includes('Second'));
   },
 
-  'extractFirstDiv: handles self-closing style attrs': () => {
-    const html = `<div class="stats" id="stats-1"><div class="n">1956</div></div><p>Body</p>`;
+  'extractFirstDiv: handles div with attributes': () => {
+    const html = `<div class="stats" id="stats-1" data-x="y"><div class="n">1956</div></div><p>Body</p>`;
     const { html: stats } = extractFirstDiv(html, 'stats');
     assert(stats.includes('1956'));
   },
