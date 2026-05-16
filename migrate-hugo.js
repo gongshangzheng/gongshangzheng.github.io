@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { marked } = require('marked');
 
 const HUGO_NOTE = path.join(process.env.HOME, 'blogs/content/note');
 const HUGO_POSTS = path.join(process.env.HOME, 'blogs/content/posts');
@@ -34,41 +35,40 @@ function parseFrontmatter(content) {
   return { data, body };
 }
 
+// Clean markdown → HTML using marked (same as .md files in generator)
 function convertBody(md) {
-  let html = md;
-  // Hugo shortcodes
-  html = html.replace(/{{<\s*[^>]*>}}/g, '');
-  // relref
-  html = html.replace(/\[([^\]]+)\]\({{< relref "([^"]+)" >}}\)/g, '<a href="./$2.html">$1</a>');
-  // Images
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" loading="lazy">');
-  // Wiki links
-  html = html.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, t, d) =>
-    `<a href="./${slugify(t)}.html">${d || t}</a>`);
-  // Heading IDs
-  html = html.replace(/\{#[^}]+\}/g, '');
-  // Headings
-  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  // Bold/italic
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  // Code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  // HR
-  html = html.replace(/^---$/gm, '<hr>');
-  // Paragraphs
-  const lines = html.split('\n');
-  const out = [];
-  let inCode = false;
-  for (const l of lines) {
-    if (l.startsWith('```')) { inCode = !inCode; out.push(l); continue; }
-    if (!inCode && l.trim() === '') { out.push(''); continue; }
-    if (!inCode && !l.startsWith('<') && l.trim()) out.push(`<p>${l}</p>`);
-    else out.push(l);
-  }
-  return out.join('\n').replace(/<\/p>\s*<p>/g, '<br>').replace(/<p>\s*<\/p>/g, '');
+  let text = md;
+
+  // Remove Hugo shortcodes {{< >}}
+  text = text.replace(/{{<\s*[^>]*>}}/g, '');
+
+  // Remove heading IDs {:#id}
+  text = text.replace(/\{#[^}]+\}/g, '');
+
+  // Convert relref to plain links
+  text = text.replace(/\[([^\]]+)\]\({{< relref "([^"]+)" >}}\)/g, (_, label, target) => {
+    const slug = slugify(target.replace('.md', ''));
+    return `[${label}](./${slug}.html)`;
+  });
+
+  // Convert wiki links [[xxx]] or [[xxx|display]]
+  text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
+    const slug = slugify(target);
+    return `[${display || target}](./${slug}.html)`;
+  });
+
+  // Use marked for proper Markdown parsing
+  marked.setOptions({
+    breaks: false,
+    gfm: true,
+  });
+
+  let html = marked.parse(text);
+
+  // Clean up empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  return html;
 }
 
 function migrateFile(src, destDir) {
@@ -76,7 +76,7 @@ function migrateFile(src, destDir) {
   const content = fs.readFileSync(src, 'utf8');
   const { data, body } = parseFrontmatter(content);
 
-  // Skip if draft and it's a short file (less than 50 lines)
+  // Skip short drafts
   const lines = content.split('\n').length;
   if (data.draft === 'true' && lines < 50) {
     console.log(`○ 跳过草稿: ${basename}`);
@@ -89,47 +89,41 @@ function migrateFile(src, destDir) {
     return null;
   }
 
-  // Generate slug from filename
   const slug = slugify(basename.replace('.md', ''));
 
   // Date
-  let date = data.date || '';
-  if (date) date = date.split('T')[0].split(' ')[0];
+  let date = (data.date || '').split('T')[0].split(' ')[0].trim();
   if (!date || date.length !== 10) date = '2026-04-22';
 
-  // Title
   const title = data.title || slug;
-
-  // Tags/Categories
   const tags = Array.isArray(data.tags) ? data.tags : (data.tags ? [data.tags] : []);
   const cats = Array.isArray(data.categories) ? data.categories : (data.categories ? [data.categories] : []);
+  const mathjax = data.mathjax === 'true' ? true : false;
 
   // Build frontmatter
-  const fm = `---\ntitle: "${title}"\ndescription: "${data.description || ''}"\ndate: ${date}\n${tags.length ? `tags: [${tags.join(', ')}]\n` : ''}${cats.length ? `categories: [${cats.join(', ')}]\n` : ''}source: hugo-blog\n---\n\n`;
+  let fm = `---\ntitle: "${title}"\ndescription: "${data.description || ''}"\ndate: ${date}\n`;
+  if (tags.length) fm += `tags: [${tags.join(', ')}]\n`;
+  if (cats.length) fm += `categories: [${cats.join(', ')}]\n`;
+  if (mathjax) fm += `mathjax: true\n`;
+  fm += `source: hugo-blog\n---\n\n`;
 
-  // Build body
   const bodyHtml = convertBody(body);
-
-  // Write
-  const dest = path.join(destDir, slug + '.html');
-  fs.writeFileSync(dest, fm + bodyHtml);
-  console.log(`✓ ${basename} → ${slug}.html`);
-  return { slug, title, date };
+  fs.writeFileSync(path.join(destDir, slug + '.html'), fm + bodyHtml);
+  console.log(`✓ ${basename} → ${slug}.html${mathjax ? ' [mathjax]' : ''}`);
+  return { slug, title, date, mathjax };
 }
 
 console.log('=== 迁移 note/ ===');
 const noteFiles = fs.readdirSync(HUGO_NOTE).filter(f => f.endsWith('.md'));
+let count = 0;
 for (const f of noteFiles) {
-  try { migrateFile(path.join(HUGO_NOTE, f), DEST); } catch (e) { console.error(`✗ ${f}: ${e.message}`); }
+  try { if (migrateFile(path.join(HUGO_NOTE, f), DEST)) count++; } catch (e) { console.error(`✗ ${f}: ${e.message}`); }
 }
 
 console.log('\n=== 迁移 posts/ ===');
 const postFiles = fs.readdirSync(HUGO_POSTS).filter(f => f.endsWith('.md'));
-let count = 0;
 for (const f of postFiles) {
-  try {
-    const r = migrateFile(path.join(HUGO_POSTS, f), DEST);
-    if (r) count++;
-  } catch (e) { console.error(`✗ ${f}: ${e.message}`); }
+  try { if (migrateFile(path.join(HUGO_POSTS, f), DEST)) count++; } catch (e) { console.error(`✗ ${f}: ${e.message}`); }
 }
+
 console.log(`\n✅ 共迁移 ${count} 篇`);

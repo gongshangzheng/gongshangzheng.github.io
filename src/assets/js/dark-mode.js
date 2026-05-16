@@ -85,6 +85,29 @@
   }, { threshold: 0.1 });
   document.querySelectorAll('.fade-in').forEach(function(el) { observer.observe(el); });
 })();
+// Music toggle
+(function() {
+  var toggleBtn = document.getElementById('music-toggle');
+  var bgm = document.getElementById('bgm');
+  if (!toggleBtn || !bgm) return;
+
+  function updateState() {
+    toggleBtn.classList.toggle('playing', !bgm.paused);
+  }
+
+  toggleBtn.addEventListener('click', function() {
+    if (bgm.paused) {
+      bgm.play();
+    } else {
+      bgm.pause();
+    }
+  });
+
+  bgm.addEventListener('play', updateState);
+  bgm.addEventListener('pause', updateState);
+  updateState();
+})();
+
 // TOC Sidebar Toggle & Scroll Tracking
 (function() {
   var sidebar = document.getElementById('toc-sidebar');
@@ -120,7 +143,7 @@
   });
 
   // Scroll tracking: highlight current section
-  var headings = document.querySelectorAll('.wrap [id], .main-content [id]');
+  var headings = document.querySelectorAll('.wrap h2[id], .wrap h3[id], .wrap h4[id], .wrap h5[id], .wrap h6[id], .main-content h2[id], .main-content h3[id], .main-content h4[id], .main-content h5[id], .main-content h6[id]');
   var tocLinks = document.querySelectorAll('#toc-nav a');
   if (headings.length === 0 || tocLinks.length === 0) return;
 

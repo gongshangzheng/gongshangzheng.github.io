@@ -3,330 +3,783 @@ title: "DiTok v1.0 实验记录"
 description: ""
 date: 2026-02-06
 tags: [ditok]
+mathjax: true
 source: hugo-blog
 ---
 
-
-
-<h2>概述 </h2>
-
+<h2>概述</h2>
 <p>DiTok (Diffusion Tokenizer) 是基于 TiTok (1D Tokenizer) 的扩散模型改进版本。</p>
+<p><strong><strong>核心思想</strong></strong>: 结合 TiTok 的高效 tokenization 和扩散模型的生成能力,实现高质量的图像生成。</p>
+<p><strong><strong>主要改进</strong></strong>:</p>
+<ol>
+<li>使用扩散解码器替代 TiTok 的确定性解码器</li>
+<li>引入时间步条件 \(t\) 和类别标签条件 \(y\)</li>
+<li>支持 EMA (Exponential Moving Average) 用于稳定推理</li>
+<li>两阶段训练: Stage 1 联合训练, Stage 2 微调解码器</li>
+</ol>
+<p><strong><strong>模型架构</strong></strong>:</p>
+<ul>
+<li>Encoder: Vision Transformer (TiTok)</li>
+<li>Quantizer: Vector Quantization</li>
+<li>Decoder: Diffusion Transformer (DiTok)</li>
+</ul>
+<h2>TimestepEmbedder - 时间步嵌入</h2>
+<p>时间步嵌入模块负责将连续时间步 \(t \in [0, 1]\) 映射到高维空间。</p>
+<p><strong><strong>为什么需要</strong></strong>: 在扩散模型中,不同的时间步需要不同的预测能力。早期时间步需要重构整体结构,晚期时间步只需要细化细节。</p>
+<p><strong><strong>实现方式</strong></strong>: 使用正弦位置编码 (sinusoidal position embedding) + MLP 投影。</p>
+<pre><code class="language-python">class TimestepEmbedder(nn.Module):
+    &quot;&quot;&quot;时间步嵌入模块
 
-<strong><em>*核心思想</strong></em>*: 结合 TiTok 的高效 tokenization 和扩散模型的生成能力,实现高质量的图像生成。
+    将连续时间步 t ∈ [0, 1] 映射到 hidden_size 维度的向量。
 
-<strong><em>*主要改进</strong></em>*:
+    使用正弦位置编码 + MLP 投影的方式,与 DiT 一致。
+    &quot;&quot;&quot;
+    def __init__(self, hidden_size, frequency_embedding_size=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.frequency_embedding_size = frequency_embedding_size
 
-<p>1.  使用扩散解码器替代 TiTok 的确定性解码器<br>2.  引入时间步条件 \\(t\\) 和类别标签条件 \\(y\\)<br>3.  支持 EMA (Exponential Moving Average) 用于稳定推理<br>4.  两阶段训练: Stage 1 联合训练, Stage 2 微调解码器</p>
+    @staticmethod
+    def timestep_embedding(t, dim, max_period=10000):
+        &quot;&quot;&quot;创建正弦时间步嵌入
 
-<strong><em>*模型架构</strong></em>*:
+        使用不同频率的正弦和余弦函数来编码时间信息。
+        这是一种绝对位置编码,可以唯一确定每个时间步。
 
-<p>-   Encoder: Vision Transformer (TiTok)<br>-   Quantizer: Vector Quantization<br>-   Decoder: Diffusion Transformer (DiTok)</p>
+        Args:
+            t: 时间步张量 [batch_size]
+            dim: 嵌入维度
+            max_period: 最大周期,控制频率范围
 
+        Returns:
+            embedding: [batch_size, dim]
+        &quot;&quot;&quot;
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=t.device)
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
 
-<h2>TimestepEmbedder - 时间步嵌入 </h2>
+    def forward(self, t):
+        &quot;&quot;&quot;
+        Args:
+            t: 连续时间步 [batch_size], 范围 [0, 1]
 
-<p>时间步嵌入模块负责将连续时间步 \\(t \in [0, 1]\\) 映射到高维空间。</p>
-
-<strong><em>*为什么需要</strong></em>*: 在扩散模型中,不同的时间步需要不同的预测能力。早期时间步需要重构整体结构,晚期时间步只需要细化细节。
-
-<strong><em>*实现方式</strong></em>*: 使用正弦位置编码 (sinusoidal position embedding) + MLP 投影。
-
-<p>``<code>python<br>class TimestepEmbedder(nn.Module):<br>    """时间步嵌入模块<br>    将连续时间步 t ∈ [0, 1] 映射到 hidden_size 维度的向量。<br>    使用正弦位置编码 + MLP 投影的方式,与 DiT 一致。<br>    """<br>    def __init__(self, hidden_size, frequency_embedding_size=256):<br>        super().__init__()<br>        self.mlp = nn.Sequential(<br>            nn.Linear(frequency_embedding_size, hidden_size, bias=True),<br>            nn.SiLU(),<br>            nn.Linear(hidden_size, hidden_size, bias=True),<br>        )<br>        self.frequency_embedding_size = frequency_embedding_size<br>    @staticmethod<br>    def timestep_embedding(t, dim, max_period=10000):<br>        """创建正弦时间步嵌入<br>        使用不同频率的正弦和余弦函数来编码时间信息。<br>        这是一种绝对位置编码,可以唯一确定每个时间步。<br>        Args:<br>            t: 时间步张量 [batch_size]<br>            dim: 嵌入维度<br>            max_period: 最大周期,控制频率范围<br>        Returns:<br>            embedding: [batch_size, dim]<br>        """<br>        half = dim // 2<br>        freqs = torch.exp(<br>            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half<br>        ).to(device=t.device)<br>        args = t[:, None].float() * freqs[None]<br>        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)<br>        if dim % 2:<br>            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)<br>        return embedding<br>    def forward(self, t):<br>        """<br>        Args:<br>            t: 连续时间步 [batch_size], 范围 [0, 1]<br>        Returns:<br>            embedding: [batch_size, hidden_size]<br>        """<br>        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)<br>        t_emb = self.mlp(t_freq)<br>        return t_emb</p>
-</code>`<code>
-
-<strong><em>*设计要点</strong></em>*:
-
-<p>1.  正弦编码: 提供唯一的时间步表示<br>2.  MLP 投影: 将低维频率编码映射到高维空间<br>3.  SiLU 激活: 平滑的非线性变换</p>
-
-
-<h2>LabelEmbedder - 类别标签嵌入 </h2>
-
+        Returns:
+            embedding: [batch_size, hidden_size]
+        &quot;&quot;&quot;
+        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        t_emb = self.mlp(t_freq)
+        return t_emb
+</code></pre>
+<p><strong><strong>设计要点</strong></strong>:</p>
+<ol>
+<li>正弦编码: 提供唯一的时间步表示</li>
+<li>MLP 投影: 将低维频率编码映射到高维空间</li>
+<li>SiLU 激活: 平滑的非线性变换</li>
+</ol>
+<h2>LabelEmbedder - 类别标签嵌入</h2>
 <p>类别标签嵌入模块负责将离散的类别标签映射到连续的嵌入空间。</p>
+<p><strong><strong>为什么需要</strong></strong>: 在条件生成任务中,模型需要根据类别信息生成相应的图像。直接使用 one-hot 编码维度太高且稀疏,嵌入映射更高效。</p>
+<pre><code class="language-python">class LabelEmbedder(nn.Module):
+    &quot;&quot;&quot;类别标签嵌入模块
 
-<strong><em>*为什么需要</strong></em>*: 在条件生成任务中,模型需要根据类别信息生成相应的图像。直接使用 one-hot 编码维度太高且稀疏,嵌入映射更高效。
+    将离散的类别标签映射到连续的嵌入空间。
+    支持分类器自由引导 (Classifier-Free Guidance)。
+    &quot;&quot;&quot;
+    def __init__(self, num_classes, hidden_size):
+        super().__init__()
+        # 创建一个额外的 token 用于&quot;无条件&quot;生成
+        # 当 CFG 时,部分样本会将标签替换为这个特殊 token
+        self.embedding_table = nn.Embedding(num_classes + 1, hidden_size)
 
-</code>`<code>python
-<p>class LabelEmbedder(nn.Module):<br>    """类别标签嵌入模块<br>    将离散的类别标签映射到连续的嵌入空间。<br>    支持分类器自由引导 (Classifier-Free Guidance)。<br>    """<br>    def __init__(self, num_classes, hidden_size):<br>        super().__init__()<br>        # 创建一个额外的 token 用于"无条件"生成<br>        # 当 CFG 时,部分样本会将标签替换为这个特殊 token<br>        self.embedding_table = nn.Embedding(num_classes + 1, hidden_size)<br>    def forward(self, labels):<br>        """<br>        Args:<br>            labels: 类别标签 [batch_size], 范围 [0, num_classes-1]<br>                    对于 CFG,可能有 num_classes 作为特殊的"无条件"标签<br>        Returns:<br>            embedding: [batch_size, hidden_size]<br>        """<br>        return self.embedding_table(labels)</p>
-</code>`<code>
+    def forward(self, labels):
+        &quot;&quot;&quot;
+        Args:
+            labels: 类别标签 [batch_size], 范围 [0, num_classes-1]
+                    对于 CFG,可能有 num_classes 作为特殊的&quot;无条件&quot;标签
 
-<strong><em>*CFG (Classifier-Free Guidance)</strong></em>*:
-
-<p>-   训练时: 以一定概率随机将标签替换为"无条件"标签 (num_classes)<br>-   推理时: 同时计算条件生成和无条件生成,然后加权组合<br>-   效果: 增强生成样本与条件标签的一致性</p>
-
-
-<h2>DiTokDecoder - 扩散解码器 </h2>
-
+        Returns:
+            embedding: [batch_size, hidden_size]
+        &quot;&quot;&quot;
+        return self.embedding_table(labels)
+</code></pre>
+<p><strong><strong>CFG (Classifier-Free Guidance)</strong></strong>:</p>
+<ul>
+<li>训练时: 以一定概率随机将标签替换为&quot;无条件&quot;标签 (num_classes)</li>
+<li>推理时: 同时计算条件生成和无条件生成,然后加权组合</li>
+<li>效果: 增强生成样本与条件标签的一致性</li>
+</ul>
+<h2>DiTokDecoder - 扩散解码器</h2>
 <p>DiTokDecoder 是核心改进部分,负责从加噪的图像 patch tokens 重建清晰的图像。</p>
+<p><strong><strong>关键设计决策</strong></strong>:</p>
+<ol>
+<li>接受两个输入: 加噪的图像 tokens (\(z_{patches}\)) + 量化的 latent tokens (\(z_{quantized}\))</li>
+<li>使用条件 token 替代了 TiTok 中的 class_tokens</li>
+<li>条件 token 由条件信息 \(t\) 和 \(y\) 组成，通过独立 token 传入，而非 <a href="">DiT</a> 中常见的 AdaLN-Zero.<ul>
+<li>这学习了 <a href="">UViT</a> 的设计。</li>
+<li>\(t\) 与 \(y\) 两个条件信息因为是相对独立（正交）的，因此可以直接相加。</li>
+<li>之所以不用 AdaLN-Zero, 是为了在结构上与 TiTok 保持一致。</li>
+</ul>
+</li>
+</ol>
+<p><strong><strong>输入输出</strong></strong>:</p>
+<ul>
+<li>Input: \(z_{patches} \in \mathbb{R}^{B \times 1024 \times D}\), \(z_{quantized} \in \mathbb{R}^{B \times 8 \times 1 \times 32}\), \(t \in [0, 1]\), \(labels \in \{0, ..., 999\}\)</li>
+<li>Output: \(x_{pred} \in \mathbb{R}^{B \times 3 \times 256 \times 256}\)</li>
+</ul>
+<p><strong><strong>初始化</strong></strong></p>
+<pre><code class="language-python">class DiTokDecoder(TiTokDecoder):
+    &quot;&quot;&quot;扩散模型的解码器，继承自 TiTokDecoder。
 
-<strong><em>*关键设计决策</strong></em>*:
+    完全参考 TiTokDecoder 的 forward 结构，但接受两个输入：
+    1. z: 加噪后的图像 patch tokens（1024个）
+    2. z_quantized: 量化的 latent tokens（32个）
 
-<p>1.  接受两个输入: 加噪的图像 tokens (\\(z\_{patches}\\)) + 量化的 latent tokens (\\(z\_{quantized}\\))<br>2.  使用条件 token 替代了 TiTok 中的 class_tokens<br>3.  条件 token 由条件信息 \\(t\\) 和 \\(y\\) 组成，通过独立 token 传入，而非 [DiT]() 中常见的 AdaLN-Zero.<br>    -   这学习了 [UViT]() 的设计。<br>    -   \\(t\\) 与 \\(y\\) 两个条件信息因为是相对独立（正交）的，因此可以直接相加。<br>    -   之所以不用 AdaLN-Zero, 是为了在结构上与 TiTok 保持一致。</p>
+    条件注入方式：
+    1. 时间步条件 t（通过 TimestepEmbedder）
+    2. 类别标签 labels（通过 LabelEmbedder）
+    3. 通过独立的条件 token 传入（参考 UViT，而非 DiT 的 AdaLN-Zero）
+    &quot;&quot;&quot;
 
-<strong><em>*输入输出</strong></em>*:
+    def __init__(self, config):
+        # 继承 TiTokDecoder 的所有组件
+        super().__init__(config)
 
-<p>-   Input: \\(z\_{patches} \in \mathbb{R}^{B \times 1024 \times D}\\), \\(z\_{quantized} \in \mathbb{R}^{B \times 8 \times 1 \times 32}\\), \\(t \in [0, 1]\\), \\(labels \in \\{0, ..., 999\\}\\)<br>-   Output: \\(x\_{pred} \in \mathbb{R}^{B \times 3 \times 256 \times 256}\\)</p>
+        # 获取隐藏层维度
+        hidden_size = self.width  # 例如: 768 for base model
+        num_classes = config.get(&quot;num_classes&quot;, 1000)
 
-<strong><em>*初始化</strong></em>*
+        # ========== 时间步嵌入 ==========
+        frequency_embedding_size = config.get(&quot;frequency_embedding_size&quot;, 256)
+        self.t_embedder = TimestepEmbedder(hidden_size, frequency_embedding_size)
 
-</code>`<code>python
-<p>class DiTokDecoder(TiTokDecoder):<br>    """扩散模型的解码器，继承自 TiTokDecoder。<br>    完全参考 TiTokDecoder 的 forward 结构，但接受两个输入：<br>    1. z: 加噪后的图像 patch tokens（1024个）<br>    2. z_quantized: 量化的 latent tokens（32个）<br>    条件注入方式：<br>    1. 时间步条件 t（通过 TimestepEmbedder）<br>    2. 类别标签 labels（通过 LabelEmbedder）<br>    3. 通过独立的条件 token 传入（参考 UViT，而非 DiT 的 AdaLN-Zero）<br>    """<br>    def __init__(self, config):<br>        # 继承 TiTokDecoder 的所有组件<br>        super().__init__(config)<br>        # 获取隐藏层维度<br>        hidden_size = self.width  # 例如: 768 for base model<br>        num_classes = config.get("num_classes", 1000)<br>        # ========== 时间步嵌入 ==========<br>        frequency_embedding_size = config.get("frequency_embedding_size", 256)<br>        self.t_embedder = TimestepEmbedder(hidden_size, frequency_embedding_size)<br>        # ========== 标签嵌入 ==========<br>        self.y_embedder = LabelEmbedder(num_classes, hidden_size)<br>        # ========== 条件投影 ==========<br>        # 将 t_emb + y_emb 投影到 hidden_size<br>        # 这样可以让条件信息更灵活地融合<br>        self.cond_proj = nn.Linear(hidden_size, hidden_size)</p>
-</code>`<code>
+        # ========== 标签嵌入 ==========
+        self.y_embedder = LabelEmbedder(num_classes, hidden_size)
 
-<strong><em>*组件说明</strong></em>*:
+        # ========== 条件投影 ==========
+        # 将 t_emb + y_emb 投影到 hidden_size
+        # 这样可以让条件信息更灵活地融合
+        self.cond_proj = nn.Linear(hidden_size, hidden_size)
+</code></pre>
+<p><strong><strong>组件说明</strong></strong>:</p>
+<ol>
+<li><kbd>TiTokDecoder</kbd> 基础结构: Transformer 解码器,包含 self-attention 和 MLP</li>
+<li><kbd>TimestepEmbedder</kbd>: 将时间步 \(t\) 映射到高维空间</li>
+<li><kbd>LabelEmbedder</kbd>: 将类别标签映射到嵌入空间</li>
+<li><kbd>cond_proj</kbd>: 条件投影层,融合 \(t\) 和 \(y\) 信息</li>
+</ol>
+<p><strong><strong>前向传播 - 第一步: 处理量化 latent tokens</strong></strong></p>
+<pre><code class="language-python">def forward(self, z_patches, z_quantized, t, labels):
+    &quot;&quot;&quot;
+    前向传播，带时间步条件和标签条件。
 
-<p>1.  <kbd>TiTokDecoder</kbd> 基础结构: Transformer 解码器,包含 self-attention 和 MLP<br>2.  <kbd>TimestepEmbedder</kbd>: 将时间步 \\(t\\) 映射到高维空间<br>3.  <kbd>LabelEmbedder</kbd>: 将类别标签映射到嵌入空间<br>4.  <kbd>cond_proj</kbd>: 条件投影层,融合 \\(t\\) 和 \\(y\\) 信息</p>
+    Args:
+        z_patches: 加噪后的图像 patch tokens（已 patchified）
+                  shape [B, grid_size**2, width]
+                  例如: [2, 1024, 768]
+        z_quantized: 量化的潜在表示（32个tokens）
+                  shape [B, token_size, 1, num_latent_tokens]
+                  例如: [2, 8, 1, 32]
+        t: 连续时间步 ∈ [0, 1], shape [B]
+        labels: 类别标签, shape [B]
 
-<strong><em>*前向传播 - 第一步: 处理量化 latent tokens</strong></em>*
+    Returns:
+        decoded: 解码后的图像, shape [B, C, H, W]
+                 例如: [2, 3, 256, 256]
+    &quot;&quot;&quot;
+    batch_size = z_patches.shape[0]
 
-</code>`<code>python
-<p>def forward(self, z_patches, z_quantized, t, labels):<br>    """<br>    前向传播，带时间步条件和标签条件。<br>    Args:<br>        z_patches: 加噪后的图像 patch tokens（已 patchified）<br>                  shape [B, grid_size**2, width]<br>                  例如: [2, 1024, 768]<br>        z_quantized: 量化的潜在表示（32个tokens）<br>                  shape [B, token_size, 1, num_latent_tokens]<br>                  例如: [2, 8, 1, 32]<br>        t: 连续时间步 ∈ [0, 1], shape [B]<br>        labels: 类别标签, shape [B]<br>    Returns:<br>        decoded: 解码后的图像, shape [B, C, H, W]<br>                 例如: [2, 3, 256, 256]<br>    """<br>    batch_size = z_patches.shape[0]<br>    # ========== 第一步：处理 z_quantized（32个 latent tokens）==========<br>    Nq, Cq, Hq, Wq = z_quantized.shape<br>    assert Hq == 1 and Wq == self.num_latent_tokens, \<br>        f"Expected z_quantized shape [B, C, 1, {self.num_latent_tokens}], got {z_quantized.shape}"<br>    # Reshape: [B, C, 1, num_latent_tokens] → [B, num_latent_tokens, C]<br>    # 例如: [2, 8, 1, 32] → [2, 32, 8]<br>    x_latent = z_quantized.reshape(Nq, Cq*Hq, Wq).permute(0, 2, 1)<br>    # 通过 decoder_embed 投影到 width 维度<br>    # 例如: [2, 32, 8] → [2, 32, 768]<br>    x_latent = self.decoder_embed(x_latent)<br>    # 添加 latent_token_positional_embedding<br>    # 这是为了让模型知道每个 latent token 的位置信息<br>    x_latent = x_latent + self.latent_token_positional_embedding[:x_latent.shape[1]]</p>
-</code>`<code>
+    # ========== 第一步：处理 z_quantized（32个 latent tokens）==========
+    Nq, Cq, Hq, Wq = z_quantized.shape
+    assert Hq == 1 and Wq == self.num_latent_tokens, \
+        f&quot;Expected z_quantized shape [B, C, 1, {self.num_latent_tokens}], got {z_quantized.shape}&quot;
 
-<strong><em>*说明</strong></em>*:
+    # Reshape: [B, C, 1, num_latent_tokens] → [B, num_latent_tokens, C]
+    # 例如: [2, 8, 1, 32] → [2, 32, 8]
+    x_latent = z_quantized.reshape(Nq, Cq*Hq, Wq).permute(0, 2, 1)
 
-<p>-   <kbd>z_quantized</kbd> 是原始图像经过 encoder 和 quantizer 后得到的离散 latent 表示<br>-   这些 latent tokens 包含了图像的高层语义信息<br>-   通过 decoder_embed 将 token_size 维度投影到 width 维度<br>-   添加位置编码以保留位置信息</p>
+    # 通过 decoder_embed 投影到 width 维度
+    # 例如: [2, 32, 8] → [2, 32, 768]
+    x_latent = self.decoder_embed(x_latent)
 
-<strong><em>*前向传播 - 第二步: 验证图像 patch tokens</strong></em>*
+    # 添加 latent_token_positional_embedding
+    # 这是为了让模型知道每个 latent token 的位置信息
+    x_latent = x_latent + self.latent_token_positional_embedding[:x_latent.shape[1]]
+</code></pre>
+<p><strong><strong>说明</strong></strong>:</p>
+<ul>
+<li><kbd>z_quantized</kbd> 是原始图像经过 encoder 和 quantizer 后得到的离散 latent 表示</li>
+<li>这些 latent tokens 包含了图像的高层语义信息</li>
+<li>通过 decoder_embed 将 token_size 维度投影到 width 维度</li>
+<li>添加位置编码以保留位置信息</li>
+</ul>
+<p><strong><strong>前向传播 - 第二步: 验证图像 patch tokens</strong></strong></p>
+<pre><code class="language-python"># ========== 第二步：验证 z_patches（1024个图像 patch tokens）==========
+# z_patches 应该已经是 [B, grid_size**2, width] 格式（patchified）
+assert z_patches.ndim == 3, f&quot;Expected z_patches to be 3D tensor, got shape {z_patches.shape}&quot;
+assert z_patches.shape[1] == self.grid_size**2, \
+    f&quot;Expected z_patches shape [B, {self.grid_size**2}, width], got {z_patches.shape}&quot;
 
-</code>`<code>python
-<p># ========== 第二步：验证 z_patches（1024个图像 patch tokens）==========<br># z_patches 应该已经是 [B, grid_size**2, width] 格式（patchified）<br>assert z_patches.ndim == 3, f"Expected z_patches to be 3D tensor, got shape {z_patches.shape}"<br>assert z_patches.shape[1] == self.grid_size**2, \<br>    f"Expected z_patches shape [B, {self.grid_size**2}, width], got {z_patches.shape}"<br># 如果 z_patches 的最后一维不等于 width，需要投影<br>z = z_patches<br>if z.shape[-1] != self.width:<br>    if not hasattr(self, 'z_proj'):<br>        # 动态创建投影层 (lazy initialization)<br>        self.z_proj = nn.Linear(z.shape[-1], self.width, device=z.device)<br>    z = self.z_proj(z)  # [B, grid_size**2, width]</p>
-</code>`<code>
+# 如果 z_patches 的最后一维不等于 width，需要投影
+z = z_patches
+if z.shape[-1] != self.width:
+    if not hasattr(self, &#39;z_proj&#39;):
+        # 动态创建投影层 (lazy initialization)
+        self.z_proj = nn.Linear(z.shape[-1], self.width, device=z.device)
+    z = self.z_proj(z)  # [B, grid_size**2, width]
+</code></pre>
+<p><strong><strong>说明</strong></strong>:</p>
+<ul>
+<li><kbd>z_patches</kbd> 是加噪图像经过 patchify 后得到的 tokens</li>
+<li>在训练时,这些 tokens 会包含不同程度的噪声</li>
+<li>在推理时,初始时刻这些是纯噪声</li>
+<li>动态投影层确保维度匹配 (只在需要时创建)</li>
+</ul>
+<p><strong><strong>前向传播 - 第三步: 创建条件 token</strong></strong></p>
+<pre><code class="language-python"># ========== 第三步：创建条件 token ==========
+# 计算条件嵌入
+t_emb = self.t_embedder(t)  # [B, hidden_size]
+y_emb = self.y_embedder(labels)  # [B, hidden_size]
 
-<strong><em>*说明</strong></em>*:
+# 将 t_emb 和 y_emb 相加 (假设它们正交)
+# 这是一种简单但有效的条件融合方式
+cond = t_emb + y_emb  # [B, hidden_size]
 
-<p>-   <kbd>z_patches</kbd> 是加噪图像经过 patchify 后得到的 tokens<br>-   在训练时,这些 tokens 会包含不同程度的噪声<br>-   在推理时,初始时刻这些是纯噪声<br>-   动态投影层确保维度匹配 (只在需要时创建)</p>
+# 通过 cond_proj 进行投影,增加灵活性
+cond = self.cond_proj(cond)  # [B, hidden_size]
 
-<strong><em>*前向传播 - 第三步: 创建条件 token</strong></em>*
+# 将 cond 作为条件 token (扩展一个序列维度)
+cond_token = cond.unsqueeze(1)  # [B, 1, width]
 
-</code>`<code>python
-<p># ========== 第三步：创建条件 token ==========<br># 计算条件嵌入<br>t_emb = self.t_embedder(t)  # [B, hidden_size]<br>y_emb = self.y_embedder(labels)  # [B, hidden_size]<br># 将 t_emb 和 y_emb 相加 (假设它们正交)<br># 这是一种简单但有效的条件融合方式<br>cond = t_emb + y_emb  # [B, hidden_size]<br># 通过 cond_proj 进行投影,增加灵活性<br>cond = self.cond_proj(cond)  # [B, hidden_size]<br># 将 cond 作为条件 token (扩展一个序列维度)<br>cond_token = cond.unsqueeze(1)  # [B, 1, width]<br># 拼接条件 token 和 z (图像 patch tokens)<br># 序列结构: [cond_token, z_0, z_1, ..., z_1023]<br>partial = torch.cat([cond_token, z], dim=1)  # [B, 1 + grid_size**2, width]<br># 加上完整的 positional_embedding（第一个位置给条件 token）<br># 位置编码让模型知道每个 token 在序列中的位置<br>partial = partial + self.positional_embedding  # [B, 1 + grid_size**2, width]</p>
-</code>`<code>
+# 拼接条件 token 和 z (图像 patch tokens)
+# 序列结构: [cond_token, z_0, z_1, ..., z_1023]
+partial = torch.cat([cond_token, z], dim=1)  # [B, 1 + grid_size**2, width]
 
-<strong><em>*设计思路</strong></em>*:
+# 加上完整的 positional_embedding（第一个位置给条件 token）
+# 位置编码让模型知道每个 token 在序列中的位置
+partial = partial + self.positional_embedding  # [B, 1 + grid_size**2, width]
+</code></pre>
+<p><strong><strong>设计思路</strong></strong>:</p>
+<ol>
+<li><strong><strong>条件融合</strong></strong>: \(t\) 和 \(y\) 相加是因为它们来自不同的嵌入空间,近似正交</li>
+<li><strong><strong>独立 token</strong></strong>: 将条件作为独立 token,参考 UViT 而非 DiT 的 AdaLN-Zero</li>
+<li><strong><strong>位置编码</strong></strong>: 条件 token 也有位置编码 (位置 0)</li>
+</ol>
+<p><strong><strong>前向传播 - 第四步: 拼接所有 tokens</strong></strong></p>
+<pre><code class="language-python"># ========== 第四步：拼接 x_latent（它已经有 latent_token_positional_embedding 了）==========
+# 完整序列结构: [cond_token, z_patches, x_latent]
+# 例如: [1, 1024, 32] = 1057 个 tokens
+x = torch.cat([partial, x_latent], dim=1)  # [B, 1 + grid_size**2 + num_latent_tokens, width]
+</code></pre>
+<p><strong><strong>序列结构</strong></strong>:</p>
+<pre><code class="language-nil">[cond_token, z_0, z_1, ..., z_1023, latent_0, latent_1, ..., latent_31]
+     0      1    2  ...  1024   1025       1026  ...           1056
+</code></pre>
+<ul>
+<li><kbd>cond_token</kbd>: 全局条件 (时间步 + 类别)</li>
+<li><kbd>z_patches</kbd>: 局部图像信息 (加噪的 patch tokens)</li>
+<li><kbd>x_latent</kbd>: 全局语义信息 (量化的 latent tokens)</li>
+</ul>
+<p><strong><strong>前向传播 - 第五步: Transformer 处理</strong></strong></p>
+<pre><code class="language-python"># ========== 第五步：通过 Transformer（参考 TiTokDecoder）==========
+# Layer Normalization (预处理)
+x = self.ln_pre(x)
 
-<p>1.  <strong><em>*条件融合</strong></em>*: \\(t\\) 和 \\(y\\) 相加是因为它们来自不同的嵌入空间,近似正交<br>2.  <strong><em>*独立 token</strong></em>*: 将条件作为独立 token,参考 UViT 而非 DiT 的 AdaLN-Zero<br>3.  <strong><em>*位置编码</strong></em>*: 条件 token 也有位置编码 (位置 0)</p>
+# 转置为 LND 格式 (Transformer 的标准输入格式)
+x = x.permute(1, 0, 2)  # NLD -&gt; LND
+                     # 例如: [2, 1057, 768] -&gt; [1057, 2, 768]
 
-<strong><em>*前向传播 - 第四步: 拼接所有 tokens</strong></em>*
+# 通过多层 Transformer
+for i in range(self.num_layers):  # 例如: 12 层
+    x = self.transformer[i](x)
 
-</code>`<code>python
-<p># ========== 第四步：拼接 x_latent（它已经有 latent_token_positional_embedding 了）==========<br># 完整序列结构: [cond_token, z_patches, x_latent]<br># 例如: [1, 1024, 32] = 1057 个 tokens<br>x = torch.cat([partial, x_latent], dim=1)  # [B, 1 + grid_size**2 + num_latent_tokens, width]</p>
-</code>`<code>
+# 转置回 NLD 格式
+x = x.permute(1, 0, 2)  # LND -&gt; NLD
+</code></pre>
+<p><strong><strong>Transformer 结构</strong></strong>:</p>
+<ul>
+<li>Multi-head Self-Attention: 让所有 tokens 之间相互交互</li>
+<li>Feed-Forward Network: 非线性变换</li>
+<li>Layer Normalization: 稳定训练</li>
+</ul>
+<p><strong><strong>前向传播 - 第六步: 提取图像 patch tokens</strong></strong></p>
+<pre><code class="language-python"># ========== 第六步：提取图像 patch tokens ==========
+# 序列是：[cond_token, z, x_latent]
+# 我们要取 z 的部分：从索引 1 到 1+grid_size**2
+x = x[:, 1:1+self.grid_size**2]  # [B, grid_size**2, width]
+</code></pre>
+<p><strong><strong>为什么只提取 z</strong></strong>:</p>
+<ul>
+<li>我们只需要预测清晰的图像,不需要预测条件或 latent tokens</li>
+<li>条件 token 和 latent tokens 只是辅助信息</li>
+</ul>
+<p><strong><strong>前向传播 - 第七步: 重建图像</strong></strong></p>
+<pre><code class="language-python"># ========== 第七步：最终处理（参考 TiTokDecoder）==========
+# Layer Normalization (后处理)
+x = self.ln_post(x)
 
-<strong><em>*序列结构</strong></em>*:
+# 重塑为空间格式: N L D -&gt; N D H W
+# 例如: [2, 1024, 768] -&gt; [2, 768, 16, 16]
+x = x.permute(0, 2, 1).reshape(batch_size, self.width, self.grid_size, self.grid_size)
 
-</code>`<code>nil
-<p>[cond_token, z_0, z_1, ..., z_1023, latent_0, latent_1, ..., latent_31]<br>     0      1    2  ...  1024   1025       1026  ...           1056</p>
-</code>`<code>
+# 通过 FFN 进行上采样
+# FFN 包含: Conv2d(768, 768) + Rearrange (unpatchify)
+# 将 16x16 grid 重建为 256x256 图像
+x = self.ffn(x.contiguous())
 
-<p>-   <kbd>cond_token</kbd>: 全局条件 (时间步 + 类别)<br>-   <kbd>z_patches</kbd>: 局部图像信息 (加噪的 patch tokens)<br>-   <kbd>x_latent</kbd>: 全局语义信息 (量化的 latent tokens)</p>
+# 最后的卷积层: 生成 RGB 图像
+x = self.conv_out(x)  # [B, 3, 256, 256]
 
-<strong><em>*前向传播 - 第五步: Transformer 处理</strong></em>*
-
-</code>`<code>python
-<p># ========== 第五步：通过 Transformer（参考 TiTokDecoder）==========<br># Layer Normalization (预处理)<br>x = self.ln_pre(x)<br># 转置为 LND 格式 (Transformer 的标准输入格式)<br>x = x.permute(1, 0, 2)  # NLD -> LND<br>                     # 例如: [2, 1057, 768] -> [1057, 2, 768]<br># 通过多层 Transformer<br>for i in range(self.num_layers):  # 例如: 12 层<br>    x = self.transformer[i](x)<br># 转置回 NLD 格式<br>x = x.permute(1, 0, 2)  # LND -> NLD</p>
-</code>`<code>
-
-<strong><em>*Transformer 结构</strong></em>*:
-
-<p>-   Multi-head Self-Attention: 让所有 tokens 之间相互交互<br>-   Feed-Forward Network: 非线性变换<br>-   Layer Normalization: 稳定训练</p>
-
-<strong><em>*前向传播 - 第六步: 提取图像 patch tokens</strong></em>*
-
-</code>`<code>python
-<p># ========== 第六步：提取图像 patch tokens ==========<br># 序列是：[cond_token, z, x_latent]<br># 我们要取 z 的部分：从索引 1 到 1+grid_size**2<br>x = x[:, 1:1+self.grid_size<strong>2]  # [B, grid_size</strong>2, width]</p>
-</code>`<code>
-
-<strong><em>*为什么只提取 z</strong></em>*:
-
-<p>-   我们只需要预测清晰的图像,不需要预测条件或 latent tokens<br>-   条件 token 和 latent tokens 只是辅助信息</p>
-
-<strong><em>*前向传播 - 第七步: 重建图像</strong></em>*
-
-</code>`<code>python
-<p># ========== 第七步：最终处理（参考 TiTokDecoder）==========<br># Layer Normalization (后处理)<br>x = self.ln_post(x)<br># 重塑为空间格式: N L D -> N D H W<br># 例如: [2, 1024, 768] -> [2, 768, 16, 16]<br>x = x.permute(0, 2, 1).reshape(batch_size, self.width, self.grid_size, self.grid_size)<br># 通过 FFN 进行上采样<br># FFN 包含: Conv2d(768, 768) + Rearrange (unpatchify)<br># 将 16x16 grid 重建为 256x256 图像<br>x = self.ffn(x.contiguous())<br># 最后的卷积层: 生成 RGB 图像<br>x = self.conv_out(x)  # [B, 3, 256, 256]<br>return x</p>
-</code>`<code>
-
-<strong><em>*FFN (Feed-Forward Network)</strong></em>*:
-
-<p>1.  Conv2d(768, 768): 增加非线性<br>2.  Rearrange: unpatchify 操作,将 patch tokens 重排为像素<br>3.  输出: [B, 3, 256, 256] 的 RGB 图像</p>
-
-
-<h2>DiTok - 完整模型 </h2>
-
+return x
+</code></pre>
+<p><strong><strong>FFN (Feed-Forward Network)</strong></strong>:</p>
+<ol>
+<li>Conv2d(768, 768): 增加非线性</li>
+<li>Rearrange: unpatchify 操作,将 patch tokens 重排为像素</li>
+<li>输出: [B, 3, 256, 256] 的 RGB 图像</li>
+</ol>
+<h2>DiTok - 完整模型</h2>
 <p>DiTok 是完整的端到端模型,包含 Encoder、Quantizer 和 Decoder。</p>
-
-<strong><em>*两阶段训练策略</strong></em>*:
-
-<p>-   <strong><em>*Stage 1</strong></em>*: 联合训练 Encoder + Quantizer + Decoder (不需要,直接用预训练的 TiTok)<br>-   <strong><em>*Stage 2</strong></em>*: 冻结 Encoder 和 Quantizer,只训练 Decoder</p>
-
-<strong><em>*为什么冻结 Encoder 和 Quantizer</strong></em>*:
-
-<p>1.  TiTok 已经在大量数据上训练好了,能很好地提取图像特征<br>2.  我们只需要学习如何从这些特征生成清晰的图像<br>3.  减少训练参数,加快训练速度</p>
-
-<strong><em>*初始化</strong></em>*
-
-</code>`<code>python
-<p>class DiTok(nn.Module):<br>    def __init__(self, config):<br>        super().__init__()<br>        # ========== Encoder: TiTok 编码器 ==========<br>        self.encoder = TiTokEncoder(config)<br>        # ========== Learnable Latent Tokens ==========<br>        # 可学习的 latent tokens,用于 cross-attention<br>        # 与 TiTok 保持一致<br>        self.num_latent_tokens = config.model.vq_model.num_latent_tokens<br>        scale = self.encoder.width ** -0.5  # Xavier 初始化<br>        self.latent_tokens = nn.Parameter(<br>            scale * torch.randn(self.num_latent_tokens, self.encoder.width)<br>        )<br>        # ========== Quantizer: 向量量化器 ==========<br>        vq_config = config.model.vq_model<br>        self.quantizer = VectorQuantizer(<br>            codebook_size=vq_config.codebook_size,    # 例如: 1024<br>            token_size=vq_config.token_size,          # 例如: 8<br>            commitment_cost=vq_config.commitment_cost, # 例如: 0.25<br>            use_l2_norm=vq_config.use_l2_norm,        # False<br>            clustering_vq=vq_config.get("clustering_vq", False)<br>        )<br>        # ========== Decoder: DiTok 扩散解码器 ==========<br>        self.diffusion_decoder = DiTokDecoder(config)</p>
-</code>`<code>
-
-<strong><em>*Stage 2 训练配置</strong></em>*
-
-</code>`<code>python
-<p># ========== Stage 2 训练配置 ==========<br>self.finetune_decoder = config.get("finetune_decoder", False)<br>self.freeze_encoder = config.get("freeze_encoder", False)<br>self.freeze_quantizer = config.get("freeze_quantizer", False)<br># 如果启用 Stage 2，冻结 encoder 和 quantizer<br>if self.freeze_encoder:<br>    self.encoder.eval()  # 设置为 eval 模式<br>    for param in self.encoder.parameters():<br>        param.requires_grad = False  # 冻结参数<br>    print("Encoder frozen for Stage 2 training")<br>if self.freeze_quantizer:<br>    self.quantizer.eval()<br>    for param in self.quantizer.parameters():<br>        param.requires_grad = False<br>    print("Quantizer frozen for Stage 2 training")</p>
-</code>`<code>
-
-<strong><em>*冻结参数的意义</strong></em>*:
-
-<p>1.  <kbd>requires_grad = False</kbd>: 不计算梯度,节省内存<br>2.  <kbd>eval()</kbd>: 关闭 Dropout 和 BatchNorm 的训练行为</p>
-
-<strong><em>*扩散训练参数</strong></em>*
-
-</code>`<code>python
-<p># ========== Diffusion 训练参数 (from JiT) ==========<br># 时间步采样参数 (logit-normal 分布)<br>self.P_std = config.get("P_std", 0.8)    # 标准差<br>self.P_mean = config.get("P_mean", -0.8) # 均值<br>self.t_eps = config.get("t_eps", 5e-2)   # 最小时间步 (避免除零)<br># 噪声缩放<br>self.noise_scale = config.get("noise_scale", 1.0)<br># 标签丢弃概率 (用于 Classifier-Free Guidance)<br>self.label_drop_prob = config.get("label_drop_prob", 0.1)<br># ========== 损失权重 ==========<br>self.v_weight = config.get("v_weight", 1.0)  # v-prediction loss 权重<br>self.gamma_weight = config.get("gamma_weight", 0.0)  # 负对数似然权重<br>self.reconstruction_weight = config.get("reconstruction_weight", 1.0)</p>
-</code>`<code>
-
-<strong><em>*时间步采样</strong></em>*:
-
-<p>-   使用 logit-normal 分布: \\(t = \sigma(\mathcal{N}(\mu, \sigma^2))\\)<br>-   \\(\mu = -0.8, \sigma = 0.8\\): 更偏向小时间步 (晚期采样)<br>-   <kbd>t_eps</kbd>: 防止 \\(t=1\\) 时除以零</p>
-
-<strong><em>*Logvar 参数 (用于 gamma_loss)</strong></em>*
-
-</code>`<code>python
-<p># ========== Logvar 参数 (用于 gamma_loss) ==========<br># 为了在连续时间扩散中使用 gamma_loss，需要：<br># 1. 将连续时间 t ∈ [0, 1] 离散化为 num_timesteps 个 bin<br># 2. 每个 bin 学习一个独立的 logvar 值<br>self.num_timesteps = config.get("num_timesteps", 1000)<br>logvar_init = config.get("logvar_init", 0.0)<br>self.learn_logvar = config.get("learn_logvar", False)<br># 创建 logvar 张量<br>logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))<br>if self.learn_logvar:<br>    self.logvar = nn.Parameter(logvar, requires_grad=True)<br>else:<br>    self.register_buffer('logvar', logvar)</p>
-</code>`<code>
-
-<strong><em>*Gamma Loss 的作用</strong></em>*:
-
-<p>-   约束 \\(v\\) 的分布为正态分布 \\(\mathcal{N}(v\_{pred}, \exp(\text{logvar}\_t))\\)<br>-   提供额外的训练信号,改进生成质量</p>
-
-<strong><em>*感知损失配置 (可选)</strong></em>*
-
-</code>`<code>python
-<p># ========== 感知损失配置 (Stage 2 可选) ==========<br># 支持 perceptual_loss_type: 'vgg', 'lpips', 'none'<br># - 'vgg': 使用 VGG-16BN 感知损失 (计算快,效果一般)<br># - 'lpips': 使用 LPIPS 感知损失 (需要 pip install lpips,效果最好)<br># - 'none': 不使用感知损失<br>perceptual_loss_type = config.get("perceptual_loss_type", "none").lower()<br>if perceptual_loss_type == "lpips":<br>    from modules.ditok_blocks import LPIPSLoss<br>    self.perceptual_loss = LPIPSLoss(config)<br>    self.perceptual_weight = config.get("perceptual_weight", 0.5)<br>    self.use_perceptual_loss = True<br>elif perceptual_loss_type == "vgg":<br>    from modules.ditok_blocks import VGGPerceptualLoss<br>    self.perceptual_loss = VGGPerceptualLoss(config)<br>    self.perceptual_weight = config.get("perceptual_weight", 0.5)<br>    self.use_perceptual_loss = True<br>else:<br>    self.perceptual_loss = None<br>    self.perceptual_weight = 0.0<br>    self.use_perceptual_loss = False</p>
-</code>`<code>
-
-<strong><em>*感知损失的作用</strong></em>*:
-
-<p>-   像素级 MSE 不一定能反映感知质量<br>-   特征空间的距离更符合人眼感知<br>-   LPIPS 与人类感知高度一致 (推荐使用)</p>
-
-<strong><em>*EMA 参数</strong></em>*
-
-</code>`<code>python
-<p># ========== EMA (Exponential Moving Average) 参数 ==========<br>self.ema_decay1 = config.get("ema_decay1", 0.9999)  # 主 EMA<br>self.ema_decay2 = config.get("ema_decay2", 0.9996)  # 辅助 EMA (衰减更快)<br>self.ema_params1 = None  # EMA1 参数<br>self.ema_params2 = None  # EMA2 参数<br># ========== 生成参数 ==========<br>self.sampling_method = config.get("sampling_method", "heun")  # 采样方法<br>self.num_sampling_steps = config.get("num_sampling_steps", 50)<br>self.cfg_scale = config.get("cfg", 1.0)  # CFG 强度<br>self.cfg_interval = (<br>    config.get("interval_min", 0.0),<br>    config.get("interval_max", 1.0)<br>)</p>
-</code>`<code>
-
-<strong><em>*EMA 的作用</strong></em>*:
-
-<p>-   参数平滑,减少推理时的随机波动<br>-   提高生成质量和稳定性<br>-   双 EMA: 提供不同程度的平滑</p>
-
-<strong><em>*前向传播 - 第一步: 编码和量化</strong></em>*
-
-</code>`<code>python
-<p>def forward(self, x, labels):<br>    """<br>    DiTok 前向传播和损失计算。<br>    支持 Stage 1 和 Stage 2 训练：<br>    - Stage 1: 训练整个模型（encoder + quantizer + decoder）<br>    - Stage 2: 冻结 encoder 和 quantizer，只训练 decoder<br>    损失组成：<br>    - v_loss: 扩散模型的 v-prediction loss（MSE）<br>    - gamma_loss: v 的负对数似然（可选）<br>    - perceptual_loss: 感知损失（Stage 2，可选）<br>    - bpp_loss: 在 Stage 2 中设为 0<br>    """<br>    loss_dict = {}<br>    # ========== 第一步：通过 Encoder 生成编码值 ==========<br>    if self.freeze_encoder:<br>        # Stage 2: 使用 torch.no_grad() 节省内存<br>        with torch.no_grad():<br>            z_encoded = self.encoder(x, self.latent_tokens)<br>    else:<br>        # Stage 1: 正常前向传播<br>        z_encoded = self.encoder(x, self.latent_tokens)<br>    # 输出形状: z_encoded [B, token_size, 1, num_latent_tokens]<br>    # 例如: [2, 8, 1, 32]</p>
-</code>`<code>
-
-<strong><em>*Encoder 的工作原理</strong></em>*:
-
-<p>1.  图像 \\(x\\) 经过 patch embedding<br>2.  与 learnable latent tokens 进行 cross-attention<br>3.  输出压缩的 latent 表示</p>
-
-<strong><em>*量化</strong></em>*
-
-</code>`<code>python
-<p># ========== 量化 (VQ 模式) ==========<br>if self.freeze_quantizer:<br>    # Stage 2: 冻结量化器<br>    with torch.no_grad():<br>        z_quantized, quant_result_dict = self.quantizer(z_encoded)<br>    # 将量化损失设为 0 (因为不更新量化器)<br>    bpp_loss = torch.tensor(0.0, device=x.device)<br>    quant_result_dict['quantizer_loss'] = torch.tensor(0.0, device=x.device)<br>    quant_result_dict['codebook_loss'] = torch.tensor(0.0, device=x.device)<br>    quant_result_dict['commitment_loss'] = torch.tensor(0.0, device=x.device)<br>else:<br>    # Stage 1: 正常训练量化器<br>    z_quantized, quant_result_dict = self.quantizer(z_encoded)<br>    bpp_loss = quant_result_dict.get('quantizer_loss', torch.tensor(0.0, device=x.device))</p>
-</code>`<code>
-
-<strong><em>*Vector Quantization</strong></em>*:
-
-<p>1.  将每个 latent token 映射到最近的 codebook 向量<br>2.  Commitment loss: 鼓励 encoder 输出接近 codebook<br>3.  Codebook loss: 更新 codebook 向量</p>
-
-<strong><em>*前向传播 - 第二步: 加噪</strong></em>*
-
-</code>`<code>python
-<p># ========== 第二步：加噪得到中间态 ==========<br># 在图像空间加噪，然后转换为 patch tokens<br>t = self.sample_t(x.size(0), device=x.device)  # [B]<br># 采样标准高斯噪声<br>e = torch.randn_like(x) * self.noise_scale  # [B, C, H, W]<br># 加噪公式: z_noisy = t <em> x + (1 - t) </em> e<br># t=0: 纯噪声; t=1: 原始图像<br>z_noisy = t.view(-1, <em>([1] </em> (x.ndim - 1))) <em> x + (1 - t.view(-1, </em>([1] <em> (x.ndim - 1)))) </em> e<br># 将加噪图像转换为 patch tokens (复用 encoder 的 patch_embed)<br>z_patches = self.encoder.patch_embed(z_noisy)  # [B, width, H', W']<br>z_patches = z_patches.reshape(z_patches.shape[0], z_patches.shape[1], -1)  # [B, width, H'*W']<br>z_patches = z_patches.permute(0, 2, 1)  # [B, H'*W', width]</p>
-</code>`<code>
-
-<strong><em>*加噪公式说明</strong></em>*:
-
-<p>-   \\(z\_{noisy} = t \cdot x + (1-t) \cdot \epsilon\\)<br>-   这是连续时间的扩散过程<br>-   \\(t\\) 越大,保留的原始信息越多</p>
-
-<strong><em>*前向传播 - 第三步: 标签丢弃 (CFG)</strong></em>*
-
-</code>`<code>python
-<p># ========== Classifier-Free Guidance 训练 ==========<br>labels_dropped = self.drop_labels(labels) if self.training else labels</p>
-</code>`<code>
-
-<strong><em>*CFG 机制</strong></em>*:
-
-<p>-   训练时: 随机将部分样本的标签替换为"无条件"标签<br>-   推理时: \\(\hat{x} = x\_{uncond} + \text{CFG} \cdot (x\_{cond} - x\_{uncond})\\)<br>-   效果: 增强条件一致性</p>
-
-<strong><em>*前向传播 - 第四步: Decoder 预测</strong></em>*
-
-</code>`<code>python
-<p># ========== 第三步：通过 Diffusion Decoder 生成预测值 ==========<br>x_pred = self.diffusion_decoder(z_patches, z_quantized, t, labels_dropped)<br># 输出: [B, 3, 256, 256]</p>
-</code>`<code>
-
-<strong><em>*Decoder 的输入</strong></em>*:
-
-<p>1.  <kbd>z_patches</kbd>: 加噪的图像 tokens (需要预测清晰的)<br>2.  <kbd>z_quantized</kbd>: 原始图像的 latent 表示 (作为条件)<br>3.  <kbd>t</kbd>: 当前时间步<br>4.  <kbd>labels</kbd>: 类别标签</p>
-
-<strong><em>*前向传播 - 第五步: 计算 v-prediction loss</strong></em>*
-
-</code>`<code>python
-<p># ========== 第四步：计算 v 的损失 ==========<br># v 是从加噪图像到原始图像的"速度"<br># 真实速度: v = (x - z_noisy) / (1 - t)<br># 预测速度: v_pred = (x_pred - z_noisy) / (1 - t)<br># 计算真实速度<br>v = (x - z_noisy) / (1 - t.view(-1, <em>([1] </em> (x.ndim - 1)))).clamp_min(self.t_eps)<br># 计算预测速度<br>v_pred = (x_pred - z_noisy) / (1 - t.view(-1, <em>([1] </em> (x.ndim - 1)))).clamp_min(self.t_eps)<br># MSE loss<br>v_loss = (v - v_pred) ** 2<br>v_loss = v_loss.mean(dim=(1, 2, 3))  # [B]<br>loss_dict.update({'v_loss': v_loss.mean()})</p>
-</code>`<code>
-
-<strong><em>*V-Prediction 的优势</strong></em>*:
-
-<p>-   相比 $&epsilon;$-prediction, \\(v\\) 的分布更均匀<br>-   更容易学习,训练更稳定<br>-   来自 Progressive Distillation 论文</p>
-
-<strong><em>*前向传播 - 第六步: 计算 gamma_loss (可选)</strong></em>*
-
-</code>`<code>python
-<p># ========== 第五步：计算 gamma_loss（v 的负对数似然）==========<br># 目的：让 v 的分布呈现正态分布 N(v_pred, exp(logvar_t))<br># 公式：log N(v; v_pred, σ²) = (v - v_pred)² / (2σ²) + log(σ)<br>if self.gamma_weight > 0:<br>    # 将连续时间 t ∈ [0, 1] 离散化为时间步索引<br>    t_idx = (t * (self.num_timesteps - 1)).long()<br>    t_idx = torch.clamp(t_idx, 0, self.num_timesteps - 1)<br>    # 获取对应时间步的 logvar<br>    logvar_t = self.logvar[t_idx]  # [B]<br>    # 计算 gamma_loss<br>    gamma_loss = v_loss / (2 * torch.exp(logvar_t)) + logvar_t / 2<br>    loss_dict.update({'gamma_loss': gamma_loss.mean()})<br>else:<br>    gamma_loss = torch.tensor(0.0, device=x.device)</p>
-</code>`<code>
-
-<strong><em>*Gamma Loss 的作用</strong></em>*:
-
-<p>-   提供似然目标,不仅仅是 MSE<br>-   自适应地调整不同时间步的权重<br>-   来自 Improved Denoising Diffusion Models</p>
-
-<strong><em>*前向传播 - 第七步: 感知损失 (可选)</strong></em>*
-
-</code>`<code>python
-<p># ========== 第七步：计算 perceptual loss（Stage 2，可选）==========<br>if self.use_perceptual_loss and self.perceptual_loss is not None:<br>    # 使用配置的感知损失 (VGG 或 LPIPS)<br>    perceptual_loss = self.perceptual_loss(x, x_pred)<br>    loss_dict.update({'perceptual_loss': perceptual_loss})<br>else:<br>    perceptual_loss = torch.tensor(0.0, device=x.device)</p>
-</code>`<code>
-
-<strong><em>*前向传播 - 第八步: 总损失</strong></em>*
-
-</code>`<code>python
-<p># ========== 第七步：bpp loss（Stage 2 中为 0）==========<br>if self.freeze_quantizer:<br>    bpp_loss = torch.tensor(0.0, device=x.device)<br>loss_dict.update({'bpp_loss': bpp_loss})<br>loss_dict.update({'codebook_loss': quant_result_dict['codebook_loss']})<br>loss_dict.update({'commitment_loss': quant_result_dict['commitment_loss']})<br># ========== 第八步：计算总损失 ==========<br>loss = (<br>    self.v_weight * v_loss.mean() +<br>    self.gamma_weight * gamma_loss.mean() +<br>    self.perceptual_weight * perceptual_loss +<br>    bpp_loss  # Stage 2 中为 0<br>)<br>loss_dict.update({'loss': loss})<br>return loss_dict</p>
-</code>`<code>
-
-<strong><em>*损失权重调节</strong></em>*:
-
-<p>-   <kbd>v_weight</kbd>: 主要损失,通常设为 1.0<br>-   <kbd>gamma_weight</kbd>: 可选,通常设为 1.0<br>-   <kbd>perceptual_weight</kbd>: 可选,通常设为 0.5</p>
-
-<strong><em>*辅助函数</strong></em>*
-
-</code>`<code>python
-<p>def drop_labels(self, labels):<br>    """Randomly drop labels for classifier-free guidance training."""<br>    drop = torch.rand(labels.shape[0], device=labels.device) < self.label_drop_prob<br>    num_classes = labels.max().item() + 1  # infer number of classes<br>    out = torch.where(drop, torch.full_like(labels, num_classes), labels)<br>    return out<br>def sample_t(self, n: int, device=None):<br>    """从 logit-normal 分布采样时间步"""<br>    z = torch.randn(n, device=device) * self.P_std + self.P_mean<br>    return torch.sigmoid(z)</p>
-</code>`<code>
-
-<strong><em>*EMA 更新</strong></em>*
-
-</code>`<code>python
-<p>@torch.no_grad()<br>def update_ema(self):<br>    """更新 EMA 参数（参考 JiT 实现）<br>    EMA (Exponential Moving Average) 用于平滑模型参数,<br>    提高推理时的稳定性和生成质量。<br>    更新公式:<br>        θ_ema = decay <em> θ_ema + (1 - decay) </em> θ<br>    使用两个 EMA 跟踪器:<br>    - EMA1: decay=0.9999, 主 EMA,用于推理<br>    - EMA2: decay=0.9996, 辅助 EMA,衰减更快<br>    """<br>    # 第一次调用时，初始化 EMA 参数<br>    if self.ema_params1 is None:<br>        self.ema_params1 = [p.clone().detach() for p in self.parameters()]<br>    if self.ema_params2 is None:<br>        self.ema_params2 = [p.clone().detach() for p in self.parameters()]<br>    # 获取当前模型参数<br>    source_params = list(self.parameters())<br>    # 更新 EMA1（主 EMA，用于推理）<br>    for targ, src in zip(self.ema_params1, source_params):<br>        # θ_ema = decay <em> θ_ema + (1 - decay) </em> θ<br>        targ.detach().mul_(self.ema_decay1).add_(src.data, alpha=1 - self.ema_decay1)<br>    # 更新 EMA2（辅助 EMA，衰减更快）<br>    for targ, src in zip(self.ema_params2, source_params):<br>        targ.detach().mul_(self.ema_decay2).add_(src.data, alpha=1 - self.ema_decay2)</p>
-</code>`<code>
-
-<strong><em>*EMA 的使用</strong></em>*:
-
-<p>1.  训练时: 每次更新后调用 <kbd>update_ema()</kbd><br>2.  推理时: 使用 EMA 参数而非原始参数<br>3.  保存时: 同时保存原始参数和 EMA 参数</p>
-
-<strong><em>*训练脚本调用示例</strong></em>*
-
-</code>`<code>python
-<p># 在训练循环中调用 EMA 更新<br>for batch in dataloader:<br>    loss = model(x, labels)<br>    loss.backward()<br>    optimizer.step()<br>    optimizer.zero_grad()<br>    # 更新 EMA 参数<br>    if accelerator.is_main_process:<br>        model.update_ema()<br>    # 更新学习率<br>    lr_scheduler.step()</p>
-</code>``
-
-<strong><em>*完整代码汇总</strong></em>*
-
-<p>DiTok 的完整实现包括以下核心模块:<br>1.  <strong><em>*TimestepEmbedder</strong></em>*: 时间步嵌入<br>2.  <strong><em>*LabelEmbedder</strong></em>*: 类别标签嵌入<br>3.  <strong><em>*DiTokDecoder</strong></em>*: 扩散解码器<br>4.  <strong><em>*DiTok</strong></em>*: 端到端模型<br>5.  <strong><em>*VectorQuantizer</strong></em>*: 向量量化器<br>6.  <strong><em>*VGGPerceptualLoss</strong></em>*: 基于 VGG 的感知损失<br>7.  <strong><em>*LPIPSLoss</strong></em>*: 学习得到的感知损失<br>8.  <strong><em>*EMA</strong></em>*: 指数移动平均<br>关键设计决策:<br>-   使用 v-prediction 而非 $&epsilon;$-prediction<br>-   使用条件 token 而非 AdaLN-Zero<br>-   两阶段训练策略<br>-   EMA 用于稳定推理</p>
+<p><strong><strong>两阶段训练策略</strong></strong>:</p>
+<ul>
+<li><strong><strong>Stage 1</strong></strong>: 联合训练 Encoder + Quantizer + Decoder (不需要,直接用预训练的 TiTok)</li>
+<li><strong><strong>Stage 2</strong></strong>: 冻结 Encoder 和 Quantizer,只训练 Decoder</li>
+</ul>
+<p><strong><strong>为什么冻结 Encoder 和 Quantizer</strong></strong>:</p>
+<ol>
+<li>TiTok 已经在大量数据上训练好了,能很好地提取图像特征</li>
+<li>我们只需要学习如何从这些特征生成清晰的图像</li>
+<li>减少训练参数,加快训练速度</li>
+</ol>
+<p><strong><strong>初始化</strong></strong></p>
+<pre><code class="language-python">class DiTok(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        # ========== Encoder: TiTok 编码器 ==========
+        self.encoder = TiTokEncoder(config)
+
+        # ========== Learnable Latent Tokens ==========
+        # 可学习的 latent tokens,用于 cross-attention
+        # 与 TiTok 保持一致
+        self.num_latent_tokens = config.model.vq_model.num_latent_tokens
+        scale = self.encoder.width ** -0.5  # Xavier 初始化
+        self.latent_tokens = nn.Parameter(
+            scale * torch.randn(self.num_latent_tokens, self.encoder.width)
+        )
+
+        # ========== Quantizer: 向量量化器 ==========
+        vq_config = config.model.vq_model
+        self.quantizer = VectorQuantizer(
+            codebook_size=vq_config.codebook_size,    # 例如: 1024
+            token_size=vq_config.token_size,          # 例如: 8
+            commitment_cost=vq_config.commitment_cost, # 例如: 0.25
+            use_l2_norm=vq_config.use_l2_norm,        # False
+            clustering_vq=vq_config.get(&quot;clustering_vq&quot;, False)
+        )
+
+        # ========== Decoder: DiTok 扩散解码器 ==========
+        self.diffusion_decoder = DiTokDecoder(config)
+</code></pre>
+<p><strong><strong>Stage 2 训练配置</strong></strong></p>
+<pre><code class="language-python"># ========== Stage 2 训练配置 ==========
+self.finetune_decoder = config.get(&quot;finetune_decoder&quot;, False)
+self.freeze_encoder = config.get(&quot;freeze_encoder&quot;, False)
+self.freeze_quantizer = config.get(&quot;freeze_quantizer&quot;, False)
+
+# 如果启用 Stage 2，冻结 encoder 和 quantizer
+if self.freeze_encoder:
+    self.encoder.eval()  # 设置为 eval 模式
+    for param in self.encoder.parameters():
+        param.requires_grad = False  # 冻结参数
+    print(&quot;Encoder frozen for Stage 2 training&quot;)
+
+if self.freeze_quantizer:
+    self.quantizer.eval()
+    for param in self.quantizer.parameters():
+        param.requires_grad = False
+    print(&quot;Quantizer frozen for Stage 2 training&quot;)
+</code></pre>
+<p><strong><strong>冻结参数的意义</strong></strong>:</p>
+<ol>
+<li><kbd>requires_grad = False</kbd>: 不计算梯度,节省内存</li>
+<li><kbd>eval()</kbd>: 关闭 Dropout 和 BatchNorm 的训练行为</li>
+</ol>
+<p><strong><strong>扩散训练参数</strong></strong></p>
+<pre><code class="language-python"># ========== Diffusion 训练参数 (from JiT) ==========
+# 时间步采样参数 (logit-normal 分布)
+self.P_std = config.get(&quot;P_std&quot;, 0.8)    # 标准差
+self.P_mean = config.get(&quot;P_mean&quot;, -0.8) # 均值
+self.t_eps = config.get(&quot;t_eps&quot;, 5e-2)   # 最小时间步 (避免除零)
+
+# 噪声缩放
+self.noise_scale = config.get(&quot;noise_scale&quot;, 1.0)
+
+# 标签丢弃概率 (用于 Classifier-Free Guidance)
+self.label_drop_prob = config.get(&quot;label_drop_prob&quot;, 0.1)
+
+# ========== 损失权重 ==========
+self.v_weight = config.get(&quot;v_weight&quot;, 1.0)  # v-prediction loss 权重
+self.gamma_weight = config.get(&quot;gamma_weight&quot;, 0.0)  # 负对数似然权重
+self.reconstruction_weight = config.get(&quot;reconstruction_weight&quot;, 1.0)
+</code></pre>
+<p><strong><strong>时间步采样</strong></strong>:</p>
+<ul>
+<li>使用 logit-normal 分布: \(t = \sigma(\mathcal{N}(\mu, \sigma^2))\)</li>
+<li>\(\mu = -0.8, \sigma = 0.8\): 更偏向小时间步 (晚期采样)</li>
+<li><kbd>t_eps</kbd>: 防止 \(t=1\) 时除以零</li>
+</ul>
+<p><strong><strong>Logvar 参数 (用于 gamma_loss)</strong></strong></p>
+<pre><code class="language-python"># ========== Logvar 参数 (用于 gamma_loss) ==========
+# 为了在连续时间扩散中使用 gamma_loss，需要：
+# 1. 将连续时间 t ∈ [0, 1] 离散化为 num_timesteps 个 bin
+# 2. 每个 bin 学习一个独立的 logvar 值
+self.num_timesteps = config.get(&quot;num_timesteps&quot;, 1000)
+logvar_init = config.get(&quot;logvar_init&quot;, 0.0)
+self.learn_logvar = config.get(&quot;learn_logvar&quot;, False)
+
+# 创建 logvar 张量
+logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
+if self.learn_logvar:
+    self.logvar = nn.Parameter(logvar, requires_grad=True)
+else:
+    self.register_buffer(&#39;logvar&#39;, logvar)
+</code></pre>
+<p><strong><strong>Gamma Loss 的作用</strong></strong>:</p>
+<ul>
+<li>约束 \(v\) 的分布为正态分布 \(\mathcal{N}(v_{pred}, \exp(\text{logvar}_t))\)</li>
+<li>提供额外的训练信号,改进生成质量</li>
+</ul>
+<p><strong><strong>感知损失配置 (可选)</strong></strong></p>
+<pre><code class="language-python"># ========== 感知损失配置 (Stage 2 可选) ==========
+# 支持 perceptual_loss_type: &#39;vgg&#39;, &#39;lpips&#39;, &#39;none&#39;
+# - &#39;vgg&#39;: 使用 VGG-16BN 感知损失 (计算快,效果一般)
+# - &#39;lpips&#39;: 使用 LPIPS 感知损失 (需要 pip install lpips,效果最好)
+# - &#39;none&#39;: 不使用感知损失
+perceptual_loss_type = config.get(&quot;perceptual_loss_type&quot;, &quot;none&quot;).lower()
+
+if perceptual_loss_type == &quot;lpips&quot;:
+    from modules.ditok_blocks import LPIPSLoss
+    self.perceptual_loss = LPIPSLoss(config)
+    self.perceptual_weight = config.get(&quot;perceptual_weight&quot;, 0.5)
+    self.use_perceptual_loss = True
+elif perceptual_loss_type == &quot;vgg&quot;:
+    from modules.ditok_blocks import VGGPerceptualLoss
+    self.perceptual_loss = VGGPerceptualLoss(config)
+    self.perceptual_weight = config.get(&quot;perceptual_weight&quot;, 0.5)
+    self.use_perceptual_loss = True
+else:
+    self.perceptual_loss = None
+    self.perceptual_weight = 0.0
+    self.use_perceptual_loss = False
+</code></pre>
+<p><strong><strong>感知损失的作用</strong></strong>:</p>
+<ul>
+<li>像素级 MSE 不一定能反映感知质量</li>
+<li>特征空间的距离更符合人眼感知</li>
+<li>LPIPS 与人类感知高度一致 (推荐使用)</li>
+</ul>
+<p><strong><strong>EMA 参数</strong></strong></p>
+<pre><code class="language-python"># ========== EMA (Exponential Moving Average) 参数 ==========
+self.ema_decay1 = config.get(&quot;ema_decay1&quot;, 0.9999)  # 主 EMA
+self.ema_decay2 = config.get(&quot;ema_decay2&quot;, 0.9996)  # 辅助 EMA (衰减更快)
+self.ema_params1 = None  # EMA1 参数
+self.ema_params2 = None  # EMA2 参数
+
+# ========== 生成参数 ==========
+self.sampling_method = config.get(&quot;sampling_method&quot;, &quot;heun&quot;)  # 采样方法
+self.num_sampling_steps = config.get(&quot;num_sampling_steps&quot;, 50)
+self.cfg_scale = config.get(&quot;cfg&quot;, 1.0)  # CFG 强度
+self.cfg_interval = (
+    config.get(&quot;interval_min&quot;, 0.0),
+    config.get(&quot;interval_max&quot;, 1.0)
+)
+</code></pre>
+<p><strong><strong>EMA 的作用</strong></strong>:</p>
+<ul>
+<li>参数平滑,减少推理时的随机波动</li>
+<li>提高生成质量和稳定性</li>
+<li>双 EMA: 提供不同程度的平滑</li>
+</ul>
+<p><strong><strong>前向传播 - 第一步: 编码和量化</strong></strong></p>
+<pre><code class="language-python">def forward(self, x, labels):
+    &quot;&quot;&quot;
+    DiTok 前向传播和损失计算。
+
+    支持 Stage 1 和 Stage 2 训练：
+    - Stage 1: 训练整个模型（encoder + quantizer + decoder）
+    - Stage 2: 冻结 encoder 和 quantizer，只训练 decoder
+
+    损失组成：
+    - v_loss: 扩散模型的 v-prediction loss（MSE）
+    - gamma_loss: v 的负对数似然（可选）
+    - perceptual_loss: 感知损失（Stage 2，可选）
+    - bpp_loss: 在 Stage 2 中设为 0
+    &quot;&quot;&quot;
+    loss_dict = {}
+
+    # ========== 第一步：通过 Encoder 生成编码值 ==========
+    if self.freeze_encoder:
+        # Stage 2: 使用 torch.no_grad() 节省内存
+        with torch.no_grad():
+            z_encoded = self.encoder(x, self.latent_tokens)
+    else:
+        # Stage 1: 正常前向传播
+        z_encoded = self.encoder(x, self.latent_tokens)
+
+    # 输出形状: z_encoded [B, token_size, 1, num_latent_tokens]
+    # 例如: [2, 8, 1, 32]
+</code></pre>
+<p><strong><strong>Encoder 的工作原理</strong></strong>:</p>
+<ol>
+<li>图像 \(x\) 经过 patch embedding</li>
+<li>与 learnable latent tokens 进行 cross-attention</li>
+<li>输出压缩的 latent 表示</li>
+</ol>
+<p><strong><strong>量化</strong></strong></p>
+<pre><code class="language-python"># ========== 量化 (VQ 模式) ==========
+if self.freeze_quantizer:
+    # Stage 2: 冻结量化器
+    with torch.no_grad():
+        z_quantized, quant_result_dict = self.quantizer(z_encoded)
+
+    # 将量化损失设为 0 (因为不更新量化器)
+    bpp_loss = torch.tensor(0.0, device=x.device)
+    quant_result_dict[&#39;quantizer_loss&#39;] = torch.tensor(0.0, device=x.device)
+    quant_result_dict[&#39;codebook_loss&#39;] = torch.tensor(0.0, device=x.device)
+    quant_result_dict[&#39;commitment_loss&#39;] = torch.tensor(0.0, device=x.device)
+else:
+    # Stage 1: 正常训练量化器
+    z_quantized, quant_result_dict = self.quantizer(z_encoded)
+    bpp_loss = quant_result_dict.get(&#39;quantizer_loss&#39;, torch.tensor(0.0, device=x.device))
+</code></pre>
+<p><strong><strong>Vector Quantization</strong></strong>:</p>
+<ol>
+<li>将每个 latent token 映射到最近的 codebook 向量</li>
+<li>Commitment loss: 鼓励 encoder 输出接近 codebook</li>
+<li>Codebook loss: 更新 codebook 向量</li>
+</ol>
+<p><strong><strong>前向传播 - 第二步: 加噪</strong></strong></p>
+<pre><code class="language-python"># ========== 第二步：加噪得到中间态 ==========
+# 在图像空间加噪，然后转换为 patch tokens
+t = self.sample_t(x.size(0), device=x.device)  # [B]
+
+# 采样标准高斯噪声
+e = torch.randn_like(x) * self.noise_scale  # [B, C, H, W]
+
+# 加噪公式: z_noisy = t * x + (1 - t) * e
+# t=0: 纯噪声; t=1: 原始图像
+z_noisy = t.view(-1, *([1] * (x.ndim - 1))) * x + (1 - t.view(-1, *([1] * (x.ndim - 1)))) * e
+
+# 将加噪图像转换为 patch tokens (复用 encoder 的 patch_embed)
+z_patches = self.encoder.patch_embed(z_noisy)  # [B, width, H&#39;, W&#39;]
+z_patches = z_patches.reshape(z_patches.shape[0], z_patches.shape[1], -1)  # [B, width, H&#39;*W&#39;]
+z_patches = z_patches.permute(0, 2, 1)  # [B, H&#39;*W&#39;, width]
+</code></pre>
+<p><strong><strong>加噪公式说明</strong></strong>:</p>
+<ul>
+<li>\(z_{noisy} = t \cdot x + (1-t) \cdot \epsilon\)</li>
+<li>这是连续时间的扩散过程</li>
+<li>\(t\) 越大,保留的原始信息越多</li>
+</ul>
+<p><strong><strong>前向传播 - 第三步: 标签丢弃 (CFG)</strong></strong></p>
+<pre><code class="language-python"># ========== Classifier-Free Guidance 训练 ==========
+labels_dropped = self.drop_labels(labels) if self.training else labels
+</code></pre>
+<p><strong><strong>CFG 机制</strong></strong>:</p>
+<ul>
+<li>训练时: 随机将部分样本的标签替换为&quot;无条件&quot;标签</li>
+<li>推理时: \(\hat{x} = x_{uncond} + \text{CFG} \cdot (x_{cond} - x_{uncond})\)</li>
+<li>效果: 增强条件一致性</li>
+</ul>
+<p><strong><strong>前向传播 - 第四步: Decoder 预测</strong></strong></p>
+<pre><code class="language-python"># ========== 第三步：通过 Diffusion Decoder 生成预测值 ==========
+x_pred = self.diffusion_decoder(z_patches, z_quantized, t, labels_dropped)
+# 输出: [B, 3, 256, 256]
+</code></pre>
+<p><strong><strong>Decoder 的输入</strong></strong>:</p>
+<ol>
+<li><kbd>z_patches</kbd>: 加噪的图像 tokens (需要预测清晰的)</li>
+<li><kbd>z_quantized</kbd>: 原始图像的 latent 表示 (作为条件)</li>
+<li><kbd>t</kbd>: 当前时间步</li>
+<li><kbd>labels</kbd>: 类别标签</li>
+</ol>
+<p><strong><strong>前向传播 - 第五步: 计算 v-prediction loss</strong></strong></p>
+<pre><code class="language-python"># ========== 第四步：计算 v 的损失 ==========
+# v 是从加噪图像到原始图像的&quot;速度&quot;
+# 真实速度: v = (x - z_noisy) / (1 - t)
+# 预测速度: v_pred = (x_pred - z_noisy) / (1 - t)
+
+# 计算真实速度
+v = (x - z_noisy) / (1 - t.view(-1, *([1] * (x.ndim - 1)))).clamp_min(self.t_eps)
+
+# 计算预测速度
+v_pred = (x_pred - z_noisy) / (1 - t.view(-1, *([1] * (x.ndim - 1)))).clamp_min(self.t_eps)
+
+# MSE loss
+v_loss = (v - v_pred) ** 2
+v_loss = v_loss.mean(dim=(1, 2, 3))  # [B]
+
+loss_dict.update({&#39;v_loss&#39;: v_loss.mean()})
+</code></pre>
+<p><strong><strong>V-Prediction 的优势</strong></strong>:</p>
+<ul>
+<li>相比 $&epsilon;$-prediction, \(v\) 的分布更均匀</li>
+<li>更容易学习,训练更稳定</li>
+<li>来自 Progressive Distillation 论文</li>
+</ul>
+<p><strong><strong>前向传播 - 第六步: 计算 gamma_loss (可选)</strong></strong></p>
+<pre><code class="language-python"># ========== 第五步：计算 gamma_loss（v 的负对数似然）==========
+# 目的：让 v 的分布呈现正态分布 N(v_pred, exp(logvar_t))
+# 公式：log N(v; v_pred, σ²) = (v - v_pred)² / (2σ²) + log(σ)
+
+if self.gamma_weight &gt; 0:
+    # 将连续时间 t ∈ [0, 1] 离散化为时间步索引
+    t_idx = (t * (self.num_timesteps - 1)).long()
+    t_idx = torch.clamp(t_idx, 0, self.num_timesteps - 1)
+
+    # 获取对应时间步的 logvar
+    logvar_t = self.logvar[t_idx]  # [B]
+
+    # 计算 gamma_loss
+    gamma_loss = v_loss / (2 * torch.exp(logvar_t)) + logvar_t / 2
+    loss_dict.update({&#39;gamma_loss&#39;: gamma_loss.mean()})
+else:
+    gamma_loss = torch.tensor(0.0, device=x.device)
+</code></pre>
+<p><strong><strong>Gamma Loss 的作用</strong></strong>:</p>
+<ul>
+<li>提供似然目标,不仅仅是 MSE</li>
+<li>自适应地调整不同时间步的权重</li>
+<li>来自 Improved Denoising Diffusion Models</li>
+</ul>
+<p><strong><strong>前向传播 - 第七步: 感知损失 (可选)</strong></strong></p>
+<pre><code class="language-python"># ========== 第七步：计算 perceptual loss（Stage 2，可选）==========
+if self.use_perceptual_loss and self.perceptual_loss is not None:
+    # 使用配置的感知损失 (VGG 或 LPIPS)
+    perceptual_loss = self.perceptual_loss(x, x_pred)
+    loss_dict.update({&#39;perceptual_loss&#39;: perceptual_loss})
+else:
+    perceptual_loss = torch.tensor(0.0, device=x.device)
+</code></pre>
+<p><strong><strong>前向传播 - 第八步: 总损失</strong></strong></p>
+<pre><code class="language-python"># ========== 第七步：bpp loss（Stage 2 中为 0）==========
+if self.freeze_quantizer:
+    bpp_loss = torch.tensor(0.0, device=x.device)
+
+loss_dict.update({&#39;bpp_loss&#39;: bpp_loss})
+loss_dict.update({&#39;codebook_loss&#39;: quant_result_dict[&#39;codebook_loss&#39;]})
+loss_dict.update({&#39;commitment_loss&#39;: quant_result_dict[&#39;commitment_loss&#39;]})
+
+# ========== 第八步：计算总损失 ==========
+loss = (
+    self.v_weight * v_loss.mean() +
+    self.gamma_weight * gamma_loss.mean() +
+    self.perceptual_weight * perceptual_loss +
+    bpp_loss  # Stage 2 中为 0
+)
+
+loss_dict.update({&#39;loss&#39;: loss})
+return loss_dict
+</code></pre>
+<p><strong><strong>损失权重调节</strong></strong>:</p>
+<ul>
+<li><kbd>v_weight</kbd>: 主要损失,通常设为 1.0</li>
+<li><kbd>gamma_weight</kbd>: 可选,通常设为 1.0</li>
+<li><kbd>perceptual_weight</kbd>: 可选,通常设为 0.5</li>
+</ul>
+<p><strong><strong>辅助函数</strong></strong></p>
+<pre><code class="language-python">def drop_labels(self, labels):
+    &quot;&quot;&quot;Randomly drop labels for classifier-free guidance training.&quot;&quot;&quot;
+    drop = torch.rand(labels.shape[0], device=labels.device) &lt; self.label_drop_prob
+    num_classes = labels.max().item() + 1  # infer number of classes
+    out = torch.where(drop, torch.full_like(labels, num_classes), labels)
+    return out
+
+def sample_t(self, n: int, device=None):
+    &quot;&quot;&quot;从 logit-normal 分布采样时间步&quot;&quot;&quot;
+    z = torch.randn(n, device=device) * self.P_std + self.P_mean
+    return torch.sigmoid(z)
+</code></pre>
+<p><strong><strong>EMA 更新</strong></strong></p>
+<pre><code class="language-python">@torch.no_grad()
+def update_ema(self):
+    &quot;&quot;&quot;更新 EMA 参数（参考 JiT 实现）
+
+    EMA (Exponential Moving Average) 用于平滑模型参数,
+    提高推理时的稳定性和生成质量。
+
+    更新公式:
+        θ_ema = decay * θ_ema + (1 - decay) * θ
+
+    使用两个 EMA 跟踪器:
+    - EMA1: decay=0.9999, 主 EMA,用于推理
+    - EMA2: decay=0.9996, 辅助 EMA,衰减更快
+    &quot;&quot;&quot;
+    # 第一次调用时，初始化 EMA 参数
+    if self.ema_params1 is None:
+        self.ema_params1 = [p.clone().detach() for p in self.parameters()]
+    if self.ema_params2 is None:
+        self.ema_params2 = [p.clone().detach() for p in self.parameters()]
+
+    # 获取当前模型参数
+    source_params = list(self.parameters())
+
+    # 更新 EMA1（主 EMA，用于推理）
+    for targ, src in zip(self.ema_params1, source_params):
+        # θ_ema = decay * θ_ema + (1 - decay) * θ
+        targ.detach().mul_(self.ema_decay1).add_(src.data, alpha=1 - self.ema_decay1)
+
+    # 更新 EMA2（辅助 EMA，衰减更快）
+    for targ, src in zip(self.ema_params2, source_params):
+        targ.detach().mul_(self.ema_decay2).add_(src.data, alpha=1 - self.ema_decay2)
+</code></pre>
+<p><strong><strong>EMA 的使用</strong></strong>:</p>
+<ol>
+<li>训练时: 每次更新后调用 <kbd>update_ema()</kbd></li>
+<li>推理时: 使用 EMA 参数而非原始参数</li>
+<li>保存时: 同时保存原始参数和 EMA 参数</li>
+</ol>
+<p><strong><strong>训练脚本调用示例</strong></strong></p>
+<pre><code class="language-python"># 在训练循环中调用 EMA 更新
+for batch in dataloader:
+    loss = model(x, labels)
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+    # 更新 EMA 参数
+    if accelerator.is_main_process:
+        model.update_ema()
+
+    # 更新学习率
+    lr_scheduler.step()
+</code></pre>
+<p><strong><strong>完整代码汇总</strong></strong></p>
+<p>DiTok 的完整实现包括以下核心模块:</p>
+<ol>
+<li><strong><strong>TimestepEmbedder</strong></strong>: 时间步嵌入</li>
+<li><strong><strong>LabelEmbedder</strong></strong>: 类别标签嵌入</li>
+<li><strong><strong>DiTokDecoder</strong></strong>: 扩散解码器</li>
+<li><strong><strong>DiTok</strong></strong>: 端到端模型</li>
+<li><strong><strong>VectorQuantizer</strong></strong>: 向量量化器</li>
+<li><strong><strong>VGGPerceptualLoss</strong></strong>: 基于 VGG 的感知损失</li>
+<li><strong><strong>LPIPSLoss</strong></strong>: 学习得到的感知损失</li>
+<li><strong><strong>EMA</strong></strong>: 指数移动平均</li>
+</ol>
+<p>关键设计决策:</p>
+<ul>
+<li>使用 v-prediction 而非 $&epsilon;$-prediction</li>
+<li>使用条件 token 而非 AdaLN-Zero</li>
+<li>两阶段训练策略</li>
+<li>EMA 用于稳定推理</li>
+</ul>

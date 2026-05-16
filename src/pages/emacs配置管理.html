@@ -5,81 +5,179 @@ date: 2026-04-22
 source: hugo-blog
 ---
 
-<p>+++<br>title = "Emacs 配置管理"<br>author = ["xinyu"]<br>date = 2025-02-08T22:22:56+01:00<br>draft = false<br>toc = false<br>mathjax = false<br>+++<br>我采用文学式编程的方法来管理我的 Emacs 配置。与将配置文件分散到多个 <code>.el</code> 文件中<br>的传统方法相比，这种方法使我能够更便捷地对代码进行注释说明和重新排列组合。<br>然而，我们不可能始终保持所有配置处于激活状态，否则 Emacs 的运行速度会显著下降。<br>因此，某些代码应当在需要时才执行。<br>如果我将所有代码分散存储在不同的文件中，可以通过 <code>require</code> 的方式导入这些代码。<br>但如果将这些配置代码放在 Org 文件的 <code>src-block</code> 中，某些 block 可能仅包含一个函<br>数。在这种情况下，为每个 block 都编写一个 <code>provide</code> 语句，似乎有些过度。<br>另一方面，如果每次需要执行某段代码时，都必须找到配置文件中的对应代码块并手动执行，<br>这显然也相当繁琐。<br>为此，我编写了几个函数来帮助管理我的配置文件。这些函数的通用性较强，稍作修改后，<br>应该还可以用于管理其他代码库。</p>
-
-
-<h2>0. 配置文件地址 </h2>
-
-<p>首先需要设定一个变量用来存储配置文件的地址。注意这是一个 org 文件<br>``<code>emacs-lisp<br>(defvar src/default-file-path "/home/xinyu/.doom.d/manual.org"<br>  "Default file path for source code blocks.")</p>
-</code>`<code>
-
-
-<h2>1. 主函数：选择并执行代码块 </h2>
-
-<p>当需要执行某一部分代码的时候，就执行这个函数。<br>按下 C-u 再执行这个函数就可以选择 org 文件，从而执行不是 src/default-file-path 中设置的文件。<br>值得注意的是，只会列出有 </code>#+name:<code> 属性的代码块。</p>
-
-<a id="code-snippet--choose-execute-code-block"></a>
-</code>`<code>emacs-lisp
-<p>(defun src/choose-and-execute-block (&optional file-path)<br>  (interactive<br>   (list (if current-prefix-arg<br>             (src--choose-folder-or-org-file default-directory)<br>           src/default-file-path)))<br>  (if (file-directory-p file-path)<br>      (src/choose-and-execute-block (src--choose-folder-or-org-file file-path))<br>    (let ((block-name (src/choose-named-src-block file-path)))<br>      (src/execute-code-block-with-name block-name))))</p>
-</code>`<code>
-
-<p>以下这些函数，列出一个文件下所有的 src-block, 根据一个函数的名称在一个文件中将其<br>找到并执行，以及选择一个 src-block 是为了上面的 src/choose-and-execute-block 能正确执行而写的辅助函数。</p>
-
-
-<h2>2. 选择文件夹或 .org 文件 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun src--choose-folder-or-org-file (dir)<br>  "Prompt the user to choose a folder or .org file under DIR."<br>  (let ((file (read-file-name "Choose a folder or .org file: " dir nil t<br>                              nil<br>                              (lambda (name)<br>                                (or (file-directory-p name)<br>                                    (and (file-regular-p name)<br>                                         (string= (file-name-extension name) "org")))))))<br>    (if (file-directory-p file)<br>        (message "You chose a directory: %s" file)<br>      (message "You chose an .org file: %s" file))<br>    file))</p>
-</code>`<code>
-
-
-<h2>3. 执行指定名称的代码块 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun src/execute-code-block-with-name (code-block-name &optional file-path)<br>  "Execute the CODE-BLOCK-NAME in the specified FILE-PATH.<br>If FILE-PATH is not provided, defaults to </code>src/default-file-path<code>."<br>  (interactive<br>   (list (read-string "Code block name: ")<br>         (if current-prefix-arg (read-file-name "File: " nil src/default-file-path))))<br>  (with-temp-buffer<br>    (insert-file-contents (or file-path src/default-file-path))<br>    (org-mode) ; Ensure Org mode is active for proper parsing<br>    (org-babel-goto-named-src-block code-block-name)<br>    (org-babel-execute-src-block)))</p>
-</code>`<code>
-
-
-<h2>4. 列出文件中所有命名的代码块 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun src/list-named-code-blocks (&optional file-path)<br>  "Return a list of all named source code blocks in the specified FILE-PATH.<br>If FILE-PATH is not provided, defaults to </code>src/default-file-path<code>."<br>  (with-temp-buffer<br>    (insert-file-contents (or file-path src/default-file-path))<br>    (org-mode) ; Ensure Org mode is active for proper parsing<br>    (org-element-map (org-element-parse-buffer) 'src-block<br>      (lambda (src-block)<br>        (let ((name (org-element-property :name src-block)))<br>          (when name<br>            name))))))</p>
-</code>`<code>
-
-
-<h2>5. 选择命名的代码块 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun src/choose-named-src-block (&optional file-path)<br>  "Choose a named src block from the specified FILE-PATH in the mini-buffer.<br>If called without C-u, defaults to </code>src/default-file-path<code>.<br>If called with C-u, prompts for the file path."<br>  (let* ((named-blocks (src/list-named-code-blocks file-path))<br>         (chosen-block (completing-read "Choose a named src block: " named-blocks)))<br>    chosen-block))</p>
-</code>`<code>
-
-
+<p>+++
+title = &quot;Emacs 配置管理&quot;
+author = [&quot;xinyu&quot;]
+date = 2025-02-08T22:22:56+01:00
+draft = false
+toc = false
+mathjax = false
++++</p>
+<p>我采用文学式编程的方法来管理我的 Emacs 配置。与将配置文件分散到多个 <code>.el</code> 文件中
+的传统方法相比，这种方法使我能够更便捷地对代码进行注释说明和重新排列组合。</p>
+<p>然而，我们不可能始终保持所有配置处于激活状态，否则 Emacs 的运行速度会显著下降。
+因此，某些代码应当在需要时才执行。</p>
+<p>如果我将所有代码分散存储在不同的文件中，可以通过 <code>require</code> 的方式导入这些代码。
+但如果将这些配置代码放在 Org 文件的 <code>src-block</code> 中，某些 block 可能仅包含一个函
+数。在这种情况下，为每个 block 都编写一个 <code>provide</code> 语句，似乎有些过度。</p>
+<p>另一方面，如果每次需要执行某段代码时，都必须找到配置文件中的对应代码块并手动执行，
+这显然也相当繁琐。</p>
+<p>为此，我编写了几个函数来帮助管理我的配置文件。这些函数的通用性较强，稍作修改后，
+应该还可以用于管理其他代码库。</p>
+<h2>0. 配置文件地址</h2>
+<p>首先需要设定一个变量用来存储配置文件的地址。注意这是一个 org 文件</p>
+<pre><code class="language-emacs-lisp">(defvar src/default-file-path &quot;/home/xinyu/.doom.d/manual.org&quot;
+  &quot;Default file path for source code blocks.&quot;)
+</code></pre>
+<h2>1. 主函数：选择并执行代码块</h2>
+<p>当需要执行某一部分代码的时候，就执行这个函数。</p>
+<p>按下 C-u 再执行这个函数就可以选择 org 文件，从而执行不是 src/default-file-path 中设置的文件。</p>
+<p>值得注意的是，只会列出有 <code>#+name:</code> 属性的代码块。</p>
+<p><a id="code-snippet--choose-execute-code-block"></a></p>
+<pre><code class="language-emacs-lisp">(defun src/choose-and-execute-block (&amp;optional file-path)
+  (interactive
+   (list (if current-prefix-arg
+             (src--choose-folder-or-org-file default-directory)
+           src/default-file-path)))
+  (if (file-directory-p file-path)
+      (src/choose-and-execute-block (src--choose-folder-or-org-file file-path))
+    (let ((block-name (src/choose-named-src-block file-path)))
+      (src/execute-code-block-with-name block-name))))
+</code></pre>
+<p>以下这些函数，列出一个文件下所有的 src-block, 根据一个函数的名称在一个文件中将其
+找到并执行，以及选择一个 src-block 是为了上面的 src/choose-and-execute-block 能正确执行而写的辅助函数。</p>
+<h2>2. 选择文件夹或 .org 文件</h2>
+<pre><code class="language-emacs-lisp">(defun src--choose-folder-or-org-file (dir)
+  &quot;Prompt the user to choose a folder or .org file under DIR.&quot;
+  (let ((file (read-file-name &quot;Choose a folder or .org file: &quot; dir nil t
+                              nil
+                              (lambda (name)
+                                (or (file-directory-p name)
+                                    (and (file-regular-p name)
+                                         (string= (file-name-extension name) &quot;org&quot;)))))))
+    (if (file-directory-p file)
+        (message &quot;You chose a directory: %s&quot; file)
+      (message &quot;You chose an .org file: %s&quot; file))
+    file))
+</code></pre>
+<h2>3. 执行指定名称的代码块</h2>
+<pre><code class="language-emacs-lisp">(defun src/execute-code-block-with-name (code-block-name &amp;optional file-path)
+  &quot;Execute the CODE-BLOCK-NAME in the specified FILE-PATH.
+If FILE-PATH is not provided, defaults to `src/default-file-path`.&quot;
+  (interactive
+   (list (read-string &quot;Code block name: &quot;)
+         (if current-prefix-arg (read-file-name &quot;File: &quot; nil src/default-file-path))))
+  (with-temp-buffer
+    (insert-file-contents (or file-path src/default-file-path))
+    (org-mode) ; Ensure Org mode is active for proper parsing
+    (org-babel-goto-named-src-block code-block-name)
+    (org-babel-execute-src-block)))
+</code></pre>
+<h2>4. 列出文件中所有命名的代码块</h2>
+<pre><code class="language-emacs-lisp">(defun src/list-named-code-blocks (&amp;optional file-path)
+  &quot;Return a list of all named source code blocks in the specified FILE-PATH.
+If FILE-PATH is not provided, defaults to `src/default-file-path`.&quot;
+  (with-temp-buffer
+    (insert-file-contents (or file-path src/default-file-path))
+    (org-mode) ; Ensure Org mode is active for proper parsing
+    (org-element-map (org-element-parse-buffer) &#39;src-block
+      (lambda (src-block)
+        (let ((name (org-element-property :name src-block)))
+          (when name
+            name))))))
+</code></pre>
+<h2>5. 选择命名的代码块</h2>
+<pre><code class="language-emacs-lisp">(defun src/choose-named-src-block (&amp;optional file-path)
+  &quot;Choose a named src block from the specified FILE-PATH in the mini-buffer.
+If called without C-u, defaults to `src/default-file-path`.
+If called with C-u, prompts for the file path.&quot;
+  (let* ((named-blocks (src/list-named-code-blocks file-path))
+         (chosen-block (completing-read &quot;Choose a named src block: &quot; named-blocks)))
+    chosen-block))
+</code></pre>
 <p>补充了几个函数用于执行一整个子树的代码。</p>
-<h2>6. 主函数：选择并执行子树下的所有代码块 </h2>
+<h2>6. 主函数：选择并执行子树下的所有代码块</h2>
+<pre><code class="language-emacs-lisp">(defun src/choose-and-execute-all-blocks-in-subtree (&amp;optional file-path)
+  (interactive
+   (list (if current-prefix-arg
+             (src--choose-folder-or-org-file default-directory)
+           src/default-file-path)))
+  (if (file-directory-p file-path)
+      (src/choose-and-execute-all-blocks-in-subtree (src--choose-folder-or-org-file file-path))
+    (let* ((subtree-name (my/choose-subtree)))
+      (my/execute-all-src-blocks-in-subtree file-path subtree-name))))
+</code></pre>
+<h2>7. 列出文件中所有的子树</h2>
+<pre><code class="language-emacs-lisp">(defun my/list-all-subtrees (&amp;optional file-path)
+  &quot;List all subtrees in an Org file.&quot;
+  (with-temp-buffer
+    (insert-file-contents (or file-path src/default-file-path))
+    (org-mode) ; Ensure Org mode is active for proper parsing
+    (org-element-map (org-element-parse-buffer) &#39;headline
+      (lambda (headline)
+        (let ((title (org-element-property :raw-value headline)))
+          (when title
+            title))))))
+</code></pre>
+<h2>8. 执行子树下所有的源代码块</h2>
+<pre><code class="language-emacs-lisp">(defun my/execute-all-src-blocks-in-subtree (&amp;optional file-path subtree-name)
+  &quot;执行指定 Org 文件中的子树下的所有源代码块（支持异步）。
+FILE-PATH: 可选，指定 Org 文件路径，默认为当前文件。
+SUBTREE-NAME: 可选，指定子树标题，默认为当前子树。&quot;
+  (interactive)
+  (let* ((file-path (or file-path (buffer-file-name)))
+         (subtree-name (or subtree-name (org-get-heading t t t t)))
+         (buffer (find-file-noselect file-path)))
+    (with-current-buffer buffer
+      (unless (org-in-src-block-p)
+        (save-excursion
+          (save-restriction
+            (widen)
+            (goto-char (point-min))
+            (when (re-search-forward (concat &quot;^\\*+ &quot; subtree-name) nil t)
+              (org-back-to-heading)
+              (let* ((beg (point))
+                     (end (progn (org-end-of-subtree) (point)))
+                     (counter 0)
+                     (total 0)
+                     (org-confirm-babel-evaluate nil)
+                     (inhibit-message t))
 
-</code>`<code>emacs-lisp
-<p>(defun src/choose-and-execute-all-blocks-in-subtree (&optional file-path)<br>  (interactive<br>   (list (if current-prefix-arg<br>             (src--choose-folder-or-org-file default-directory)<br>           src/default-file-path)))<br>  (if (file-directory-p file-path)<br>      (src/choose-and-execute-all-blocks-in-subtree (src--choose-folder-or-org-file file-path))<br>    (let* ((subtree-name (my/choose-subtree)))<br>      (my/execute-all-src-blocks-in-subtree file-path subtree-name))))</p>
-</code>`<code>
+                ;; 统计代码块总数
+                (org-element-map (org-element-parse-buffer) &#39;src-block
+                  (lambda (block)
+                    (when (&lt;= beg (org-element-property :begin block) end)
+                      (cl-incf total))))
 
+                (when (&gt; total 0)
+                  ;; 遍历执行代码块
+                  (org-element-map (org-element-parse-buffer) &#39;src-block
+                    (lambda (block)
+                      (when (&lt;= beg (org-element-property :begin block) end)
+                        (let ((block-beg (org-element-property :begin block))
+                              (lang (org-element-property :language block)))
+                          (save-excursion
+                            (goto-char block-beg)
+                            (cl-incf counter)
+                            (message &quot;正在执行代码块 %d/%d (%s)...&quot;
+                                     counter total lang)
+                            (condition-case err
+                                (if (member lang &#39;(&quot;python&quot; &quot;shell&quot; &quot;javascript&quot;))
+                                    (org-babel-execute-src-block &#39;async) ; 异步执行支持
+                                  (org-babel-execute-src-block)) ; 同步执行其他语言
+                              (error (message &quot;执行失败: %s&quot; err)))))))
+                    nil beg end)
 
-<h2>7. 列出文件中所有的子树 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun my/list-all-subtrees (&optional file-path)<br>  "List all subtrees in an Org file."<br>  (with-temp-buffer<br>    (insert-file-contents (or file-path src/default-file-path))<br>    (org-mode) ; Ensure Org mode is active for proper parsing<br>    (org-element-map (org-element-parse-buffer) 'headline<br>      (lambda (headline)<br>        (let ((title (org-element-property :raw-value headline)))<br>          (when title<br>            title))))))</p>
-</code>`<code>
-
-
-<h2>8. 执行子树下所有的源代码块 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun my/execute-all-src-blocks-in-subtree (&optional file-path subtree-name)<br>  "执行指定 Org 文件中的子树下的所有源代码块（支持异步）。<br>FILE-PATH: 可选，指定 Org 文件路径，默认为当前文件。<br>SUBTREE-NAME: 可选，指定子树标题，默认为当前子树。"<br>  (interactive)<br>  (let* ((file-path (or file-path (buffer-file-name)))<br>         (subtree-name (or subtree-name (org-get-heading t t t t)))<br>         (buffer (find-file-noselect file-path)))<br>    (with-current-buffer buffer<br>      (unless (org-in-src-block-p)<br>        (save-excursion<br>          (save-restriction<br>            (widen)<br>            (goto-char (point-min))<br>            (when (re-search-forward (concat "^\\*+ " subtree-name) nil t)<br>              (org-back-to-heading)<br>              (let* ((beg (point))<br>                     (end (progn (org-end-of-subtree) (point)))<br>                     (counter 0)<br>                     (total 0)<br>                     (org-confirm-babel-evaluate nil)<br>                     (inhibit-message t))<br>                ;; 统计代码块总数<br>                (org-element-map (org-element-parse-buffer) 'src-block<br>                  (lambda (block)<br>                    (when (<= beg (org-element-property :begin block) end)<br>                      (cl-incf total))))<br>                (when (> total 0)<br>                  ;; 遍历执行代码块<br>                  (org-element-map (org-element-parse-buffer) 'src-block<br>                    (lambda (block)<br>                      (when (<= beg (org-element-property :begin block) end)<br>                        (let ((block-beg (org-element-property :begin block))<br>                              (lang (org-element-property :language block)))<br>                          (save-excursion<br>                            (goto-char block-beg)<br>                            (cl-incf counter)<br>                            (message "正在执行代码块 %d/%d (%s)..."<br>                                     counter total lang)<br>                            (condition-case err<br>                                (if (member lang '("python" "shell" "javascript"))<br>                                    (org-babel-execute-src-block 'async) ; 异步执行支持<br>                                  (org-babel-execute-src-block)) ; 同步执行其他语言<br>                              (error (message "执行失败: %s" err)))))))<br>                    nil beg end)<br>                  (message "完成！已执行 %d 个代码块" total))<br>                (message "当前子树没有可执行的代码块")))))))))</p>
-</code>`<code>
-
-
-<h2>9. 选择子树 </h2>
-
-</code>`<code>emacs-lisp
-<p>(defun my/choose-subtree (&optional file-path)<br>  "Prompt the user to choose a subtree from the specified FILE-PATH.<br>If FILE-PATH is not provided, defaults to the current buffer's file."<br>  (interactive)<br>  (let* ((subtrees (my/list-all-subtrees file-path))<br>         (chosen-subtree (completing-read "Choose a subtree: " subtrees)))<br>    chosen-subtree))</p>
-</code>``
-
+                  (message &quot;完成！已执行 %d 个代码块&quot; total))
+                (message &quot;当前子树没有可执行的代码块&quot;)))))))))
+</code></pre>
+<h2>9. 选择子树</h2>
+<pre><code class="language-emacs-lisp">(defun my/choose-subtree (&amp;optional file-path)
+  &quot;Prompt the user to choose a subtree from the specified FILE-PATH.
+If FILE-PATH is not provided, defaults to the current buffer&#39;s file.&quot;
+  (interactive)
+  (let* ((subtrees (my/list-all-subtrees file-path))
+         (chosen-subtree (completing-read &quot;Choose a subtree: &quot; subtrees)))
+    chosen-subtree))
+</code></pre>
 <p>(my/choose-subtree)</p>

@@ -3,416 +3,981 @@ title: "DiTok Stage 2 训练指南"
 description: ""
 date: 2026-02-06
 tags: [ditok]
+mathjax: true
 source: hugo-blog
 ---
 
-
-
-<h2>概述 </h2>
-
+<h2>概述</h2>
 <p>本文档介绍 DiTok Stage 2 训练流程,用于微调扩散解码器。</p>
+<p><strong><strong>训练策略</strong></strong>:</p>
+<ul>
+<li><strong><strong>Stage 1</strong></strong>: 端到端训练 Encoder + Quantizer + Decoder (使用预训练的 TiTok) 这个过程我们并不需要真的进行，可以使用 TiTok 已经训练好的结果。</li>
+<li><strong><strong>Stage 2</strong></strong> (本文档): 冻结 Encoder 和 Quantizer,只训练 Decoder</li>
+</ul>
+<p><strong><strong>预训练 Checkpoint</strong></strong>:</p>
+<p>本教程使用预训练的 TiTok L32 checkpoint:</p>
+<ul>
+<li>文件: <kbd>tokenizer_titok_l32_imagenet.safetensors</kbd></li>
+<li>大小: ~2.4 GB</li>
+<li>来源: TiTok 官方预训练模型</li>
+<li>特点: 32 个 latent tokens，在 ImageNet 上训练</li>
+</ul>
+<p>配置文件中已默认设置好预训练 checkpoint 路径，无需手动下载。</p>
+<p><strong><strong>为什么需要 Stage 2</strong></strong>:</p>
+<ol>
+<li>TiTok 已经在大规模数据上训练好了,能很好地提取图像特征</li>
+<li>我们只需要学习如何从这些特征生成清晰的图像</li>
+<li>冻结 Encoder 和 Quantizer 可以减少训练参数,加快训练速度</li>
+</ol>
+<p><strong><strong>关键特性</strong></strong>:</p>
+<ul>
+<li>冻结 Encoder 和 Quantizer</li>
+<li>使用 v-prediction loss 训练扩散解码器</li>
+<li>支持可选的感知损失 (VGG 或 LPIPS)</li>
+<li>EMA (指数移动平均) 用于稳定推理</li>
+<li>使用 Accelerate 支持分布式训练</li>
+<li>余弦退火学习率调度</li>
+</ul>
+<h2>环境设置</h2>
+<p>本项目使用 <a href="https://github.com/astral-sh/uv">uv</a> 作为包管理器。</p>
+<pre><code class="language-bash"># 1. 安装 uv (如果还没有安装)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-<strong><em>*训练策略</strong></em>*:
+# 2. 安装项目依赖
+uv sync
 
-<p>-   <strong><em>*Stage 1</strong></em>*: 端到端训练 Encoder + Quantizer + Decoder (使用预训练的 TiTok) 这个过程我们并不需要真的进行，可以使用 TiTok 已经训练好的结果。<br>-   <strong><em>*Stage 2</strong></em>* (本文档): 冻结 Encoder 和 Quantizer,只训练 Decoder</p>
-
-<strong><em>*预训练 Checkpoint</strong></em>*:
-
-<p>本教程使用预训练的 TiTok L32 checkpoint:<br>-   文件: <kbd>tokenizer_titok_l32_imagenet.safetensors</kbd><br>-   大小: ~2.4 GB<br>-   来源: TiTok 官方预训练模型<br>-   特点: 32 个 latent tokens，在 ImageNet 上训练<br>配置文件中已默认设置好预训练 checkpoint 路径，无需手动下载。</p>
-
-<strong><em>*为什么需要 Stage 2</strong></em>*:
-
-<p>1.  TiTok 已经在大规模数据上训练好了,能很好地提取图像特征<br>2.  我们只需要学习如何从这些特征生成清晰的图像<br>3.  冻结 Encoder 和 Quantizer 可以减少训练参数,加快训练速度</p>
-
-<strong><em>*关键特性</strong></em>*:
-
-<p>-   冻结 Encoder 和 Quantizer<br>-   使用 v-prediction loss 训练扩散解码器<br>-   支持可选的感知损失 (VGG 或 LPIPS)<br>-   EMA (指数移动平均) 用于稳定推理<br>-   使用 Accelerate 支持分布式训练<br>-   余弦退火学习率调度</p>
-
-
-<h2>环境设置 </h2>
-
-<p>本项目使用 [uv](https://github.com/astral-sh/uv) 作为包管理器。<br>``<code>bash<br># 1. 安装 uv (如果还没有安装)<br>curl -LsSf https://astral.sh/uv/install.sh | sh<br># 2. 安装项目依赖<br>uv sync<br># 3. (可选) 添加 LPIPS 感知损失支持<br>uv add lpips</p>
-</code>`<code>
-
-<strong><em>*项目结构</strong></em>*:
-
-</code>`<code>bash
-<p>DiTok/<br>├── ditok.py                    # DiTok 模型定义<br>├── modules/                    # 核心模块<br>│   ├── titok_blocks.py        # TiTok Transformer blocks<br>│   ├── ditok_blocks.py        # DiTok Transformer blocks<br>│   ├── quantizer.py           # Vector Quantization<br>│   └── losses.py              # 损失函数 (LPIPS, VGG等)<br>├── utils/                      # 工具脚本<br>│   ├── train_ditok.py         # Stage 2 训练脚本<br>│   └── logger.py              # 日志工具<br>├── configs/                    # 配置文件<br>│   └── training/DiTok/stage2/<br>│       └── ditok_b64.yaml     # Stage 2 配置<br>├── pyproject.toml              # 项目配置<br>├── uv.lock                     # 依赖锁定<br>└── .python-version             # Python 3.12</p>
-</code>`<code>
-
-
-<h2>快速开始 </h2>
-
-<strong><em>*单 GPU 训练</strong></em>*:
-
-</code>`<code>bash
-<p># 使用 uv run 运行训练脚本<br>uv run python utils/train_ditok.py</p>
-</code>`<code>
-
-<strong><em>*多 GPU 训练</strong></em>* (推荐):
-
-</code>`<code>bash
-<p># 使用 uv run 配合 Accelerate 启动 8 个 GPU<br>uv run accelerate launch --num_processes=8 --main_process_port=9999 utils/train_ditok.py</p>
-</code>`<code>
-
-<strong><em>*自定义配置</strong></em>*:
-
-</code>`<code>bash
-<p># 注意: 当前版本暂不支持命令行参数<br># 请直接修改 configs/training/DiTok/stage2/ditok_l32.yaml<br>uv run python utils/train_ditok.py</p>
-</code>`<code>
-
-
-<h2>配置文件详解 </h2>
-
+# 3. (可选) 添加 LPIPS 感知损失支持
+uv add lpips
+</code></pre>
+<p><strong><strong>项目结构</strong></strong>:</p>
+<pre><code class="language-bash">DiTok/
+├── ditok.py                    # DiTok 模型定义
+├── modules/                    # 核心模块
+│   ├── titok_blocks.py        # TiTok Transformer blocks
+│   ├── ditok_blocks.py        # DiTok Transformer blocks
+│   ├── quantizer.py           # Vector Quantization
+│   └── losses.py              # 损失函数 (LPIPS, VGG等)
+├── utils/                      # 工具脚本
+│   ├── train_ditok.py         # Stage 2 训练脚本
+│   └── logger.py              # 日志工具
+├── configs/                    # 配置文件
+│   └── training/DiTok/stage2/
+│       └── ditok_b64.yaml     # Stage 2 配置
+├── pyproject.toml              # 项目配置
+├── uv.lock                     # 依赖锁定
+└── .python-version             # Python 3.12
+</code></pre>
+<h2>快速开始</h2>
+<p><strong><strong>单 GPU 训练</strong></strong>:</p>
+<pre><code class="language-bash"># 使用 uv run 运行训练脚本
+uv run python utils/train_ditok.py
+</code></pre>
+<p><strong><strong>多 GPU 训练</strong></strong> (推荐):</p>
+<pre><code class="language-bash"># 使用 uv run 配合 Accelerate 启动 8 个 GPU
+uv run accelerate launch --num_processes=8 --main_process_port=9999 utils/train_ditok.py
+</code></pre>
+<p><strong><strong>自定义配置</strong></strong>:</p>
+<pre><code class="language-bash"># 注意: 当前版本暂不支持命令行参数
+# 请直接修改 configs/training/DiTok/stage2/ditok_l32.yaml
+uv run python utils/train_ditok.py
+</code></pre>
+<h2>配置文件详解</h2>
 <p>配置文件位于: <kbd>configs/training/DiTok/stage2/ditok_l32.yaml</kbd></p>
+<p><strong><strong>核心配置项</strong></strong>:</p>
+<pre><code class="language-yaml"># ========== 模型配置 ==========
+model:
+  vq_model:
+    vit_enc_patch_size: 16        # Encoder patch size
+    vit_enc_model_size: &quot;base&quot;     # Encoder model size
+    vit_dec_patch_size: 16        # Decoder patch size
+    vit_dec_model_size: &quot;base&quot;     # Decoder model size
+    num_latent_tokens: 32         # L32: 32 latent tokens
+    token_size: 8                 # Token dimension
+    codebook_size: 1024           # VQ codebook size
+    commitment_cost: 0.25         # VQ commitment cost
 
-<strong><em>*核心配置项</strong></em>*:
+# ========== 预训练 Checkpoint ==========
+pretrained_checkpoint: &quot;./checkpoints/tokenizer_titok_l32_imagenet.safetensors&quot;
 
-</code>`<code>yaml
-<p># ========== 模型配置 ==========<br>model:<br>  vq_model:<br>    vit_enc_patch_size: 16        # Encoder patch size<br>    vit_enc_model_size: "base"     # Encoder model size<br>    vit_dec_patch_size: 16        # Decoder patch size<br>    vit_dec_model_size: "base"     # Decoder model size<br>    num_latent_tokens: 32         # L32: 32 latent tokens<br>    token_size: 8                 # Token dimension<br>    codebook_size: 1024           # VQ codebook size<br>    commitment_cost: 0.25         # VQ commitment cost<br># ========== 预训练 Checkpoint ==========<br>pretrained_checkpoint: "./checkpoints/tokenizer_titok_l32_imagenet.safetensors"<br># ========== 训练配置 ==========<br>training:<br>  output_dir: "./output/ditok_l32_stage2"<br>  per_gpu_batch_size: 32         # 每个 GPU 的 batch size<br>  gradient_accumulation_steps: 1  # 梯度累积步数<br>  mixed_precision: "bf16"        # 混合精度训练<br>  max_train_steps: 500000        # 最大训练步数<br>  lr: 1.0e-4                    # 初始学习率<br>  min_lr: 1.0e-6                 # 最小学习率<br>  warmup_steps: 10000           # 预热步数<br>  lr_schedule: "cosine"          # 学习率调度<br>  gradient_clip: 1.0             # 梯度裁剪<br>  # Stage 2 特定配置<br>  freeze_encoder: true           # 冻结 encoder<br>  freeze_quantizer: true         # 冻结 quantizer<br>  # 感知损失配置<br>  perceptual_loss_type: "lpips"  # 'none', 'vgg', 'lpips'<br>  perceptual_weight: 0.5         # 感知损失权重<br>  # Diffusion 训练参数<br>  P_std: 0.8                     # 时间步采样标准差<br>  P_mean: -0.8                   # 时间步采样均值<br>  t_eps: 5e-2                    # 最小时间步<br>  noise_scale: 1.0               # 噪声缩放<br>  label_drop_prob: 0.1           # CFG 标签丢弃概率<br>  v_weight: 1.0                  # v-prediction loss 权重<br>  gamma_weight: 1.0              # gamma loss 权重<br>  # EMA 参数<br>  ema_decay1: 0.9999             # 主 EMA 衰减率<br>  ema_decay2: 0.9996             # 辅助 EMA 衰减率<br>  # 生成参数<br>  sampling_method: "heun"        # 采样方法<br>  num_sampling_steps: 50         # 采样步数<br>  cfg: 1.0                      # CFG 强度<br># ========== 数据集配置 ==========<br>dataset:<br>  data_path: "./data/imagenet"    # ImageNet 数据集路径<br>  preprocessing:<br>    crop_size: 256               # 图像裁剪大小</p>
-</code>`<code>
+# ========== 训练配置 ==========
+training:
+  output_dir: &quot;./output/ditok_l32_stage2&quot;
+  per_gpu_batch_size: 32         # 每个 GPU 的 batch size
+  gradient_accumulation_steps: 1  # 梯度累积步数
+  mixed_precision: &quot;bf16&quot;        # 混合精度训练
+  max_train_steps: 500000        # 最大训练步数
+  lr: 1.0e-4                    # 初始学习率
+  min_lr: 1.0e-6                 # 最小学习率
+  warmup_steps: 10000           # 预热步数
+  lr_schedule: &quot;cosine&quot;          # 学习率调度
+  gradient_clip: 1.0             # 梯度裁剪
 
+  # Stage 2 特定配置
+  freeze_encoder: true           # 冻结 encoder
+  freeze_quantizer: true         # 冻结 quantizer
 
-<h2>训练流程详解 </h2>
+  # 感知损失配置
+  perceptual_loss_type: &quot;lpips&quot;  # &#39;none&#39;, &#39;vgg&#39;, &#39;lpips&#39;
+  perceptual_weight: 0.5         # 感知损失权重
 
-<strong><em>*训练脚本主要函数</strong></em>*:
+  # Diffusion 训练参数
+  P_std: 0.8                     # 时间步采样标准差
+  P_mean: -0.8                   # 时间步采样均值
+  t_eps: 5e-2                    # 最小时间步
+  noise_scale: 1.0               # 噪声缩放
+  label_drop_prob: 0.1           # CFG 标签丢弃概率
+  v_weight: 1.0                  # v-prediction loss 权重
+  gamma_weight: 1.0              # gamma loss 权重
 
-<p>1.  <strong><em>*get_config()</strong></em>*: 加载配置文件<br>2.  <strong><em>*create_model_and_loss_module()</strong></em>*: 创建模型并冻结 Encoder 和 Quantizer<br>3.  <strong><em>*create_optimizer()</strong></em>*: 创建 AdamW 优化器<br>4.  <strong><em>*create_lr_scheduler()</strong></em>*: 创建余弦退火学习率调度器<br>5.  <strong><em>*create_dataloader()</strong></em>*: 创建数据加载器<br>6.  <strong><em>*train_one_epoch()</strong></em>*: 训练一个 epoch<br>7.  <strong><em>*save_checkpoint()</strong></em>*: 保存检查点</p>
+  # EMA 参数
+  ema_decay1: 0.9999             # 主 EMA 衰减率
+  ema_decay2: 0.9996             # 辅助 EMA 衰减率
 
-<strong><em>*关键训练步骤</strong></em>*:
+  # 生成参数
+  sampling_method: &quot;heun&quot;        # 采样方法
+  num_sampling_steps: 50         # 采样步数
+  cfg: 1.0                      # CFG 强度
 
+# ========== 数据集配置 ==========
+dataset:
+  data_path: &quot;./data/imagenet&quot;    # ImageNet 数据集路径
+  preprocessing:
+    crop_size: 256               # 图像裁剪大小
+</code></pre>
+<h2>训练流程详解</h2>
+<p><strong><strong>训练脚本主要函数</strong></strong>:</p>
+<ol>
+<li><strong><strong>get_config()</strong></strong>: 加载配置文件</li>
+<li><strong><strong>create_model_and_loss_module()</strong></strong>: 创建模型并冻结 Encoder 和 Quantizer</li>
+<li><strong><strong>create_optimizer()</strong></strong>: 创建 AdamW 优化器</li>
+<li><strong><strong>create_lr_scheduler()</strong></strong>: 创建余弦退火学习率调度器</li>
+<li><strong><strong>create_dataloader()</strong></strong>: 创建数据加载器</li>
+<li><strong><strong>train_one_epoch()</strong></strong>: 训练一个 epoch</li>
+<li><strong><strong>save_checkpoint()</strong></strong>: 保存检查点</li>
+</ol>
+<p><strong><strong>关键训练步骤</strong></strong>:</p>
 <p>完整的训练流程包括以下 7 个主要函数的调用:</p>
-
-</code>`<code>python
-<p># ========== 1. 加载配置文件 ==========<br>config = get_config()  # 加载 YAML 配置或使用默认配置<br># ========== 2. 创建模型并冻结参数 ==========<br>model, _, _ = create_model_and_loss_module(config, logger, accelerator)<br># - 创建 DiTok 模型<br># - 加载预训练 checkpoint (如果有)<br># - 冻结 encoder 和 quantizer<br># ========== 3. 创建优化器 ==========<br>optimizer = create_optimizer(config, logger, model)<br># - 收集可训练参数 (diffusion_decoder)<br># - 创建 AdamW 优化器<br># ========== 4. 创建学习率调度器 ==========<br>lr_scheduler, _ = create_lr_scheduler(config, logger, accelerator, optimizer)<br># - 创建余弦退火学习率调度器<br># ========== 5. 创建数据加载器 ==========<br>train_dataloader, _ = create_dataloader(config, logger, accelerator)<br># - 加载 ImageNet 数据集<br># - 应用数据增强 (center crop, random flip)<br># ========== 6. 训练循环 ==========<br>global_step = 0<br>while global_step < config.training.max_train_steps:<br>    global_step = train_one_epoch(<br>        config, logger, accelerator, model, optimizer, lr_scheduler,<br>        train_dataloader, global_step<br>    )<br>    # 每个 epoch 内:<br>    # - 前向传播计算 loss<br>    # - 反向传播更新参数<br>    # - 更新 EMA (主进程)<br>    # - 更新学习率<br>    # - 定期保存 checkpoint<br># ========== 7. 保存最终检查点 ==========<br>save_checkpoint(model, optimizer, lr_scheduler, global_step, config, logger)<br># - 保存模型参数和优化器状态<br># - 保存 EMA1 和 EMA2 参数</p>
-</code>`<code>
-
-<strong><em>*加载预训练 Checkpoint 详解</strong></em>*
-
-<kbd>load_pretrained_checkpoint</kbd> 函数负责从 SafeTensors 文件加载预训练权重：
-
-</code>`<code>python
-<p>def load_pretrained_checkpoint(model, checkpoint_path, logger):<br>    """加载预训练 TiTok checkpoint<br>    处理 SafeTensors 格式，并映射键名：<br>    - checkpoint 'decoder.<em>' -> model 'diffusion_decoder.</em>'<br>    - checkpoint 'encoder.<em>' -> model 'encoder.</em>'<br>    """<br>    # 判断文件格式<br>    if checkpoint_path.endswith('.safetensors'):<br>        from safetensors import safe_open<br>        with safe_open(checkpoint_path, framework="pt", device="cpu") as f:<br>            state_dict = {key: f.get_tensor(key) for key in f.keys()}<br>    else:<br>        checkpoint = torch.load(checkpoint_path, map_location='cpu')<br>        state_dict = checkpoint['model']<br>    # 创建键名映射<br>    mapped_state_dict = {}<br>    for key, value in state_dict.items():<br>        if key.startswith('decoder.'):<br>            new_key = 'diffusion_decoder.' + key[8:]<br>            mapped_state_dict[new_key] = value<br>        elif key.startswith('encoder.'):<br>            mapped_state_dict[key] = value<br>    # 加载权重<br>    load_result = model.load_state_dict(mapped_state_dict, strict=False)<br>    # 记录加载结果<br>    logger.info(f"Loaded {len(load_result.loaded_keys)} keys")<br>    logger.info(f"Missing {len(load_result.missing_keys)} keys")<br>    return model</p>
-</code>`<code>
-
-<strong><em>*创建模型并冻结参数详解</strong></em>*
-
-</code>`<code>python
-<p>def create_model_and_loss_module(config, logger, accelerator):<br>    """创建 DiTok 模型<br>    Stage 2 训练冻结 encoder 和 quantizer，只训练 diffusion decoder。<br>    """<br>    model = DiTok(config)<br>    # 加载预训练 checkpoint<br>    pretrained_checkpoint = config.training.get("pretrained_checkpoint", None)<br>    if pretrained_checkpoint and os.path.exists(pretrained_checkpoint):<br>        model = load_pretrained_checkpoint(model, pretrained_checkpoint, logger)<br>    # Stage 2: 冻结 encoder<br>    if config.training.freeze_encoder:<br>        model.encoder.eval()<br>        for param in model.encoder.parameters():<br>            param.requires_grad = False<br>        logger.info("Encoder frozen for Stage 2 training")<br>    # Stage 2: 冻结 quantizer<br>    if config.training.freeze_quantizer:<br>        model.quantizer.eval()<br>        for param in model.quantizer.parameters():<br>            param.requires_grad = False<br>        logger.info("Quantizer frozen for Stage 2 training")<br>    # 统计可训练参数<br>    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)<br>    logger.info(f"Trainable parameters: {n_params:,}")<br>    return model, None, None</p>
-</code>`<code>
-
-<strong><em>*创建优化器详解</strong></em>*
-
-</code>`<code>python
-<p>def create_optimizer(config, logger, model):<br>    """创建 AdamW 优化器<br>    只优化 diffusion decoder 的参数。<br>    """<br>    # 收集所有可训练参数<br>    trainable_params = [p for p in model.parameters() if p.requires_grad]<br>    # 按模块分组统计<br>    param_count_by_module = {}<br>    for name, param in model.named_parameters():<br>        if param.requires_grad:<br>            module = name.split('.')[0]<br>            param_count_by_module[module] = param_count_by_module.get(module, 0) + param.numel()<br>    logger.info(f"Trainable parameters by module:")<br>    for module, count in sorted(param_count_by_module.items()):<br>        logger.info(f"  {module}: {count:,}")<br>    # 创建 AdamW 优化器<br>    optimizer = torch.optim.AdamW(<br>        trainable_params,<br>        lr=config.training.lr,<br>        betas=(0.9, 0.95),<br>        weight_decay=config.training.weight_decay<br>    )<br>    return optimizer</p>
-</code>`<code>
-
-<strong><em>*训练循环详解</strong></em>*
-
-</code>`<code>python
-<p>def train_one_epoch(config, logger, accelerator, model, optimizer,<br>                     train_dataloader, global_step):<br>    """训练一个 epoch<br>    关键点：<br>    1. Encoder 和 Quantizer 必须保持 eval 模式<br>    2. 图像需要归一化到 [0, 1] 范围<br>    3. EMA 只在主进程中更新<br>    """<br>    model.train()<br>    # 确保 encoder 和 quantizer 处于 eval 模式<br>    model.encoder.eval()<br>    model.quantizer.eval()<br>    for batch_idx, (images, labels) in enumerate(train_dataloader):<br>        # 移动数据到设备<br>        images = images.to(accelerator.device)<br>        images = images.float() / 255.0  # 归一化到 [0, 1]<br>        labels = labels.to(accelerator.device)<br>        # 前向传播<br>        loss_dict = model(images, labels)<br>        loss = loss_dict['loss']<br>        # 反向传播<br>        accelerator.backward(loss)<br>        optimizer.step()<br>        optimizer.zero_grad()<br>        # 更新 EMA (只在主进程)<br>        if accelerator.is_main_process:<br>            model.update_ema()<br>        # 更新学习率<br>        lr_scheduler.step()<br>        global_step += 1<br>        # 日志记录<br>        if global_step % config.training.get("log_freq", 100) == 0:<br>            log_parts = [f"Step {global_step}"]<br>            for key in ['loss', 'v_loss', 'gamma_loss', 'perceptual_loss']:<br>                if key in loss_dict:<br>                    value = loss_dict[key].item() if torch.is_tensor(loss_dict[key]) else loss_dict[key]<br>                    log_parts.append(f"{key}={value:.4f}")<br>            logger.info(" ".join(log_parts))<br>        # 保存 checkpoint<br>        if global_step % config.training.get("save_freq", 10000) == 0:<br>            save_checkpoint(model, optimizer, lr_scheduler, global_step, config, logger)<br>        if global_step >= config.training.max_train_steps:<br>            break<br>    return global_step</p>
-</code>`<code>
-
-<strong><em>*保存 Checkpoint 详解</strong></em>*
-
-</code>`<code>python
-<p>def save_checkpoint(model, optimizer, lr_scheduler, global_step, config, logger):<br>    """保存检查点<br>    保存内容：<br>    1. 模型参数和优化器状态<br>    2. EMA1 和 EMA2 参数（如果已初始化）<br>    """<br>    output_dir = config.training.output_dir<br>    # 保存模型检查点<br>    model_save_path = os.path.join(output_dir, f"checkpoint-{global_step}.pt")<br>    torch.save({<br>        'model': model.state_dict(),<br>        'optimizer': optimizer.state_dict(),<br>        'lr_scheduler': lr_scheduler.state_dict() if lr_scheduler else None,<br>        'global_step': global_step,<br>        'config': config<br>    }, model_save_path)<br>    # 保存 EMA 参数<br>    if model.ema_params1 is not None and model.ema_params2 is not None:<br>        ema_save_path = os.path.join(output_dir, f"ema-{global_step}.pt")<br>        # 使用 named_parameters() 确保键名匹配<br>        ema_state_dict1 = {<br>            name: param.data.cpu()<br>            for (name, _), param in zip(model.named_parameters(), model.ema_params1)<br>        }<br>        ema_state_dict2 = {<br>            name: param.data.cpu()<br>            for (name, _), param in zip(model.named_parameters(), model.ema_params2)<br>        }<br>        torch.save({<br>            'ema_state_dict1': ema_state_dict1,<br>            'ema_state_dict2': ema_state_dict2,<br>            'global_step': global_step,<br>            'ema_decay1': model.ema_decay1,<br>            'ema_decay2': model.ema_decay2,<br>        }, ema_save_path)<br>        logger.info(f"Checkpoint saved at step {global_step} (with EMA)")<br>    else:<br>        logger.info(f"Checkpoint saved at step {global_step} (no EMA yet)")</p>
-</code>`<code>
-
-<strong><em>*加载配置文件详解</strong></em>*
-
-</code>`<code>python
-<p>def get_config():<br>    """加载训练配置<br>    支持从 YAML 文件加载配置,如果文件不存在则使用默认配置。<br>    """<br>    # 配置文件路径<br>    config_path = "configs/training/DiTok/stage2/ditok_l32.yaml"<br>    # 尝试加载配置文件<br>    if os.path.exists(config_path):<br>        config = OmegaConf.load(config_path)<br>    else:<br>        # 配置文件不存在时使用默认配置<br>        print(f"Warning: {config_path} not found, using default config")<br>        config = OmegaConf.create({<br>            "dataset": {<br>                "preprocessing": {"crop_size": 256}<br>            },<br>            "model": {<br>                "vq_model": {<br>                    "vit_enc_patch_size": 16,<br>                    "vit_enc_model_size": "base",<br>                    "vit_dec_patch_size": 16,<br>                    "vit_dec_model_size": "base",<br>                    "num_latent_tokens": 32,<br>                    "token_size": 8,<br>                    "codebook_size": 1024,<br>                    "commitment_cost": 0.25,<br>                    "use_l2_norm": False,<br>                    "clustering_vq": False,<br>                    "is_legacy": False,<br>                }<br>            },<br>            "training": {<br>                "output_dir": "./output/ditok_l32_stage2",<br>                "per_gpu_batch_size": 32,<br>                "lr": 1.0e-4,<br>                "min_lr": 1.0e-6,<br>                "max_train_steps": 500000,<br>                "warmup_steps": 10000,<br>                "lr_schedule": "cosine",<br>                # Stage 2 特定配置<br>                "freeze_encoder": True,<br>                "freeze_quantizer": True,<br>                # Diffusion 训练参数<br>                "P_std": 0.8,<br>                "P_mean": -0.8,<br>                "v_weight": 1.0,<br>                "gamma_weight": 1.0,<br>                # EMA 参数<br>                "ema_decay1": 0.9999,<br>                "ema_decay2": 0.9996,<br>            }<br>        })<br>    return config</p>
-</code>`<code>
-
-<strong><em>*配置项说明</strong></em>*:
-
-<p>-   <strong>dataset</strong>: 数据集预处理配置<br>-   <strong>model.vq_model</strong>: Encoder 和 Decoder 架构配置<br>-   <strong>training</strong>: 训练超参数 (学习率、batch size、步数等)<br>-   <strong>training.freeze_encoder/quantizer</strong>: Stage 2 冻结设置<br>-   <strong>training.P_std/P_mean</strong>: 时间步采样参数 (Karras et al., 2022)<br>-   <strong>training.ema_decay1/2</strong>: EMA 衰减率</p>
-
-<strong><em>*创建学习率调度器详解</strong></em>*
-
-</code>`<code>python
-<p>def create_lr_scheduler(config, logger, accelerator, optimizer):<br>    """创建学习率调度器<br>    使用余弦退火调度器,从初始学习率逐渐降低到最小学习率。<br>    """<br>    if config.training.lr_schedule == "cosine":<br>        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(<br>            optimizer,<br>            T_max=config.training.max_train_steps,  # 总步数<br>            eta_min=config.training.min_lr           # 最小学习率<br>        )<br>    else:<br>        scheduler = None<br>    return scheduler, None</p>
-</code>`<code>
-
-<strong><em>*余弦退火学习率曲线</strong></em>*:
-
-<p>学习率按照余弦曲线从初始值衰减到最小值:<br>\\[ \eta\_t = \eta\_{min} + \frac{1}{2}(\eta\_{max} - \eta\_{min})\left(1 + \cos\frac{t\pi}{T\_{max}}\right) \\]<br>其中:<br>-   \\(\eta\_{max} = 1.0 \times 10^{-4}\\) (初始学习率)<br>-   \\(\eta\_{min} = 1.0 \times 10^{-6}\\) (最小学习率)<br>-   \\(T\_{max} = 500000\\) (最大训练步数)</p>
-
-<strong><em>*学习率调度示例</strong></em>*:
-
-<p>| Step | 学习率   | 说明     |<br>|------|-------|--------|<br>| 0    | 1.00e-4  | 初始学习率 |<br>| 10k  | ~1.00e-4 | Warmup 后 |<br>| 250k | 5.05e-5  | 中点 (50%) |<br>| 500k | 1.00e-6  | 最小学习率 |</p>
-
-<strong><em>*创建数据加载器详解</strong></em>*
-
-</code>`<code>python
-<p>def create_dataloader(config, logger, accelerator):<br>    """创建数据加载器<br>    加载 ImageNet 数据集并应用数据增强。<br>    """<br>    import torchvision.transforms as transforms<br>    from torch.utils.data import DataLoader<br>    from torchvision.datasets import ImageFolder<br>    # 数据增强流程<br>    transform_train = transforms.Compose([<br>        # 1. Center crop 到指定大小 (256x256)<br>        transforms.Lambda(lambda img: center_crop_arr(img,<br>                         config.dataset.preprocessing.crop_size)),<br>        # 2. 随机水平翻转 (数据增强)<br>        transforms.RandomHorizontalFlip(),<br>        # 3. 转换为 PyTorch tensor (uint8 [0, 255])<br>        transforms.PILToTensor()<br>    ])<br>    # 数据集路径: data_path/train/<br>    data_path = config.dataset.get("data_path", "./data/imagenet")<br>    train_dataset = ImageFolder(<br>        os.path.join(data_path, 'train'),<br>        transform=transform_train<br>    )<br>    # 创建数据加载器<br>    train_loader = DataLoader(<br>        train_dataset,<br>        batch_size=config.training.per_gpu_batch_size,  # 每个GPU的batch size<br>        shuffle=True,                                  # 打乱数据<br>        num_workers=config.training.get("num_workers", 4),  # 数据加载进程数<br>        pin_memory=True,                               # 加速GPU数据传输<br>        drop_last=True                                 # 丢弃最后不完整的batch<br>    )<br>    logger.info(f"Train dataset size: {len(train_dataset)}")<br>    logger.info(f"Train dataloader size: {len(train_loader)}")<br>    return train_loader, None<br>def center_crop_arr(img, size):<br>    """Center crop 辅助函数<br>    将图像从中心裁剪到指定大小。<br>    """<br>    import numpy as np<br>    img = np.asarray(img)<br>    h, w = img.shape[:2]<br>    c_h, c_w = size<br>    # 计算裁剪起始位置<br>    top = (h - c_h) // 2<br>    left = (w - c_w) // 2<br>    return img[top:top+c_h, left:left+c_w]</p>
-</code>`<code>
-
-<strong><em>*数据增强流程说明</strong></em>*:
-
-<p>1.  <strong><em>*Center Crop (256x256)</strong></em>*:<br>    -   从原始图像中心裁剪出 256×256 区域<br>    -   保证所有图像尺寸一致<br>    -   适合 ImageNet (通常图像 ≥ 256)<br>2.  <strong><em>*Random Horizontal Flip</strong></em>*:<br>    -   随机水平翻转 (p=0.5)<br>    -   增加数据多样性<br>    -   不改变图像语义<br>3.  <strong><em>*PILToTensor</strong></em>*:<br>    -   转换为 PyTorch tensor<br>    -   值域: uint8 [0, 255]<br>    -   后续在训练中归一化到 [0, 1]</p>
-
-<strong><em>*数据加载器参数说明</strong></em>*:
-
-<p>| 参数        | 值   | 说明                |<br>|-----------|-----|-------------------|<br>| batch_size  | 32   | 每个 GPU 的 batch size |<br>| shuffle     | True | 每个 epoch 打乱数据 |<br>| num_workers | 4    | 数据加载进程数 (可调整) |<br>| pin_memory  | True | 锁页内存,加速 GPU 传输 |<br>| drop_last   | True | 丢弃不完整的最后 batch |</p>
-
-<strong><em>*数据加载器性能优化</strong></em>*:
-
-</code>`<code>python
-<p># GPU 内存充足时增大 batch size<br>per_gpu_batch_size: 64<br># CPU 核心多时增加 num_workers<br>num_workers: 8  # 根据 CPU 核心数调整<br># 使用 gradient_accumulation 增大有效 batch size<br>per_gpu_batch_size: 16<br>gradient_accumulation_steps: 4<br># 有效 batch size = 16 <em> 4 </em> num_gpus</p>
-</code>`<code>
-
-
-<h2>EMA (指数移动平均) </h2>
-
-<strong><em>*EMA 的作用</strong></em>*:
-
-<p>-   平滑模型参数,减少推理时的随机波动<br>-   提高生成质量和稳定性<br>-   双 EMA 提供不同程度的平滑</p>
-
-<strong><em>*EMA 更新公式</strong></em>*:
-
-<p>\\[ \theta\_{EMA} = \text{decay} \times \theta\_{EMA} + (1 - \text{decay}) \times \theta \\]</p>
-
-<strong><em>*使用两个 EMA 跟踪器</strong></em>*:
-
-<p>-   <strong><em>*EMA1</strong></em>* (decay=0.9999): 主 EMA,用于推理<br>-   <strong><em>*EMA2</strong></em>* (decay=0.9996): 辅助 EMA,衰减更快</p>
-
-<strong><em>*保存 EMA 参数</strong></em>*:
-
-<p>检查点文件包含:<br>-   <kbd>checkpoint-{step}.pt</kbd>: 模型参数和优化器状态<br>-   <kbd>ema-{step}.pt</kbd>: EMA1 和 EMA2 参数</p>
-
-
-<h2>损失函数 </h2>
-
-<strong><em>*总损失组成</strong></em>*:
-
-<p>\\[ \mathcal{L} = w\_v \cdot \mathcal{L}\_v + w\_\gamma \cdot \mathcal{L}\_\gamma + w\_p \cdot \mathcal{L}\_p + \mathcal{L}\_{bpp} \\]<br>其中:<br>-   \\(\mathcal{L}\_v\\): v-prediction loss (主要损失)<br>-   \\(\mathcal{L}\_\gamma\\): gamma loss (可选,负对数似然)<br>-   \\(\mathcal{L}\_p\\): perceptual loss (可选,VGG 或 LPIPS)<br>-   \\(\mathcal{L}\_{bpp}\\): bpp loss (Stage 2 中为 0)</p>
-
-<strong><em>*损失权重</strong></em>*:
-
-<p>-   <kbd>v_weight = 1.0</kbd>: 主要损失,通常设为 1.0<br>-   <kbd>gamma_weight = 0.0</kbd>: 可选,通常设为 0.0<br>-   <kbd>perceptual_weight = 0.5</kbd>: 可选,通常设为 0.5</p>
-
-
-<h2>感知损失选择 </h2>
-
-<p>DiTok 支持两种感知损失:<br>1.  <strong><em>*VGGPerceptualLoss</strong></em>* (快速):<br>    -   基于 VGG-16BN<br>    -   计算效率高<br>    -   效果一般<br>2.  <strong><em>*LPIPSLoss</strong></em>* (推荐):<br>    -   学习得到的感知距离<br>    -   与人类感知高度一致<br>    -   需要安装: <kbd>uv add lpips</kbd></p>
-
-<strong><em>*配置选项</strong></em>*:
-
-</code>`<code>yaml
-<p>perceptual_loss_type: "lpips"  # 'none', 'vgg', 'lpips'<br>perceptual_weight: 0.5<br>lpips_net: "vgg"              # 'vgg' or 'alex'</p>
-</code>`<code>
-
-
-<h2>数据准备 </h2>
-
-<strong><em>*数据集结构</strong></em>*:
-
-</code>`<code>bash
-<p>data_path/<br>├── train/<br>│   ├── n01440764/<br>│   │   ├── n01440764_10026.JPEG<br>│   │   ├── n01440764_10027.JPEG<br>│   │   └── ...<br>│   ├── n01443537/<br>│   └── ...<br>└── val/<br>    └── ...</p>
-</code>`<code>
-
-<strong><em>*数据增强</strong></em>*:
-
-<p>-   Center crop (256x256)<br>-   Random horizontal flip<br>-   转换为 PyTorch tensor</p>
-
-
-<h2>训练监控 </h2>
-
-<strong><em>*日志输出</strong></em>*:
-
-<p>训练脚本会输出以下信息:<br>-   每个 100 步输出损失<br>-   每个 10000 步保存检查点<br>-   每隔 <kbd>test_interval</kbd> 步（默认 3000）进行评估<br>-   TensorBoard 日志 (在 <kbd>logging_dir</kbd> 中)</p>
-
-<strong><em>*日志示例</strong></em>*:
-
-</code>`<code>nil
-<p>Step 100: loss=3.4567, v_loss=3.4123<br>Step 200: loss=3.2345, v_loss=3.1987<br>...</p>
-</code>`<code>
-
-
-<h2>评估结果 </h2>
-
+<pre><code class="language-python"># ========== 1. 加载配置文件 ==========
+config = get_config()  # 加载 YAML 配置或使用默认配置
+
+# ========== 2. 创建模型并冻结参数 ==========
+model, _, _ = create_model_and_loss_module(config, logger, accelerator)
+# - 创建 DiTok 模型
+# - 加载预训练 checkpoint (如果有)
+# - 冻结 encoder 和 quantizer
+
+# ========== 3. 创建优化器 ==========
+optimizer = create_optimizer(config, logger, model)
+# - 收集可训练参数 (diffusion_decoder)
+# - 创建 AdamW 优化器
+
+# ========== 4. 创建学习率调度器 ==========
+lr_scheduler, _ = create_lr_scheduler(config, logger, accelerator, optimizer)
+# - 创建余弦退火学习率调度器
+
+# ========== 5. 创建数据加载器 ==========
+train_dataloader, _ = create_dataloader(config, logger, accelerator)
+# - 加载 ImageNet 数据集
+# - 应用数据增强 (center crop, random flip)
+
+# ========== 6. 训练循环 ==========
+global_step = 0
+while global_step &lt; config.training.max_train_steps:
+    global_step = train_one_epoch(
+        config, logger, accelerator, model, optimizer, lr_scheduler,
+        train_dataloader, global_step
+    )
+    # 每个 epoch 内:
+    # - 前向传播计算 loss
+    # - 反向传播更新参数
+    # - 更新 EMA (主进程)
+    # - 更新学习率
+    # - 定期保存 checkpoint
+
+# ========== 7. 保存最终检查点 ==========
+save_checkpoint(model, optimizer, lr_scheduler, global_step, config, logger)
+# - 保存模型参数和优化器状态
+# - 保存 EMA1 和 EMA2 参数
+</code></pre>
+<p><strong><strong>加载预训练 Checkpoint 详解</strong></strong></p>
+<p><kbd>load_pretrained_checkpoint</kbd> 函数负责从 SafeTensors 文件加载预训练权重：</p>
+<pre><code class="language-python">def load_pretrained_checkpoint(model, checkpoint_path, logger):
+    &quot;&quot;&quot;加载预训练 TiTok checkpoint
+
+    处理 SafeTensors 格式，并映射键名：
+    - checkpoint &#39;decoder.*&#39; -&gt; model &#39;diffusion_decoder.*&#39;
+    - checkpoint &#39;encoder.*&#39; -&gt; model &#39;encoder.*&#39;
+    &quot;&quot;&quot;
+    # 判断文件格式
+    if checkpoint_path.endswith(&#39;.safetensors&#39;):
+        from safetensors import safe_open
+        with safe_open(checkpoint_path, framework=&quot;pt&quot;, device=&quot;cpu&quot;) as f:
+            state_dict = {key: f.get_tensor(key) for key in f.keys()}
+    else:
+        checkpoint = torch.load(checkpoint_path, map_location=&#39;cpu&#39;)
+        state_dict = checkpoint[&#39;model&#39;]
+
+    # 创建键名映射
+    mapped_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith(&#39;decoder.&#39;):
+            new_key = &#39;diffusion_decoder.&#39; + key[8:]
+            mapped_state_dict[new_key] = value
+        elif key.startswith(&#39;encoder.&#39;):
+            mapped_state_dict[key] = value
+
+    # 加载权重
+    load_result = model.load_state_dict(mapped_state_dict, strict=False)
+
+    # 记录加载结果
+    logger.info(f&quot;Loaded {len(load_result.loaded_keys)} keys&quot;)
+    logger.info(f&quot;Missing {len(load_result.missing_keys)} keys&quot;)
+
+    return model
+</code></pre>
+<p><strong><strong>创建模型并冻结参数详解</strong></strong></p>
+<pre><code class="language-python">def create_model_and_loss_module(config, logger, accelerator):
+    &quot;&quot;&quot;创建 DiTok 模型
+
+    Stage 2 训练冻结 encoder 和 quantizer，只训练 diffusion decoder。
+    &quot;&quot;&quot;
+    model = DiTok(config)
+
+    # 加载预训练 checkpoint
+    pretrained_checkpoint = config.training.get(&quot;pretrained_checkpoint&quot;, None)
+    if pretrained_checkpoint and os.path.exists(pretrained_checkpoint):
+        model = load_pretrained_checkpoint(model, pretrained_checkpoint, logger)
+
+    # Stage 2: 冻结 encoder
+    if config.training.freeze_encoder:
+        model.encoder.eval()
+        for param in model.encoder.parameters():
+            param.requires_grad = False
+        logger.info(&quot;Encoder frozen for Stage 2 training&quot;)
+
+    # Stage 2: 冻结 quantizer
+    if config.training.freeze_quantizer:
+        model.quantizer.eval()
+        for param in model.quantizer.parameters():
+            param.requires_grad = False
+        logger.info(&quot;Quantizer frozen for Stage 2 training&quot;)
+
+    # 统计可训练参数
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f&quot;Trainable parameters: {n_params:,}&quot;)
+
+    return model, None, None
+</code></pre>
+<p><strong><strong>创建优化器详解</strong></strong></p>
+<pre><code class="language-python">def create_optimizer(config, logger, model):
+    &quot;&quot;&quot;创建 AdamW 优化器
+
+    只优化 diffusion decoder 的参数。
+    &quot;&quot;&quot;
+    # 收集所有可训练参数
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+    # 按模块分组统计
+    param_count_by_module = {}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            module = name.split(&#39;.&#39;)[0]
+            param_count_by_module[module] = param_count_by_module.get(module, 0) + param.numel()
+
+    logger.info(f&quot;Trainable parameters by module:&quot;)
+    for module, count in sorted(param_count_by_module.items()):
+        logger.info(f&quot;  {module}: {count:,}&quot;)
+
+    # 创建 AdamW 优化器
+    optimizer = torch.optim.AdamW(
+        trainable_params,
+        lr=config.training.lr,
+        betas=(0.9, 0.95),
+        weight_decay=config.training.weight_decay
+    )
+
+    return optimizer
+</code></pre>
+<p><strong><strong>训练循环详解</strong></strong></p>
+<pre><code class="language-python">def train_one_epoch(config, logger, accelerator, model, optimizer,
+                     train_dataloader, global_step):
+    &quot;&quot;&quot;训练一个 epoch
+
+    关键点：
+    1. Encoder 和 Quantizer 必须保持 eval 模式
+    2. 图像需要归一化到 [0, 1] 范围
+    3. EMA 只在主进程中更新
+    &quot;&quot;&quot;
+    model.train()
+    # 确保 encoder 和 quantizer 处于 eval 模式
+    model.encoder.eval()
+    model.quantizer.eval()
+
+    for batch_idx, (images, labels) in enumerate(train_dataloader):
+        # 移动数据到设备
+        images = images.to(accelerator.device)
+        images = images.float() / 255.0  # 归一化到 [0, 1]
+        labels = labels.to(accelerator.device)
+
+        # 前向传播
+        loss_dict = model(images, labels)
+        loss = loss_dict[&#39;loss&#39;]
+
+        # 反向传播
+        accelerator.backward(loss)
+        optimizer.step()
+        optimizer.zero_grad()
+
+        # 更新 EMA (只在主进程)
+        if accelerator.is_main_process:
+            model.update_ema()
+
+        # 更新学习率
+        lr_scheduler.step()
+        global_step += 1
+
+        # 日志记录
+        if global_step % config.training.get(&quot;log_freq&quot;, 100) == 0:
+            log_parts = [f&quot;Step {global_step}&quot;]
+            for key in [&#39;loss&#39;, &#39;v_loss&#39;, &#39;gamma_loss&#39;, &#39;perceptual_loss&#39;]:
+                if key in loss_dict:
+                    value = loss_dict[key].item() if torch.is_tensor(loss_dict[key]) else loss_dict[key]
+                    log_parts.append(f&quot;{key}={value:.4f}&quot;)
+            logger.info(&quot; &quot;.join(log_parts))
+
+        # 保存 checkpoint
+        if global_step % config.training.get(&quot;save_freq&quot;, 10000) == 0:
+            save_checkpoint(model, optimizer, lr_scheduler, global_step, config, logger)
+
+        if global_step &gt;= config.training.max_train_steps:
+            break
+
+    return global_step
+</code></pre>
+<p><strong><strong>保存 Checkpoint 详解</strong></strong></p>
+<pre><code class="language-python">def save_checkpoint(model, optimizer, lr_scheduler, global_step, config, logger):
+    &quot;&quot;&quot;保存检查点
+
+    保存内容：
+    1. 模型参数和优化器状态
+    2. EMA1 和 EMA2 参数（如果已初始化）
+    &quot;&quot;&quot;
+    output_dir = config.training.output_dir
+
+    # 保存模型检查点
+    model_save_path = os.path.join(output_dir, f&quot;checkpoint-{global_step}.pt&quot;)
+    torch.save({
+        &#39;model&#39;: model.state_dict(),
+        &#39;optimizer&#39;: optimizer.state_dict(),
+        &#39;lr_scheduler&#39;: lr_scheduler.state_dict() if lr_scheduler else None,
+        &#39;global_step&#39;: global_step,
+        &#39;config&#39;: config
+    }, model_save_path)
+
+    # 保存 EMA 参数
+    if model.ema_params1 is not None and model.ema_params2 is not None:
+        ema_save_path = os.path.join(output_dir, f&quot;ema-{global_step}.pt&quot;)
+
+        # 使用 named_parameters() 确保键名匹配
+        ema_state_dict1 = {
+            name: param.data.cpu()
+            for (name, _), param in zip(model.named_parameters(), model.ema_params1)
+        }
+        ema_state_dict2 = {
+            name: param.data.cpu()
+            for (name, _), param in zip(model.named_parameters(), model.ema_params2)
+        }
+
+        torch.save({
+            &#39;ema_state_dict1&#39;: ema_state_dict1,
+            &#39;ema_state_dict2&#39;: ema_state_dict2,
+            &#39;global_step&#39;: global_step,
+            &#39;ema_decay1&#39;: model.ema_decay1,
+            &#39;ema_decay2&#39;: model.ema_decay2,
+        }, ema_save_path)
+
+        logger.info(f&quot;Checkpoint saved at step {global_step} (with EMA)&quot;)
+    else:
+        logger.info(f&quot;Checkpoint saved at step {global_step} (no EMA yet)&quot;)
+</code></pre>
+<p><strong><strong>加载配置文件详解</strong></strong></p>
+<pre><code class="language-python">def get_config():
+    &quot;&quot;&quot;加载训练配置
+
+    支持从 YAML 文件加载配置,如果文件不存在则使用默认配置。
+    &quot;&quot;&quot;
+    # 配置文件路径
+    config_path = &quot;configs/training/DiTok/stage2/ditok_l32.yaml&quot;
+
+    # 尝试加载配置文件
+    if os.path.exists(config_path):
+        config = OmegaConf.load(config_path)
+    else:
+        # 配置文件不存在时使用默认配置
+        print(f&quot;Warning: {config_path} not found, using default config&quot;)
+        config = OmegaConf.create({
+            &quot;dataset&quot;: {
+                &quot;preprocessing&quot;: {&quot;crop_size&quot;: 256}
+            },
+            &quot;model&quot;: {
+                &quot;vq_model&quot;: {
+                    &quot;vit_enc_patch_size&quot;: 16,
+                    &quot;vit_enc_model_size&quot;: &quot;base&quot;,
+                    &quot;vit_dec_patch_size&quot;: 16,
+                    &quot;vit_dec_model_size&quot;: &quot;base&quot;,
+                    &quot;num_latent_tokens&quot;: 32,
+                    &quot;token_size&quot;: 8,
+                    &quot;codebook_size&quot;: 1024,
+                    &quot;commitment_cost&quot;: 0.25,
+                    &quot;use_l2_norm&quot;: False,
+                    &quot;clustering_vq&quot;: False,
+                    &quot;is_legacy&quot;: False,
+                }
+            },
+            &quot;training&quot;: {
+                &quot;output_dir&quot;: &quot;./output/ditok_l32_stage2&quot;,
+                &quot;per_gpu_batch_size&quot;: 32,
+                &quot;lr&quot;: 1.0e-4,
+                &quot;min_lr&quot;: 1.0e-6,
+                &quot;max_train_steps&quot;: 500000,
+                &quot;warmup_steps&quot;: 10000,
+                &quot;lr_schedule&quot;: &quot;cosine&quot;,
+                # Stage 2 特定配置
+                &quot;freeze_encoder&quot;: True,
+                &quot;freeze_quantizer&quot;: True,
+                # Diffusion 训练参数
+                &quot;P_std&quot;: 0.8,
+                &quot;P_mean&quot;: -0.8,
+                &quot;v_weight&quot;: 1.0,
+                &quot;gamma_weight&quot;: 1.0,
+                # EMA 参数
+                &quot;ema_decay1&quot;: 0.9999,
+                &quot;ema_decay2&quot;: 0.9996,
+            }
+        })
+
+    return config
+</code></pre>
+<p><strong><strong>配置项说明</strong></strong>:</p>
+<ul>
+<li><strong>dataset</strong>: 数据集预处理配置</li>
+<li><strong>model.vq_model</strong>: Encoder 和 Decoder 架构配置</li>
+<li><strong>training</strong>: 训练超参数 (学习率、batch size、步数等)</li>
+<li><strong>training.freeze_encoder/quantizer</strong>: Stage 2 冻结设置</li>
+<li><strong>training.P_std/P_mean</strong>: 时间步采样参数 (Karras et al., 2022)</li>
+<li><strong>training.ema_decay1/2</strong>: EMA 衰减率</li>
+</ul>
+<p><strong><strong>创建学习率调度器详解</strong></strong></p>
+<pre><code class="language-python">def create_lr_scheduler(config, logger, accelerator, optimizer):
+    &quot;&quot;&quot;创建学习率调度器
+
+    使用余弦退火调度器,从初始学习率逐渐降低到最小学习率。
+    &quot;&quot;&quot;
+    if config.training.lr_schedule == &quot;cosine&quot;:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=config.training.max_train_steps,  # 总步数
+            eta_min=config.training.min_lr           # 最小学习率
+        )
+    else:
+        scheduler = None
+
+    return scheduler, None
+</code></pre>
+<p><strong><strong>余弦退火学习率曲线</strong></strong>:</p>
+<p>学习率按照余弦曲线从初始值衰减到最小值:</p>
+<p>\[ \eta_t = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})\left(1 + \cos\frac{t\pi}{T_{max}}\right) \]</p>
+<p>其中:</p>
+<ul>
+<li>\(\eta_{max} = 1.0 \times 10^{-4}\) (初始学习率)</li>
+<li>\(\eta_{min} = 1.0 \times 10^{-6}\) (最小学习率)</li>
+<li>\(T_{max} = 500000\) (最大训练步数)</li>
+</ul>
+<p><strong><strong>学习率调度示例</strong></strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>学习率</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0</td>
+<td>1.00e-4</td>
+<td>初始学习率</td>
+</tr>
+<tr>
+<td>10k</td>
+<td>~1.00e-4</td>
+<td>Warmup 后</td>
+</tr>
+<tr>
+<td>250k</td>
+<td>5.05e-5</td>
+<td>中点 (50%)</td>
+</tr>
+<tr>
+<td>500k</td>
+<td>1.00e-6</td>
+<td>最小学习率</td>
+</tr>
+</tbody></table>
+<p><strong><strong>创建数据加载器详解</strong></strong></p>
+<pre><code class="language-python">def create_dataloader(config, logger, accelerator):
+    &quot;&quot;&quot;创建数据加载器
+
+    加载 ImageNet 数据集并应用数据增强。
+    &quot;&quot;&quot;
+    import torchvision.transforms as transforms
+    from torch.utils.data import DataLoader
+    from torchvision.datasets import ImageFolder
+
+    # 数据增强流程
+    transform_train = transforms.Compose([
+        # 1. Center crop 到指定大小 (256x256)
+        transforms.Lambda(lambda img: center_crop_arr(img,
+                         config.dataset.preprocessing.crop_size)),
+        # 2. 随机水平翻转 (数据增强)
+        transforms.RandomHorizontalFlip(),
+        # 3. 转换为 PyTorch tensor (uint8 [0, 255])
+        transforms.PILToTensor()
+    ])
+
+    # 数据集路径: data_path/train/
+    data_path = config.dataset.get(&quot;data_path&quot;, &quot;./data/imagenet&quot;)
+    train_dataset = ImageFolder(
+        os.path.join(data_path, &#39;train&#39;),
+        transform=transform_train
+    )
+
+    # 创建数据加载器
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.training.per_gpu_batch_size,  # 每个GPU的batch size
+        shuffle=True,                                  # 打乱数据
+        num_workers=config.training.get(&quot;num_workers&quot;, 4),  # 数据加载进程数
+        pin_memory=True,                               # 加速GPU数据传输
+        drop_last=True                                 # 丢弃最后不完整的batch
+    )
+
+    logger.info(f&quot;Train dataset size: {len(train_dataset)}&quot;)
+    logger.info(f&quot;Train dataloader size: {len(train_loader)}&quot;)
+
+    return train_loader, None
+
+
+def center_crop_arr(img, size):
+    &quot;&quot;&quot;Center crop 辅助函数
+
+    将图像从中心裁剪到指定大小。
+    &quot;&quot;&quot;
+    import numpy as np
+
+    img = np.asarray(img)
+    h, w = img.shape[:2]
+    c_h, c_w = size
+
+    # 计算裁剪起始位置
+    top = (h - c_h) // 2
+    left = (w - c_w) // 2
+
+    return img[top:top+c_h, left:left+c_w]
+</code></pre>
+<p><strong><strong>数据增强流程说明</strong></strong>:</p>
+<ol>
+<li><p><strong><strong>Center Crop (256x256)</strong></strong>:</p>
+<ul>
+<li>从原始图像中心裁剪出 256×256 区域</li>
+<li>保证所有图像尺寸一致</li>
+<li>适合 ImageNet (通常图像 ≥ 256)</li>
+</ul>
+</li>
+<li><p><strong><strong>Random Horizontal Flip</strong></strong>:</p>
+<ul>
+<li>随机水平翻转 (p=0.5)</li>
+<li>增加数据多样性</li>
+<li>不改变图像语义</li>
+</ul>
+</li>
+<li><p><strong><strong>PILToTensor</strong></strong>:</p>
+<ul>
+<li>转换为 PyTorch tensor</li>
+<li>值域: uint8 [0, 255]</li>
+<li>后续在训练中归一化到 [0, 1]</li>
+</ul>
+</li>
+</ol>
+<p><strong><strong>数据加载器参数说明</strong></strong>:</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>batch_size</td>
+<td>32</td>
+<td>每个 GPU 的 batch size</td>
+</tr>
+<tr>
+<td>shuffle</td>
+<td>True</td>
+<td>每个 epoch 打乱数据</td>
+</tr>
+<tr>
+<td>num_workers</td>
+<td>4</td>
+<td>数据加载进程数 (可调整)</td>
+</tr>
+<tr>
+<td>pin_memory</td>
+<td>True</td>
+<td>锁页内存,加速 GPU 传输</td>
+</tr>
+<tr>
+<td>drop_last</td>
+<td>True</td>
+<td>丢弃不完整的最后 batch</td>
+</tr>
+</tbody></table>
+<p><strong><strong>数据加载器性能优化</strong></strong>:</p>
+<pre><code class="language-python"># GPU 内存充足时增大 batch size
+per_gpu_batch_size: 64
+
+# CPU 核心多时增加 num_workers
+num_workers: 8  # 根据 CPU 核心数调整
+
+# 使用 gradient_accumulation 增大有效 batch size
+per_gpu_batch_size: 16
+gradient_accumulation_steps: 4
+# 有效 batch size = 16 * 4 * num_gpus
+</code></pre>
+<h2>EMA (指数移动平均)</h2>
+<p><strong><strong>EMA 的作用</strong></strong>:</p>
+<ul>
+<li>平滑模型参数,减少推理时的随机波动</li>
+<li>提高生成质量和稳定性</li>
+<li>双 EMA 提供不同程度的平滑</li>
+</ul>
+<p><strong><strong>EMA 更新公式</strong></strong>:</p>
+<p>\[ \theta_{EMA} = \text{decay} \times \theta_{EMA} + (1 - \text{decay}) \times \theta \]</p>
+<p><strong><strong>使用两个 EMA 跟踪器</strong></strong>:</p>
+<ul>
+<li><strong><strong>EMA1</strong></strong> (decay=0.9999): 主 EMA,用于推理</li>
+<li><strong><strong>EMA2</strong></strong> (decay=0.9996): 辅助 EMA,衰减更快</li>
+</ul>
+<p><strong><strong>保存 EMA 参数</strong></strong>:</p>
+<p>检查点文件包含:</p>
+<ul>
+<li><kbd>checkpoint-{step}.pt</kbd>: 模型参数和优化器状态</li>
+<li><kbd>ema-{step}.pt</kbd>: EMA1 和 EMA2 参数</li>
+</ul>
+<h2>损失函数</h2>
+<p><strong><strong>总损失组成</strong></strong>:</p>
+<p>\[ \mathcal{L} = w_v \cdot \mathcal{L}_v + w_\gamma \cdot \mathcal{L}_\gamma + w_p \cdot \mathcal{L}_p + \mathcal{L}_{bpp} \]</p>
+<p>其中:</p>
+<ul>
+<li>\(\mathcal{L}_v\): v-prediction loss (主要损失)</li>
+<li>\(\mathcal{L}_\gamma\): gamma loss (可选,负对数似然)</li>
+<li>\(\mathcal{L}_p\): perceptual loss (可选,VGG 或 LPIPS)</li>
+<li>\(\mathcal{L}_{bpp}\): bpp loss (Stage 2 中为 0)</li>
+</ul>
+<p><strong><strong>损失权重</strong></strong>:</p>
+<ul>
+<li><kbd>v_weight = 1.0</kbd>: 主要损失,通常设为 1.0</li>
+<li><kbd>gamma_weight = 0.0</kbd>: 可选,通常设为 0.0</li>
+<li><kbd>perceptual_weight = 0.5</kbd>: 可选,通常设为 0.5</li>
+</ul>
+<h2>感知损失选择</h2>
+<p>DiTok 支持两种感知损失:</p>
+<ol>
+<li><p><strong><strong>VGGPerceptualLoss</strong></strong> (快速):</p>
+<ul>
+<li>基于 VGG-16BN</li>
+<li>计算效率高</li>
+<li>效果一般</li>
+</ul>
+</li>
+<li><p><strong><strong>LPIPSLoss</strong></strong> (推荐):</p>
+<ul>
+<li>学习得到的感知距离</li>
+<li>与人类感知高度一致</li>
+<li>需要安装: <kbd>uv add lpips</kbd></li>
+</ul>
+</li>
+</ol>
+<p><strong><strong>配置选项</strong></strong>:</p>
+<pre><code class="language-yaml">perceptual_loss_type: &quot;lpips&quot;  # &#39;none&#39;, &#39;vgg&#39;, &#39;lpips&#39;
+perceptual_weight: 0.5
+lpips_net: &quot;vgg&quot;              # &#39;vgg&#39; or &#39;alex&#39;
+</code></pre>
+<h2>数据准备</h2>
+<p><strong><strong>数据集结构</strong></strong>:</p>
+<pre><code class="language-bash">data_path/
+├── train/
+│   ├── n01440764/
+│   │   ├── n01440764_10026.JPEG
+│   │   ├── n01440764_10027.JPEG
+│   │   └── ...
+│   ├── n01443537/
+│   └── ...
+└── val/
+    └── ...
+</code></pre>
+<p><strong><strong>数据增强</strong></strong>:</p>
+<ul>
+<li>Center crop (256x256)</li>
+<li>Random horizontal flip</li>
+<li>转换为 PyTorch tensor</li>
+</ul>
+<h2>训练监控</h2>
+<p><strong><strong>日志输出</strong></strong>:</p>
+<p>训练脚本会输出以下信息:</p>
+<ul>
+<li>每个 100 步输出损失</li>
+<li>每个 10000 步保存检查点</li>
+<li>每隔 <kbd>test_interval</kbd> 步（默认 3000）进行评估</li>
+<li>TensorBoard 日志 (在 <kbd>logging_dir</kbd> 中)</li>
+</ul>
+<p><strong><strong>日志示例</strong></strong>:</p>
+<pre><code class="language-nil">Step 100: loss=3.4567, v_loss=3.4123
+Step 200: loss=3.2345, v_loss=3.1987
+...
+</code></pre>
+<h2>评估结果</h2>
 <p>训练过程中会自动保存评估结果，便于追踪模型性能变化。</p>
-
-<strong><em>*评估结果文件结构</strong></em>*:
-
-</code>`<code>bash
-<p>output/ditok_l32_stage2_filelist/<br>├── evaluation_history/<br>│   ├── eval_step00003000.json           # 单次评估的详细结果<br>│   ├── eval_step00006000.json<br>│   ├── eval_step00009000.json<br>│   └── evaluation_summary.jsonl         # 所有结果的汇总文件<br>└── visualizations/<br>    ├── comparison_step00003000.png      # 原图与重建图对比<br>    ├── comparison_step00006000.png<br>    └── ...</p>
-</code>`<code>
-
-<strong><em>*单个评估结果文件格式</strong></em>*:
-
-<kbd>eval_step00003000.json</kbd>:
-
-</code>`<code>json
-<p>{<br>  "global_step": 3000,<br>  "timestamp": "2025-02-07T12:34:56.789012",<br>  "metrics": {<br>    "rFID": 25.4321,<br>    "IS": 18.7654,<br>    "entropy": 9.8765<br>  },<br>  "image_path": "output/ditok_l32_stage2_filelist/visualizations/comparison_step00003000.png",<br>  "image_path_absolute": "/完整路径/.../comparison_step00003000.png"<br>}</p>
-</code>`<code>
-
-<strong><em>*汇总文件格式</strong></em>*:
-
-<kbd>evaluation_summary.jsonl</kbd> (JSON Lines 格式，每行一个 JSON 对象):
-
-</code>`<code>json
-<p>{"global_step": 3000, "timestamp": "2025-02-07T12:34:56", "metrics": {"rFID": 25.43, "IS": 18.76}, "image_path": "output/..."}<br>{"global_step": 6000, "timestamp": "2025-02-07T13:45:67", "metrics": {"rFID": 23.21, "IS": 19.54}, "image_path": "output/..."}<br>{"global_step": 9000, "timestamp": "2025-02-07T14:56:78", "metrics": {"rFID": 21.09, "IS": 20.12}, "image_path": "output/..."}</p>
-</code>`<code>
-
-<strong><em>*查看评估结果</strong></em>*:
-
+<p><strong><strong>评估结果文件结构</strong></strong>:</p>
+<pre><code class="language-bash">output/ditok_l32_stage2_filelist/
+├── evaluation_history/
+│   ├── eval_step00003000.json           # 单次评估的详细结果
+│   ├── eval_step00006000.json
+│   ├── eval_step00009000.json
+│   └── evaluation_summary.jsonl         # 所有结果的汇总文件
+└── visualizations/
+    ├── comparison_step00003000.png      # 原图与重建图对比
+    ├── comparison_step00006000.png
+    └── ...
+</code></pre>
+<p><strong><strong>单个评估结果文件格式</strong></strong>:</p>
+<p><kbd>eval_step00003000.json</kbd>:</p>
+<pre><code class="language-json">{
+  &quot;global_step&quot;: 3000,
+  &quot;timestamp&quot;: &quot;2025-02-07T12:34:56.789012&quot;,
+  &quot;metrics&quot;: {
+    &quot;rFID&quot;: 25.4321,
+    &quot;IS&quot;: 18.7654,
+    &quot;entropy&quot;: 9.8765
+  },
+  &quot;image_path&quot;: &quot;output/ditok_l32_stage2_filelist/visualizations/comparison_step00003000.png&quot;,
+  &quot;image_path_absolute&quot;: &quot;/完整路径/.../comparison_step00003000.png&quot;
+}
+</code></pre>
+<p><strong><strong>汇总文件格式</strong></strong>:</p>
+<p><kbd>evaluation_summary.jsonl</kbd> (JSON Lines 格式，每行一个 JSON 对象):</p>
+<pre><code class="language-json">{&quot;global_step&quot;: 3000, &quot;timestamp&quot;: &quot;2025-02-07T12:34:56&quot;, &quot;metrics&quot;: {&quot;rFID&quot;: 25.43, &quot;IS&quot;: 18.76}, &quot;image_path&quot;: &quot;output/...&quot;}
+{&quot;global_step&quot;: 6000, &quot;timestamp&quot;: &quot;2025-02-07T13:45:67&quot;, &quot;metrics&quot;: {&quot;rFID&quot;: 23.21, &quot;IS&quot;: 19.54}, &quot;image_path&quot;: &quot;output/...&quot;}
+{&quot;global_step&quot;: 9000, &quot;timestamp&quot;: &quot;2025-02-07T14:56:78&quot;, &quot;metrics&quot;: {&quot;rFID&quot;: 21.09, &quot;IS&quot;: 20.12}, &quot;image_path&quot;: &quot;output/...&quot;}
+</code></pre>
+<p><strong><strong>查看评估结果</strong></strong>:</p>
 <p>使用 <kbd>scripts/show_eval_results.py</kbd> 脚本查看和分析评估结果：</p>
+<pre><code class="language-bash"># 显示所有评估结果汇总表格
+uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist
 
-</code>`<code>bash
-<p># 显示所有评估结果汇总表格<br>uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist<br># 显示最近 N 次评估<br>uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist --top-k 5<br># 显示指标趋势分析<br>uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist --trend rFID<br># 导出为 CSV 文件<br>uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist --export results.csv</p>
-</code>`<code>
+# 显示最近 N 次评估
+uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist --top-k 5
 
-<strong><em>*输出示例</strong></em>*:
+# 显示指标趋势分析
+uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist --trend rFID
 
+# 导出为 CSV 文件
+uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist --export results.csv
+</code></pre>
+<p><strong><strong>输出示例</strong></strong>:</p>
 <p>汇总表格：</p>
+<pre><code class="language-nil">================================================================================
+Evaluation Summary
+================================================================================
 
-</code>`<code>nil
-<p>================================================================================<br>Evaluation Summary<br>================================================================================<br>Step         Timestamp            rFID            IS              Image<br>--------------------------------------------------------------------------------<br>3000         2025-02-07 12:34     25.4321         18.7654         output/...comparison_step00003000.png<br>6000         2025-02-07 13:45     23.2100         19.5400         output/...comparison_step00006000.png<br>9000         2025-02-07 14:56     21.0900         20.1200         output/...comparison_step00009000.png<br>================================================================================</p>
-</code>`<code>
+Step         Timestamp            rFID            IS              Image
+--------------------------------------------------------------------------------
+3000         2025-02-07 12:34     25.4321         18.7654         output/...comparison_step00003000.png
+6000         2025-02-07 13:45     23.2100         19.5400         output/...comparison_step00006000.png
+9000         2025-02-07 14:56     21.0900         20.1200         output/...comparison_step00009000.png
 
+================================================================================
+</code></pre>
 <p>趋势分析：</p>
+<pre><code class="language-nil">================================================================================
+Metric Trend Analysis: rFID
+================================================================================
 
-</code>`<code>nil
-<p>================================================================================<br>Metric Trend Analysis: rFID<br>================================================================================<br>Total evaluations: 10<br>Min value: 21.0900 (at step 9000)<br>Max value: 25.4321 (at step 3000)<br>Mean value: 22.8765<br>Latest value: 21.0900 (at step 9000)<br>Total change: -4.3421 (-17.08%)<br>Improving steps: 8/9<br>Detailed Values:<br>--------------------------------------------------------------------------------<br>Step         rFID                 Change<br>--------------------------------------------------------------------------------<br>3000         25.4321<br>6000         23.2100              -2.2221<br>9000         21.0900              -2.1200<br>================================================================================</p>
-</code>`<code>
+Total evaluations: 10
+Min value: 21.0900 (at step 9000)
+Max value: 25.4321 (at step 3000)
+Mean value: 22.8765
+Latest value: 21.0900 (at step 9000)
+Total change: -4.3421 (-17.08%)
+Improving steps: 8/9
 
-<strong><em>*评估配置</strong></em>*:
+Detailed Values:
+--------------------------------------------------------------------------------
+Step         rFID                 Change
+--------------------------------------------------------------------------------
+3000         25.4321
+6000         23.2100              -2.2221
+9000         21.0900              -2.1200
 
+================================================================================
+</code></pre>
+<p><strong><strong>评估配置</strong></strong>:</p>
 <p>在配置文件中设置评估间隔：</p>
-
-</code>`<code>yaml
-<p>training:<br>  test_interval: 3000  # 每 3000 步评估一次</p>
-</code>`<code>
-
-<strong><em>*自动保存时机</strong></em>*:
-
-<p>评估结果会在以下时机自动保存：<br>1.  <strong><em>*定期评估</strong></em>*: 每隔 <kbd>test_interval</kbd> 步（默认 3000 步）<br>2.  <strong><em>*训练结束</strong></em>*: 最终模型评估后</p>
-
-<strong><em>*路径说明</strong></em>*:
-
-<p>-   <strong><em>*相对路径</strong></em>* (<kbd>image_path</kbd>): 相对于项目根目录的路径，便于在代码中使用<br>-   <strong><em>*绝对路径</strong></em>* (<kbd>image_path_absolute</kbd>): 完整的文件系统路径，便于直接访问文件<br>-   <strong><em>*时间戳</strong></em>*: JSON 内部包含 ISO 8601 格式的保存时间</p>
-
-<strong><em>*编程接口</strong></em>*:
-
+<pre><code class="language-yaml">training:
+  test_interval: 3000  # 每 3000 步评估一次
+</code></pre>
+<p><strong><strong>自动保存时机</strong></strong>:</p>
+<p>评估结果会在以下时机自动保存：</p>
+<ol>
+<li><strong><strong>定期评估</strong></strong>: 每隔 <kbd>test_interval</kbd> 步（默认 3000 步）</li>
+<li><strong><strong>训练结束</strong></strong>: 最终模型评估后</li>
+</ol>
+<p><strong><strong>路径说明</strong></strong>:</p>
+<ul>
+<li><strong><strong>相对路径</strong></strong> (<kbd>image_path</kbd>): 相对于项目根目录的路径，便于在代码中使用</li>
+<li><strong><strong>绝对路径</strong></strong> (<kbd>image_path_absolute</kbd>): 完整的文件系统路径，便于直接访问文件</li>
+<li><strong><strong>时间戳</strong></strong>: JSON 内部包含 ISO 8601 格式的保存时间</li>
+</ul>
+<p><strong><strong>编程接口</strong></strong>:</p>
 <p>也可以在 Python 代码中读取评估历史：</p>
+<pre><code class="language-python">from utils.viz_utils import load_evaluation_history, print_evaluation_summary
 
-</code>`<code>python
-<p>from utils.viz_utils import load_evaluation_history, print_evaluation_summary<br># 加载评估历史<br>history = load_evaluation_history("output/ditok_l32_stage2_filelist")<br># 获取最近 N 次评估<br>from utils.viz_utils import get_latest_evaluation_results<br>recent_results = get_latest_evaluation_results("output/ditok_l32_stage2_filelist", top_k=5)<br># 打印汇总表格<br>print_evaluation_summary("output/ditok_l32_stage2_filelist")</p>
-</code>`<code>
+# 加载评估历史
+history = load_evaluation_history(&quot;output/ditok_l32_stage2_filelist&quot;)
 
+# 获取最近 N 次评估
+from utils.viz_utils import get_latest_evaluation_results
+recent_results = get_latest_evaluation_results(&quot;output/ditok_l32_stage2_filelist&quot;, top_k=5)
 
-<h2>检查点保存 </h2>
+# 打印汇总表格
+print_evaluation_summary(&quot;output/ditok_l32_stage2_filelist&quot;)
+</code></pre>
+<h2>检查点保存</h2>
+<p><strong><strong>检查点文件</strong></strong>:</p>
+<ul>
+<li><kbd>checkpoint-{step}.pt</kbd>: 模型参数和优化器状态</li>
+<li><kbd>ema-{step}.pt</kbd>: EMA 参数</li>
+<li><kbd>final_model.pt</kbd>: 最终模型</li>
+</ul>
+<p><strong><strong>加载检查点</strong></strong>:</p>
+<pre><code class="language-python">import torch
 
-<strong><em>*检查点文件</strong></em>*:
+# 加载模型检查点
+checkpoint = torch.load(&quot;checkpoint-100000.pt&quot;)
+model.load_state_dict(checkpoint[&#39;model&#39;])
+optimizer.load_state_dict(checkpoint[&#39;optimizer&#39;])
 
-<p>-   <kbd>checkpoint-{step}.pt</kbd>: 模型参数和优化器状态<br>-   <kbd>ema-{step}.pt</kbd>: EMA 参数<br>-   <kbd>final_model.pt</kbd>: 最终模型</p>
-
-<strong><em>*加载检查点</strong></em>*:
-
-</code>`<code>python
-<p>import torch<br># 加载模型检查点<br>checkpoint = torch.load("checkpoint-100000.pt")<br>model.load_state_dict(checkpoint['model'])<br>optimizer.load_state_dict(checkpoint['optimizer'])<br># 加载 EMA 检查点<br>ema_checkpoint = torch.load("ema-100000.pt")<br># 使用 EMA1 参数进行推理<br>model.load_state_dict(ema_checkpoint['ema_state_dict1'])<br># 或者使用 EMA2 参数<br># model.load_state_dict(ema_checkpoint['ema_state_dict2'])</p>
-</code>`<code>
-
-
-<h2>常见问题 </h2>
-
-<strong><em>*Q: 为什么要使用 uv?</strong></em>*
-
-<p>A: uv 是一个快速的 Python 包管理器,比 pip 快 10-100 倍。它提供了:<br>-   极快的依赖解析和安装速度<br>-   锁定文件 (<kbd>uv.lock</kbd>) 确保可重现的环境<br>-   更好的依赖管理体验<br>-   与 pyproject.toml 标准完全兼容</p>
-
-<strong><em>*Q: 如何调整 batch size?</strong></em>*
-
-<p>A: 修改配置文件中的 ~per_gpu_batch_size~。如果 GPU 内存不足,可以减小这个值或使用梯度累积。</p>
-
-<strong><em>*Q: 如何使用多个 GPU?</strong></em>*
-
+# 加载 EMA 检查点
+ema_checkpoint = torch.load(&quot;ema-100000.pt&quot;)
+# 使用 EMA1 参数进行推理
+model.load_state_dict(ema_checkpoint[&#39;ema_state_dict1&#39;])
+# 或者使用 EMA2 参数
+# model.load_state_dict(ema_checkpoint[&#39;ema_state_dict2&#39;])
+</code></pre>
+<h2>常见问题</h2>
+<p><strong><strong>Q: 为什么要使用 uv?</strong></strong></p>
+<p>A: uv 是一个快速的 Python 包管理器,比 pip 快 10-100 倍。它提供了:</p>
+<ul>
+<li>极快的依赖解析和安装速度</li>
+<li>锁定文件 (<kbd>uv.lock</kbd>) 确保可重现的环境</li>
+<li>更好的依赖管理体验</li>
+<li>与 pyproject.toml 标准完全兼容</li>
+</ul>
+<p><strong><strong>Q: 如何调整 batch size?</strong></strong></p>
+<p>A: 修改配置文件中的 <del>per_gpu_batch_size</del>。如果 GPU 内存不足,可以减小这个值或使用梯度累积。</p>
+<p><strong><strong>Q: 如何使用多个 GPU?</strong></strong></p>
 <p>A: 使用 uv run 配合 Accelerate 启动训练脚本:</p>
-
-</code>`<code>bash
-<p>uv run accelerate launch --num_processes=8 utils/train_ditok.py</p>
-</code>`<code>
-
-<strong><em>*Q: 如何恢复训练?</strong></em>*
-
+<pre><code class="language-bash">uv run accelerate launch --num_processes=8 utils/train_ditok.py
+</code></pre>
+<p><strong><strong>Q: 如何恢复训练?</strong></strong></p>
 <p>A: 在 <kbd>create_model_and_loss_module()</kbd> 函数中添加从检查点加载的逻辑,或者修改配置文件的 <kbd>output_dir</kbd> 为之前的输出目录。</p>
-
-<strong><em>*Q: 如何使用感知损失?</strong></em>*
-
-<p>A: 在配置文件中设置:<br>-   快速实验: <kbd>perceptual_loss_type: "vgg"</kbd><br>-   最佳质量: <kbd>perceptual_loss_type: "lpips"</kbd></p>
-
-<strong><em>*Q: EMA 参数有什么用?</strong></em>*
-
+<p><strong><strong>Q: 如何使用感知损失?</strong></strong></p>
+<p>A: 在配置文件中设置:</p>
+<ul>
+<li>快速实验: <kbd>perceptual_loss_type: "vgg"</kbd></li>
+<li>最佳质量: <kbd>perceptual_loss_type: "lpips"</kbd></li>
+</ul>
+<p><strong><strong>Q: EMA 参数有什么用?</strong></strong></p>
 <p>A: EMA 参数用于推理时,可以提高生成质量。训练时会自动更新 EMA,推理时加载 EMA 参数即可。</p>
-
-<strong><em>*Q: 如何查看训练过程中的评估结果?</strong></em>*
-
+<p><strong><strong>Q: 如何查看训练过程中的评估结果?</strong></strong></p>
 <p>A: 使用 <kbd>scripts/show_eval_results.py</kbd> 脚本：</p>
+<pre><code class="language-bash"># 查看所有评估结果
+uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist
 
-</code>`<code>bash
-<p># 查看所有评估结果<br>uv run scripts/show_eval_results.py --output-dir output/ditok_l32_stage2_filelist<br># 查看指标趋势<br>uv run scripts/show_eval_results.py --output-dir output/... --trend rFID<br># 导出为 CSV<br>uv run scripts/show_eval_results.py --output-dir output/... --export results.csv</p>
-</code>`<code>
+# 查看指标趋势
+uv run scripts/show_eval_results.py --output-dir output/... --trend rFID
 
-<strong><em>*Q: 评估结果保存在哪里?</strong></em>*
-
-<p>A: 评估结果保存在 <kbd>output_dir/evaluation_history/</kbd> 目录下：<br>-   <kbd>eval_step00003000.json</kbd>: 单次评估的详细结果<br>-   <kbd>evaluation_summary.jsonl</kbd>: 所有结果的汇总文件（JSON Lines 格式）</p>
-
-<strong><em>*Q: 如何修改评估频率?</strong></em>*
-
+# 导出为 CSV
+uv run scripts/show_eval_results.py --output-dir output/... --export results.csv
+</code></pre>
+<p><strong><strong>Q: 评估结果保存在哪里?</strong></strong></p>
+<p>A: 评估结果保存在 <kbd>output_dir/evaluation_history/</kbd> 目录下：</p>
+<ul>
+<li><kbd>eval_step00003000.json</kbd>: 单次评估的详细结果</li>
+<li><kbd>evaluation_summary.jsonl</kbd>: 所有结果的汇总文件（JSON Lines 格式）</li>
+</ul>
+<p><strong><strong>Q: 如何修改评估频率?</strong></strong></p>
 <p>A: 在配置文件中修改 <kbd>test_interval</kbd> 参数：</p>
-
-</code>`<code>yaml
-<p>training:<br>  test_interval: 3000  # 每 3000 步评估一次</p>
-</code>`<code>
-
-<strong><em>*Q: 评估结果包含哪些指标?</strong></em>*
-
-<p>A: 评估结果包含以下指标：<br>-   <kbd>rFID</kbd>: reconstruction Fréchet Inception Distance（重建质量）<br>-   <kbd>IS</kbd>: Inception Score（图像质量）<br>-   <kbd>entropy</kbd>: Codebook 使用熵（量化多样性）</p>
-
-
-<h2>性能优化建议 </h2>
-
-<strong><em>*1. 混合精度训练</strong></em>*:
-
-<p>使用 <kbd>mixed_precision: "bf16"</kbd> 可以:<br>-   减少 GPU 内存使用<br>-   加速训练 (约 2x)<br>-   保持数值稳定性</p>
-
-<strong><em>*2. 梯度累积</strong></em>*:
-
+<pre><code class="language-yaml">training:
+  test_interval: 3000  # 每 3000 步评估一次
+</code></pre>
+<p><strong><strong>Q: 评估结果包含哪些指标?</strong></strong></p>
+<p>A: 评估结果包含以下指标：</p>
+<ul>
+<li><kbd>rFID</kbd>: reconstruction Fréchet Inception Distance（重建质量）</li>
+<li><kbd>IS</kbd>: Inception Score（图像质量）</li>
+<li><kbd>entropy</kbd>: Codebook 使用熵（量化多样性）</li>
+</ul>
+<h2>性能优化建议</h2>
+<p><strong><strong>1. 混合精度训练</strong></strong>:</p>
+<p>使用 <kbd>mixed_precision: "bf16"</kbd> 可以:</p>
+<ul>
+<li>减少 GPU 内存使用</li>
+<li>加速训练 (约 2x)</li>
+<li>保持数值稳定性</li>
+</ul>
+<p><strong><strong>2. 梯度累积</strong></strong>:</p>
 <p>如果 GPU 内存不足,可以使用梯度累积:</p>
-
-</code>`<code>yaml
-<p>per_gpu_batch_size: 16        # 减小 batch size<br>gradient_accumulation_steps: 2  # 累积 2 步<br># 有效 batch size = 16 <em> 2 </em> num_gpus</p>
-</code>`<code>
-
-<strong><em>*3. 数据加载优化</strong></em>*:
-
+<pre><code class="language-yaml">per_gpu_batch_size: 16        # 减小 batch size
+gradient_accumulation_steps: 2  # 累积 2 步
+# 有效 batch size = 16 * 2 * num_gpus
+</code></pre>
+<p><strong><strong>3. 数据加载优化</strong></strong>:</p>
 <p>增加 <kbd>num_workers</kbd> 可以加速数据加载:</p>
-
-</code>`<code>yaml
-<p>num_workers: 8  # 根据CPU核心数调整</p>
-</code>`<code>
-
-<strong><em>*4. TF32 (Ampere GPU)</strong></em>*:
-
+<pre><code class="language-yaml">num_workers: 8  # 根据CPU核心数调整
+</code></pre>
+<p><strong><strong>4. TF32 (Ampere GPU)</strong></strong>:</p>
 <p>如果使用 Ampere GPU (A100, 3090等),可以启用 TF32:</p>
-
-</code>`<code>yaml
-<p>enable_tf32: true</p>
-</code>``
-
-
-<h2>参考资料 </h2>
-
-<strong><em>*相关脚本</strong></em>*:
-
-<p>-   <kbd>scripts/compute_bpp.py</kbd>: 计算 Bits Per Pixel (BPP) 指标<br>-   <kbd>scripts/show_eval_results.py</kbd>: 查看和分析评估结果<br>-   <kbd>scripts/show_ckpt_structure.py</kbd>: 显示 checkpoint 结构</p>
-
-<strong><em>*相关文档</strong></em>*:
-
-<p>-   <kbd>docs/EVAL_RESULTS_EXAMPLE.md</kbd>: 评估结果文件格式说明<br>-   <kbd>docs/Config-usage.md</kbd>: 配置文件使用说明</p>
-
-<strong><em>*相关论文</strong></em>*:
-
-<p>-   [TiTok](): An Image is Worth 32 Tokens (NeurIPS 2024)<br>-   [DiT](): Scalable Diffusion Models with Transformers (ICLR 2023)<br>-   [JiT](): Just Image Transformer<br>-   [DiffEIC](): Towards Extreme Image Compression with Diffusion Models<br>-   LPIPS: The Unreasonable Effectiveness of Deep Features as a Perceptual Metric (CVPR 2018)</p>
+<pre><code class="language-yaml">enable_tf32: true
+</code></pre>
+<h2>参考资料</h2>
+<p><strong><strong>相关脚本</strong></strong>:</p>
+<ul>
+<li><kbd>scripts/compute_bpp.py</kbd>: 计算 Bits Per Pixel (BPP) 指标</li>
+<li><kbd>scripts/show_eval_results.py</kbd>: 查看和分析评估结果</li>
+<li><kbd>scripts/show_ckpt_structure.py</kbd>: 显示 checkpoint 结构</li>
+</ul>
+<p><strong><strong>相关文档</strong></strong>:</p>
+<ul>
+<li><kbd>docs/EVAL_RESULTS_EXAMPLE.md</kbd>: 评估结果文件格式说明</li>
+<li><kbd>docs/Config-usage.md</kbd>: 配置文件使用说明</li>
+</ul>
+<p><strong><strong>相关论文</strong></strong>:</p>
+<ul>
+<li><a href="">TiTok</a>: An Image is Worth 32 Tokens (NeurIPS 2024)</li>
+<li><a href="">DiT</a>: Scalable Diffusion Models with Transformers (ICLR 2023)</li>
+<li><a href="">JiT</a>: Just Image Transformer</li>
+<li><a href="">DiffEIC</a>: Towards Extreme Image Compression with Diffusion Models</li>
+<li>LPIPS: The Unreasonable Effectiveness of Deep Features as a Perceptual Metric (CVPR 2018)</li>
+</ul>
