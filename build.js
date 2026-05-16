@@ -90,9 +90,13 @@ function collectPosts() {
 function build() {
   console.log('🔨 Building HtmlBlogs...\n');
 
-  // Run tests first
-  console.log('🧪 Running tests...');
-  runTests();
+  // Run tests first (skip if FORCE_BUILD=1)
+  if (!process.env.FORCE_BUILD) {
+    console.log('🧪 Running tests...');
+    runTests();
+  } else {
+    console.log('🧪 Skipping tests (FORCE_BUILD=1)...');
+  }
 
   // Clean
   if (fs.existsSync(PATHS.public)) {

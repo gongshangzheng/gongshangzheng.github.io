@@ -1,14 +1,14 @@
 # Test Results
 
-**Run:** 2026-05-16T16:57:04.406Z
+**Run:** 2026-05-16T17:00:52.689Z
 
 ## Summary
 
 | Metric | Value |
 |--------|-------|
 | Total | 61 |
-| Passed | 53 |
-| Failed | 8 |
+| Passed | 59 |
+| Failed | 2 |
 | Duration | 0.01s |
 
 ## Per-Module Results
