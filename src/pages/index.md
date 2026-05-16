@@ -21,7 +21,7 @@ hero_tagline: "Nietzsche está morto"
   <ul class="post-list">
     <li>
       <span class="date">2026/05/16</span>
-      <a href="/about.html">About This Blog</a>
+      <a href="./about.html">About This Blog</a>
     </li>
   </ul>
 </div>

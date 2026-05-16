@@ -109,6 +109,7 @@ function buildContext(pageData = {}) {
     description: CONFIG.site.description,
     author: CONFIG.site.author,
     url: CONFIG.site.url,
+    base_url: CONFIG.site.base_url || '/',
     ...pageData,
     nav: CONFIG.nav,
     year: new Date().getFullYear()
