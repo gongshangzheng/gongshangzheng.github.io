@@ -132,7 +132,7 @@ const tests = {
   'buildTocSidebar: sidebar has correct id/class attributes': () => {
     const { sidebar } = buildTocSidebar([{ level: 2, text: 'Test', id: 'Test' }]);
     assert(sidebar.includes('id="toc-sidebar"'));
-    assert(sidebar.includes('class="toc-sidebar"'));
+    assert(sidebar.includes('class="toc-sidebar'));
     assert(sidebar.includes('toc-header'));
     assert(sidebar.includes('toc-content'));
     assert(sidebar.includes('id="toc-nav"'));

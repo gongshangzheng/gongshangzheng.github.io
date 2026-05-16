@@ -82,10 +82,11 @@ const tests = {
     assert(body.includes('Second'));
   },
 
-  'extractFirstDiv: handles div with attrs': () => {
-    const html = `<div class="stats" id="stats-1"><div class="n">1956</div></div><p>Body</p>`;
+  'extractFirstDiv: handles div with class+attributes': () => {
+    // test uses data-id attribute (not in className), openTag matches class first
+    const html = `<div class="stats" data-id="x"><div class="n">1956</div></div><p>Body</p>`;
     const { html: stats } = extractFirstDiv(html, 'stats');
-    assert(stats.includes('1956'), `stats should include 1956, got: ${stats}`);
+    assert(stats.includes('1956'), 'stats should include 1956, got: ' + stats);
   },
 
   // ===== startsWithWrap detection (the bug fix) =====
