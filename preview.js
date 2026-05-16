@@ -7,7 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PUBLIC = path.join(__dirname, 'public');
+const PUBLIC = path.join('/Users/zhengxinyu/gongshangzheng.github.io', 'public');
 const BASE = '/HtmlBlogs'; // kept for backwards compat (strip old prefix if present)
 
 const MIME = {
@@ -38,8 +38,8 @@ function serve(res, filePath, status = 200) {
 const server = http.createServer((req, res) => {
   let p = req.url;
 
-  // Strip /HtmlBlogs prefix if present (for backwards compat after rename)
-  if (p.startsWith(BASE)) p = p.slice(BASE.length);
+  // Strip /HtmlBlogs prefix if present (backwards compat)
+  if (p.startsWith('/HtmlBlogs')) p = p.slice(10);
   if (!p.startsWith('/')) p = '/' + p;
 
   // / -> index.html
