@@ -11,6 +11,39 @@ const { parseFrontmatter, parseListField } = require('./lib/parser');
 const { copyDir } = require('./lib/utils');
 const { buildArticles, buildPostsPage, buildTaxonomyPages, buildSearch } = require('./lib/generator');
 
+// Run unit tests before build (non-blocking)
+// Tests must pass before building — exit on failure
+function runTests() {
+  const testFiles = fs.readdirSync(path.join(__dirname, 'tests'))
+    .filter(f => f.endsWith('.test.js'));
+  if (testFiles.length === 0) return;
+
+  const { tests } = require('./tests/parser.test.js');
+  const gen = require('./tests/generator.test.js');
+  const toc = require('./tests/toc.test.js');
+
+  let passed = 0, failed = 0;
+  const allTests = {
+    ...tests,
+    ...gen.tests,
+    ...toc.tests,
+  };
+
+  for (const [name, fn] of Object.entries(allTests)) {
+    try { fn(); passed++; }
+    catch (e) {
+      failed++;
+      console.error(`\x1b[31m✗ ${name}: ${e.message.split('\n')[0]}\x1b[0m`);
+    }
+  }
+
+  if (failed > 0) {
+    console.error(`\n\x1b[31m✗ Tests failed (${failed}/${passed + failed}). Fix before building.\x1b[0m\n`);
+    process.exit(1);
+  }
+  console.log(`\x1b[2m  ✓ ${passed} tests passed\x1b[0m`);
+}
+
 // Build context factory
 function buildContext(pageData = {}) {
   return {
@@ -56,6 +89,10 @@ function collectPosts() {
 // Main build
 function build() {
   console.log('🔨 Building HtmlBlogs...\n');
+
+  // Run tests first
+  console.log('🧪 Running tests...');
+  runTests();
 
   // Clean
   if (fs.existsSync(PATHS.public)) {
