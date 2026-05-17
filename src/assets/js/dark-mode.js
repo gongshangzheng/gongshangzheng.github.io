@@ -1,3 +1,14 @@
+// Auto-wrap tables in scrollable containers
+(function() {
+  document.querySelectorAll('.wrap table, .main-content table').forEach(function(tbl) {
+    if (tbl.parentElement && tbl.parentElement.classList.contains('table-wrap')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    tbl.parentNode.insertBefore(wrap, tbl);
+    wrap.appendChild(tbl);
+  });
+})();
+
 // Responsive nav-brand sizing
 (function() {
   var brand = document.getElementById('nav-brand');

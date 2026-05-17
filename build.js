@@ -110,7 +110,7 @@ function build() {
   console.log('✓ assets/');
 
   // Copy audio files (if src/audio/ exists)
-  const audioDir = path.join(PATHS.src, 'audio');
+  const audioDir = path.join(PATHS.src, 'media');
   const audioDest = path.join(PATHS.public, 'audio');
   copyDir(audioDir, audioDest);
   console.log('✓ audio/');
