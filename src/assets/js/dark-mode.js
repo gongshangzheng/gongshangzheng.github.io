@@ -150,6 +150,7 @@
 (function() {
   var sidebar = document.getElementById('toc-sidebar');
   var toggleBtn = document.getElementById('toc-toggle-btn');
+  var mainWrapper = document.querySelector('.main-wrapper');
   if (!sidebar || !toggleBtn) return;
 
   function setSidebarWidth(w) {
@@ -157,12 +158,14 @@
     sidebar.style.maxWidth = w + 'px';
     sidebar.style.width = w + 'px';
     toggleBtn.style.left = w + 'px';
+    mainWrapper.style.paddingLeft = w + 'px';
   }
   function clearSidebarWidth() {
     sidebar.style.minWidth = '';
     sidebar.style.maxWidth = '';
     sidebar.style.width = '';
     toggleBtn.style.left = '';
+    mainWrapper.style.paddingLeft = '';
   }
 
   // Toggle sidebar
