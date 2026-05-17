@@ -165,6 +165,17 @@
     sidebar.classList.add('toc-collapsed');
   }
 
+  // TOC item collapse toggle (event delegation on sidebar)
+  sidebar.addEventListener('click', function(e) {
+    var toggleEl = e.target.closest('.toc-toggle');
+    if (!toggleEl) return;
+    var li = toggleEl.parentElement;
+    if (li && li.classList.contains('toc-parent')) {
+      li.classList.toggle('toc-collapsed');
+    }
+    e.stopPropagation();
+  });
+
   // Smooth scroll for TOC links
   document.querySelectorAll('#toc-nav a').forEach(function(link) {
     link.addEventListener('click', function(e) {
@@ -239,16 +250,13 @@
   var desktopNav = document.getElementById('toc-nav');
   if (!desktopNav) { btn.style.display = 'none'; return; }
 
-  // Clone links with level classes
+  // Clone links with level from data-level attribute
   var items = desktopNav.querySelectorAll('li');
   var html = '<ul>';
   items.forEach(function(li) {
     var a = li.querySelector('a');
     if (!a) return;
-    var level = 2;
-    for (var i = 2; i <= 6; i++) {
-      if (li.classList.contains('toc-h' + i)) { level = i; break; }
-    }
+    var level = a.getAttribute('data-level') || '2';
     html += '<li class="toc-h' + level + '"><a href="' + a.getAttribute('href') + '">' + a.textContent + '</a></li>';
   });
   html += '</ul>';

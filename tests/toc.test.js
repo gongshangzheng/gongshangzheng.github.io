@@ -69,12 +69,15 @@ const tests = {
     assert.equal(headings[0].text, 'Title');
   },
 
-  'processHeadings: existing IDs are overwritten by generated slugs': () => {
-    // Current implementation always generates new ID from text — existing ID is not preserved
+  'processHeadings: existing IDs are replaced by generated slugs': () => {
+    // Existing id attribute is stripped and replaced with generated slug
     const html = `<h2 id="my-id">Custom ID</h2>`;
     const { html: out } = processHeadings(html);
     assert(out.includes('id="Custom-ID"'));
-    assert(!out.includes('id="my-id"'), 'Existing ID should be overwritten by slugify');
+    assert(!out.includes('id="my-id"'), 'Existing ID should be replaced by slugify');
+    // Should not produce double id attributes
+    const idCount = (out.match(/\bid="/g) || []).length;
+    assert.equal(idCount, 1, 'Should have exactly one id attribute, got: ' + out);
   },
 
   'processHeadings: .ch-title elements processed as h2': () => {
@@ -198,10 +201,16 @@ const tests = {
     const out = buildTocHtml(headings);
     assert(out.includes('href="#h2"'));
     assert(out.includes('href="#h6"'));
-    // Should have nested <ul> elements
-    const ulCount = out.split('<ul>').length - 1;
+    // Nested <ul> elements should balance
+    const ulCount = out.split('<ul').length - 1;
     const closeUlCount = out.split('</ul>').length - 1;
     assert.equal(ulCount, closeUlCount, 'opening and closing <ul> should match');
+    // Every parent should have a toggle button
+    const toggleCount = (out.match(/class="toc-toggle"/g) || []).length;
+    assert.equal(toggleCount, 4, '4 parent levels (h2-h5) should have toggle buttons');
+    // Leaf node (h6) should NOT have a toggle
+    const h6Li = out.match(/<li><a[^>]*>H6<\/a><\/li>/);
+    assert(h6Li, 'h6 leaf should be a plain <li> without toggle');
   },
 
   'buildTocHtml: data-level attribute on each link': () => {
@@ -218,25 +227,66 @@ const tests = {
 
   // ===== mixed .ch-title and h2 =====
 
-  'processHeadings: mixed .ch-title and h2 headings': () => {
-    // Note: implementation processes .ch-title replacements first, then h2-h6.
-    // So order in headings array reflects processing order, not document order.
+  'processHeadings: mixed .ch-title and h2 headings in document order': () => {
+    // Combined regex processes all heading types in document order
     const html = `<h2>Section Title</h2><div class="ch-title">Chapter Title</div><h3>Subsection</h3>`;
     const { headings } = processHeadings(html);
     assert.equal(headings.length, 3);
-    // All three headings are captured regardless of order
-    const texts = headings.map(h => h.text);
-    assert(texts.includes('Section Title'));
-    assert(texts.includes('Chapter Title'));
-    assert(texts.includes('Subsection'));
-    // Chapter Title (.ch-title) is level 2, h3 Subsection is level 3
-    const chTitle = headings.find(h => h.text === 'Chapter Title');
-    assert.equal(chTitle.level, 2);
+    // Document order: h2, ch-title, h3
+    assert.equal(headings[0].text, 'Section Title');
+    assert.equal(headings[0].level, 2);
+    assert.equal(headings[1].text, 'Chapter Title');
+    assert.equal(headings[1].level, 2);  // .ch-title → level 2
+    assert.equal(headings[2].text, 'Subsection');
+    assert.equal(headings[2].level, 3);
   },
 
   'buildTocSidebar: sidebar contains closing aside tag': () => {
     const { sidebar } = buildTocSidebar([{ level: 2, text: 'Test', id: 'Test' }]);
     assert(sidebar.includes('</aside>'), 'sidebar should be properly closed');
+  },
+
+  // ===== tree structure =====
+
+  'buildTocTree: h2 with h3 children': () => {
+    const { buildTocTree } = require('../lib/toc');
+    const headings = [
+      { level: 2, text: 'A', id: 'a' },
+      { level: 3, text: 'B', id: 'b' },
+      { level: 3, text: 'C', id: 'c' },
+      { level: 2, text: 'D', id: 'd' },
+    ];
+    const tree = buildTocTree(headings);
+    assert.equal(tree.length, 2); // two top-level nodes
+    assert.equal(tree[0].text, 'A');
+    assert.equal(tree[0].children.length, 2); // B, C
+    assert.equal(tree[0].children[0].text, 'B');
+    assert.equal(tree[1].text, 'D');
+    assert.equal(tree[1].children.length, 0);
+  },
+
+  'buildTocTree: skipped level (h2 → h4) still nests under h2': () => {
+    const { buildTocTree } = require('../lib/toc');
+    const headings = [
+      { level: 2, text: 'A', id: 'a' },
+      { level: 4, text: 'B', id: 'b' },
+    ];
+    const tree = buildTocTree(headings);
+    assert.equal(tree.length, 1);
+    assert.equal(tree[0].children.length, 1);
+    assert.equal(tree[0].children[0].text, 'B');
+    assert.equal(tree[0].children[0].level, 4);
+  },
+
+  'buildTocHtml: parent items have toc-parent class and toggle': () => {
+    const headings = [
+      { level: 2, text: 'Parent', id: 'p' },
+      { level: 3, text: 'Child', id: 'c' },
+    ];
+    const out = buildTocHtml(headings);
+    assert(out.includes('class="toc-parent"'), 'parent li should have toc-parent class');
+    assert(out.includes('class="toc-toggle"'), 'parent should have toggle button');
+    assert(out.includes('toc-children'), 'parent should have children ul');
   },
 };
 
