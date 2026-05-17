@@ -259,9 +259,10 @@
   var headingElements = Array.from(headings);
 
   function updateActiveToc() {
-    var scrollPos = window.pageYOffset + 100;
+    var scrollPos = window.pageYOffset + 80;
     var current = null;
 
+    // Find the lowest heading that's at or above the viewport
     for (var i = 0; i < headingElements.length; i++) {
       if (headingElements[i].offsetTop <= scrollPos) {
         current = headingElements[i];
@@ -280,6 +281,12 @@
         activeLink.classList.add('active');
         var activeLi = activeLink.parentElement;
         if (activeLi) activeLi.classList.add('active');
+        // Expand parent if this link is inside a collapsed .toc-children
+        var parentChildren = activeLi.closest('.toc-children');
+        if (parentChildren) {
+          var parentLi = parentChildren.parentElement;
+          if (parentLi) parentLi.classList.remove('toc-collapsed');
+        }
         // Scroll active link into view in TOC
         activeLink.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
