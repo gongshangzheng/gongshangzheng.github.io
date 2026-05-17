@@ -1,0 +1,156 @@
+---
+title: "把个人笔记文件夹变成 Agent 可查询的 RAG：本地优先方案"
+description: "为 Hanako/OpenHanako 设计个人知识库 RAG：Hybrid retrieval、本地索引、插件工具、MCP Bridge 与权限边界。"
+date: 2026-05-18
+source: deep-research
+tags: ["RAG", "Agent", "Hanako", "MCP", "Knowledge Base"]
+---
+
+<section class="section">
+  <h1>把个人笔记变成 Agent 可查询的知识库</h1>
+  <p>这份方案回答一个具体问题：如何把本地笔记文件夹变成 RAG，让 Hanako/OpenHanako agent 能可靠查询信息。</p>
+  <div class="callout">
+    <strong>核心结论：</strong>不要只接一个向量数据库。推荐做 <code>Hanako Plugin + Local RAG Core + Optional MCP Bridge</code>。检索层默认使用全文检索/BM25 + 向量语义检索 + rerank + 相邻 chunk 扩展，并且所有结果必须带来源引用。
+  </div>
+</section>
+
+<section class="section">
+  <h2>为什么不是“直接上向量库”？</h2>
+  <p>个人笔记不是普通网页语料。它里面有大量精确信号：文件名、课程名、项目名、人名、日期、标签、org heading、roam links。纯向量检索擅长语义相似，但对专名、缩写、路径和精确关键词并不稳定。</p>
+  <p>Haystack 的 hybrid retrieval 教程明确说明：BM25 这类 keyword-based retrieval 在特定领域常常优于 dense retrieval，而混合检索能同时利用关键词和语义表示的优势。Qdrant 的 hybrid search 教程也采用 dense embeddings、sparse BM25 和 late interaction reranking 的组合。</p>
+  <p>所以个人笔记 RAG 的默认检索流应该是：</p>
+  <pre>query
+  → FTS/BM25 recall
+  → vector semantic recall
+  → Reciprocal Rank Fusion
+  → reranker
+  → neighbor chunk expansion
+  → cited context pack</pre>
+</section>
+
+<section class="section">
+  <h2>推荐总体架构</h2>
+  <pre>用户笔记目录，例如 ~/Org/roam、Obsidian vault、课程笔记
+  ↓ parser + watcher
+RAG Core Service / Library
+  ├─ parser: org / md / txt / pdf / docx
+  ├─ metadata: path / title / tags / heading / links / mtime / hash
+  ├─ index: SQLite FTS5 + sqlite-vec 或 Qdrant/Chroma
+  ├─ retrieval: FTS + vector + RRF + rerank + neighbor expansion
+  ├─ policy: roots whitelist / deny globs / rag_exclude
+  └─ API: local tool interface
+       ├─ Hanako Plugin Tools
+       └─ optional MCP Bridge</pre>
+  <p>Hanako plugin 应该是主入口，因为它能承载设置页、目录授权、索引状态、PathGuard、工具权限和桌面 UI。MCP Bridge 适合做跨客户端兼容层，让 Claude、Cursor 或其他 MCP host 查询同一个本地知识库。</p>
+</section>
+
+<section class="section">
+  <h2>笔记应该如何解析</h2>
+  <p>不要把所有文件粗暴切成固定长度。笔记的结构本身就是重要信号。</p>
+  <table>
+    <thead><tr><th>格式</th><th>应提取的信息</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td>Org-mode</td><td>title、ID、tags、properties、heading path、links、aliases</td><td>保留 org-roam 语义和反链关系</td></tr>
+      <tr><td>Markdown</td><td>frontmatter、heading、wikilinks、tags、代码块</td><td>适配 Obsidian/普通文档库</td></tr>
+      <tr><td>PDF/DOCX</td><td>转 Markdown、标题、段落、表格、页码</td><td>统一进入文本 chunk 管线</td></tr>
+      <tr><td>附件图片</td><td>OCR 或 vision caption</td><td>二期支持，不建议 MVP 先做</td></tr>
+    </tbody>
+  </table>
+  <p>理想 chunk 是 heading/段落级，而不是固定字符窗口。每个 chunk 应保留前后邻居，避免 agent 拿到断裂上下文。</p>
+</section>
+
+<section class="section">
+  <h2>Agent 工具设计</h2>
+  <p>Agent 不应该知道数据库细节，只调用稳定工具。</p>
+  <table>
+    <thead><tr><th>工具</th><th>作用</th><th>权限</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>kb_search_notes</code></td><td>Hybrid 搜索笔记 chunk</td><td>只读</td><td>返回 score、path、heading、摘要、chunk_id</td></tr>
+      <tr><td><code>kb_read_note</code></td><td>读取完整笔记或 heading</td><td>只读</td><td>path 必须在白名单内</td></tr>
+      <tr><td><code>kb_get_neighbors</code></td><td>读取 chunk 前后文</td><td>只读</td><td>解决 chunk 截断问题</td></tr>
+      <tr><td><code>kb_build_context</code></td><td>构造带引用上下文包</td><td>只读</td><td>搜索、邻居、反链、去重后组合</td></tr>
+      <tr><td><code>kb_index_status</code></td><td>查看索引状态</td><td>只读</td><td>返回 last_indexed、pending、errors</td></tr>
+      <tr><td><code>kb_request_reindex</code></td><td>请求刷新索引</td><td>需确认</td><td>非只读，必须用户确认</td></tr>
+    </tbody>
+  </table>
+  <p>MVP 不开放 write/delete/move。写笔记属于另一类高风险能力，必须有 diff 预览、备份和撤销。</p>
+</section>
+
+<section class="section">
+  <h2>技术路线对比</h2>
+  <table>
+    <thead><tr><th>方案</th><th>优势</th><th>劣势</th><th>适用条件</th></tr></thead>
+    <tbody>
+      <tr><td>纯向量 RAG</td><td>语义召回好，教程多</td><td>专名和路径弱，调试难</td><td>非结构化长文本语义问答</td></tr>
+      <tr><td>FTS/BM25 only</td><td>轻量、可解释、精确词强</td><td>抽象语义弱</td><td>MVP、文件名/标题/术语查询</td></tr>
+      <tr><td>Hybrid + rerank</td><td>质量上限高</td><td>工程复杂，需要调参</td><td>正式个人知识库 RAG</td></tr>
+      <tr><td>LlamaIndex</td><td>文件夹读取和增量 API 成熟</td><td>长期产品化可控性一般</td><td>快速原型</td></tr>
+      <tr><td>Haystack</td><td>Pipeline 和 hybrid retrieval 清晰</td><td>对小型本地库偏重</td><td>实验和工程 pipeline</td></tr>
+      <tr><td>SQLite FTS5 + sqlite-vec</td><td>单文件、本地、易嵌入</td><td>需要自建 chunk/rerank/中文分词</td><td>Hanako 内置 RAG Core</td></tr>
+      <tr><td>Qdrant</td><td>Hybrid、多向量、过滤强</td><td>需要独立服务或部署</td><td>大规模和复杂检索</td></tr>
+      <tr><td>现成 MCP RAG</td><td>最快接入 MCP host</td><td>权限/UI/工具面不一定适合 Hanako</td><td>PoC 或参考实现</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <h2>安全与权限</h2>
+  <p>个人知识库是高隐私资产，权限设计必须前置。</p>
+  <ul>
+    <li>用户必须显式选择 roots。</li>
+    <li>所有 path 入参 canonicalize，解析 symlink 后仍必须在 roots 内。</li>
+    <li>默认 deny：<code>.git</code>、<code>node_modules</code>、<code>.env</code>、<code>private</code>、<code>财务</code>、<code>diary</code> 等。</li>
+    <li>支持 org property 或 frontmatter 排除：<code>RAG_EXCLUDE: t</code> / <code>rag: false</code>。</li>
+    <li>搜索结果不能泄露被排除笔记的标题。</li>
+    <li>日志不记录完整 query 和正文，调试日志可一键清除。</li>
+    <li>云 embedding 必须明确提示笔记内容会发送给第三方，默认使用本地 embedding。</li>
+  </ul>
+  <p>MCP roots 规范明确 roots 是服务器可访问的文件系统边界，并要求防 path traversal 和访问控制。MCP 安全文档也强调 scope minimization。</p>
+</section>
+
+<section class="section">
+  <h2>MVP 路线</h2>
+  <h3>第 0 周：离线分析</h3>
+  <p>扫描目标笔记目录，统计格式、数量、总字数、最大文件、org/markdown 比例。做 parser spike：org heading、tags、links、property drawers。</p>
+  <h3>第 1 阶段：只读本地搜索</h3>
+  <p>建立 SQLite documents/chunks/FTS5，实现 <code>kb_search_notes</code> 和 <code>kb_read_note</code>。先不用向量，验证 agent 查询体验。</p>
+  <h3>第 2 阶段：语义检索</h3>
+  <p>加入 sqlite-vec 或 Chroma/Qdrant，增加 embedding cache、RRF hybrid fusion 和 <code>kb_get_neighbors</code>。</p>
+  <h3>第 3 阶段：上下文构建</h3>
+  <p>加入 reranker 和 <code>kb_build_context</code>，返回文件路径、标题、heading、chunk_id、修改时间等引用。</p>
+  <h3>第 4 阶段：Hanako 插件化</h3>
+  <p>设置页选择知识库目录和 deny globs，注册 agent tools，展示索引状态 widget，最后增加 MCP bridge。</p>
+</section>
+
+<section class="section">
+  <h2>最终建议</h2>
+  <div class="callout">
+    <p><strong>推荐方案：</strong>先做 Hanako 原生只读 RAG 插件，底层使用 SQLite FTS5 + sqlite-vec 的轻量本地 RAG Core；后续再加 Qdrant 选项和 MCP Bridge。</p>
+  </div>
+  <ol>
+    <li>先选一个目标目录，例如 <code>~/Org/roam</code>。</li>
+    <li>写只读 scanner，输出文件统计和解析成功率。</li>
+    <li>先用 SQLite FTS5 做可查版本。</li>
+    <li>再加 embedding 和 reranker。</li>
+    <li>所有答案必须带引用：文件路径、heading、chunk_id、mtime。</li>
+  </ol>
+</section>
+
+<section class="section">
+  <h2>主要来源</h2>
+  <ul>
+    <li>LlamaIndex VectorStoreIndex: https://developers.llamaindex.ai/python/framework/module_guides/indexing/vector_store_index/</li>
+    <li>LlamaIndex Document Management: https://developers.llamaindex.ai/python/framework/module_guides/indexing/document_management/</li>
+    <li>Haystack Hybrid Retrieval: https://haystack.deepset.ai/tutorials/33_hybrid_retrieval</li>
+    <li>Qdrant Hybrid Search with Reranking: https://qdrant.tech/documentation/tutorials-search-engineering/reranking-hybrid-search/</li>
+    <li>MCP Architecture: https://modelcontextprotocol.io/docs/learn/architecture</li>
+    <li>MCP Tools: https://modelcontextprotocol.io/specification/2025-06-18/server/tools</li>
+    <li>MCP Roots: https://modelcontextprotocol.io/specification/2025-06-18/client/roots</li>
+    <li>knowledge-rag: https://github.com/lyonzin/knowledge-rag</li>
+    <li>MCP-Markdown-RAG: https://github.com/Zackriya-Solutions/MCP-Markdown-RAG</li>
+    <li>Basic Memory: https://github.com/basicmachines-co/basic-memory</li>
+    <li>SQLite FTS5: https://www.sqlite.org/fts5.html</li>
+    <li>sqlite-vec: https://github.com/asg017/sqlite-vec</li>
+    <li>OpenHanako: https://github.com/liliMozi/openhanako</li>
+  </ul>
+</section>
