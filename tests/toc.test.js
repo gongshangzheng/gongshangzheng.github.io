@@ -205,6 +205,18 @@ const tests = {
     assert.equal(ulCount, closeUlCount, 'opening and closing <ul> should match');
   },
 
+  'buildTocHtml: data-level attribute on each link': () => {
+    const headings = [
+      { level: 2, text: 'H2', id: 'h2' },
+      { level: 3, text: 'H3', id: 'h3' },
+      { level: 4, text: 'H4', id: 'h4' },
+    ];
+    const out = buildTocHtml(headings);
+    assert(out.includes('data-level="2"'), 'h2 should have data-level=2');
+    assert(out.includes('data-level="3"'), 'h3 should have data-level=3');
+    assert(out.includes('data-level="4"'), 'h4 should have data-level=4');
+  },
+
   // ===== mixed .ch-title and h2 =====
 
   'processHeadings: mixed .ch-title and h2 headings': () => {
