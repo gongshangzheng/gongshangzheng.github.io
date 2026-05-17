@@ -210,12 +210,16 @@
 
     tocLinks.forEach(function(link) {
       link.classList.remove('active');
+      var li = link.parentElement;
+      if (li) li.classList.remove('active');
     });
 
     if (current) {
       var activeLink = document.querySelector('#toc-nav a[href="#' + current.id + '"]');
       if (activeLink) {
         activeLink.classList.add('active');
+        var activeLi = activeLink.parentElement;
+        if (activeLi) activeLi.classList.add('active');
         // Scroll active link into view in TOC
         activeLink.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
