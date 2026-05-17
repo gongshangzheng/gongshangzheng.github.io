@@ -152,10 +152,35 @@
   var toggleBtn = document.getElementById('toc-toggle-btn');
   if (!sidebar || !toggleBtn) return;
 
+  function setSidebarWidth(w) {
+    sidebar.style.minWidth = w + 'px';
+    sidebar.style.maxWidth = w + 'px';
+    sidebar.style.width = w + 'px';
+    toggleBtn.style.left = w + 'px';
+  }
+  function clearSidebarWidth() {
+    sidebar.style.minWidth = '';
+    sidebar.style.maxWidth = '';
+    sidebar.style.width = '';
+    toggleBtn.style.left = '';
+  }
+
   // Toggle sidebar
   toggleBtn.addEventListener('click', function() {
-    sidebar.classList.toggle('toc-expanded');
-    sidebar.classList.toggle('toc-collapsed');
+    var isCollapsed = sidebar.classList.contains('toc-collapsed');
+    if (isCollapsed) {
+      // Expanding — restore saved width or default
+      sidebar.classList.remove('toc-collapsed');
+      sidebar.classList.add('toc-expanded');
+      var savedWidth = localStorage.getItem('toc-width');
+      var w = savedWidth ? parseInt(savedWidth) : 250;
+      setSidebarWidth(w);
+    } else {
+      // Collapsing
+      sidebar.classList.remove('toc-expanded');
+      sidebar.classList.add('toc-collapsed');
+      clearSidebarWidth();
+    }
     localStorage.setItem('toc-collapsed', sidebar.classList.contains('toc-collapsed'));
   });
 
@@ -163,6 +188,38 @@
   if (localStorage.getItem('toc-collapsed') === 'true') {
     sidebar.classList.remove('toc-expanded');
     sidebar.classList.add('toc-collapsed');
+    clearSidebarWidth();
+  } else {
+    var savedWidth = localStorage.getItem('toc-width');
+    setSidebarWidth(savedWidth ? parseInt(savedWidth) : 250);
+  }
+
+  // Resize handle
+  var resizeHandle = document.querySelector('.toc-resize-handle');
+  if (resizeHandle) {
+    resizeHandle.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      if (sidebar.classList.contains('toc-collapsed')) return;
+      var startX = e.clientX;
+      var startWidth = sidebar.offsetWidth;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMove(e) {
+        var newWidth = startWidth + (e.clientX - startX);
+        newWidth = Math.max(180, Math.min(600, newWidth));
+        setSidebarWidth(newWidth);
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        localStorage.setItem('toc-width', sidebar.offsetWidth);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   }
 
   // TOC item collapse toggle (event delegation on sidebar)
