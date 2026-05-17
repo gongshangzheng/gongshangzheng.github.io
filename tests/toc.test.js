@@ -208,9 +208,11 @@ const tests = {
     // Every parent should have a toggle button
     const toggleCount = (out.match(/class="toc-toggle"/g) || []).length;
     assert.equal(toggleCount, 4, '4 parent levels (h2-h5) should have toggle buttons');
-    // Leaf node (h6) should NOT have a toggle
-    const h6Li = out.match(/<li><a[^>]*>H6<\/a><\/li>/);
-    assert(h6Li, 'h6 leaf should be a plain <li> without toggle');
+    // Leaf node (h6) should have a dot, not a toggle
+    const h6Idx = out.indexOf('>H6<');
+    const beforeH6 = out.substring(Math.max(0, h6Idx - 100), h6Idx);
+    assert(!beforeH6.includes('toc-toggle'), 'h6 leaf should not have a toggle');
+    assert(beforeH6.includes('toc-dot'), 'h6 leaf should have a toc-dot');
   },
 
   'buildTocHtml: data-level attribute on each link': () => {
