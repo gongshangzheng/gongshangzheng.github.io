@@ -252,7 +252,7 @@
   });
 
   // Scroll tracking: highlight current section
-  var headings = document.querySelectorAll('.wrap h2[id], .wrap h3[id], .wrap h4[id], .wrap h5[id], .wrap h6[id], .main-content h2[id], .main-content h3[id], .main-content h4[id], .main-content h5[id], .main-content h6[id]');
+  var headings = document.querySelectorAll('.wrap h2[id], .wrap h3[id], .wrap h4[id], .wrap h5[id], .wrap h6[id], .wrap div.ch-title[id], .main-content h2[id], .main-content h3[id], .main-content h4[id], .main-content h5[id], .main-content h6[id]');
   var tocLinks = document.querySelectorAll('#toc-nav a');
   if (headings.length === 0 || tocLinks.length === 0) return;
 
@@ -262,10 +262,14 @@
     var scrollPos = window.pageYOffset + 80;
     var current = null;
 
-    // Find the lowest heading that's at or above the viewport
+    // Use getBoundingClientRect for absolute document position.
+    // offsetTop is unreliable when a heading's offsetParent is a deeply-nested
+    // container (.ch) rather than the nearest scrollable ancestor (.wrap).
     for (var i = 0; i < headingElements.length; i++) {
-      if (headingElements[i].offsetTop <= scrollPos) {
-        current = headingElements[i];
+      var el = headingElements[i];
+      var absTop = el.getBoundingClientRect().top + window.pageYOffset;
+      if (absTop <= scrollPos) {
+        current = el;
       }
     }
 
