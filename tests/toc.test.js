@@ -77,12 +77,11 @@ const tests = {
     assert(!out.includes('id="my-id"'), 'Existing ID should be overwritten by slugify');
   },
 
-  'processHeadings: .ch-title elements processed as h3': () => {
+  'processHeadings: .ch-title elements processed as h2': () => {
     const html = `<div class="ch-title">Chapter One</div>`;
     const { html: out, headings } = processHeadings(html);
-    // ID preserves original case (Chapter-One, not chapter-one)
     assert(out.includes('id="Chapter-One"'), `Expected id="Chapter-One", got: ${out.substring(0, 100)}`);
-    assert.equal(headings[0].level, 3);
+    assert.equal(headings[0].level, 2);
     assert.equal(headings[0].text, 'Chapter One');
   },
 
@@ -172,7 +171,7 @@ const tests = {
     const html = `<div class="ch-title">AI & ML: 深度学习 (2024)</div>`;
     const { headings } = processHeadings(html);
     assert.equal(headings.length, 1);
-    assert.equal(headings[0].level, 3);
+    assert.equal(headings[0].level, 2);
     // Colon and parens stripped by slugify, CJK preserved
     assert(headings[0].id.includes('AI'));
     assert(headings[0].id.includes('深度学习'));
@@ -230,9 +229,9 @@ const tests = {
     assert(texts.includes('Section Title'));
     assert(texts.includes('Chapter Title'));
     assert(texts.includes('Subsection'));
-    // Chapter Title is always h3 level
+    // Chapter Title (.ch-title) is level 2, h3 Subsection is level 3
     const chTitle = headings.find(h => h.text === 'Chapter Title');
-    assert.equal(chTitle.level, 3);
+    assert.equal(chTitle.level, 2);
   },
 
   'buildTocSidebar: sidebar contains closing aside tag': () => {
