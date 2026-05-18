@@ -1,0 +1,228 @@
+---
+title: "ELF: Embedded Language Flows — 连续空间扩散语言模型"
+description: "MIT 何恺明与 Jacob Andreas 团队提出 ELF，将去噪过程完全保留在连续 embedding 空间中，只在最后一步做 discretization。105M 参数超越 170M 离散 DLM，训练 tokens 减少 10 倍。"
+date: 2026-05-18
+tags: [diffusion, language-model, flow-matching, ELF, 论文精读]
+categories: ["论文精读"]
+mathjax: true
+hero_title: "ELF: Embedded Language Flows"
+hero_sub: "arXiv 2605.10938 · MIT CSAIL · 2026"
+hero_tagline: "105M 参数干翻离散 DLM：去噪全程驻留连续空间，仅最后一步离散化"
+page_style: |
+  :root { --hero-grad: linear-gradient(135deg, #1a1a3e, #2a2a5e); }
+---
+
+<div class="ch fade-in">
+  <div class="ch-title">简介</div>
+
+  <p><strong>ELF（Embedded Language Flows）</strong>是 MIT 何恺明与 Jacob Andreas 团队于 2026 年 5 月提出的连续扩散语言模型。与当前主流的离散扩散模型（如 MDLM、Duo）不同，ELF 将去噪过程完全保留在连续的 embedding 空间中，只在最后一步（t=1）做 discretization。</p>
+
+  <div class="callout">
+    <strong>核心结论：</strong>105M 参数的 ELF-B 在 32 步采样内达到 Gen PPL 24，优于 170M 的离散扩散模型，且训练 tokens 减少 10 倍。这不是通过更大的模型规模实现的，而是通过更简洁的架构设计——shared-weight network、无独立 decoder、无每步 token-level supervision。
+  </div>
+
+  <p><strong>核心创新点：</strong></p>
+  <ul>
+    <li>全程驻留连续空间（t ∈ (0,1)），仅在 t=1 一步离散化</li>
+    <li>Shared-weight network：同一网络同时承担去噪和最终解码，无需独立 decoder</li>
+    <li>x-prediction 参数化：直接预测 clean embedding 而非 velocity，使 t→1 时梯度稳定</li>
+    <li>训练时 CFG 实现：无需额外 forward pass，通过 batch 中的条件/无条件预测计算 guidance target</li>
+    <li>T5 frozen encoder embeddings：只用训练时，推理无额外模块</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">参考链接</div>
+
+  <ul>
+    <li>arXiv：<a href="https://arxiv.org/abs/2605.10938">https://arxiv.org/abs/2605.10938</a></li>
+    <li>代码：<a href="https://github.com/lillian039/ELF">https://github.com/lillian039/ELF</a></li>
+    <li>机构：MIT CSAIL</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">背景：扩散语言模型的两条路线</div>
+
+  <p>扩散语言模型（DLM）分为两条技术路线：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>代表工作</th><th>去噪空间</th><th>Discretization 策略</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>离散 DLM</td><td>MDLM, Duo</td><td>token space</td><td>每步都是离散的</td></tr>
+        <tr><td>连续 DLM</td><td>CDCD, DiffuSeq</td><td>embedding space</td><td>每步有 CE supervision</td></tr>
+        <tr><td>Flow-based DLM</td><td>LangFlow, FLM</td><td>embedding space</td><td>每步有 CE supervision</td></tr>
+        <tr><td><strong>本文 ELF</strong></td><td>ELF</td><td>embedding space</td><td><strong>仅最后一步</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>连续 DLM 长期落后于离散方法，根源不在于语言"本质离散"，而在于之前方法在训练中对中间状态施加 token-level 监督（cross-entropy loss），打断了 Flow Matching 连续轨迹的灵活性。Flow Matching（Albergo &amp; Vanden-Eijnden, 2023）的出现提供了理论工具，使连续 embedding 扩散能够真正发挥效力。</p>
+
+  <div class="callout">
+    <strong>Insight：去噪轨迹的完整性决定了生成质量。</strong>之前连续 DLM 在每步都施加 token-level cross-entropy supervision，等于把连续流形强制"拽回"到离散 token 空间。ELF 只在最后一步做 discretization，去噪全程在连续空间完成，流动态获得最大灵活性。类比：图像扩散从来不在中间步骤"四舍五入到像素值"，语言扩散也不应该每步"四舍五入到 token"。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">核心创新</div>
+
+  <p><strong>创新 1：Shared-weight Network 无需独立 Decoder</strong></p>
+
+  <p>标准的 Latent Diffusion 需要 encoder + latent space + decoder，因为图像的像素空间和 latent 空间的语义完全不同。ELF 发现：embedding 空间到 token 空间的映射，本质上是一个线性投影（unembedding matrix），与去噪过程共享参数即可。</p>
+
+  <div class="callout">
+    <strong>具体做法：</strong>unembedding 权重 $W$ 与 embedding 权重绑定（tied weights），最终时间步的输出直接通过这个线性映射得到 token logits，不需要额外的神经网络 decoder。这消除了 latent diffusion 中"需要独立 decoder"这个额外模块。
+  </div>
+
+  <p><strong>创新 2：x-prediction > v-prediction</strong></p>
+
+  <p>标准 Flow Matching 预测 velocity $v = x - \varepsilon$，但 ELF 选择预测 clean embedding $x$。当 $t \to 1$ 时，$z_t \to x$，所以 $v = (x - z_t)/(1-t)$ 中分子分母同时趋于 0，梯度消失。x-prediction 在整个时间域内保持稳定梯度，而且与最终 discretization 天然一致，因为两者都是在 $\mathbb{R}^d$ 空间操作。</p>
+
+  <p><strong>创新 3：CFG 在连续空间几乎零成本实现</strong></p>
+
+  <p>在图像扩散中，CFG 需要两个 forward pass（条件/无条件）各一次。ELF 通过 batch 内计算技巧，在训练时同时得到条件和无条件预测，直接计算 CFG target，无需额外的网络前向传播。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">模型架构</div>
+
+  <p>输入 token 序列 → T5 frozen encoder → continuous embeddings → ELF 去噪（连续时间 Flow Matching）→ 最后一步 discretization → 输出 token 序列</p>
+
+  <p><strong>从离散 Token 到 Continuous Embedding</strong></p>
+
+  <p>给定句子 $s = [s_1, ..., s_L]$，通过 T5-small encoder 映射为连续 embedding $x \in \mathbb{R}^{L \times 512}$。embedding 经过 bottleneck（512 → 128 → 768）后送入 ELF Transformer。注意：embedding 只在训练时使用，推理时没有 encoder 的额外开销——这是与 Latent Diffusion 的本质区别。</p>
+
+  <p><strong>Flow Matching Formulation</strong></p>
+
+  <p>线性插值（rectified flow）：</p>
+  <p style="text-align:center">$$z_t = t \cdot x + (1-t) \cdot \varepsilon, \quad \varepsilon \sim \mathcal{N}(0, I)$$</p>
+
+  <p>速度场定义为时间导数：</p>
+  <p style="text-align:center">$$v = \frac{dz}{dt} = x - \varepsilon$$</p>
+
+  <p>训练目标是 MSE 回归：</p>
+  <p style="text-align:center">$$\mathcal{L}_{MSE} = \mathbb{E}_{t,x,\varepsilon} \frac{1}{(1-t)^2} \| x_\theta(z_t, t) - x \|^2$$</p>
+
+  <p>其中 $x_\theta = net_\theta(z_t, t)$ 是网络对 clean embedding 的预测。注意 ELF 参数化 $x$ 而非 $v$，这使得 t→1 时梯度不会消失。</p>
+
+  <p><strong>最后一 Step 的 Discretization</strong></p>
+
+  <p>$t=1$ 时，为了提供 non-trivial 的训练信号，对 clean embedding 施加 per-token corruption：</p>
+  <p style="text-align:center">$$\tilde{z} = p \cdot x + (1-p) \cdot \varepsilon', \quad p \sim \text{LogitNormal}(0.8, 0.8)$$</p>
+
+  <p>网络输出 $h = x_\theta(\tilde{z})$，再通过 unembedding 矩阵 $W$ 得到 token logits：</p>
+  <p style="text-align:center">$$\mathcal{L}_{CE} = \mathbb{E}_{\tilde{z}}[ \text{CrossEnt}(W \cdot h, s) ]$$</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">训练配置</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>参数</th><th>值</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>模型</td><td>ELF-B: 105M / ELF-M: 342M / ELF-L: 652M</td></tr>
+        <tr><td>Encoder</td><td>T5-small frozen（35M params, 512-d）</td></tr>
+        <tr><td>Bottleneck</td><td>512 → 128 → 768</td></tr>
+        <tr><td>优化器</td><td>Muon，lr=0.002，constant schedule</td></tr>
+        <tr><td>Batch size</td><td>512 × 1024 tokens</td></tr>
+        <tr><td>训练 epochs</td><td>5 epochs OWT（~95K steps）</td></tr>
+        <tr><td>训练 tokens</td><td>~45.2B（OWT），比 baselines 少约 11×</td></tr>
+        <tr><td>Denoiser vs Decoder 比例</td><td>80% vs 20%</td></tr>
+        <tr><td>Self-conditioning</td><td>50% 概率</td></tr>
+        <tr><td>CFG scale range</td><td>[0.5, 5]</td></tr>
+        <tr><td>最优 CFG scale</td><td>3（无条件），2（条件生成）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>关键数字：</strong>MDLM/Duo 使用约 524B tokens，ELF 只用了 45.2B，仍然取得了更好的生成质量。训练数据效率是 ELF 的最大亮点之一。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">实验结果</div>
+
+  <p><strong>无条件生成（OWT 数据集）</strong></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>模型</th><th>参数量</th><th>Gen PPL ↓</th><th>采样步数</th><th>训练 tokens</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>MDLM</td><td>170M</td><td>~28</td><td>100+</td><td>~524B</td></tr>
+        <tr><td>Duo</td><td>170M</td><td>~26</td><td>100+</td><td>~524B</td></tr>
+        <tr><td>FLM</td><td>~170M</td><td>~27</td><td>100+</td><td>~500B+</td></tr>
+        <tr><td>LangFlow</td><td>~170M</td><td>~26</td><td>100+</td><td>~500B+</td></tr>
+        <tr><td><strong>ELF-B</strong></td><td><strong>105M</strong></td><td><strong>24</strong></td><td><strong>32</strong></td><td><strong>45.2B</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>ELF-B 105M 在 32 步采样内达到 Gen PPL 24，超越了 170M 的离散和连续 DLM，且训练 tokens 减少约 11 倍。</p>
+
+  <p><strong>条件生成</strong></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>任务</th><th>数据集</th><th>BLEU / ROUGE-1/2/L</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>机器翻译</td><td>WMT14 De-En</td><td>26.4</td></tr>
+        <tr><td>摘要</td><td>XSum</td><td>36.0 / 12.2 / 27.8</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>ELF-B 在 WMT14 De-En 和 XSum 两个标准任务上均超越 AR baseline（99M）和所有 DLM baselines。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">消融实验与失败案例</div>
+
+  <p><strong>消融实验的关键发现：</strong></p>
+  <ul>
+    <li><strong>x-prediction 优于 v-prediction</strong>：v-prediction 在 512d embedding 上显著退化，x-prediction 保持稳定</li>
+    <li><strong>CFG 有效但有饱和点</strong>：scale=3 是最佳点，超过 3 后 perplexity 反升</li>
+    <li><strong>SDE > ODE（尤其少步数）</strong>：随机性减少了误差累积；在 8-16 步时差异最显著</li>
+    <li><strong>Shared-weight ≈ two-stage decoder</strong>：两者整体 tradeoff 相似，但 shared-weight 在低 perplexity 区域更优</li>
+    <li><strong>Pretrained contextual embedding 优于非上下文和随机 embedding</strong>：T5 frozen encoder 是最优选择</li>
+  </ul>
+
+  <p><strong>失败案例：</strong></p>
+  <ul>
+    <li>ε-prediction 完全崩溃（所有维度、所有设置）</li>
+    <li>v-prediction 在 embedding dim > 512 时显著退化</li>
+    <li>512d bottleneck 产生极高 perplexity（必须用 128 bottleneck）</li>
+    <li>CFG scale > 3 后 perplexity 回升</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">结论与收获</div>
+
+  <p>ELF 证明了连续 DLM 在语言建模中可以超越离散方法，核心是"只在最后一步做 discretization"。Flow Matching 的连续时间 formulation 使得图像域的技术（CFG、SDE/ODE 采样、self-conditioning）可以零成本迁移到语言建模。</p>
+
+  <p><strong>主要限制：</strong>(1) 105M 参数仍是概念验证，无 instruction tuning / RLHF 下游任务验证；(2) scaling law 尚未建立；(3) Cola DLM 同天发布说明大厂已押注这条路线。</p>
+
+  <p><strong>工程收获：</strong></p>
+  <ul>
+    <li><strong>去噪轨迹的完整性 > 每步精确度</strong>：让连续流形保持完整比在每步精确预测 token 更重要</li>
+    <li><strong>Interface 设计决定上限</strong>：Diffusion-LM 和 CDCD 的失败是因为在每步都重新"翻译"到离散空间打断了流形</li>
+    <li><strong>x-prediction 在高维连续空间的重要性</strong>：标准 Flow Matching 用 v-prediction 在图像生成中 work，但在语言的高维 embedding 空间（768d）中，t→1 时的梯度消失问题变得严重</li>
+    <li><strong>"无 decoder"不是没有 decoder，而是 decoder 已隐含在线性映射中</strong></li>
+  </ul>
+
+  <div class="info-box">
+    <strong>ByteDance Cola DLM vs MIT ELF 的路线对比：</strong>Cola DLM 用 Text VAE + block-causal DiT，走"分层解耦"路线；ELF 用 frozen encoder + shared-weight network，走"最简适配"路线。两者共同点是都认为连续 embedding 是正确方向，分歧在于如何处理 embedding 空间和 token 空间的接口。
+  </div>
+</div>
