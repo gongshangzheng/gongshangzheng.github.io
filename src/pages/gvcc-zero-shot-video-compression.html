@@ -1,348 +1,349 @@
 ---
 title: "GVCC 零镜头视频压缩：代码簿驱动的随机整流流"
-description: ""
-date: 2026-05-19T00:33:41
-created_at: 2026-05-19T00:33:41
-updated_at: 2026-05-19T00:33:41
-tags: []
-categories: []
+description: "精读 GVCC 论文：如何将预训练 Rectified Flow 视频生成模型直接作为零镜头视频编解码器，通过 ODE→SDE 等价变换引入可编码的信息通道。"
+date: 2026-05-19T00:33:00
+created_at: 2026-05-19T00:33:00
+updated_at: 2026-05-19T00:33:00
+tags: ["视频压缩", "生成式Codec", "Rectified Flow", "零镜头压缩", "深度学习"]
+categories: ["论文精读", "视频处理"]
+hero_title: "GVCC"
+hero_sub: "Zero-Shot Video Compression via Codebook-Driven Stochastic Rectified Flow"
+hero_tagline: "用预训练视频生成模型直接做编解码器"
+mathjax: true
 ---
 
-
 <div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+  <div class="stat"><span class="num b">65%</span><span class="label g">LPIPS 降低（vs DCVC-RT）</span></div>
+  <div class="stat"><span class="num">0.134</span><span class="label">LPIPS @ 0.005 bpp</span></div>
+  <div class="stat"><span class="num b">97%</span><span class="label">感知偏好胜率</span></div>
+  <div class="stat"><span class="num">3</span><span class="label g">条件策略模式</span></div>
 </div>
 
-<!-- ============================================================
-  前置元数据（Frontmatter）
-  ============================================================ -->
-<!--
-  以下是全部支持的 frontmatter 字段：
+<!-- INJECT toc_sidebar -->
 
-  title           页面标题
-  description     页面描述（用于 meta description）
-  date            发布日期，格式 YYYY-MM-DDTHH:mm:ss
-  created_at      首次创建时间（capture.js 自动注入，勿手动修改）
-  updated_at      最后修改时间（capture.js 自动注入）
-  tags            标签列表 [tag1, tag2, ...]
-  categories      分类列表 [cat1, cat2, ...]
-  audio_src       背景音乐路径，如 /audio/japan-history-bgm.mp3
-  page_style      页面级 CSS 覆盖，写在 | 后多行字符串中
-  hero_title      Hero 区域大标题（省略时用 title）
-  hero_sub        Hero 区域副标题
-  hero_tagline    Hero 区域标语
-  mathjax         设为 true 以启用数学公式渲染（MathJax）
--->
+<div class="section fade-in">
+  <div class="section-title">核心问题：极低码率下的视频压缩困境</div>
 
-<!-- ============================================================
-  第一部分：结构化 HTML 组件
-  ============================================================ -->
+  <p>在极低码率（ultra-low bitrate）场景下，视频压缩面临一个根本性矛盾：传统混合编解码器（H.264 / HEVC / VVC）和学习型神经编解码器都会产生严重的细节损失和过度平滑（oversmoothing）——这正是率和失真-感知权衡（Rate-Distortion-Perception Trade-off）的体现。</p>
 
-<!-- 章节容器（Chapter）— 用于长文章分段 -->
-<div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <p>现有的生成式视频压缩方法虽然引入了生成先验，但大多采用==混合范式==：传统编解码器先生成压缩表示，生成模型仅作为后处理精炼/恢复模块。在这种设计下，生成模型不决定传输符号，也不主导解码器的重建轨迹。</p>
 
-  <p>正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。</p>
+  <p>GVCC 提出的核心问题是：<strong>能否让预训练视频生成模型直接成为编解码器本身？</strong></p>
 
-  <!-- 图片组件 -->
-  <div class="photo">
-    <img src="assets/media/images/sengoku-japan/nobunaga.jpg" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
-  </div>
-
-  <!-- 高亮/标注：==text== → <mark>text</mark> -->
-  <p>这是一段包含 ==高亮文字== 的正文。</p>
-
-  <!-- 提示框 -->
   <div class="callout">
-    <strong>提示框标题</strong>：提示框内容，用于重点提示或引用。
+    <strong>核心思路</strong>：传输的比特流直接指定解码器的生成轨迹，而非传统像素或 latent 压缩。预训练视频生成模型作为 decoder，根据比特流中的索引重建每步 SDE 随机创新，从而恢复视频。
   </div>
+</div>
 
-  <!-- 信息框（蓝底） -->
+<div class="ch fade-in">
+  <div class="ch-label">第一章 · 理论基础</div>
+  <div class="ch-title">从概率流 ODE 到边缘保持 SDE</div>
+
+  <p>GVCC 的技术核心是将确定性概率流常微分方程（Probability-Flow ODE）转换为等价随机微分方程（SDE），在不重训练模型的情况下引入可编码的信息通道。理解这个转换需要三个基础概念。</p>
+
+  <h3>1.1 Rectified Flow（整流流）</h3>
+
+  <p>Rectified Flow 是一种基于概率流 ODE 的生成模型范式，核心是学习从噪声样本 $x_1 \sim p_1$ 到数据样本 $x_0 \sim p_0$ 的直线路径：</p>
+
+  <p style="text-align:center;">
+  \[ x_t = (1-t) x_0 + t \epsilon, \quad t \in [0,1] \]
+  </p>
+
+  <p>采样时，通过反向概率流 ODE 从 $x_1$ 积分到 $x_0$：</p>
+
+  <p style="text-align:center;">
+  \[ \mathrm{d}x = \frac{x_0^* - x_t}{1-t} \, \mathrm{d}t \]
+  </p>
+
+  <p>这里的关键问题是：<strong>这个过程是纯确定性的</strong>。给定初始 latent $x_1$，轨迹唯一，没有每步随机通道可用于嵌入压缩信息——这正是代码簿驱动压缩方法所依赖的。</p>
+
+  <h3>1.2 代码簿驱动压缩的 bit-budget 约束</h3>
+
+  <p>参考 DDCM、Turbo-DDCM、NCS 等工作，代码簿驱动压缩的核心思路是：将每步高斯噪声替换为可复现的 M-原子代码簿 $\mathcal{C} = \{\phi_j\}_{j=1}^M$ 中的元素，仅传输紧凑索引。</p>
+
+  <p>设 SDE 每步的随机创新为 $r_k$，编码端在代码簿中搜索最优匹配原子：</p>
+
+  <p style="text-align:center;">
+  \[ z_k^* = \underset{z \in \mathcal{C}}{\arg\min} \| r_k - z \|_2 \]
+  </p>
+
+  <p>传输的比特流即为每步原子索引 $\{i_k\}$。解码端用相同索引重建 SDE 轨迹。这要求每步创新必须==可被 M-原子子空间表示==，即：</p>
+
+  <p style="text-align:center;">
+  \[ \| g_{t_k} \sqrt{\Delta t} \, z_k^* \| \leq \| \mathcal{C} \text{ 子空间} \| \]
+  </p>
+
+  <p>当创新方差超过代码簿容量时，SDE 轨迹发散，质量崩溃。这解释了为何 $g_\text{scale}$ 存在极窄的稳定区间（2.0–3.0）。</p>
+
+  <h3>1.3 ODE → SDE 等价变换</h3>
+
+  <p>score-SDE 框架的核心洞察告诉我们：任何概率流 ODE 都存在一族反向时间的 SDE，与原 ODE 共享完全相同的连续时间边缘分布 $p_t$。</p>
+
+  <p>对于 Rectified Flow 的反向 ODE：</p>
+
+  <p style="text-align:center;">
+  \[ \mathrm{d}x = \frac{x_0^* - x_t}{1-t} \, \mathrm{d}t \]
+  </p>
+
+  <p>等价 SDE 为：</p>
+
+  <p style="text-align:center;">
+  \[ \mathrm{d}x = \Bigl[ \frac{x_0^* - x_t}{1-t} - g_t^2 \nabla_x \log p_t(x) \Bigr] \mathrm{d}t + g_t \, \mathrm{d}w \]
+  </p>
+
+  <p>其中 $g_t \geq 0$ 是扩散系数，$\mathrm{d}w$ 是维纳过程。引入非零 $g_t$ 的意义在于：<strong>将随机性从初始 latent 重新分配到每步随机创新</strong>——即从"种子噪声决定一切"变为"每步创新携带信息"。</p>
+
   <div class="info-box">
-    <h3>信息框标题</h3>
-    <p>信息框内容。</p>
+    <h3>Score-from-Velocity：从速度场推导 Score</h3>
+    <p>实际应用中，我们只有学习的速度场 $v_t^*$ 而非 score 函数。通过恒等式可以直接推导：</p>
+    <p style="text-align:center;">
+    \[ \nabla_x \log p_t(x) = \frac{(x_0^* - x_t) - v_t^*}{g_t^2 (1-t)} \]
+    </p>
+    <p>这使得整个框架==无需重训练==——score 可以从预训练模型的 velocity 输出在线计算。</p>
   </div>
+</div>
 
-  <!-- 引用块 -->
-  <blockquote>
-    <p>引用内容。可以在此放名言、原文摘录。</p>
-    <p><em>— 来源</em></p>
-  </blockquote>
+<div class="ch fade-in">
+  <div class="ch-label">第二章 · 技术方案</div>
+  <div class="ch-title">GVCC 统一框架</div>
 
-  <!-- 表格 -->
+  <p>如图 2 所示，GVCC 的压缩流程分为三个阶段：3D VAE 编码 → 代码簿驱动 SDE 压缩 → 解码重建。三种条件策略（T2V / I2V / FLF2V）共享同一 SDE-代码簿骨干，仅在条件注入方式上有所不同。</p>
+
+  <h3>2.1 三种条件策略</h3>
+
   <table>
     <thead>
-      <tr><th>表头1</th><th>表头2</th><th>表头3</th></tr>
+      <tr><th>模式</th><th>参考信息</th><th>适用场景</th><th>码率效率</th><th>空间保真</th><th>时序一致</th></tr>
     </thead>
     <tbody>
-      <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
-      <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+      <tr><td><strong>T2V</strong></td><td>无参考帧</td><td>最低码率、纯生成模式</td><td>⭐⭐⭐⭐⭐</td><td>⭐⭐</td><td>⭐⭐</td></tr>
+      <tr><td><strong>I2V</strong></td><td>首帧 + AR GOP 链</td><td>有首帧锚点的场景</td><td>⭐⭐⭐</td><td>⭐⭐⭐⭐</td><td>⭐⭐⭐</td></tr>
+      <tr><td><strong>FLF2V</strong></td><td>首尾帧双锚点</td><td>强时空一致性需求</td><td>⭐⭐⭐</td><td>⭐⭐⭐⭐⭐</td><td>⭐⭐⭐⭐</td></tr>
     </tbody>
   </table>
 
-  <!-- 有序列表 -->
-  <ol>
-    <li>第一项</li>
-    <li>第二项
-      <ol>
-        <li>嵌套子项</li>
-        <li>嵌套子项</li>
-      </ol>
-    </li>
-    <li>第三项</li>
-  </ol>
+  <h4>T2V（Text-to-Video）：无参考帧模式</h4>
+  <p>码流仅包含代码簿原子索引，代表最低边信息（side-information）模式。没有空间锚点，生成完全依赖预训练视频模型的生成先验。适用于比特率极度受限、可以接受一定幻觉风险的场景。</p>
 
-  <!-- 无序列表 -->
-  <ul>
-    <li>列表项</li>
-    <li>列表项
-      <ul>
-        <li>嵌套列表项</li>
-      </ul>
-    </li>
-  </ul>
+  <h4>I2V（Image-to-Video）：自回归图像到视频 + 尾 latent 修正</h4>
+  <p>首帧通过学习型图像编解码器压缩传输，后续帧使用自回归 GOP 链式结构（类似 DCVC 的 temporal 传播）。尾部 latent 修正：每个 GOP 的最后一帧 latent 额外传输一个细粒度修正信号，缓解 AR 误差累积。</p>
 
-  <!-- 定义列表（术语说明）：Term :: Definition -->
-  <!--
-    用法：<li>**术语** :: 定义内容</li>
-    或：<p>术语 :: 定义内容</p>
-    术语中的 *强调* 和 **加粗** 会被保留
-  -->
-  <ul>
-    <li><strong>术语一</strong> :: 这是一段定义说明</li>
-    <li><em>带强调的术语</em> :: 定义中也支持 [[wiki 链接]] 等语法</li>
-  </ul>
+  <h4>FLF2V（First-Last-Frame-to-Video）：首尾帧到视频</h4>
+  <p>每个 GOP 的首帧和尾帧同时作为边界锚点压缩传输，中间帧通过代码簿驱动的 SDE 采样重建。首尾帧的双重锚定显著改善时序一致性，避免跨 GOP 的大幅 appearance drift。边界帧使用 CompressAI 压缩（质量 level 4）。</p>
 
-  <!-- 代码块 -->
+  <h3>2.2 编码端算法流程</h3>
+
   <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-      </code></pre>
-</div>
+# GVCC 编码端伪代码（每步）
+for k in range(T):
+    # 1. 估计当前步的 score（从 velocity 推导）
+    score = (x0_pred - x_t) / (g_scale^2 * (1 - t_k))
 
-<!-- ============================================================
-  LaTeX 数学公式（MathJax）
-  ============================================================ -->
+    # 2. 计算所需随机创新
+    residual = target_latent - (x_t - Δt * (x0_pred - x_t) / (1 - t_k))
+    innovation = residual / (g_scale * sqrt(Δt))
 
-<!--
-  所有数学公式均依赖 MathJax 渲染，必须满足两个条件：
-  1. frontmatter 中声明 mathjax: true
-  2. 使用 \[...\] 和 $...$ 分隔符
+    # 3. 在代码簿中搜索最优原子
+    z_star = argmin_{z ∈ C} || innovation - z||_2
+    transmitted_index = codebook.index(z_star)
 
-  分隔符规范：
-  · 独立公式（display）：\[...\]（在源码中）
-    generator.js 在构建时将其包装为 <div class="math-block"><ila>裸公式</ila></div>
-    MathJax 通过 processClass: 'math' 配置识别 <ila> 元素进行渲染
-  · 行内公式（inline）：$...$
-    generator.js 将其包装为 <span class="math-inline"><ila>裸公式</ila></span>
+    # 4. 更新 latent 状态
+    x_{t_{k+1}} = x_{t_k} - Δt * (x0_pred - x_t) / (1 - t_k) + g_scale * sqrt(Δt) * z_star
+  </code></pre>
 
-  ⚠️ 绝对不要使用 \( ... \)、$$...$$ 作为 MathJax 分隔符
-    原因：generator.js 已配置 MathJax 使用 processClass: 'math' 方式处理 <ila> 元素，
-    分隔符仅用于源码输入层面。直接写 \( ... \) 会被当作普通文本处理。
+  <h3>2.3 解码端算法流程</h3>
 
-  LaTeX 语法注意事项：
-  · \left( 和 \right) 在某些 MathJax 版本中会产生 delimiter 错误
-    改用 \Bigl( ... \Bigr) 或 \bigl( ... \bigr)
-  · 常见命令：\frac{a}{b}, \Theta, \epsilon, \sigma, \alpha, \beta
-    \sum, \int, \infty, \sqrt{x}, x^{n}, a_{i}, \Omega, \lambda
--->
+  <p>解码端使用共享 seed 和传输的索引序列，==精确重建相同的 SDE 轨迹==：</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
+  <pre><code class="language-python">
+# GVCC 解码端伪代码（每步）
+for k in range(T):
+    # 1. 从索引获取代码簿原子
+    z_star = codebook[transmitted_index[k]]
 
-  <p>行内公式如 $O(T\epsilon^2)$，直接嵌入段落中。公式内容存储在 <ila> 中，不含分隔符。</p>
+    # 2. 重放 SDE 更新步骤
+    x_{t_{k+1}} = x_{t_k} - Δt * (x0_pred - x_t) / (1 - t_k) + g_scale * sqrt(Δt) * z_star
 
-  <!-- 独立公式（display）——使用 \[...\] 包裹 -->
-  <p style="text-align:center;">
-  \[\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)\]
-  </p>
+    # 3. VAE 解码重建视频帧
+    video_frames = vae_decode(x_0)
+  </code></pre>
 
   <div class="callout">
-    <strong>⚠️ 分隔符规则</strong>：行内用 <code>$...$</code>，独立公式用 <code>\[...\]</code>。
-    不要使用 <code>\(...\)</code> 或 <code>$$...$$</code>。
+    <strong>关键特性</strong>：编解码端的代码簿原子完全相同，共享 seed 保证初始状态一致，因此解码端无需编码端的完整信息即可精确重建轨迹——只需传输每步的原子索引序列。
   </div>
 </div>
 
-<!-- ============================================================
-  引用语法
-  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第三章 · 实验结果</div>
+  <div class="ch-title">UVG 数据集上的性能评估</div>
 
-<!--
-  引用使用 $key$ 语法（如 $Hinton et al., 2015$、$KL Divergence$），
-  generator.js 在构建时将其转换为 <cite>$key$</cite>。
+  <h3>3.1 感知质量对比（~0.005 bpp）</h3>
 
-  引用格式规则：
-  · 引用必须包含空格或年份（如 $Hinton et al., 2015$）——
-    这是它与行内数学 $T^2$ 的根本区别（数学公式无空格）
-  · 引用 key 可以包含中文、英文字母、数字、空格、连字符、句点
-  · 生成的 <cite>$key$</cite> 在前端由 CSS 渲染为带书名号样式的引用标注
+  <table>
+    <thead>
+      <tr><th>方法</th><th>BPP</th><th>LPIPS ↓</th><th>改进幅度</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>DCVC-RT</td><td>~0.005</td><td>0.391</td><td>—（baseline）</td><td>学习型神经视频编解码</td></tr>
+      <tr><td>GNVC-VD</td><td>~0.005</td><td>~0.18</td><td>+54% LPIPS 降低</td><td>预训练视频扩散模型精炼</td></tr>
+      <tr><td><strong>GVCC-T2V</strong></td><td><strong>~0.005</strong></td><td><strong>0.134</strong></td><td><strong>+65% LPIPS 降低</strong></td><td>生成模型即编解码器</td></tr>
+    </tbody>
+  </table>
 
-  示例：
-  · $Hinton et al., 2015$ → <cite>$Hinton et al., 2015$</cite>
-  · $KL Divergence$ → <cite>$KL Divergence$</cite>
--->
+  <h3>3.2 率失真覆盖范围</h3>
+
+  <p>GVCC 在 UVG 480p 上覆盖了近两个数量级的比特率范围：</p>
+
+  <table>
+    <thead>
+      <tr><th>M（原子数）</th><th>K（代码簿大小）</th><th>BPP</th><th>码率 (kbps)</th><th>PSNR (dB)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>8</td><td>256</td><td>0.0008</td><td>5.3</td><td>22.5</td></tr>
+      <tr><td>16</td><td>512</td><td>0.0018</td><td>11.9</td><td>24.3</td></tr>
+      <tr><td>32</td><td>2048</td><td>0.0044</td><td>28.5</td><td>26.3</td></tr>
+      <tr><td><strong>64</strong></td><td><strong>16384</strong></td><td><strong>0.011</strong></td><td>71.2</td><td><strong>28.1</strong></td></tr>
+      <tr><td>128</td><td>16384</td><td>0.022</td><td>142.4</td><td>28.9</td></tr>
+      <tr><td>256</td><td>65536</td><td>0.050</td><td>322.8</td><td>30.0</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.3 感知偏好研究（内部）</h3>
+
+  <p>10 名视频处理研究熟悉人员参与的成对偏好研究中：</p>
+
+  <table>
+    <thead>
+      <tr><th>对比</th><th>比特率</th><th>GVCC 胜率（排除平局）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>GVCC vs. DCVC-RT</td><td>~0.005 bpp</td><td><strong>97%</strong></td></tr>
+      <tr><td>GVCC vs. GNVC-VD</td><td>附近比特率</td><td><strong>88%</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.4 忠实性分析</h3>
+
+  <p>在受控的 in-distribution 测试中，GVCC 展现了极高的忠实性：</p>
+
+  <table>
+    <thead>
+      <tr><th>测试类型</th><th>PSNR (dB)</th><th>LPIPS</th><th>MS-SSIM</th><th>ΔE (色差)</th><th>人脸 ID (ArcFace)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>色彩标定</td><td>48.60</td><td>0.004</td><td>0.998</td><td>0.26</td><td>—</td></tr>
+      <tr><td>文字覆盖</td><td>38.87</td><td>0.002</td><td>0.998</td><td>0.26</td><td>—</td></tr>
+      <tr><td>人脸</td><td>31.58</td><td>0.022</td><td>0.986</td><td>2.34</td><td>0.857</td></tr>
+      <tr><td>OOD（越界）</td><td>22.81</td><td>0.188</td><td>0.860</td><td>4.10</td><td>—</td></tr>
+    </tbody>
+  </table>
+
+  <p>ΔE &lt; 1 表示色差不可感知。GOP 链式结构在三个 GOP 上不表现出累积退化，验证了 FLF2V 边界共享设计的稳健性。</p>
+
+  <h3>3.5 默认超参数</h3>
+
+  <table>
+    <thead>
+      <tr><th>参数</th><th>720p</th><th>1080p</th><th>作用</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>M（每步原子数）</td><td>64</td><td>80</td><td>主要码率控制变量</td></tr>
+      <tr><td>K（代码簿大小）</td><td>16384</td><td>16384</td><td>每步搜索空间表达力</td></tr>
+      <tr><td>T（采样步数）</td><td>20</td><td>20</td><td>收敛稳定性</td></tr>
+      <tr><td>$g_\text{scale}$</td><td>3.0</td><td>3.0</td><td>SDE 扩散系数（稳定区间最大值）</td></tr>
+      <tr><td>GOP 长度</td><td>33</td><td>33</td><td>4× VAE 时序 stride</td></tr>
+      <tr><td>边界帧质量</td><td>4</td><td>4</td><td>CompressAI 质量 level（FLF2V/I2V）</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
+  <div class="ch-label">第四章 · 关键发现与消融</div>
+  <div class="ch-title">超参数敏感性分析</div>
 
-  <p>根据 $Hinton et al., 2015$ 的开创性工作，知识蒸馏通过软标签传递教师模型的暗知识。$KL Divergence$ 是衡量两个概率分布差异的核心指标。</p>
+  <h3>4.1 原子数 M：质量饱和与线性码率</h3>
+
+  <p>BPP 随 M 近似线性增长（M=16 → 0.0012 bpp，M=256 → 0.0192 bpp），但 PSNR 质量在 M &gt; 128 后趋于饱和。M=64 是默认最优值——增加 M beyond 64 仅带来边际收益，同时增加码率。LPIPS 甚至出现轻微恶化（M=128 时 0.117，M=256 时 0.121），说明过多原子可能引入代码簿噪声。</p>
+
+  <h3>4.2 代码簿大小 K：表达力与计算权衡</h3>
+
+  <p>K 从 1024 → 16384 可获得 0.64 dB PSNR 增益（31.04 → 31.68 dB）和 0.019 LPIPS 改善（0.141 → 0.122），但编码时间翻倍（46s → 90s）。K=65536 额外增加 0.23 dB 的代价是 2.6× 计算开销（237s）。K=16384 是表达力和效率的最佳平衡点。</p>
+
+  <h3>4.3 采样步数 T：存在最小值</h3>
+
+  <p>T=5 时产生灾难性失败（PSNR 19.3 dB，LPIPS 0.576），T=15 建立了最小可用步数（T=10 → T=15 有巨大 LPIPS 跳变：0.514 → 0.211）。T=20 之后收益递减，T=30 仅增加 0.5 dB PSNR 但编码时间增加 50%。</p>
+
+  <h3>4.4 扩散系数 $g_\text{scale}$：极窄的稳定区间</h3>
+
+  <p>$g_\text{scale}$ 是最敏感的超参数，存在极窄的稳定区间（2.0–3.0）。当 $g_\text{scale} = 5.0$ 时 PSNR 骤降至 29.3 dB、LPIPS 飙升至 0.597，$g_\text{scale} = 8.0$ 时进一步恶化至 22.9 dB / 0.797。</p>
+
+  <p>这直接验证了 bit-budget 理论：增加 $g_\text{scale}$ 以二次方规模放大创新方差，一旦该方差超过 M=64 原子子空间的表示容量，代码簿匹配无法引导 SDE 轨迹，==发散随即发生==。</p>
+
+  <h3>4.5 GOP 长度与时序建模</h3>
+
+  <p>17 帧 GOP 过短，无法充分发挥视频模型的时序建模能力，导致明显的时间闪烁和 appearance drift（LPIPS 0.224 vs. 33 帧的 0.122）。33 帧和 49 帧性能相当，49 帧在 1080p 下因 VAE 4× 时序压缩效率更高而略微有利。</p>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      超参数选择哲学
+    </div>
+    <div class="admonition-content">
+      <p>GVCC 的超参数设计体现了清晰的==可解释性原则==：M 控制码率（线性），T 控制收敛（存在最小值），$g_\text{scale}$ 受 bit-budget 约束（有稳定区间上限）。这些关系均有理论解释而非纯经验调优。</p>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章 · 范式思考</div>
+  <div class="ch-title">生成式压缩：从混合范式到统一框架</div>
+
+  <h3>5.1 范式转变的意义</h3>
+
+  <p>传统视频编解码器的设计哲学是"==精确表示 + 有损压缩=="：传输足够精确的像素或 latent 表示，解码器做确定性重建。生成式压缩的出现引入了"==先验引导 + 采样重建=="的思路。</p>
+
+  <p>但 DDPM 先前的生成式编解码器（GLVC、GNVC-VD、GVC）仍采用混合范式：编解码器定义压缩表示，生成模型仅作为精炼模块。GVCC 和 Free-GVC 代表了更彻底的方向——<strong>生成模型即编解码器</strong>。</p>
+
+  <h3>5.2 GVCC vs. Free-GVC</h3>
+
+  <p>同为无训练压缩方法，GVCC 和 Free-GVC 在压缩机制上有本质区别：</p>
+
+  <table>
+    <thead>
+      <tr><th>维度</th><th>Free-GVC</th><th>GVCC</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>压缩机制</td><td>逆向信道编码（reverse channel coding）</td><td>代码簿驱动的 SDE 采样</td></tr>
+      <tr><td>基础模型</td><td>CogVideoX-2B（扩散）</td><td>Wan 2.1（整流流）</td></tr>
+      <tr><td>信息注入点</td><td>扩散轨迹（score-based）</td><td>每步 SDE 随机创新</td></tr>
+      <tr><td>理论框架</td><td>信息论-逆向信道</td><td>概率流 ODE ↔ SDE 等价</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.3 当前局限与适用边界</h3>
+
+  <p>作为生成式编解码器，GVCC 在极低码率下可能产生逼真但失真的内容——论文明确指出不适合取证/证据用途。输入 OOD（分布外）内容时，VAE 和代码簿匹配同时退化，边界帧开销占比上升。</p>
+
+  <p>然而，在受控 in-distribution 场景下，FLF2V 的边界共享设计有效抑制了累积退化，色彩/文字等细节具有极高忠实性（ΔE ≈ 0.26），这为实际应用提供了可靠基础。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">结语</div>
+
+  <p>GVCC 的核心贡献不仅在于具体方法，更在于提出了一种==生成式压缩的范式转变==：从"编解码器 + 生成式精炼"的混合设计，走向"生成模型即编解码器"的统一框架。</p>
+
+  <p>通过将 Rectified Flow 的确定性 ODE 采样器转换为边缘保持的随机过程（SDE），GVCC 在不重训练预训练模型的情况下，恢复了代码簿驱动压缩所需的信息传输通道。三种条件策略（T2V / I2V / FLF2V）覆盖了从纯生成到边界锚定的完整谱系，在 UVG 数据集上以低至 ~0.003 bpp 的比特率实现了业界领先的感知质量。</p>
+
+  <p>这一方向还有广阔的探索空间：更大规模的原子代码簿、更多样的条件策略融合、跨模型泛化……生成式编解码器的时代才刚刚开始。</p>
 
   <div class="sources">
     <h3>参考来源</h3>
     <ul>
-      <li><a href="https://arxiv.org/abs/1503.02531" target="_blank">$Hinton et al., 2015$ — Distilling the Knowledge in a Neural Network（原始论文）</a></li>
+      <li><a href="https://arxiv.org/abs/2603.26571" target="_blank">arXiv:2603.26571 — GVCC: Zero-Shot Video Compression via Codebook-Driven Stochastic Rectified Flow</a></li>
+      <li><a href="https://github.com/CCdydy/GVCC" target="_blank">GitHub: CCdydy/GVCC — Official Implementation</a></li>
+      <li><a href="https://arxiv.org/abs/2209.03003" target="_blank">Liu et al., 2022 — Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</a></li>
+      <li><a href="https://arxiv.org/abs/2011.13456" target="_blank">Song et al., 2021 — Score-Based Generative Modeling through Stochastic Differential Equations</a></li>
+      <li><a href="https://arxiv.org/abs/2602.09868" target="_blank">Ling et al., 2026 — Free-GVC: Towards Training-Free Extreme Generative Video Compression</a></li>
     </ul>
   </div>
-</div>
-<!-- ============================================================
-  第二部分：Shortcode 语法
-  ============================================================ -->
-
-<!--
-  Shortcode 语法源自 Hugo，在生成时会被转换为对应 HTML。
-  使用 {{< ... >}} 形式。
--->
-
-<!-- 1. 背景高亮 bg -->
-<!--
-  {{< bg yellow >}}文字内容{{< /bg >}}
-  可选颜色：yellow / red / blue / green / purple
--->
-<div class="ch fade-in">
-  <div class="ch-label">Shortcode 示例</div>
-  <div class="ch-title">Shortcode 语法</div>
-
-  <p>{{< bg yellow >}}这是黄色高亮背景{{< /bg >}}</p>
-  <p>{{< bg red >}}这是红色高亮背景{{< /bg >}}</p>
-  <p>{{< bg blue >}}这是蓝色高亮背景{{< /bg >}}</p>
-  <p>{{< bg green >}}这是绿色高亮背景{{< /bg >}}</p>
-  <p>{{< bg purple >}}这是紫色高亮背景{{< /bg >}}</p>
-
-  <!-- 2. 可折叠 details -->
-  <!--
-    {{< details summary="标题" openByDefault=true >}}
-    可折叠内容
-    {{< /details >}}
-  -->
-  <p>{{< details summary="点击展开：更多内容" openByDefault=true >}}</p>
-  <p>这里是隐藏在可折叠区域内的内容。</p>
-  <p>{{< /details >}}</p>
-
-  <!-- 3. Bilibili 嵌入 -->
-  <!-- {{< bilibili BV号 [p=集数] >}} -->
-  <p>{{< bilibili BV1xxooXX1Xx >}}</p>
-
-  <!-- 4. YouTube 嵌入 -->
-  <!-- {{< youtube 视频ID "可选说明文字" >}} -->
-  <p>{{< youtube dQw4w9WgXcQ "精彩视频" >}}</p>
-
-  <!-- 5. 本地视频嵌入 -->
-  <!-- {{< video "视频路径.mp4" >}} -->
-  <p>{{< video "assets/media/video/sample.mp4" >}}</p>
-
-  <!-- 6. PPT / Google Slides 嵌入 -->
-  <!-- {{< ppt "PPT 链接" >}} -->
-  <!-- {{< googleslides "Google Slides 链接" >}} -->
-  <p>{{< googleslides "https://docs.google.com/presentation/d/..." >}}</p>
-</div>
-
-<!-- ============================================================
-  第三部分：Wiki 类链接语法
-  ============================================================ -->
-
-<!--
-  所有链接语法均使用 [[...]] 形式，生成时转换为 <a> 标签。
-  内部链接（无协议、无路径前缀）会生成相对路径链接。
--->
-
-<!-- 1. Wikipedia 链接 -->
-<!-- [[wiki.en 词条名 | 显示文字]]   → 英文维基 -->
-<!-- [[wiki 词条名 | 显示文字]]      → 默认英文 -->
-<!-- [[wiki.zh 词条名 | 显示文字]]   → 中文维基 -->
-<div class="ch fade-in">
-  <div class="ch-label">链接语法</div>
-  <div class="ch-title">Wiki 类链接</div>
-
-  <ul>
-    <li>[[wiki Albert Einstein | 爱因斯坦]]</li>
-    <li>[[wiki.zh 日本历史 | 日本历史（中文）]]</li>
-    <li>[[wiki.en Industrial Revolution | 工业革命]]</li>
-  </ul>
-
-  <!-- 2. ArXiv 论文链接 -->
-  <!-- [[arxiv 2301.00001 abs | 显示文字]]  abs / pdf -->
-  <p>[[arxiv 2301.00001 abs | 论文链接]]</p>
-  <p>[[arxiv 2301.00001 pdf | PDF 版本]]</p>
-
-  <!-- 3. GitHub 链接 -->
-  <!-- [[github user/repo | 显示文字]] -->
-  <p>[[github pytorch/pytorch | PyTorch]]</p>
-
-  <!-- 4. Google 搜索链接 -->
-  <!-- [[google 查询词 | 显示文字]] -->
-  <p>[[google transformer architecture | Google 搜索 Transformer]]</p>
-
-  <!-- 5. 内部跳转链接 -->
-  <!-- [[path#anchor | 显示文字]]   path 为相对路径，anchor 为锚点 -->
-  <p>[[posts.html | 返回文章列表]]</p>
-  <p>[[japan-history.html#绳文土器上的绳纹最早的文字 | 跳到绳文章节]]</p>
-</div>
-
-<!-- ============================================================
-  第四部分：图片与资源引用
-  ============================================================ -->
-
-<!--
-  图片语法（Markdown / Org 风格）：
-  ![[filename | width # caption]]
-
-  解析后生成：
-  <div class="image">
-    <img width="..." src="imgDir/filename" alt="..." />
-    <p class="caption">caption</p>
-  </div>
-
-  imgDir 默认值：assets/media
-  可在 processBody 调用时通过 imgDir 参数覆盖。
--->
-<div class="ch fade-in">
-  <div class="ch-label">资源引用</div>
-  <div class="ch-title">图片与媒体</div>
-
-  <!-- 只写文件名，自动拼接 imgDir 前缀 -->
-  <!-- 使用真实图片（织田信长，sengoku-japan 系列） -->
-  <p>![[sengoku-japan/nobunaga.jpg | 400 # 织田信长]]</p>
-
-  <!-- 纯图片，无宽度无说明 -->
-  <p>![[japan-history/oda-nobunaga.jpg]]</p>
-
-  <!--
-    音频文件（BGM）：
-    在 frontmatter 中写 audio_src: /audio/xxx.mp3
-    页面会自动渲染音乐播放控件。
-    音频文件需放在 src/media/ 目录下，build 时自动复制到 public/audio/。
-  -->
-</div>
-
-<!-- ============================================================
-  第五部分：结语 / 普通 Section
-  ============================================================ -->
-
-<div class="section fade-in">
-  <div class="section-title">结语</div>
-  <p>使用 <code>.section</code> 类创建不归属任何章节的普通段落区域，
-     例如文章结语、参考资料列表等。它不在 TOC 中出现，
-     但受 <code>.wrap</code> 约束，居中且有 max-width。</p>
-
-  <blockquote>
-    <p>模板内容可自由修改。本文件本身就是一个可编译的示例。</p>
-  </blockquote>
 </div>
