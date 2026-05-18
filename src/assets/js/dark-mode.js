@@ -20,23 +20,27 @@
   }
 
   function wrapFormulas() {
-    document.querySelectorAll('p, li, td').forEach(function(el) {
-      if (el.hasAttribute('data-math-wrapped')) return;
-      var code = el.querySelector('code');
-      if (!code) return;
-      var text = code.textContent;
-      if ((text.startsWith('$') && text.endsWith('$') && text.length > 2) ||
-          (text.startsWith('$$') && text.endsWith('$$'))) {
-        el.setAttribute('data-math-wrapped', 'true');
-        markEl(el);
-      }
+    // Wrap mjx-container elements (MathJax creates these after typesetting)
+    document.querySelectorAll('mjx-container').forEach(function(el) {
+      if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'math-wrap';
+      el.parentNode.insertBefore(wrap, el);
+      wrap.appendChild(el);
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', wrapFormulas);
-  } else {
+  function tryWrap() {
     wrapFormulas();
+    if (document.querySelectorAll('mjx-container:not(.math-wrap *)').length > 0) {
+      setTimeout(tryWrap, 300);
+    }
+  }
+
+  if (document.readyState === 'complete') {
+    setTimeout(tryWrap, 800);
+  } else {
+    window.addEventListener('load', function() { setTimeout(tryWrap, 800); });
   }
 })();
 
