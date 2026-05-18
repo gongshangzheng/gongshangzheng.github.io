@@ -9,6 +9,29 @@
   });
 })();
 
+// Auto-wrap MathJax formula containers so wide formulas can scroll horizontally
+(function() {
+  function wrapFormulas() {
+    document.querySelectorAll('.math-wrap mjx-container, mjx-container[jax="TE"]').forEach(function(el) {
+      if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'math-wrap';
+      el.parentNode.insertBefore(wrap, el);
+      wrap.appendChild(el);
+    });
+  }
+  // Run after MathJax finishes typesetting (it fires DOMContentLoaded already)
+  if (document.readyState === 'complete') {
+    wrapFormulas();
+  } else {
+    window.addEventListener('load', function() {
+      // MathJax may typeset asynchronously, give it a moment
+      setTimeout(wrapFormulas, 500);
+      setTimeout(wrapFormulas, 2000); // also retry in case of slow render
+    });
+  }
+})();
+
 // Responsive nav-brand sizing
 (function() {
   var brand = document.getElementById('nav-brand');
