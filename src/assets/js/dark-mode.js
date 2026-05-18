@@ -11,25 +11,32 @@
 
 // Auto-wrap MathJax formula containers so wide formulas can scroll horizontally
 (function() {
+  function markEl(el) {
+    if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'math-wrap';
+    el.parentNode.insertBefore(wrap, el);
+    wrap.appendChild(el);
+  }
+
   function wrapFormulas() {
-    // mjx-container is the element MathJax creates to wrap each formula
-    document.querySelectorAll('mjx-container').forEach(function(el) {
-      if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
-      var wrap = document.createElement('div');
-      wrap.className = 'math-wrap';
-      el.parentNode.insertBefore(wrap, el);
-      wrap.appendChild(el);
+    document.querySelectorAll('p, li, td').forEach(function(el) {
+      if (el.hasAttribute('data-math-wrapped')) return;
+      var code = el.querySelector('code');
+      if (!code) return;
+      var text = code.textContent;
+      if ((text.startsWith('$') && text.endsWith('$') && text.length > 2) ||
+          (text.startsWith('$$') && text.endsWith('$$'))) {
+        el.setAttribute('data-math-wrapped', 'true');
+        markEl(el);
+      }
     });
   }
-  // Run after MathJax finishes typesetting (it fires DOMContentLoaded already)
-  if (document.readyState === 'complete') {
-    wrapFormulas();
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wrapFormulas);
   } else {
-    window.addEventListener('load', function() {
-      // MathJax may typeset asynchronously, give it a moment
-      setTimeout(wrapFormulas, 500);
-      setTimeout(wrapFormulas, 2000); // also retry in case of slow render
-    });
+    wrapFormulas();
   }
 })();
 
