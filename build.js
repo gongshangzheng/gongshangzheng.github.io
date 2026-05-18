@@ -79,6 +79,7 @@ function collectPosts() {
       date: fm.date || '',
       tags: parseListField(fm.tags),
       categories: parseListField(fm.categories),
+      created_at: fm.created_at || fm.date || '',
       url: `./${slug}.html`,
     });
   }
