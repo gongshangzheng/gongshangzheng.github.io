@@ -1,0 +1,458 @@
+---
+title: "iTARFlow: 迭代去噪的归一化流"
+description: "Apple ML Research 在 ICML 2026 提出 iTARFlow，通过多噪声训练和迭代去噪解决归一化流的噪声困境，首次系统性地将 NF 与扩散模型统一，在 ImageNet 多分辨率上刷新 NF SOTA。"
+date: 2026-04-23
+tags: [normalizing_flow, diffusion, generative_model, image_generation]
+categories: [论文精读]
+mathjax: true
+hero_title: "iTARFlow"
+hero_sub: "迭代去噪的归一化流"
+---
+
+<h2>简介</h2>
+<h3>为什么值得读</h3>
+<p>iTARFlow 是一篇来自 Apple ML Research 的 ICML 2026 论文，它在生成模型领域提出了一个关键的"桥梁"思路：</p>
+<ol>
+<li>*理论价值*：首次系统性地识别并形式化了归一化流训练中的"噪声困境"（Noise Dilemma），揭示了单一噪声水平训练的根本局限性</li>
+<li>*方法创新*：将传统上分离的"似然模型"（NF）和"分数模型"（扩散模型）统一起来——训练时用端到端似然目标，推理时通过似然梯度自动获得分数进行迭代去噪</li>
+<li>*性能突破*：在 ImageNet 多分辨率上刷新了归一化流的 SOTA，将 NF 与扩散模型的性能差距显著缩小</li>
+<li>*工程启示*：展示了如何在保持精确似然计算能力的同时，获得接近扩散模型的生成质量，对需要概率建模的应用（异常检测、压缩）具有直接参考价值</li>
+</ol>
+<p>如果你关注生成模型的范式演进，或者正在研究如何在可解释性/精确似然与生成质量之间取得平衡，这篇论文提供了非常有价值的思路。</p>
+<div class="photo"><img src="assets/media/images/itarflow/image_000000_48cda40ba752dbcc3de6f17b6a0983e02de95b1f1d32bfa9b66b1f6ef8734d2b.png" alt=""></div>
+<h2>参考链接</h2>
+<h3>论文链接</h3>
+<ul>
+<li>arXiv HTML :: https://arxiv.org/html/2604.20041v1</li>
+<li>arXiv PDF :: https://arxiv.org/pdf/2604.20041v1</li>
+<li>代码仓库 :: https://github.com/apple/ml-itarflow</li>
+</ul>
+<h3>作者及机构</h3>
+<tr><th>作者</th><th>机构</th></tr>
+<tr><th>Tianrong Chen</th><th>Apple</th></tr>
+<tr><th>Jiatao Gu</th><th>Apple</th></tr>
+<tr><th>David Berthelot</th><th>Apple</th></tr>
+<tr><th>Joshua Susskind</th><th>Apple</th></tr>
+<tr><th>Shuangfei Zhai</th><th>Apple</th></tr>
+<ul>
+<li>投稿会议 :: ICML 2026</li>
+<li>arXiv ID :: 2604.20041v1 [cs.CV] 21 Apr 2026</li>
+</ul>
+<h2>相关工作</h2>
+<h3>研究领域与背景</h3>
+<p>iTARFlow 属于深度生成模型领域，聚焦于连续空间生成建模与归一化流（Normalizing Flows, NFs）的复兴。当前图像生成由两大范式主导：（1）扩散模型，通过连续去噪实现高质量生成，但推理需数十至数百步迭代，且缩放规律不如语言模型可预测；（2）离散自回归模型，利用 Transformer 建模离散 token，采样快、缩放特性明确，但量化引入信息瓶颈。在此背景下，研究者试图结合自回归架构的可扩展性与连续表示的表达力，归一化流因其可逆变换和精确似然估计成为关键候选。</p>
+<h3>相关方法发展脉络</h3>
+<h4>扩散模型</h4>
+<ul>
+<li>代表工作 :: Ho et al. (2020); Rombach et al. (2022); Peebles and Xie (2023)</li>
+<li>核心思想 :: 定义连续时间/空间的去噪过程，逐步逆转噪声生成数据</li>
+<li>优势 :: 生成质量高；劣势：推理成本高、迭代步数多</li>
+</ul>
+<h4>离散自回归模型</h4>
+<ul>
+<li>代表工作 :: Yu et al. (2022); Sun et al. (2024); Tian et al. (2024)</li>
+<li>核心思想 :: 将图像量化为离散 token，用 Transformer 自回归预测</li>
+<li>优势 :: 采样快、符合 LLM 缩放规律；劣势：量化损失导致保真度下降</li>
+</ul>
+<h4>连续像素空间自回归模型</h4>
+<ul>
+<li>代表工作 :: PixelRNN / PixelCNN (Van den Oord et al., 2016a,b); Image Transformer (Parmar et al., 2018); iGPT (Chen et al., 2020)</li>
+<li>核心思想 :: 直接在连续像素空间进行自回归建模，避免量化瓶颈</li>
+<li>劣势 :: 像素级序列极长，训练/采样缓慢，难以建模长距离空间结构</li>
+</ul>
+<h4>归一化流与自回归流</h4>
+<ul>
+<li>代表工作 :: NF (Tabak and Vanden-Eijnden, 2010; Rezende and Mohamed, 2015; Dinh et al., 2016); AF (Papamakarios et al., 2017; Kingma et al., 2016)</li>
+<li>核心思想 :: 通过可逆变换将数据分布映射到简单先验，支持精确最大似然训练；AF 引入自回归结构确保 Jacobian 可计算且逆变换高效</li>
+</ul>
+<h4>TARFlow 及其后续</h4>
+<ul>
+<li>代表工作 :: TARFlow (Zhai et al., 2024); STARFlow (Gu et al., 2025a); JetFormer (Zhang et al., 2025); 视频流模型 (Gu et al., 2025b)</li>
+<li>核心创新 :: 采用因果 Transformer 架构实现自回归流；使用加性高斯噪声（而非传统去量化噪声）训练；通过似然函数的梯度进行自去噪</li>
+<li>*引用链关键补充*：</li>
+</ul>
+<p>  - TARFlow (Zhai et al., 2024) 论文标题"Normalizing flows are capable generative models"本身就带有宣言性质，它证明了 NF 在图像生成上可以与扩散模型竞争；其核心 trick 是将传统 dequantization noise 替换为较大尺度的 additive Gaussian noise，这直接启发了 iTARFlow 的多噪声训练</p>
+<p>  - STARFlow (Gu et al., 2025a) 将 TARFlow 扩展到 latent 空间，采用 deep-shallow 架构（深层因果 Transformer + 浅层通道混合），这是 iTARFlow 模型架构的直接基础</p>
+<p>  - Tweedie's lemma (Robbins, 1992) 虽非 TARFlow 原创，但 TARFlow 首次将其用于 NF 去噪：利用自动微分计算分数，避免了单独训练分数网络</p>
+<h3>iTARFlow 与相关方法的关系和区别</h3>
+<tr><th>维度</th><th>关系</th><th>区别</th></tr>
+<tr><th>扩散模型</th><th>借鉴迭代去噪的推理范式</th><th>保持端到端似然训练目标，非分数匹配；去噪通过似然参数化的梯度实现</th></tr>
+<tr><th>离散自回归模型</th><th>共享自回归生成结构和 Transformer 可扩展性</th><th>在连续空间操作，无量化信息瓶颈</th></tr>
+<tr><th>连续像素自回归模型</th><th>同属连续空间自回归方法</th><th>基于可逆 NF 训练更稳定；采用 patch 级 token，序列更短</th></tr>
+<tr><th>TARFlow</th><th>直接继承基础架构</th><th>引入多噪声级训练和迭代去噪，解决"噪声困境"：小噪声导致纹理过度丰富但全局结构差，大噪声导致去噪后模糊</th></tr>
+<h2>前置知识</h2>
+<h3>Normalizing Flows :: 归一化流</h3>
+<p>:: 可逆神经网络变换，通过变量替换公式计算精确似然 ::</p>
+<p>归一化流通过可逆映射 \( z = f(x) \) 将复杂数据分布 \( p(x) \) 转换为简单基分布 \( p(z) \)（通常为标准高斯）。利用变量替换公式：</p>
+<p>\[ p(x) = p(z) \left| \det \frac{\partial f}{\partial x} \right| \]</p>
+<p>关键约束：变换必须可逆且 Jacobian 行列式可高效计算。</p>
+<h3>Autoregressive Flows :: 自回归流</h3>
+<p>:: 因果结构确保可处理的 Jacobian 行列式的归一化流变体 ::</p>
+<p>自回归流将联合分布分解为条件乘积：</p>
+<p>\[ p(x) = \prod_{i=1}^{D} p(x_i | x_{<i}) \]</p>
+<p>每个维度 \( x_i \) 的变换仅依赖于前序维度 \( x_{<i} \)，形成三角 Jacobian 矩阵，行列式等于对角线元素乘积，计算复杂度 \( O(D) \)。</p>
+<h3>TARFlow :: Transformer Autoregressive Flow</h3>
+<p>:: 基于因果 Transformer 的自回归流，使用 additive Gaussian noise 替代 dequantization noise ::</p>
+<p>TARFlow 核心特点：</p>
+<ul>
+<li>使用**因果 Transformer**（causal Transformer）建模条件分布</li>
+<li>采用**additive Gaussian noise**进行数据增强，替代传统 dequantization</li>
+<li>训练目标为去噪条件似然：\( \log p(x | \tilde{x}) \)，其中 \( \tilde{x} = x + \sigma \epsilon \)</li>
+</ul>
+<h3>Tweedie's Lemma :: Tweedie 估计引理</h3>
+<p>:: 从噪声数据估计清晰样本的贝叶斯估计器 ::</p>
+<p>给定噪声观测 \( \tilde{x} = x + \sigma \epsilon \)，其中 \( \epsilon \sim \mathcal{N}(0, I) \)，Tweedie's lemma 给出：</p>
+<p>\[ \mathbb{E}[x | \tilde{x}] = \tilde{x} + \sigma^2 \nabla_{\tilde{x}} \log p(\tilde{x}) \]</p>
+<p>即：清晰样本的期望估计 = 噪声输入 + 噪声方差 × 分数函数（对数似然梯度）。</p>
+<h3>Score-based Denoising :: 基于分数的去噪</h3>
+<p>:: 利用似然对输入的导数（分数函数）进行去噪的方法 ::</p>
+<p>分数函数定义为：\( \mathbf{s}(\tilde{x}) = \nabla_{\tilde{x}} \log p(\tilde{x}) \)</p>
+<p>去噪操作通过 Tweedie's lemma 实现：</p>
+<ul>
+<li>估计噪声：\( \hat{\epsilon} = -\sigma \mathbf{s}(\tilde{x}) \)</li>
+<li>去噪样本：\( \hat{x} = \tilde{x} + \sigma^2 \mathbf{s}(\tilde{x}) \)</li>
+</ul>
+<h3>Diffusion Models :: 扩散模型</h3>
+<p>:: 通过多噪声水平训练和迭代去噪生成样本的生成模型 ::</p>
+<p>核心概念：</p>
+<ul>
+<li>**前向过程**：逐步添加高斯噪声，噪声水平由小到大（\( \sigma_1 < \sigma_2 < ... < \sigma_T \)）</li>
+<li>**反向过程**：学习去噪，从纯噪声逐步恢复清晰样本</li>
+<li>**噪声条件**：模型接收噪声水平 \( \sigma \) 作为条件输入</li>
+<li>**训练目标**：预测噪声或分数函数，通常使用去噪得分匹配（Denoising Score Matching）</li>
+</ul>
+<p>与归一化流的区别：扩散模型不保证可逆性，不计算精确似然；归一化流要求严格可逆。</p>
+<h2>阅读前疑问</h2>
+<ul>
+<li>iTARFlow 与扩散模型的本质区别是什么？</li>
+</ul>
+<p>  - 扩散模型使用分数匹配训练去噪网络，而 iTARFlow 保持端到端的似然训练目标，去噪通过似然参数化的梯度实现</p>
+<ul>
+<li>多噪声训练如何具体实现？</li>
+</ul>
+<p>  - 在噪声水平范围 \([0, t_{\max}]\) 上训练共享网络，所有噪声水平共享同一网络参数</p>
+<ul>
+<li>迭代去噪的分数如何计算？</li>
+</ul>
+<p>  - 分数直接计算为损失函数对输入的导数：\( \nabla_{x_t} \log p_\theta(x_t) = -\nabla_{x_t} \mathcal{L}(x_t; \theta) \)</p>
+<ul>
+<li>噪声困境（noise dilemma）的具体表现是什么？</li>
+</ul>
+<p>  - 小噪声导致纹理过度丰富但全局结构差；大噪声导致全局结构准确但细节模糊</p>
+<ul>
+<li>iTARFlow 能否扩展到离散数据（如文本、图结构）？</li>
+</ul>
+<p>  - 当前框架主要针对连续数据，扩展到离散数据是未来方向</p>
+<h2>面临问题及 Insights</h2>
+<h3>核心问题</h3>
+<p>TARFlow 在训练时向输入图像添加高斯噪声，但噪声水平的选择面临一个根本性的两难困境：单一噪声水平无法同时保证生成图像的全局结构准确性和局部细节丰富度。</p>
+<h3>Noise Dilemma 现象</h3>
+<tr><th>噪声水平</th><th>生成效果</th><th>原因</th></tr>
+<tr><th>太小 (\( \sigma \to 0 \))</th><th>局部纹理丰富，全局结构差</th><th>模型过度关注高频细节，忽视整体布局</th></tr>
+<tr><th>太大 (\( \sigma \to 1 \))</th><th>全局结构准确，细节模糊/伪影</th><th>强噪声抹除细节，模型只能恢复粗略结构</th></tr>
+<p>这一现象由 <strong>Tweedie's lemma</strong> 预测：去噪目标 \( \mathbb{E}[x|y] \) 的行为随噪声水平变化——低噪声时估计量接近带噪输入，高噪声时则趋向数据均值。</p>
+<h3>关键洞察与解决思路</h3>
+<p><em>核心洞察</em>：不同噪声水平对应不同的生成"regime"，各自擅长不同尺度的内容生成。单一噪声训练迫使模型在两种失败模式间妥协，而非真正解决矛盾。</p>
+<p><em>解决思路（iTARFlow）</em>：</p>
+<ol>
+<li>**训练阶段**：在多个噪声水平上同时训练 TARFlow</li>
+<li>**采样阶段**：采用迭代去噪策略</li>
+</ol>
+<p>   - 先用<strong>大噪声</strong>生成全局结构（低分辨率、语义正确的布局）</p>
+<p>   - 再用<strong>小噪声</strong>迭代恢复细节（高分辨率纹理、局部特征）</p>
+<ol>
+<li>**效果**：结合两种 regime 的优势——大噪声的结构准确性 + 小噪声的细节丰富度</li>
+</ol>
+<p><em>本质</em>：将"噪声选择"从训练时的静态参数，转变为采样时的动态过程，通过迭代逐步降低噪声水平，实现从粗到精的生成。</p>
+<h2>模型和方法</h2>
+<h3>整体结构</h3>
+<p>iTARFlow 基于 <strong>TARFlow</strong>（Transformer-based Autoregressive Flow），由 \( L \) 个堆叠的<strong>因果 Transformer 块</strong>（causal Transformer blocks）组成，构成一个<strong>可逆归一化流</strong>（Invertible Normalizing Flow）。</p>
+<p>每个块 \( f^\ell \) 输出仿射变换参数：</p>
+<p>\[ \mu_\theta^\ell, \quad \sigma_\theta^\ell \]</p>
+<p>使得前向变换为：</p>
+<p>\[ z^\ell = \frac{x - \mu_\theta^\ell}{\sigma_\theta^\ell}, \quad x = \sigma_\theta^\ell \odot z^\ell + \mu_\theta^\ell \]</p>
+<p>其中 \( z^\ell \) 为潜变量，\( \odot \) 表示逐元素乘法。</p>
+<div class="photo"><img src="assets/media/images/itarflow/image_000001_d5b226678d504ca5086381a4c3bd6450cab6a08580347a69c44af3434f34ed9f.png" alt=""></div>
+<h3>与标准 TARFlow 的关键区别</h3>
+<tr><th>特性</th><th>标准 TARFlow</th><th>iTARFlow</th></tr>
+<tr><th>训练数据</th><th>干净数据分布 \( p(x) \)</th><th>**多噪声水平** \( p_t(x_t) \)，\( t \in [0, t_{\max}] \)</th></tr>
+<tr><th>网络共享</th><th>单网络</th><th>**共享网络**处理所有噪声水平</th></tr>
+<tr><th>采样方式</th><th>直接自回归生成</th><th>**自回归生成 + 迭代去噪**两阶段</th></tr>
+<tr><th>分数估计</th><th>无显式分数</th><th>**通过似然自动微分获得分数**</th></tr>
+<h3>训练过程</h3>
+<h4>噪声水平定义</h4>
+<p>定义噪声数据分布：</p>
+<p>\[ x_t = x + \epsilon_t, \quad \epsilon_t \sim \mathcal{N}(0, t^2 I) \]</p>
+<p>其中 \( t \in [0, t_{\max}] \) 为噪声水平，\( t=0 \) 对应干净数据。</p>
+<h4>训练目标</h4>
+<p>在噪声数据分布上最大化似然（含噪声水平重加权 \(\gamma_t := t\)）：</p>
+<p>\[ \mathcal{L}(\theta) = \mathbb{E}_{t \sim [t_{\min}, t_{\max}]} \mathbb{E}_{x_t \sim p_t(x_t)} \left[ \gamma_t \log p_\theta(x_t, t) \right] \]</p>
+<p>其中 \( \gamma_t := t \) 为简化且数值稳定的重加权项（原文 §3.1 指出不同 \(\gamma_t\) 选择性能相近）。</p>
+<p>由于 TARFlow 的可逆性，对数似然可通过变量替换公式计算：</p>
+<p>\[ \log p_\theta(x_t) = \log p_Z(z) + \sum_{\ell=1}^{L} \log |\det J_{f^\ell}| \]</p>
+<p>其中 \( z = f_\theta(x_t) \) 为潜变量，\( p_Z(z) \) 通常为标准高斯分布，\( J_{f^\ell} \) 为第 \( \ell \) 个变换的雅可比矩阵。</p>
+<h4>共享网络训练</h4>
+<p>所有噪声水平<strong>共享同一网络参数</strong> \( \theta \)，网络需要学习：</p>
+<ul>
+<li>对不同噪声水平的条件响应</li>
+<li>从噪声数据到潜变量的可逆映射</li>
+</ul>
+<h3>采样过程</h3>
+<h4>两阶段采样</h4>
+<p><em>阶段一：自回归生成噪声样本</em></p>
+<p>从先验分布采样潜变量 \( z \sim p_Z(z) \)，通过逆变换自回归生成噪声样本：</p>
+<p>\[ x_{t_{\max}} = f_\theta^{-1}(z) \]</p>
+<p><em>阶段二：迭代去噪</em></p>
+<p>利用参数化似然对噪声水平进行<strong>自动微分</strong>，迭代去噪遵循与 Flow Matching / DDIM 相关的概率 ODE：</p>
+<p>\[ x_{t-\Delta t} = x_t - \frac{\Delta t}{t} \cdot \sigma_\theta^2(x_t, t) \cdot \nabla_{x_t} \log p_\theta(x_t) \]</p>
+<p>其中分数（score）直接计算为损失函数对输入的导数：</p>
+<p>\[ \nabla_{x_t} \log p_\theta(x_t) = -\nabla_{x_t} \mathcal{L}(x_t; \theta) \]</p>
+<h4>与扩散模型的联系</h4>
+<tr><th>特性</th><th>扩散模型（DDPM/DDIM）</th><th>iTARFlow</th></tr>
+<tr><th>分数来源</th><th>单独训练分数网络 \( s_\theta(x_t, t) \)</th><th>**从似然自动微分获得**</th></tr>
+<tr><th>参数化</th><th>噪声预测或分数预测</th><th>**归一化流参数化**</th></tr>
+<tr><th>去噪基础</th><th>变分推断</th><th>**基于似然的迭代细化**</th></tr>
+<h3>关键技术细节</h3>
+<h4>因果 Transformer 块</h4>
+<p>每个因果 Transformer 块确保自回归性质，即第 \( i \) 维的输出仅依赖于前 \( i-1 \) 维的输入：</p>
+<p>\[ \mu_{\theta,i}^\ell = \mu_\theta^\ell(x_{<i}), \quad \sigma_{\theta,i}^\ell = \sigma_\theta^\ell(x_{<i}) \]</p>
+<h4>分数计算</h4>
+<p>分数通过似然函数的梯度自动获得，无需额外训练：</p>
+<p>\[ \nabla_{x_t} \log p_\theta(x_t) = \nabla_{x_t} \left( \log p_Z(f_\theta(x_t)) + \sum_{\ell=1}^{L} \log \sigma_\theta^\ell \right) \]</p>
+<p>这一性质使得 iTARFlow 能够：</p>
+<ul>
+<li>避免显式分数估计的不稳定性</li>
+<li>利用流的精确似然进行迭代细化</li>
+<li>在采样阶段实现确定性的迭代去噪</li>
+</ul>
+<h2>训练</h2>
+<h3>数据集与设置</h3>
+<ul>
+<li>数据集 :: ImageNet，训练于 64×64、128×128、256×256 三种分辨率</li>
+<li>Patch size :: 分辨率 256 使用 8×8，128 使用 4×4，64 使用 2×2</li>
+<li>条件 :: 使用类别条件（class conditioning）</li>
+</ul>
+<h3>训练目标</h3>
+<ul>
+<li>在噪声数据分布上最大化对数似然（log-likelihood）</li>
+<li>多噪声水平训练：噪声水平范围 \([0, t_{\max}]\)</li>
+<li>使用共享网络处理不同噪声水平</li>
+</ul>
+<h3>模型架构</h3>
+<ul>
+<li>由 \( L \) 个因果 Transformer 块（causal Transformer blocks）组成</li>
+</ul>
+<h3>超参数（已知）</h3>
+<tr><th>分辨率</th><th>Patch size</th><th>序列长度</th><th>噪声水平范围</th><th>t_max</th></tr>
+<tr><th>64×64</th><th>2×2 (Resolution/32)</th><th>1024</th><th>\([t_{\min}, t_{\max}]\)</th><th>0.3</th></tr>
+<tr><th>128×128</th><th>4×4 (Resolution/32)</th><th>1024</th><th>\([t_{\min}, t_{\max}]\)</th><th>0.5</th></tr>
+<tr><th>256×256</th><th>8×8 (Resolution/32)</th><th>1024</th><th>\([t_{\min}, t_{\max}]\)</th><th>0.7</th></tr>
+<ul>
+<li>注：Pixel-space 实验 patch size 固定为 Resolution/32，确保不同分辨率下序列长度恒定（N=1024）</li>
+</ul>
+<h3>训练细节（来自论文 §4）</h3>
+<ul>
+<li>优化器 :: AdamW，momentum coefficients (0.9, 0.95)</li>
+<li>学习率 :: Cosine schedule，warmup 从 \(10^{-6}\) 到 \(10^{-4}\)（第一个 epoch），之后衰减回 \(10^{-6}\)</li>
+<li>Weight decay :: \(10^{-4}\)</li>
+<li>Batch size :: 1024</li>
+<li>训练 epoch :: 原文未明确总步数，但提到收敛仅需约 600 epochs（对比 DiT 的 1400 epochs）</li>
+<li>噪声水平范围 :: \([t_{\min}, t_{\max}]\)，其中 \( t_{\min} = 0.01 \)</li>
+<li>噪声调度 :: 训练时从 \([t_{\min}, t_{\max}]\) 均匀采样噪声水平；使用 reweighting term \(\gamma_t := t\)</li>
+<li>时间条件 :: Fourier time conditioning + log-scaled timestep embedding（遵循 EDM 设计）</li>
+<li>类别条件注入 :: 通过可学习的类别嵌入向量与每个 token 相加；仅在第一层因果 Transformer 应用 patch-wise Classifier-Free Guidance (CFG)</li>
+<li>模型规模（Pixel-space）::</li>
+</ul>
+<p>  - L = 4 层因果 Transformer（所有分辨率）</p>
+<p>  - Small (S)：attention layers [2,2,2,12]，channel size 1280，参数量约 350M</p>
+<p>  - Big (B)：attention layers [4,4,4,24]，channel size 1280，参数量约 770M</p>
+<p>  - Large (L)：attention layers [4,4,4,24]，channel size 1600，参数量约 1.2B</p>
+<p>  - Extra Large (XL)：attention layers [4,4,4,24]，channel size 2176，参数量约 2.2B</p>
+<ul>
+<li>数据增强 :: 随机水平翻转</li>
+<li>层间置换 :: 相邻流层之间使用 flip permutation \(\pi(n) = N-n+1\)，体积保持（\(|\det P_\pi| = 1\)）</li>
+</ul>
+<h3>与 TARFlow 的训练对比</h3>
+<tr><th>配置</th><th>TARFlow</th><th>iTARFlow</th></tr>
+<tr><th>噪声水平</th><th>单一 \( t_{\max} \)</th><th>多噪声范围 \([0, t_{\max}]\)</th></tr>
+<tr><th>网络共享</th><th>单网络单噪声</th><th>共享网络多噪声</th></tr>
+<tr><th>训练目标</th><th>单一噪声似然</th><th>多噪声期望似然</th></tr>
+<h2>实验</h2>
+<h3>实验设置</h3>
+<ul>
+<li>数据集 :: ImageNet（64×64、128×128、256×256 三种分辨率）</li>
+<li>评估指标 :: FID（Fréchet Inception Distance）、NLL（negative log-likelihood）</li>
+<li>Baseline 方法 :: 之前的 TARFlow 变体、扩散模型、离散自回归模型</li>
+</ul>
+<h3>评估指标</h3>
+<ul>
+<li>FID :: 衡量生成图像与真实图像分布之间的距离，越低越好</li>
+<li>NLL :: 负对数似然，衡量模型对数据的概率建模能力</li>
+</ul>
+<h3>Baseline 方法</h3>
+<ul>
+<li>之前的 TARFlow 变体</li>
+<li>扩散模型（如 DDPM、DDIM、EDM）</li>
+<li>离散自回归模型</li>
+<li>其他归一化流方法（如 Glow、Flow++）</li>
+</ul>
+<div class="photo"><img src="assets/media/images/itarflow/image_000002_328b59f550eef65f1fd93259383f7938adb496ff296c12fd39a2b07a7823f2a7.png" alt=""></div>
+<h3>主要结果（来自论文 §4.1，Table 3/4/5）</h3>
+<p><em>注：以下数值严格来自原文表格；原文未报告 NLL/bits/dim 的具体数值。</em></p>
+<h4>ImageNet 64×64（Pixel-space）</h4>
+<tr><th>方法</th><th>FID ↓</th><th>参数量</th></tr>
+<tr><th>EDM-SDE (511 NFE)</th><th>1.55</th><th>300M</th></tr>
+<tr><th>ADM (dropout)</th><th>2.09</th><th>554M</th></tr>
+<tr><th>iDDPM</th><th>2.92</th><th>300M</th></tr>
+<tr><th>TARFlow</th><th>2.66</th><th>880M</th></tr>
+<tr><th>iTARFlow-S (Ours)</th><th>2.05</th><th>350M</th></tr>
+<tr><th>iTARFlow-B (Ours)</th><th>**1.68**</th><th>770M</th></tr>
+<h4>ImageNet 128×128（Pixel-space）</h4>
+<tr><th>方法</th><th>FID ↓</th><th>参数量</th></tr>
+<tr><th>Simple Diff</th><th>1.94</th><th>2B</th></tr>
+<tr><th>ADM-G (511 NFE)</th><th>2.97</th><th>554M</th></tr>
+<tr><th>RIN</th><th>2.75</th><th>410M</th></tr>
+<tr><th>CDM</th><th>3.52</th><th>-</th></tr>
+<tr><th>TARFlow</th><th>5.03</th><th>1.3B</th></tr>
+<tr><th>iTARFlow-L (Ours)</th><th>**2.44**</th><th>1.2B</th></tr>
+<h4>ImageNet 256×256（Latent-space）</h4>
+<tr><th>方法</th><th>FID ↓</th><th>参数量</th></tr>
+<tr><th>REPA</th><th>1.94</th><th>675M+86M</th></tr>
+<tr><th>SiT-XL</th><th>2.06</th><th>675M+86M</th></tr>
+<tr><th>DiT-XL</th><th>2.27</th><th>675M+86M</th></tr>
+<tr><th>GIVT</th><th>2.59</th><th>1.67B+53M</th></tr>
+<tr><th>STARFlow</th><th>2.40</th><th>1.4B+86M</th></tr>
+<tr><th>iTARFlow-B (Ours)</th><th>**2.32**</th><th>770M+86M</th></tr>
+<h4>ImageNet 256×256（Pixel-space）</h4>
+<tr><th>方法</th><th>FID ↓</th><th>参数量</th></tr>
+<tr><th>SiD2 patch 1</th><th>1.38</th><th>-</th></tr>
+<tr><th>PixNerd-XL</th><th>1.93</th><th>700M</th></tr>
+<tr><th>Simple-Diff (UViT)</th><th>2.77</th><th>2B</th></tr>
+<tr><th>FARMER-Patch8</th><th>3.60</th><th>1.9B</th></tr>
+<tr><th>TARFlow</th><th>5.56</th><th>1.3B</th></tr>
+<tr><th>STARFlow</th><th>4.69</th><th>1.4B</th></tr>
+<tr><th>iTARFlow-XL (Ours)</th><th>**3.32**</th><th>2.2B</th></tr>
+<h3>关键发现</h3>
+<ul>
+<li>iTARFlow 在所有分辨率上均显著优于单噪声 TARFlow 变体</li>
+<li>ImageNet-64 上，iTARFlow-B（770M 参数，FID 1.68）接近 EDM-SDE（300M 参数，FID 1.55）</li>
+<li>ImageNet-256 latent-space 上，iTARFlow-B（770M+86M，FID 2.32）优于 STARFlow（1.4B+86M，FID 2.40），且接近 SiT-XL（675M+86M，FID 2.06）</li>
+<li>ImageNet-256 pixel-space 上，iTARFlow-XL（2.2B，FID 3.32）显著优于 TARFlow（1.3B，FID 5.56）和 STARFlow（1.4B，FID 4.69），但仍落后于最优扩散模型</li>
+<li>作者指出 pixel-space 的部分性能差距可归因于少量 collapsed samples 对 FID 的影响（见 §4.3）</li>
+</ul>
+<h3>消融实验（§4.2，具体数值）</h3>
+<h4>迭代去噪策略对比（Table 6，ImageNet-64，t=0.3）</h4>
+<tr><th>模型与去噪策略</th><th>FID ↓</th></tr>
+<tr><th>TARFlow-S + self-denoiser</th><th>5.22</th></tr>
+<tr><th>TARFlow-S + iTARFlow-S iterative denoiser</th><th>2.08</th></tr>
+<tr><th>iTARFlow-S + iterative denoiser</th><th>**2.05**</th></tr>
+<ul>
+<li>*发现*：将 TARFlow 的 self-denoiser 替换为 iTARFlow 的 iterative denoiser，FID 从 5.22 降至 2.08，改善超过 60%</li>
+<li>*发现*：iTARFlow 训练得到的分数估计器具有良好的泛化性，可作为通用 denoiser 用于其他 TARFlow 模型</li>
+</ul>
+<h4>与 DiT 分数估计器对比（Table 7，ImageNet-256 Latent-space，t=0.5）</h4>
+<tr><th>模型与去噪策略</th><th>FID ↓</th></tr>
+<tr><th>STARFlow-B + finetune decoder</th><th>2.48</th></tr>
+<tr><th>STARFlow-B + DiT iterative denoiser</th><th>2.54</th></tr>
+<tr><th>iTARFlow-B + iterative denoiser</th><th>2.32</th></tr>
+<tr><th>iTARFlow-B + DiT iterative denoiser</th><th>**2.28**</th></tr>
+<ul>
+<li>*发现*：iTARFlow 的分数估计质量与 DiT 相当，但训练效率更高（600 epochs vs DiT 的 1400 epochs）</li>
+<li>*发现*：iTARFlow 可与预训练 DiT denoiser 无缝集成且无明显性能损失，而 STARFlow 与 DiT 集成时性能会下降</li>
+</ul>
+<div class="photo"><img src="assets/media/images/itarflow/image_000003_8a38491d2a25528f7815c84b4a1ee859ffcb279509d0bcadfb22f845acc90521.png" alt=""></div>
+<div class="photo"><img src="assets/media/images/itarflow/image_000005_5092ec8237106190139d55d4856243f1607c14d55742f8f78fff489ac5ee84ab.png" alt=""></div>
+<h4>其他消融（来自 Figure 5/6）</h4>
+<ul>
+<li>迭代去噪步数 :: 5 步即可产生视觉上高质量的样本，10 步达到最优 FID；超过 10 步边际收益递减</li>
+<li>t_max 选择 :: 更大的 t_max 通常带来更好的性能；64→0.3, 128→0.5, 256 pixel→0.7, 256 latent→0.5</li>
+<li>Patch size 与 CFG :: 更大 patch size 需要更强的 Classifier-Free Guidance scale（Figure 6）</li>
+</ul>
+<div class="photo"><img src="assets/media/images/itarflow/image_000006_de8ccdd9f72b6a6733facba758f123309066aa314dd74157cbba04a899180f7d.png" alt=""></div>
+<h2>效果</h2>
+<h3>失败案例与局限性（§4.3）</h3>
+<p>论文在 50k 个用于 FID 计算的生成样本中（pixel-space ImageNet-256），观察到两种特定的、反复出现的失败模式：</p>
+<ol>
+<li>**Collapsed background（背景塌陷）** :: 模型产生完全黑色的背景。作者假设这与大 patch 实验中使用的较高 CFG scale 有关（Figure 6）。可通过设计更简洁、更原则的 guidance 方案来缓解。</li>
+</ol>
+<ol>
+<li>**Bottom-right blur（右下角模糊）** :: 模糊样本共享一致的结构特征——右下角区域（对应自回归生成的第一个连续 token）出现特征性的 distortion。原因：第一个 token 在没有任何前置条件上下文的情况下生成，容易偏离训练分布；该 out-of-distribution 的初始预测会将误差传播到后续 token。随着 patch 维度增大（如 256×256 使用 8×8 patch），此效应被放大，导致高分辨率下失败率升高。</li>
+</ol>
+<div class="photo"><img src="assets/media/images/itarflow/image_000007_6be3911dd1784faee6f01669f849c48a991f67a28feeb71674eb17dd441f494d.png" alt=""></div>
+<h3>计算成本与局限性</h3>
+<ul>
+<li>GPU 内存 :: 迭代去噪阶段的自动微分（autograd）会消耗*显著*的 GPU 内存，因为它需要对整个网络进行反向传播。这是该方法的主要计算瓶颈（原文 Sec 5 明确说明）。</li>
+<li>步数权衡 :: 5 步即可产生视觉高质量样本，10 步达到最优 FID；增加步数可进一步改善质量，但计算成本线性增长。</li>
+<li>与 SOTA 的差距 :: 在 256×256 pixel-space 上，iTARFlow-XL FID 3.32 仍落后于 SiD2（1.38）和 PixNerd-XL（1.93）。</li>
+</ul>
+<h3>与 SOTA 的对比总结</h3>
+<tr><th>分辨率</th><th>iTARFlow FID</th><th>SOTA (非 NF)</th><th>差距</th></tr>
+<tr><th>64×64</th><th>1.68 (B, 770M)</th><th>EDM-SDE 1.55 (300M)</th><th>⚠️ 接近</th></tr>
+<tr><th>128×128</th><th>2.44 (L, 1.2B)</th><th>Simple Diff 1.94 (2B)</th><th>⚠️ 接近</th></tr>
+<tr><th>256×256 Latent</th><th>2.32 (B, 770M+86M)</th><th>REPA 1.94 (675M+86M)</th><th>⚠️ 接近</th></tr>
+<tr><th>256×256 Pixel</th><th>3.32 (XL, 2.2B)</th><th>SiD2 1.38</th><th>❌ 落后</th></tr>
+<ul>
+<li>iTARFlow 在较低分辨率和 latent-space 上具有竞争力，但在 256×256 pixel-space 上仍落后于最优扩散模型</li>
+<li>作者认为部分差距可归因于 collapsed samples 对 FID 的负面影响，解决 artifacts 有望进一步提升指标</li>
+</ul>
+<h2>结论</h2>
+<h3>主要结论</h3>
+<ul>
+<li>**Noise Dilemma 是 NF 训练的根本瓶颈**：归一化流在训练时添加噪声以提升泛化能力，但推理时去除噪声会导致分布偏移和性能下降，这一矛盾限制了 NF 的生成质量上限。</li>
+<li>**多噪声训练 + 迭代去噪推理可有效缓解该问题**：通过在训练阶段同时优化多个噪声水平下的流模型，并在推理时进行基于似然的迭代去噪，iTARFlow 显著改善了 NF 的生成性能。</li>
+<li>**iTARFlow 在 ImageNet 上达到 NF 领域 SOTA**：在多个分辨率上，iTARFlow 取得了与当前最优生成模型相竞争的结果，显著缩小了 NF 与 SOTA 的差距。</li>
+<li>**迭代去噪的步数与质量存在权衡**：增加迭代步数可进一步提升样本质量，但计算成本线性增长。</li>
+</ul>
+<h3>核心贡献</h3>
+<tr><th>#</th><th>贡献</th><th>说明</th></tr>
+<p>|---|------|------|</p>
+<tr><th>1</th><th>**Noise Dilemma 的形式化表征**</th><th>首次系统识别并量化了 NF 训练中"训练加噪-推理去噪"的内在矛盾</th></tr>
+<tr><th>2</th><th>**多噪声训练方案**</th><th>提出在单一流模型中同时学习多个噪声水平下的可逆映射，增强模型鲁棒性</th></tr>
+<tr><th>3</th><th>**基于似然的迭代去噪推理**</th><th>设计了一种利用流模型精确似然计算进行迭代去噪的新推理流程</th></tr>
+<tr><th>4</th><th>**SOTA 性能验证**</th><th>iTARFlow 在 ImageNet 多分辨率上刷新 NF 方法的最优指标</th></tr>
+<tr><th>5</th><th>**失败案例与方向分析**</th><th>深入分析迭代去噪失败的样本类型，为后续改进提供明确方向</th></tr>
+<h2>收获</h2>
+<h3>噪声水平选择的"两难困境"（Noise Dilemma）</h3>
+<ul>
+<li>*核心发现*：低噪声水平（\( \sigma \to 0 \)）时，流模型难以学习高维分布；高噪声水平（\( \sigma \to \infty \)）时，虽然训练稳定但生成质量下降</li>
+<li>*iTARFlow 的解决*：通过迭代去噪策略，在不同噪声水平间平滑过渡，每个步骤只需处理"适度困难"的分布变换</li>
+<li>*实践启示*：在设计生成模型时，不应将噪声视为需要一次性消除的干扰，而应作为多尺度学习的资源。类似思想可迁移到图像超分辨率的多尺度重建、语音合成的逐层细化、科学模拟的多分辨率求解</li>
+</ul>
+<h3>多尺度训练的优势互补</h3>
+<ul>
+<li>*关键观察*：不同噪声水平对应不同的学习 regime</li>
+</ul>
+<p>  - 高噪声：学习全局结构、语义一致性</p>
+<p>  - 低噪声：学习精细纹理、局部细节</p>
+<ul>
+<li>*iTARFlow 的机制*：通过时间相关的条件化（time-dependent conditioning），让模型在不同阶段专注于不同尺度的特征</li>
+<li>*实践启示*：这种"分而治之"的策略可以泛化到其他领域，如强化学习中不同时间尺度的策略分解、蛋白质折叠中从粗粒度到细粒度的结构预测、代码生成中从架构设计到具体实现的层次化生成</li>
+</ul>
+<h3>似然模型与分数模型的统一视角</h3>
+<ul>
+<li>*核心洞察*：传统上，归一化流（似然模型）和扩散模型（分数模型）被视为两个独立范式</li>
+<li>*iTARFlow 的突破*：证明分数函数可以从似然参数化中直接导出，即 \( \nabla_x \log p(x) \) 可以通过流的 Jacobian 计算得到</li>
+<li>*数学基础*：利用变量替换公式，\( p(x) = p(z)|\det J_f(x)| \)，其中 \( f \) 是可逆变换</li>
+<li>*实践启示*：</li>
+</ul>
+<p>  - 不再需要单独训练分数估计网络</p>
+<p>  - 似然训练提供了更稳定的优化目标（对比分数匹配的数值不稳定性）</p>
+<p>  - 为混合生成模型设计提供了理论基础</p>
+<h3>自回归 + 并行去噪的两阶段策略</h3>
+<ul>
+<li>*设计动机*：纯自回归生成虽然质量高但速度慢；纯并行生成虽然快但质量受限</li>
+<li>*iTARFlow 的方案*：</li>
+</ul>
+<p>  1. <strong>自回归阶段</strong>：生成粗略的潜在表示，建立全局结构</p>
+<p>  2. <strong>并行去噪阶段</strong>：在潜在空间进行迭代细化，加速局部细节生成</p>
+<ul>
+<li>*效率分析*：相比纯自回归，速度提升与并行化程度成正比；相比纯并行，质量提升来自自回归的全局一致性保证</li>
+<li>*实践启示*：这种"粗略到精细"的两阶段框架具有广泛适用性，如文本生成（先生成大纲，再扩展段落）、分子设计（先确定骨架，再优化侧链）、电路设计（先布局模块，再优化连线）</li>
+</ul>
+<h3>对未来工作的启示</h3>
+<ul>
+<li>*理论方向*：探索迭代去噪的最优步数与分布复杂度之间的关系，建立计算效率的理论界限</li>
+<li>*算法方向*：将 iTARFlow 的思想扩展到离散数据（如文本、图结构），当前框架主要针对连续数据</li>
+<li>*应用方向*：在需要精确似然计算的场景（如异常检测、压缩）中，iTARFlow 提供了比纯扩散模型更优的选择</li>
+<li>*工程方向*：开发自适应噪声调度策略，根据当前样本的"难度"动态调整去噪步长</li>
+</ul>

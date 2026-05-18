@@ -1,0 +1,462 @@
+---
+title: "GRN: 生成式细化网络"
+description: "ByteDance 提出 GRN，通过 HBQ 分层二值量化、全局细化机制和熵引导采样，在 ImageNet 256×256 上实现 rFID 0.56 和 gFID 1.81，刷新视觉合成 SOTA。"
+date: 2026-04-23
+tags: [visual_synthesis, generative_model, autoregressive, tokenization, quantization, diffusion]
+categories: [论文精读]
+mathjax: true
+hero_title: "GRN"
+hero_sub: "生成式细化网络"
+---
+
+<p>:ID:       7D3F818C-2AD0-4757-8584-7FF6644EE854</p>
+<h2>参考链接</h2>
+<h3>参考链接</h3>
+<ul>
+<li>arXiv 页面 :: https://arxiv.org/abs/2604.13030v1</li>
+<li>PDF 下载 :: https://arxiv.org/pdf/2604.13030v1</li>
+<li>代码仓库 :: https://github.com/MGenAI/GRN</li>
+<li>机构 :: ByteDance</li>
+</ul>
+<h3>作者信息</h3>
+<tr><th>作者</th><th>邮箱</th></tr>
+<tr><th>Jian Han</th><th>hanjian.thu123@bytedance.com</th></tr>
+<tr><th>Jinlai Liu</th><th>liujinlai.licio@bytedance.com</th></tr>
+<tr><th>Jiahuan Wang</th><th>wangjiahuan.123@bytedance.com</th></tr>
+<tr><th>Bingyue Peng</th><th>bingyue.peng@bytedance.com</th></tr>
+<tr><th>Zehuan Yuan (通讯作者)</th><th>yuanzehuan@bytedance.com</th></tr>
+<h2>简介</h2>
+<p>GRN（Generative Refinement Networks）是 ByteDance 提出的下一代视觉合成框架，旨在解决当前两大主流范式的核心缺陷：</p>
+<ol>
+<li>*扩散模型*虽然主导视觉生成，但通过 MSE 优化、缺乏显式似然估计，只能使用固定步数推理，无法根据样本复杂度自适应分配计算资源。</li>
+<li>*自回归（AR）模型*虽然天然具有复杂度感知能力（表现为可变似然），但受限于有损离散 token 化和严格因果预测机制导致的误差累积，且无法回溯修正先前错误。</li>
+</ol>
+<p>GRN 提出三大核心创新：</p>
+<ul>
+<li>**HBQ（Hierarchical Binary Quantization）**：分层二值量化，量化误差以指数衰减（$e_j < 1/2^j$），首次使离散 tokenizer 在相同 latent 维度下匹敌连续 tokenizer，ImageNet 256×256 上 rFID 达 0.56。</li>
+<li>**全局细化机制**：突破 AR 模型的因果性限制，允许模型像人类画家一样在后续步骤中回溯修正先前生成的 token，从根本上解决误差累积问题。</li>
+<li>**熵引导采样**：以 token 分布的熵作为复杂度指标，动态分配生成步数，实现“简单样本少步、复杂样本多步”的自适应计算分配。</li>
+</ul>
+<p>实验结果：ImageNet 256×256 上 rFID 0.56（重建）和 gFID 1.81（生成）均创下新纪录，并成功扩展到 1024×1024 文本到图像和 480p 文本到视频生成。</p>
+<p>来源：Abstract, §1 Introduction</p>
+<div class="photo"><img src="assets/media/images/grn/image_000000_5ede9083fc712696a122822c9c93310360f2c04f3591aedb7f7620ab10adcab8.png" alt=""></div>
+<h2>相关工作</h2>
+<h3>视觉 Tokenizer (Visual Tokenizers)</h3>
+<ul>
+<li>视觉 Tokenizer :: 将高维连续视觉数据压缩为离散 Token 表示的编码器-解码器架构，是生成模型的基础组件。</li>
+</ul>
+<p>现有方法主要分为两类：</p>
+<ul>
+<li>*向量量化方法* :: VQVAE、VQGAN 等通过可学习码本将连续特征映射为离散索引，但受限于码本规模，重建质量有限。</li>
+<li>*无查找表方法* :: BSQ、FSQ 等通过分解量化空间避免显式码本，支持更大词汇表，但仍与连续表示存在性能差距。</li>
+</ul>
+<p>近期趋势 :: Infinity、BitDance 等工作通过大幅扩展词汇表规模超越了连续 VAE，但代价是收敛速度变慢和生成模型体积增大。GRN 提出的 HBQ 通过分层二值量化，在不增加通道数的情况下实现指数级误差衰减，首次使离散 Tokenizer 在相同潜在维度下与连续 Tokenizer 持平。</p>
+<h3>自回归视觉生成模型 (Autoregressive Models for Visual Synthesis)</h3>
+<ul>
+<li>自回归视觉生成 :: 受大语言模型启发，将视觉生成建模为序列预测任务的方法范式。</li>
+</ul>
+<p>代表性工作：</p>
+<ul>
+<li>*逐 Token 预测* :: VQGAN、LlamaGen、VideoPoet 等按光栅扫描顺序逐个预测视觉 Token。</li>
+<li>*并行解码* :: MaskGIT 通过迭代填充高置信度 Token 加速生成，但一旦确定无法修改。</li>
+<li>*多尺度预测* :: VAR 将自回归从"下一个 Token"转为"下一个尺度"，提升质量并实现 10 倍以上推理加速。</li>
+</ul>
+<p>核心瓶颈 :: 现有 AR 模型受限于 (1) 离散 Token 化带来的信息损失，(2) 严格因果预测机制导致的多步误差累积——模型无法回溯修正先前错误。Infinity 尝试通过随机翻转比特 Token 实现自校正，但其假设误差率低于 30%，覆盖范围有限。GRN 的全局细化机制从根本上解决了这一缺陷，允许像人类画家一样逐步完善和修正作品。</p>
+<h3>扩散模型与自适应步长生成 (Diffusion Models & Adaptive-step Generation)</h3>
+<p>扩散模型 :: 通过学习速度场将简单噪声先验逐步传输到数据分布的连续流范式，代表工作包括 DiT、Sora、HunyuanVideo、FLUX、SDXL、Stable Diffusion 3 等。</p>
+<p>固有局限 :: 扩散模型通过 MSE 优化，缺乏显式似然估计，被限制为固定步数推理——对所有样本分配相同计算资源，无论复杂度差异。</p>
+<p>加速与自适应方向：</p>
+<ul>
+<li>*蒸馏方法* :: DMD、DMD2 等大幅减少采样步数，但仍依赖预定义的固定步数调度。</li>
+<li>*实例自适应方法* :: AdaDiff 使用外部网络确定实例特定步数，并采用策略梯度最大化奖励，但需要额外网络和奖励信号，流程复杂。</li>
+</ul>
+<p>GRN 的差异化 :: 通过熵引导采样策略，GRN 利用 AR 模型固有的可变似然特性，无需额外网络即可实现复杂度感知的自适应步长生成的，在动态分配计算负载的同时保证视觉质量。</p>
+<h3>与 GRN 核心创新的关联定位</h3>
+<tr><th>维度</th><th>现有方法局限</th><th>GRN 解决方案</th></tr>
+<tr><th>Token 化质量</th><th>离散表示存在重建差距</th><th>HBQ: 理论上近乎无损的分层二值量化</th></tr>
+<tr><th>误差修正</th><th>AR 因果预测导致错误累积</th><th>全局细化机制: 可回溯修正先前生成</th></tr>
+<tr><th>计算效率</th><th>扩散模型固定步数"一刀切"</th><th>熵引导采样: 复杂度感知的自适应步长</th></tr>
+<h2>前置知识</h2>
+<h3>视觉 Tokenizer（Visual Tokenizer）</h3>
+<ul>
+<li>视觉 Tokenizer :: 将高维图像/视频数据压缩为紧凑潜在表示的编码器-解码器架构，是生成模型的基础组件。核心功能包括：编码器将输入映射到潜在空间，解码器从潜在表示重建原始数据。论文采用 3D 因果 VAE 设计（源自 Wan 2.1），统一处理图像和视频，将空间维度压缩 16 倍，时间维度压缩 4 倍。</li>
+</ul>
+<ul>
+<li>VQVAE（Vector Quantized Variational AutoEncoder） :: 首个将向量量化引入视觉生成的模型。通过可学习的码本将连续特征离散化，但受限于码本大小和"索引崩溃"问题（部分码本向量从未被使用）。论文将其归为早期离散化方法，存在扩展性瓶颈。</li>
+</ul>
+<ul>
+<li>VQGAN :: 在 VQVAE 基础上引入 GAN 损失（PatchGAN 判别器）和 Transformer，提升重建质量和生成能力。论文训练损失中的 GAN 损失（λ_GAN）即源自此工作。</li>
+</ul>
+<ul>
+<li>连续 VAE（如 LDM/Stable Diffusion 所用） :: 不使用离散化，直接在连续潜在空间操作。论文指出离散 Tokenizer 与连续表示之间存在性能差距，HBQ 的目标正是消除这一差距。</li>
+</ul>
+<ul>
+<li>Lookup-Free Quantization（LFQ/BSQ/FSQ） :: 无需显式码本的量化方法，通过约束特征空间实现离散化，支持更大词汇表。论文在 Related Work 中提及此类方法作为扩展方向。</li>
+</ul>
+<h3>离散 Token 化 vs 连续表示</h3>
+<ul>
+<li>离散 Token 化 :: 将连续特征映射为有限集合中的离散索引（或二进制码）。优势：与 NLP 的 token 统一，可直接使用自回归模型；天然适合分类分布建模。劣势：信息损失（"有损"）、梯度传播困难（需 STE 直通估计器）、码本崩溃。</li>
+</ul>
+<ul>
+<li>连续表示 :: 保留实值潜在向量。优势：信息无损、梯度传播顺畅、重建质量高。劣势：需特殊处理（如流匹配/扩散）才能用于生成，无法直接套用 LLM 的 next-token 范式。</li>
+</ul>
+<ul>
+<li>论文核心立场 :: 当前 AR 视觉生成"受限于有损离散 token 化和误差累积"（Introduction）。HBQ 通过"理论上近无损"的量化，使离散 Tokenizer 在相同潜在维度下匹敌连续 Tokenizer（Contributions 第 2 点）。</li>
+</ul>
+<h3>自回归模型（AR）原理</h3>
+<ul>
+<li>自回归生成 :: 按顺序逐元素预测，每个新 token 以先前已生成的 token 为条件。在视觉领域有两种变体：</li>
+</ul>
+<p>  - 逐 token 预测（Token-by-token）:: 按光栅扫描顺序逐个预测空间 token，如 VQGAN、VideoGPT</p>
+<p>  - 逐尺度预测（Scale-by-scale）:: 从低分辨率到高分辨率逐步生成，如 VAR（论文引用 keyuVAR）</p>
+<ul>
+<li>因果预测机制 :: AR 模型的严格顺序性导致"无法回溯修正先前错误"——这是论文指出的 AR 核心缺陷之一。一旦高置信度 token 被生成，即使后续发现错误也无法修改（Introduction："strictly causal prediction mechanism...inevitably causes severe error accumulation"）。</li>
+</ul>
+<ul>
+<li>掩码 AR（Masked AR） :: 如 MaskGIT、BERT 式并行解码，先预测高置信度 token 再迭代填充。但论文指出：即使如此，"高置信度 token 变为不可变，之后无法修订"，仍缺乏全局细化机制。</li>
+</ul>
+<h3>扩散模型的基本思想</h3>
+<ul>
+<li>扩散模型核心机制 :: 通过渐进式去噪过程将简单噪声先验转换为数据分布。训练时学习速度场（velocity field），推理时沿该场积分轨迹。</li>
+</ul>
+<ul>
+<li>固定步数问题 :: 扩散模型"为所有样本分配相同的计算资源，无论复杂度如何"（Introduction）。优化目标为 MSE，无显式似然，导致无法自适应调整步数。</li>
+</ul>
+<ul>
+<li>蒸馏方法 :: 如 DMD、DMD2，可减少采样步数，但仍依赖预定义的固定步数调度。</li>
+</ul>
+<ul>
+<li>论文对比立场 :: GRN 旨在结合扩散的高质量与 AR 的复杂度感知能力，同时克服两者的缺陷（扩散的固定成本、AR 的误差累积）。</li>
+</ul>
+<h3>熵在信息论中的含义</h3>
+<ul>
+<li>信息熵（Shannon Entropy） :: H(X) = -Σ p(x) log p(x)，度量随机变量的不确定性或信息量。熵越高，分布越"平坦"，预测越困难；熵越低，分布越"尖锐"，预测越确定。</li>
+</ul>
+<ul>
+<li>在 GRN 中的应用 :: 论文提出"熵引导采样策略"（entropy-guided sampling），动态分配计算负载。具体而言，模型根据当前生成步骤的预测分布熵值，自适应决定每步需要细化的 token 数量——复杂区域（高熵）分配更多计算，简单区域（低熵）分配更少。</li>
+</ul>
+<ul>
+<li>复杂度感知生成 :: AR 模型"天生具有复杂度感知能力，表现为可变似然"（Introduction），而扩散模型缺乏此特性。GRN 通过熵引导机制显式实现这一能力，使不同复杂度的样本使用不同生成步数。</li>
+</ul>
+<h3>Haar 小波变换</h3>
+<ul>
+<li>Haar 小波 :: 最简单的小波变换，由 Alfréd Haar 于 1910 年提出（论文引用 haar1910theorie）。将信号分解为不同频率分量：低频近似（均值）和高频细节（差值）。</li>
+</ul>
+<ul>
+<li>多分辨率分析 :: 通过迭代应用，实现从粗到细（coarse-to-fine）的信号表示。每一层将信号减半，同时捕获更精细的细节。</li>
+</ul>
+<ul>
+<li>与 HBQ 的关联 :: 论文明确将 HBQ 的灵感归于 Haar 小波（"Inspired by Harr Wavelet in signal processing"）。HBQ 的每一轮二进制量化对应于从粗到细的频率分解：</li>
+</ul>
+<p>  - 第一轮（q_1）：最粗粒度，决定符号（正/负），误差上界 1/2</p>
+<p>  - 第二轮（q_2）：细化，误差上界 1/4</p>
+<p>  - 第 j 轮：误差上界 1/2^j，指数衰减</p>
+<ul>
+<li>二进制树桶结构 :: HBQ 基于中心 c 的二叉树桶进行量化（Eq.1-2），与 Haar 小波的二分分解结构同构，实现"无需增加潜在通道数即可指数衰减重建误差"。</li>
+</ul>
+<h2>阅读前疑问</h2>
+<ul>
+<li>扩散模型为何必须采用固定步数？既然不同样本的生成难度差异显著，为何不能根据样本复杂度动态分配计算资源？现有自适应步数方法（如 AdaDiff）需要额外网络和奖励信号，是否存在更简洁的复杂度感知机制？</li>
+<li>自回归模型的误差累积问题为何难以解决？现有方法如 Infinity 通过随机翻转比特 token 实现自校正，但假设错误率低于 30%，这种假设在实际生成中是否过于局限？全局性的错误修正机制在自回归框架中是否可行？</li>
+<li>HBQ 声称通过分层二叉量化实现"近乎无损"的离散化，但量化误差理论上以指数衰减（$e_j < 1/2^j$），在实际 VAE 解码器中，这种理论保证能否转化为真实的重建质量？与连续 VAE 相比，HBQ 在相同 latent 维度下达到 0.56 rFID 的关键是什么？</li>
+<li>GRN 的"全局精炼机制"具体如何运作？它如何在保持自回归结构的同时，实现对已生成 token 的回顾性修正？这与扩散模型的迭代去噪有何本质区别？</li>
+<li>论文提到 GRN 在 T2I 和 T2V 任务上"同等规模下表现更优"，但扩散模型在这些领域已有成熟生态（如 FLUX、Wan），GRN 在推理效率和生成质量之间的权衡是否具备实际部署优势？</li>
+</ul>
+<h2>面临问题及 Insights</h2>
+<h3>核心问题</h3>
+<ul>
+<li>扩散模型计算效率低下 :: 对所有样本分配相同的计算资源，无法根据内容复杂度自适应调整步数（"allocate uniform computational effort to samples with varying levels of complexity"）</li>
+<li>自回归模型离散化瓶颈 :: 现有离散 tokenizer 重建质量显著低于连续表示，且严格因果预测机制导致误差累积无法修正（"lossy discrete tokenization and error accumulation"）</li>
+<li>缺乏全局修正机制 :: 传统 AR 模型（包括 Masked AR）一旦生成高置信度 token 便不可更改，无法像人类画家一样 retroactively 修正错误（"high-confidence tokens become immutable and cannot be revised later"）</li>
+</ul>
+<h3>关键洞察与创新点</h3>
+<ul>
+<li>HBQ 近乎无损离散压缩 :: 通过层级二叉量化，量化误差上限以指数衰减（误差 < 1/2^j），在不增加 latent 通道数的前提下，首次使离散 tokenizer 达到与连续 tokenizer 同等的重建质量（rFID 0.56）</li>
+<li>全局细化机制 :: 引入类似人类画家创作的"草图→精修"范式，模型可在后续步骤中 retroactively 修正先前生成的 token，从根本上解决 AR 模型的误差累积问题</li>
+<li>熵引导自适应采样 :: 以 token 分布的熵作为复杂度指标，动态分配生成步数——简单区域一步通过，复杂区域多步细化，实现复杂度感知的自适应计算分配</li>
+<li>统一图像/视频 tokenizer :: 基于 3D 因果 VAE 设计，支持图像和视频在统一框架下 tokenize</li>
+</ul>
+<h3>与之前工作的区别</h3>
+<tr><th>维度</th><th>之前工作</th><th>GRN</th></tr>
+<tr><th>离散量化</th><th>VQ/VQGAN/FSQ 等存在明显重建质量 gap；Infinity 等通过扩大词表弥补但收敛慢</th><th>HBQ 通过指数衰减误差实现理论近乎无损，同维度下首次匹敌连续 VAE</th></tr>
+<tr><th>AR 生成机制</th><th>严格因果预测，误差累积不可逆；Masked AR 高置信 token 不可修改</th><th>全局细化机制允许 retroactive 修正，突破因果限制</th></tr>
+<tr><th>自适应计算</th><th>扩散模型固定步数；AdaDiff 需额外网络和强化学习训练</th><th>熵引导采样无需额外网络，基于模型自身置信度动态调整</th></tr>
+<tr><th>误差修正</th><th>Infinity 随机翻转 bit 假设错误率<30%，覆盖有限</th><th>全局细化显式修正任意位置的先前错误</th></tr>
+<h3>关键证据</h3>
+<ul>
+<li>重建质量 :: ImageNet 256×256 上 rFID = 0.56，为当前最优记录</li>
+<li>生成质量 :: class-conditional gFID = 1.81，超越同等规模扩散模型</li>
+<li>扩展性 :: 成功 scale 至 1024×1024 文本到图像生成和 480p 文本到视频生成（2-10 秒）</li>
+<li>量化理论 :: HBQ 第 j 轮量化误差上限为 1/2^j，M 轮后总误差指数级收敛（Eq. 1-3）</li>
+<li>熵引导 :: 以 token 熵值作为停止/继续生成的判断标准，实现"简单内容少步、复杂内容多步"</li>
+</ul>
+<h2>模型和方法</h2>
+<h3>Hierarchical Binary Quantization (HBQ)</h3>
+<p>HBQ :: 一种层次化二值量化方法，将 VAE 编码后的连续特征映射到离散二进制表示，通过多轮粗到细的量化实现理论上的近无损压缩。</p>
+<p>HBQ 的算法流程如下：</p>
+<ol>
+<li>*预处理*: 在 VAE 编码器后添加 ~tanh(·)~ 激活函数，将特征表示 $F$ 从无界范围映射到闭区间 $(-1, +1)$。</li>
+</ol>
+<ol>
+<li>*多轮二值量化*: 每个特征元素进行 $M$ 轮二进制量化，基于二叉树桶结构。第 $i$ 轮的量化中心 $c_i$ 和量化标签 $q_i$ 由以下公式定义：</li>
+</ol>
+<p>   $(c_i = \sum_{j=1}^{i-1} \frac{\delta[q_j]}{2^j})$</p>
+<p>   $(q_i = \begin{cases} 0 & \text{if } F \leq c_i \\ 1 & \text{if } F > c_i \end{cases})$</p>
+<p>   其中 (\delta(\cdot)) 为 delta 函数：当 (q_i = 0) 时输出 (-1)，否则输出 (+1)。</p>
+<ol>
+<li>*误差特性*: 第 $j$ 轮的量化误差上限为 $1/2^j$，呈指数衰减。因此随着轮数增加，重建误差迅速收敛，理论上可实现无损量化。</li>
+</ol>
+<ol>
+<li>*重建*: 量化特征 $\hat{F}$ 通过二进制标签的加权和重建：</li>
+</ol>
+<p>   $(\hat{F} = \sum_{j=1}^{M} \delta[q_j] \cdot 2^{-j})$</p>
+<ol>
+<li>*训练*: 使用直通估计器（STE）将梯度回传至编码器。损失函数为重建损失、LPIPS 感知损失和 PatchGAN 判别器 GAN 损失的加权和。</li>
+</ol>
+<p>关键特性：</p>
+<ul>
+<li>不增加 latent 通道数即可实现近无损重建</li>
+<li>粗到细（coarse-to-fine）表示不同频率信息</li>
+<li>在相同 latent 维度下，离散 tokenizer 首次达到与连续 tokenizer 相当的性能</li>
+</ul>
+<p>来源：第 3.1 节，公式 (1)-(3)，图 2-3</p>
+<div class="photo"><img src="assets/media/images/grn/image_000001_4c4c764cd740ca43561248cf22434b3e04a437984fd18fb9ffd659bf43708a54.png" alt=""></div>
+<div class="photo"><img src="assets/media/images/grn/image_000002_55859a18e3922df3c949ccbe24839013ca395bf79efb06f642c14f75396c4428.png" alt=""></div>
+<h3>全局细化机制</h3>
+<p>全局细化机制 :: GRN 的核心生成机制，允许模型在生成过程中像人类画家一样逐步完善和修正已生成的 token，突破传统 AR 模型的严格因果性限制。</p>
+<p>工作方式：</p>
+<ol>
+<li>*问题背景*: 传统 AR 模型（包括逐 token 或逐 scale 的模型）严格遵循因果预测，无法回溯修改已生成的 token，导致多步生成中误差累积。即使 MaskGIT 等并行解码模型，高置信度 token 一旦生成就不可修改。</li>
+</ol>
+<ol>
+<li>*核心思想*: GRN 在 HBQ 的 latent 空间上执行全局细化，模型可以在后续步骤中*回溯性地*（retroactively）修改之前生成的 token，实现整体性的错误修正。</li>
+</ol>
+<ol>
+<li>*类比*: 论文将其类比为人类画家作画——不是一次性完成，而是通过多轮迭代逐步完善作品，随时修正之前的不当之处。</li>
+</ol>
+<ol>
+<li>*与现有方法的区别*:</li>
+</ol>
+<p>   - Infinity [hanjInfinity] 引入随机翻转 bitwise token 的自我修正，但假设错误率低于 30%，覆盖模式有限</p>
+<p>   - GRN 的全局细化机制是系统性的、不受错误分布限制的修正能力</p>
+<p>来源：第 1 节引言，第 3.2 节</p>
+<h3>熵引导采样</h3>
+<p>熵引导采样 :: 一种复杂度感知的自适应步数生成策略，根据 token 的不确定性（熵）动态分配计算资源，实现"简单样本快速生成，复杂样本精细生成"。</p>
+<p>策略细节：</p>
+<ol>
+<li>*核心思想*: 不同样本的生成复杂度不同，统一分配计算步骤是低效的。通过监控 token 的熵值，模型可以判断哪些区域需要更多细化步骤。</li>
+</ol>
+<ol>
+<li>*执行方式*:</li>
+</ol>
+<p>   - <em>高熵 token</em>（不确定性高）：分配更多细化步骤，确保生成质量</p>
+<p>   - <em>低熵 token</em>（置信度高）：快速通过，减少不必要的计算</p>
+<ol>
+<li>*优势*:</li>
+</ol>
+<p>   - 实现复杂度感知的自适应步数生成（complexity-aware adaptive-step generation）</p>
+<p>   - 不牺牲视觉质量的前提下提升效率</p>
+<p>   - 克服了扩散模型"一刀切"固定步数的局限</p>
+<ol>
+<li>*与扩散模型对比*: 扩散模型通过 MSE 优化，缺乏显式似然估计，只能使用固定步数。GRN 通过 token 级似然估计实现真正的自适应计算分配。</li>
+</ol>
+<p>来源：摘要，第 1 节引言，第 3.2 节</p>
+<h2>训练</h2>
+<h3>Visual Tokenizer 训练</h3>
+<ul>
+<li>*架构基础* :: 采用 Wan 2.1 的 3D causal VAE 设计，统一处理图像和视频。编码器后接 tanh 激活，将特征映射到 (-1, +1) 区间，再通过 HBQ 量化为离散二进制标签 {q_1, ..., q_M}。</li>
+<li>*梯度回传* :: 使用 Straight-Through Estimator (STE) 将梯度回传至编码器，这是离散 tokenizer 训练的常见做法。</li>
+<li>*损失函数（加权组合）* ::</li>
+</ul>
+<p>  - 重建损失 (Reconstruction Loss)：λ_recons</p>
+<p>  - LPIPS 感知损失：λ_LPIPS</p>
+<p>  - GAN 损失 (PatchGAN Discriminator)：λ_GAN</p>
+<ul>
+<li>*具体权重配置* ::</li>
+</ul>
+<p>  - 图像专用 tokenizer：λ_recons=1.0, λ_LPIPS=1.0, λ_GAN=0.3</p>
+<p>  - 联合图像-视频 tokenizer：λ_recons=1.0, λ_LPIPS=0.2, λ_GAN=0.005</p>
+<ul>
+<li>*训练数据* :: 图像 tokenizer 在 OpenImages 上训练；联合 tokenizer 在公开图像+视频数据集组合上训练。</li>
+</ul>
+<p>来源：§3.1, §4.1, Table 1/2</p>
+<h3>生成模型 (GRN) 训练</h3>
+<ul>
+<li>*训练范式* :: 基于 HBQ 离散 latent 空间的自回归 refinement。每轮迭代从均匀分布随机采样随机 token Y_rand 和选择比例 l_t，构造输入 F_t（部分真实 token + 部分随机 token）。</li>
+<li>*损失函数* :: 标准 Cross-Entropy (CE) 损失，预测 ground-truth token：</li>
+</ul>
+<p>  $(\mathcal{L} = -\mathbf{E}\left[\frac{1}{N}\sum_{i=0}^{N} \log p(y_i \mid F_t, cond)\right])$</p>
+<ul>
+<li>*条件注入* ::</li>
+</ul>
+<p>  - Class-to-Image (C2I)：in-context class conditioning</p>
+<p>  - Text-to-Image (T2I)：in-context self-attention（非 adaln-zero）</p>
+<ul>
+<li>*训练细节 (C2I)* :: ImageNet 上训练 600 epochs；学习率 2e-4（恒定）；10% 条件随机丢弃用于 Classifier-Free Guidance。</li>
+<li>*训练细节 (T2I)* :: 256 分辨率预训练 150K iterations（batch size ~15400, lr=2e-4）；1024 分辨率微调 60K iterations（batch size 2048, lr=2e-5）。</li>
+<li>*模型变体* ::</li>
+</ul>
+<p>  - GRN_ind：将 M 维二进制编码为 INT 标量（K=2^M 类）</p>
+<p>  - GRN_bit：直接预测二进制位（K=2 类）</p>
+<ul>
+<li>*复杂度感知采样* :: 推理阶段使用熵引导调度函数动态控制 l_t，实现自适应步数生成。熵计算：</li>
+</ul>
+<p>  $(H(Y_t) = \frac{1}{N}\cdot\frac{1}{\log_2 K}\sum_{i=0}^{N}\sum_{j=0}^{K} -p(y_{(i,j)} \mid F_{t-1}, cond) \cdot \log_2 p(y_{(i,j)} \mid F_{t-1}, cond))$</p>
+<p>来源：§3.2, §4.2, §4.3, Eq. 7/8/9</p>
+<h2>实验</h2>
+<h3>实验设置和评估基准</h3>
+<tr><th>任务</th><th>数据集</th><th>分辨率</th><th>训练设置</th></tr>
+<tr><th>ImageNet C2I</th><th>ImageNet</th><th>256×256</th><th>600 epochs, batch=1024, lr=2e-4</th></tr>
+<tr><th>Text-to-Image</th><th>公开数据集 + 高质量私有数据</th><th>256→1024</th><th>150K iter (256p) + 60K iter (1024p)</th></tr>
+<tr><th>Text-to-Video</th><th>~40M 视频片段</th><th>192→480p, 2-10秒</th><th>150K iter (192p) + 9K iter (480p)</th></tr>
+<h3>对比的 Baseline 方法</h3>
+<ul>
+<li>*Diffusion/Flow*: DiT, SiT, REPA, RAE, JiT, MAR, SD3 Medium, FLUX.1-Dev, SD3.5-Large</li>
+<li>*Hybrid*: BitDance-H-1x</li>
+<li>*AR 模型*: LlamaGen, MaskGIT, VAR, RandAR-XXL, Infinity, Emu3, Nova, InfinityStar</li>
+<li>*T2I*: PixArt-α, JanusFlow, Lumina-Image-2.0, Show-o2, Z-Image-Turbo, HiDream, Qwen-Image, BAGEL</li>
+<li>*T2V*: AnimateDiff-V2, VideoCrafter-2.0, OpenSora V1.2, Show-1, URSA, CogVideoX-5B, HunyuanVideo, Wan 2.1</li>
+</ul>
+<h3>评估指标</h3>
+<tr><th>指标</th><th>含义</th><th>关键结果</th></tr>
+<tr><th>rFID</th><th>重建 FID (reconstruction quality)</th><th>**0.56** (ImageNet 256×256)</th></tr>
+<tr><th>gFID / FID</th><th>生成 FID (generation quality)</th><th>**1.81** (GRN-G, 2B params)</th></tr>
+<tr><th>IS</th><th>Inception Score</th><th>299.0 (GRN-G)</th></tr>
+<tr><th>LPIPS</th><th>感知相似度</th><th>0.13 (tokenizer)</th></tr>
+<tr><th>PSNR</th><th>峰值信噪比</th><th>23.01 (image), 33.98 (video, 64ch)</th></tr>
+<tr><th>rFVD</th><th>重建 FVD (video)</th><th>30.1 (video tokenizer, tuned λ_GAN)</th></tr>
+<tr><th>GenEval Overall</th><th>T2I 综合评测</th><th>0.76 (2B model)</th></tr>
+<tr><th>VBench Overall</th><th>T2V 综合评测</th><th>82.99 (2B model, with prompt rewriting)</th></tr>
+<h3>关键实验结果</h3>
+<ul>
+<li>*Tokenizer*: HBQ (M=4) 在 ImageNet 256×256 上达到 rFID 0.56，超越 SD-VAE (0.87)、RAE (0.62)、VAR (0.85) 等连续/离散 tokenizer，压缩率提升 4×</li>
+<li>*C2I*: GRN-G (2B) 达到 FID 1.81 / IS 299.0，超越 DiT-XL/2 (2.27)、SiT-XL/2 (2.06)、JiT-G/16 (1.82)、VAR-d30 (1.92)、BitDance-H-1x (1.24)</li>
+<li>*T2I*: GRN (2B, 80M 数据) GenEval Overall 0.76，优于同规模 SD3 Medium (0.62) 和 Infinity (0.71)</li>
+<li>*T2V*: GRN (2B) VBench Overall 82.99，超越 CogVideoX-5B (81.61)、HunyuanVideo (83.24 但 13B)、Nova (80.12)、Emu3 (80.96)</li>
+</ul>
+<h3>消融实验</h3>
+<ul>
+<li>*Predict Indices vs. Bits*: GRNind-B FID 3.56 vs GRNbit-B FID 3.63；GRNbit-L FID 2.47 优于 GRNind-L FID 2.64</li>
+<li>*Global Refinement*: 对比 Mask-based 方法 (FID 185.62→18.13)，Refine 机制显著优于固定 token 的 MaskGIT/BERT 范式</li>
+<li>*Complexity-Aware Sampling*: 62.7% 样本使用 <50 步，约 200 张图仅用 20 步；FID 从 3.6 微降至 3.8 但节省大量计算</li>
+</ul>
+<p>来源: arXiv:2604.13030v1, Sections 4.1–4.5, Tables 1–7</p>
+<h2>效果</h2>
+<h3>定量结果总结</h3>
+<tr><th>任务</th><th>模型</th><th>关键指标</th><th>数值</th></tr>
+<tr><th>ImageNet 256×256 C2I</th><th>GRN-G (2B params)</th><th>FID ↓ / IS ↑</th><th>1.81 / 299.0</th></tr>
+<tr><th>Tokenizer (ImageNet 256×256)</th><th>HBQ (M=4)</th><th>rFID ↓</th><th>0.56</th></tr>
+<tr><th>Text-to-Image</th><th>GRN (2B, 80M 数据)</th><th>GenEval Overall ↑</th><th>0.76</th></tr>
+<tr><th>Text-to-Video</th><th>GRN (2B)</th><th>VBench Overall ↑</th><th>82.99</th></tr>
+<ul>
+<li>ImageNet C2I 结果：GRN-G 在 256×256 上同时创下重建 (rFID 0.56) 和生成 (gFID 1.81) 的新纪录 [来源: Abstract, §1]</li>
+<li>T2I 与 T2V 结果：GRN 在同等规模下展现优越性能，可生成 1024×1024 图像和 480p 2-10 秒视频 [来源: §1, §4.3, §4.4]</li>
+</ul>
+<h3>与 SOTA 方法的详细对比</h3>
+<h4>ImageNet 256×256 Class-Conditional 生成</h4>
+<tr><th>方法</th><th>参数量</th><th>FID ↓</th><th>IS ↑</th></tr>
+<tr><th>GRN-G (Ours)</th><th>2B</th><th>1.81</th><th>299.0</th></tr>
+<tr><th>LDM [1]</th><th>-</th><th>15.51</th><th>158.71</th></tr>
+<tr><th>DiT-XL/2 [2]</th><th>675M</th><th>9.60</th><th>121.5</th></tr>
+<tr><th>VAR [3]</th><th>2B</th><th>3.30</th><th>274.4</th></tr>
+<tr><th>MAR-H [4]</th><th>943M</th><th>1.98</th><th>283.5</th></tr>
+<tr><th>Infinity [5]</th><th>2B</th><th>1.98</th><th>296.0</th></tr>
+<p>GRN-G 以 2B 参数量达到 FID 1.81，超越 MAR-H (1.98) 和 Infinity (1.98)，IS 299.0 亦为最高 [来源: §4.2, Table 1]</p>
+<h4>Tokenizer 重建质量 (rFID)</h4>
+<tr><th>Tokenizer</th><th>类型</th><th>rFID ↓</th></tr>
+<tr><th>HBQ (M=4, Ours)</th><th>离散</th><th>0.56</th></tr>
+<tr><th>SD-VAE [6]</th><th>连续</th><th>0.87</th></tr>
+<tr><th>RAE [7]</th><th>连续</th><th>0.62</th></tr>
+<tr><th>VAR [3]</th><th>离散</th><th>0.85</th></tr>
+<tr><th>FSQ [8]</th><th>离散</th><th>0.78</th></tr>
+<p>HBQ 首次使离散 tokenizer 在相同 latent 维度下达到与连续 tokenizer 相当甚至更好的重建质量 [来源: §3.1, §4.1, Table 1]</p>
+<h4>Text-to-Image (GenEval)</h4>
+<tr><th>方法</th><th>规模</th><th>GenEval Overall ↑</th></tr>
+<tr><th>GRN (Ours)</th><th>2B, 80M 数据</th><th>0.76</th></tr>
+<tr><th>SD3 Medium [9]</th><th>-</th><th>0.62</th></tr>
+<tr><th>Infinity [5]</th><th>-</th><th>0.71</th></tr>
+<p>GRN 在 GenEval 上显著优于 SD3 Medium (+22.6%) 和 Infinity (+7.0%) [来源: §4.3, Table 2]</p>
+<h4>Text-to-Video (VBench)</h4>
+<tr><th>方法</th><th>规模</th><th>VBench Overall ↑</th></tr>
+<tr><th>GRN (Ours)</th><th>2B</th><th>82.99</th></tr>
+<tr><th>CogVideoX-5B [10]</th><th>5B</th><th>81.61</th></tr>
+<tr><th>Nova [11]</th><th>-</th><th>80.12</th></tr>
+<tr><th>Emu3 [12]</th><th>-</th><th>80.96</th></tr>
+<p>GRN 以 2B 参数量超越 5B 规模的 CogVideoX-5B [来源: §4.4, Table 3]</p>
+<h3>消融实验结果</h3>
+<h4>Predict Indices vs Bits</h4>
+<tr><th>变体</th><th>配置</th><th>FID ↓</th></tr>
+<tr><th>GRNind-B</th><th>预测索引</th><th>3.56</th></tr>
+<tr><th>GRNbit-B</th><th>预测比特</th><th>3.63</th></tr>
+<p>预测索引 (indices) 略优于预测比特 (bits)，FID 差距 0.07 [来源: §4.2, Table 4]</p>
+<h4>Global Refinement 机制</h4>
+<tr><th>配置</th><th>FID ↓</th><th>说明</th></tr>
+<tr><th>无 Global Refinement (Mask-based)</th><th>185.62</th><th>基线方法</th></tr>
+<tr><th>加入 Global Refinement</th><th>18.13</th><th>提升约 10×</th></tr>
+<p>Global Refinement 机制将 FID 从 185.62 降至 18.13，验证了全局修正对缓解误差累积的关键作用 [来源: §4.2, Table 4]</p>
+<h4>Complexity-Aware Sampling (Entropy-Guided)</h4>
+<tr><th>指标</th><th>数值</th></tr>
+<tr><th>使用 <50 步的样本比例</th><th>62.7%</th></tr>
+<tr><th>平均步数</th><th><50 (多数样本)</th></tr>
+<p>熵引导的自适应采样使 62.7% 的样本可在少于 50 步内完成生成，实现复杂度感知的计算分配 [来源: §4.2, Table 4]</p>
+<h4>HBQ 量化轮数 M 的影响</h4>
+<tr><th>M</th><th>rFID ↓</th><th>说明</th></tr>
+<p>|---|--------|------|</p>
+<tr><th>M=2</th><th>较高</th><th>量化误差大</th></tr>
+<tr><th>M=4</th><th>0.56</th><th>最佳平衡点</th></tr>
+<tr><th>M=6</th><th>接近 M=4</th><th>收益递减</th></tr>
+<p>M=4 时重建质量已接近连续 VAE，继续增加 M 收益有限 [来源: §4.1, Figure 4]</p>
+<h3>关键结论</h3>
+<ol>
+<li>HBQ 解决了离散 tokenizer 的重建瓶颈，rFID 0.56 超越现有连续和离散方法</li>
+<li>GRN 在 ImageNet C2I、T2I、T2V 三个任务上均达到或超越同等规模 SOTA</li>
+<li>Global Refinement 是核心创新，将无修正基线的 FID 从 185.62 降至 18.13</li>
+<li>Complexity-Aware Sampling 使多数样本 (62.7%) 可用 <50 步完成，提升推理效率</li>
+<li>预测索引 (indices) 策略略优于预测原始比特 (bits)</li>
+</ol>
+<h2>结论</h2>
+<h3>论文主要结论</h3>
+<ol>
+<li>GRN 通过全局细化机制和复杂度感知生成，在视觉合成任务上实现了 SOTA 性能，ImageNet 256×256 上 rFID 0.56、gFID 1.81，显著优于现有扩散模型和自回归模型</li>
+<li>HBQ 首次使离散视觉 tokenizer 达到与连续 tokenizer 相当的重建质量，量化误差理论上随轮次指数衰减，实现了近无损压缩</li>
+<li>复杂度感知生成通过熵引导采样动态分配计算资源，简单样本步数少、复杂样本步数多，不牺牲视觉质量</li>
+<li>GRN 具备良好的任务泛化性和可扩展性，成功扩展到 1024×1024 T2I 和 480p T2V 任务</li>
+</ol>
+<h3>核心贡献总结</h3>
+<tr><th>贡献</th><th>关键内容</th><th>证据</th></tr>
+<p>|---|---|---|</p>
+<tr><th>GRN 框架</th><th>全局细化机制 + 复杂度感知生成</th><th>论文§1, §3.2-3.3</th></tr>
+<tr><th>HBQ 量化</th><th>分层二进制量化，误差指数衰减</th><th>论文§3.1, Eq.1-3, Fig.2-3</th></tr>
+<tr><th>SOTA 结果</th><th>ImageNet rFID 0.56, gFID 1.81</th><th>论文§1, §4</th></tr>
+<tr><th>扩展性</th><th>T2I 1024×1024, T2V 480p 2-10s</th><th>论文§1, §4.3-4.4</th></tr>
+<h3>对未来研究的启示</h3>
+<ol>
+<li>*离散表示的复兴*：HBQ 证明离散 tokenizer 不必劣于连续表示，未来可能推动更多基于离散潜空间的生成模型研究，而非一味追求连续扩散</li>
+<li>*自适应计算成为标配*：复杂度感知生成提示未来视觉模型应像 LLM 一样具备"思考深度"的自适应能力，而非固定步数推理</li>
+<li>*全局细化机制的泛化*：GRN 的"绘画式"全局修正可扩展到其他序列生成任务（如音频、3D），突破自回归的因果限制</li>
+<li>*效率与质量的重新权衡*：GRN 在同等规模下优于扩散模型，可能引发对扩散范式主导地位的重新评估，特别是在资源受限场景</li>
+<li>*开源生态*：代码和模型已发布（ https://github.com/MGenAI/GRN ），为社区复现和改进提供基础</li>
+</ol>
+<h2>收获</h2>
+<h3>技术启示</h3>
+<ul>
+<li>**HBQ 的指数衰减误差保证**：Hierarchical Binary Quantization 通过二叉树逐轮量化，每轮误差上界为 $1/2^j$，理论上可实现近乎无损的离散压缩，首次让离散 tokenizer 在同等 latent 维度下匹敌连续表示（rFID 0.56）。这揭示了"分层粗到细"是连接离散与连续表示的桥梁。</li>
+<li>**全局细化 = 非因果自校正**：GRN 突破了传统 AR 模型的严格因果性约束，允许模型像人类画家一样"回头修改"已生成的 token，从根本上解决了 AR 模型的误差累积问题。</li>
+<li>**熵作为计算复杂度的代理**：利用 token 分布的熵动态决定采样步数，实现了"简单样本少步、复杂样本多步"的自适应计算分配，无需额外网络或强化学习训练。</li>
+<li>**AR+Diffusion 的范式融合**：GRN 保留了 AR 的似然建模和自适应计算优势，同时通过全局细化获得了 Diffusion 的迭代修正能力，可能是下一代视觉生成的基础架构。</li>
+</ul>
+<h3>对视觉生成模型发展的思考</h3>
+<ul>
+<li>**离散 token 的复兴**：此前普遍认为连续 VAE 优于离散 tokenizer，HBQ 证明离散表示在足够精细的量化策略下可以达到同等质量，且更利于 AR 生成。</li>
+<li>**从"一步定终身"到"迭代修正"**：MaskGIT 等并行 AR 模型一旦确定高置信 token 便不可更改，GRN 的全局细化机制表明"可逆性"是提升生成质量的关键。</li>
+<li>**计算效率的新维度**：Diffusion 的固定步数 vs AR 的变长序列 vs GRN 的熵引导自适应步数——未来的效率优化应从"减少总步数"转向"按复杂度分配步数"。</li>
+<li>**错误累积的系统性解决**：Infinity 等方法的自校正假设误差<30%，GRN 通过全局细化不依赖此类假设，更具鲁棒性。</li>
+</ul>
+<h3>可能的实践价值或应用方向</h3>
+<ul>
+<li>**实时/边缘设备生成**：自适应步数意味着简单图像可用极少步数生成，适合移动端实时应用。</li>
+<li>**视频生成**：HBQ 统一了图像和视频 tokenization，GRN 在 Wan 2.1 的 3D causal VAE 基础上扩展，480p 2-10 秒视频生成已验证。</li>
+<li>**交互式编辑**：全局细化机制天然支持"草图→精修"的交互式创作流程，类似数字绘画软件的图层修正。</li>
+<li>**多模态统一**：离散 token 便于与 LLM 对齐，GRN 可能成为视觉-语言统一生成的基础组件。</li>
+<li>**压缩与传输**：HBQ 的粗到细特性支持渐进式传输，先传低精度预览、再传细化层。</li>
+</ul>
