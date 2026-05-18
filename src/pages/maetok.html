@@ -42,6 +42,49 @@ hero_tagline: 用掩码建模让 AE 学习判别性潜空间，替代 VAE，仅 
   </ul>
 </div>
 
+<!-- 相关工作 -->
+<div class="ch fade-in">
+  <div class="ch-label">背景</div>
+  <div class="ch-title">相关工作</div>
+  <h3>Image Tokenization</h3>
+  <p>图像 tokenization 的发展脉络：早期 AE (Hinton &amp; Salakhutdinov, 2006) → VAE (Kingma, 2013) → VQ-GAN (Esser et al., 2021)。近期 1D tokenizer 成为主流：TiTok (Yu et al., 2024) 用离散 token 序列表示图像；ImageFolder (Li et al., 2024) 和 SoftVQVAE (Chen et al., 2024) 探索连续 tokenization；VAVAE (Yao &amp; Wang, 2025) 和 TexTok (Zha et al., 2024) 引入表征对齐的 VAE。MAETok 属于连续 tokenizer 路线，但完全抛弃了变分约束。</p>
+  <h3>Image Generation</h3>
+  <p>生成模型主要分为扩散模型和自回归模型两条路线。扩散模型方面：LDM (Rombach et al., 2022) 开创潜扩散范式，DiT (Peebles &amp; Xie, 2023) 和 SiT (Ma et al., 2024) 改进骨干架构，REPA (Yu et al., 2024) 探索 representation alignment。自回归模型方面：MaskGIT、VAR、LlamaGen 等持续进步。</p>
+  <h3>MAE 预训练</h3>
+  <p>MAE (He et al., 2022) 开创了随机掩码重建的自监督学习范式，后续工作如 Xie et al., 2022 和 Wei et al., 2022 将其扩展到不同目标和更强特征。MAETok 将 MAE 的掩码建模思想引入 tokenizer 训练，填补了这一应用空白。</p>
+  <div class="info-box">
+    <h3>本文定位</h3>
+    <p>MAETok 属于<strong>连续 tokenizer + 扩散模型</strong>的交叉路线。与 VAVAE/TexTok 不同的是：它<strong>不依赖变分约束</strong>，而是通过 MAE 的掩码建模直接学习判别性潜空间。与 TiTok/MAGVIT 不同的是：它<strong>不量化</strong>，输出连续 latent codes。</p>
+  </div>
+</div>
+
+<!-- 前置知识 -->
+<div class="ch fade-in">
+  <div class="ch-label">背景</div>
+  <div class="ch-title">前置知识</div>
+  <ul>
+    <li><strong>Latent Diffusion Models</strong> :: 在 tokenizer 编码的低维潜在空间中进行扩散去噪，避免像素空间高维计算，典型如 SD-VAE 将 512×512 图像编码为 1024 个 latent tokens</li>
+    <li><strong>VAE vs AE</strong> :: VAE 通过 KL 约束使潜在分布平滑，但牺牲重建精度；AE 重建保真但潜在空间可能不够结构化。MAETok 证明了 AE + mask modeling 可以兼顾两者</li>
+    <li><strong>Masked Autoencoders (MAE)</strong> :: 随机遮蔽 40-80% 输入 patch，让模型从可见 patch 预测被遮蔽部分的特征，学到更判别性的表征</li>
+    <li><strong>GMM (Gaussian Mixture Model)</strong> :: 用 K 个高斯混合建模潜在分布，mode 数量反映分布复杂度。Mode 越多 → 分布越复杂 → 扩散模型越难学</li>
+    <li><strong>gFID / rFID</strong> :: gFID = generation FID（生成质量），rFID = reconstruction FID（重建质量）。MAETok 在两者上都优于 VAE baseline</li>
+    <li><strong>CFG (Classifier-Free Guidance)</strong> :: 扩散模型推理时用无条件预测引导条件预测，提升质量但增加计算量</li>
+  </ul>
+</div>
+
+<!-- 阅读前疑问 -->
+<div class="ch fade-in">
+  <div class="ch-label">思考</div>
+  <div class="ch-title">阅读前疑问</div>
+  <ol>
+    <li>什么样的潜在空间对扩散模型是"好的"？VAE 的变分约束真的是必要的吗？</li>
+    <li>MAE 的 mask modeling 如何改善 tokenizer 的潜在空间？为什么它能减少 GMM mode 数量？</li>
+    <li>128 个 token 如何在 512×512 分辨率上达到 SOTA？压缩率这么高不会丢失细节吗？</li>
+    <li>辅助解码器为什么能同时学到多种目标特征（DINOv2 + CLIP + HOG）而不互相干扰？</li>
+    <li>两阶段训练（先 mask 训练 encoder，再 fine-tune decoder）的物理意义是什么？</li>
+  </ol>
+</div>
+
 <!-- 核心发现 -->
 <div class="ch fade-in">
   <div class="ch-label">理论分析</div>
@@ -92,6 +135,41 @@ hero_tagline: 用掩码建模让 AE 学习判别性潜空间，替代 VAE，仅 
     <img src="assets/media/images/maetok/maetok-convergence.png" alt="训练收敛对比" loading="lazy">
     <div class="cap">Figure 5(b): 训练收敛对比 — MAETok 使扩散模型更快收敛到更低的 gFID</div>
   </div>
+</div>
+
+<!-- 训练 -->
+<div class="ch fade-in">
+  <div class="ch-label">方法论</div>
+  <div class="ch-title">训练细节</div>
+  <h3>Tokenizer 训练超参数</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>值</th></tr></thead>
+      <tbody>
+        <tr><td>架构</td><td>ViT-Base encoder + ViT-Base decoder，共 176M 参数</td></tr>
+        <tr><td>Latent space</td><td>L = 128 tokens，H = 32 维</td></tr>
+        <tr><td>训练迭代</td><td>Stage 1: 500K / Stage 2: 50K</td></tr>
+        <tr><td>Mask ratio</td><td>Stage 1: 40-60% / Stage 2: 60% → 0% 线性衰减</td></tr>
+        <tr><td>辅助解码器</td><td>3 个（HOG + DINOv2-Large + SigCLIP-Large），各 3 层 Transformer</td></tr>
+        <tr><td>损失权重</td><td>λ₁ = 1.0（perceptual），λ₂ = 0.4（adversarial）</td></tr>
+        <tr><td>数据集</td><td>ImageNet 256×256 / 512×512 / LAION-COCO 512×512</td></tr>
+        <tr><td>初始化</td><td>从零初始化（无预训练权重）</td></tr>
+        <tr><td>代码框架</td><td>XQ-GAN codebase</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3>Diffusion 模型训练</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>参数量</th><th>训练步数</th><th>Patch size</th></tr></thead>
+      <tbody>
+        <tr><td>SiT-XL</td><td>675M</td><td>4M steps</td><td>1</td></tr>
+        <tr><td>LightningDiT</td><td>675M</td><td>400K steps</td><td>1</td></tr>
+        <tr><td>SiT-L (ablation)</td><td>458M</td><td>400K steps</td><td>1</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>所有 diffusion 模型使用 1D position embedding（适配 1D latent tokens），评估使用 250 inference steps，with/without CFG。</p>
 </div>
 
 <!-- 消融实验 -->
@@ -168,6 +246,25 @@ hero_tagline: 用掩码建模让 AE 学习判别性潜空间，替代 VAE，仅 
   </div>
 </div>
 
+<!-- 效率对比 -->
+<div class="ch fade-in">
+  <div class="ch-label">实验</div>
+  <div class="ch-title">效率与质量双重优势</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tokenizer</th><th>Token 数</th><th>GFLOPs</th><th>Throughput (img/s)</th></tr></thead>
+      <tbody>
+        <tr><td>SD-VAE（1024 tokens）</td><td>1024</td><td>373.3</td><td>0.1</td></tr>
+        <tr><td><strong>MAETok（128 tokens）</strong></td><td>128</td><td style="color:var(--accent-gold)">48.5</td><td style="color:var(--accent-gold)">3.12</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>128 tokens 相比标准 1024 tokens，<strong>FLOPs 降低 7.7×，推理吞吐提升 31×</strong>。训练速度提升 76×（达到同等 REPA 性能）。</p>
+  <div class="callout">
+    <p><strong>实践启示</strong>：在资源受限场景（移动端、边缘设备）下，MAETok 的极致压缩率（512×512 → 128 tokens）使得实时高分辨率生成成为可能。</p>
+  </div>
+</div>
+
 <!-- 潜空间可视化 -->
 <div class="ch fade-in">
   <div class="ch-label">实验</div>
@@ -187,29 +284,33 @@ hero_tagline: 用掩码建模让 AE 学习判别性潜空间，替代 VAE，仅 
 <!-- 结论 -->
 <div class="ch fade-in">
   <div class="ch-label">总结</div>
-  <div class="ch-title">结论与启示</div>
-  <div class="icon-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top:1rem;">
-    <div class="card fade-in">
-      <div class="icon">🔑</div>
-      <div class="title">潜空间结构 > 变分约束</div>
-      <div class="desc">VAE 的 KL 约束不是必要条件。掩码建模让纯 AE 自主学习判别性潜空间即可。</div>
-    </div>
-    <div class="card fade-in">
-      <div class="icon">⚡</div>
-      <div class="title">128 token 极致压缩</div>
-      <div class="desc">仅 128 个潜 token 实现超越 256-1024 token 的生成质量，为实时高分辨率生成铺路。</div>
-    </div>
-    <div class="card fade-in">
-      <div class="icon">🧠</div>
-      <div class="title">编码器-解码器解耦</div>
-      <div class="desc">先优化潜空间（高掩码），再恢复重建（微调解码器），两阶段训练策略有效。</div>
-    </div>
-    <div class="card fade-in">
-      <div class="icon">📊</div>
-      <div class="title">GMM 模式数是质量指标</div>
-      <div class="desc">可作为评估任意 tokenizer 潜空间质量的代理指标，衡量生成模型学习难度。</div>
-    </div>
-  </div>
+  <div class="ch-title">结论</div>
+  <ol>
+    <li><strong>理论</strong>：潜在分布的 GMM mode 越少，扩散模型所需训练样本越少（\(\sim K^4\)），生成质量越好</li>
+    <li><strong>方法</strong>：MAE 的 mask modeling 能在 plain AE 上学到判别性潜在空间，不需要 VAE 的变分约束</li>
+    <li><strong>解耦效应</strong>：encoder 学判别性表征 和 decoder 学高保真重建可以分开——先 mask 训练 encoder，再 fine-tune decoder</li>
+    <li><strong>实践</strong>：128 tokens 的 MAETok + 675M SiT-XL 在 ImageNet 512×512 上达到 gFID 1.69 的 SOTA</li>
+  </ol>
+  <h3>局限性与未来方向</h3>
+  <ul>
+    <li>辅助解码器引入了额外计算开销，虽然论文称其 overhead 很小，但未给出量化数据</li>
+    <li>两阶段训练的调参空间较大（Stage 1 mask ratio、Stage 2 fine-tune 步数），泛化性未充分验证</li>
+    <li>在非 ImageNet 数据集（如 COCO、ADE20K）上的生成质量未报告</li>
+    <li>与更强 diffusion 骨干（如 DiT-XL/2 + classifier-free guidance tuning）的联合优化空间未被探索</li>
+  </ul>
+</div>
+
+<!-- 收获 -->
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">收获</div>
+  <ul>
+    <li><strong>分析框架</strong>：GMM mode 数提供了一个量化评估任意 tokenizer 潜空间质量的新视角，linear probing accuracy 可作为便捷的 proxy metric</li>
+    <li><strong>设计思路</strong>：对于视觉 tokenizer 的后续设计，可以直接采用"plain AE + MAE mask modeling"的范式，抛弃 VAE 的变分约束</li>
+    <li><strong>两阶段训练</strong>：当 encoder 和 decoder 的目标冲突时（判别性 vs 重建精度），解耦训练是有效的解决方案</li>
+    <li><strong>多目标学习</strong>：辅助解码器用不同层次的特征（HOG/DINOv2/SigCLIP）引导潜空间学习，比单一目标更有效</li>
+    <li><strong>极致压缩</strong>：128 tokens 超越 256-1024 tokens 的效果，说明 token 数量不是越多越好，关键是潜空间的判别性结构</li>
+  </ul>
 </div>
 
 <!-- 相关资源 -->
