@@ -1,0 +1,265 @@
+---
+title: "Harness Engineering：如何让 AI 编程 Agent 可靠地工作"
+description: "深度调研 WalkingLabs 的 Learn Harness Engineering 课程，解析如何通过系统工程方法让 Codex、Claude Code 等 AI 编程工具可靠地工作。"
+date: 2026-05-18
+categories: [AI工程, 编程]
+tags: [harness-engineering, AI-agent, prompt-engineering, Codex, Claude]
+hero_sub: "Learn Harness Engineering 调研笔记"
+hero_tagline: "模型没有变，环境变了"
+---
+
+<!-- INJECT toc_sidebar -->
+
+<div class="admonition tip">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    核心引用
+  </div>
+  <div class="admonition-content">
+    <p>本调研基于 WalkingLabs 出品的 <a href="https://walkinglabs.github.io/learn-harness-engineering/en/" target="_blank">Learn Harness Engineering</a> 课程，综合了 OpenAI 和 Anthropic 两篇重量级工程论文。</p>
+  </div>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-title">引言：为什么需要一个"鞍子"？</div>
+
+  <p>你订阅了 Claude Pro，手握 GPT-4o API key，SWE-bench 排行榜数字倒背如流。某天你终于把一个真实项目交给 AI agent，信心满满。结果呢？它加了一个功能却破坏了测试，修复了一个 bug 却引入两个新的，运行了 20 分钟骄傲地宣布"完成了"——然后你一看代码，根本不是你要求的。</p>
+
+  <p>你的第一反应是什么？"这个模型还不够好，升级吧。"停一下。在掏钱包之前，先想一个反直觉的事实：</p>
+
+  <div class="callout">
+    <strong>核心洞见</strong>：截至 2025 年底，SWE-bench Verified 上最强的编程 agent 正确率大约只有 50-60%。而且那可是在精心挑选的任务上——清晰的 issue 描述、现成的测试用例。切换到你的日常开发环境——模糊的需求、没有测试、散布各处的隐式业务规则——这个数字只会更低。
+  </div>
+
+  <p>但背后的真相是：<strong>同一模型在裸环境和完整 harness 中产生根本不同的输出。</strong>模型没有变，环境变了。</p>
+
+  <div class="info-box">
+    <h3>什么是 Harness？</h3>
+    <p>Harness（挽具/驾驭框架）不是让模型更聪明，而是为模型建立一个封闭环路的"工作系统"。它泛指<strong>模型权重之外的一切工程基础设施</strong>——指令、工具、环境、状态管理、验证反馈。</p>
+    <p>类比：纯种马（强大模型）没有鞍子也能骑，但骑不远、骑不快、从马上摔下来也不意外。Harness 就是那个鞍子。</p>
+  </div>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">理论基础</div>
+  <div class="ch-title">Lecture 01：为什么强大的 Agent 仍然会失败</div>
+  <p><em>来源：</em><a href="https://walkinglabs.github.io/learn-harness-engineering/en/lectures/lecture-01-why-capable-agents-still-fail/" target="_blank">Lecture 01 原链接</a></p>
+
+  <h3>Anthropic 的对照实验</h3>
+  <p>同一个提示（"构建一个 2D 复古游戏制作工具"）、同一个模型（Opus 4.5）：</p>
+
+  <table>
+    <thead>
+      <tr><th>实验条件</th><th>耗时</th><th>成本</th><th>结果</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>裸环境，无支持</td><td>20 分钟</td><td>$9</td><td>游戏核心功能完全不工作</td></tr>
+      <tr><td>完整 harness（三 agent 架构）</td><td>6 小时</td><td>$200</td><td>游戏可玩</td></tr>
+    </tbody>
+  </table>
+
+  <p>他们没有换模型。改变的是鞍子。</p>
+
+  <h3>Agent 实际卡住的五个地方</h3>
+
+  <ol>
+    <li><strong>任务定义模糊</strong>：没有清楚定义任务边界，agent 靠猜测行事。你说"加一个搜索功能"，agent 的理解和你的完全不同。</li>
+    <li><strong>隐式架构规则</strong>：项目约定（如 SQLAlchemy 2.0 语法、OAuth 2.0 认证规范）只存在于工程师脑中，agent 无法感知。</li>
+    <li><strong>环境缺陷</strong>：依赖不完整、工具版本错误，agent 在错误的事情上消耗上下文窗口。</li>
+    <li><strong>无法验证</strong>：没有测试、没有 lint，或验证命令从未传达给 agent。</li>
+    <li><strong>上下文焦虑（Context Anxiety）</strong>：Anthropic 发现的独特现象——agent 感知到上下文快用完时，会仓促完成、跳过验证、选择简单解法而非最优解。</li>
+    <li><strong>跨会话状态断裂</strong>：长任务中上一 session 的所有发现都丢失，新 session 需要重新探索代码结构。</li>
+  </ol>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      核心原则
+    </div>
+    <div class="admonition-content">
+      <p><strong>当事情失败时，不要第一时间换模型——先检查 harness。</strong>如果相同模型在结构化良好的类似任务上成功，就假定是 harness 问题。就像汽车抛锚时，你不会首先怀疑发动机，而是先检查有没有汽油。</p>
+    </div>
+  </div>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">实战项目</div>
+  <div class="ch-title">Project 01：Baseline vs Minimal Harness</div>
+  <p><em>来源：</em><a href="https://walkinglabs.github.io/learn-harness-engineering/en/projects/project-01-baseline-vs-minimal-harness/" target="_blank">Project 01 原链接</a></p>
+
+  <p>构建一个最小 Electron 知识库应用外壳——左侧文档列表、右侧问答面板、本地数据目录。任务本身不复杂，复杂的是如何让 agent 完成它。</p>
+
+  <h3>两次对比实验</h3>
+
+  <ol>
+    <li><strong>Baseline（无准备）</strong>：只有一个提示，没有准备</li>
+    <li><strong>Minimal Harness</strong>：预先放置 AGENTS.md、init.sh、feature_list.json</li>
+  </ol>
+
+  <p>这个项目的核心不是写代码，而是搞清楚"花 15 分钟准备规则"和"直接让 agent 干"的差距有多大。</p>
+
+  <div class="callout">
+    <strong>关键发现</strong>：Minimal Harness = AGENTS.md + init.sh + feature_list.json，一个简单的 AGENTS.md 文件可能比升级到更贵的模型更有效——这不是开玩笑。
+  </div>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">工程实践</div>
+  <div class="ch-title">资源库：Templates 详解</div>
+  <p><em>来源：</em><a href="https://walkinglabs.github.io/learn-harness-engineering/en/resources/templates/" target="_blank">Templates 原链接</a></p>
+
+  <h3>AGENTS.md / CLAUDE.md — 项目规范文件</h3>
+  <p>项目根目录的指令文件，是 agent 启动时首先读取的内容。定义操作规则：写代码前要先做什么、如何工作、如何收尾。</p>
+  <p>最重要的部分是 Definition of Done——机器可验证的完成条件：</p>
+
+  <pre><code class="language-markdown">
+Completion criteria:
+- New endpoint GET /api/search?q=xxx
+- Supports pagination, default 20 items
+- Results include highlighted snippets
+- All new code passes pytest
+- Type checking passes (mypy --strict)
+</code></pre>
+
+  <h3>init.sh — 启动脚本</h3>
+  <p>一次完成三件事：依赖安装、验证、打印启动命令。如果验证失败，agent 应停止并修复基线。</p>
+
+  <h3>claude-progress.md — 进度日志</h3>
+  <p>每个 session 写入、每个新 session 首先读取的项目状态文件。包含当前验证状态、Session 记录、下一步行动。</p>
+
+  <h3>feature_list.json — 特性追踪器</h3>
+  <p>机器可读的每项特性清单。状态流转：not_started → in_progress → blocked/passing。原则：任何时刻只有一个 feature 处于 in_progress。</p>
+
+  <h3>Evaluator Rubric — 质量评分卡</h3>
+  <p>六个维度的评分（每个维度 0-2 分）：正确性、验证、范围纪律、可靠性、可维护性、交接就绪度。</p>
+
+  <div class="callout">
+    <strong>⚠️ 重要</strong>：evaluator 需要调优。开箱即用的 agent 是糟糕的自我评判者——发现问题后会自我说服通过。需要 3-5 轮调优来对齐人工评审标准。
+  </div>
+
+  <h3>Quality Document — 质量快照</h3>
+  <p>按产品领域和架构层对项目健康度打分。不是评估单个 session 输出，而是追踪代码库随时间的健康趋势。它还支持 harness 简化——随着模型能力提升，定期检查哪些组件已变成冗余开销。</p>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">核心能力</div>
+  <div class="ch-title">五个关键能力详解</div>
+
+  <ol>
+    <li>
+      <strong>Constrain（约束）</strong>：用显式规则约束 agent 行为。AGENTS.md 就是这种约束的核心载体。
+    </li>
+    <li>
+      <strong>Maintain context（维护上下文）</strong>：在长运行时多会话任务中保持上下文连续性。通过 claude-progress.md 和 session-handoff.md 实现跨 session 状态持久化。
+    </li>
+    <li>
+      <strong>Stop declaring victory（防止过早胜利）</strong>：防止 agent 过早宣布完成。通过明确的 Definition of Done 和 Evaluator Rubric 建立客观标准。
+    </li>
+    <li>
+      <strong>Verify work（验证）</strong>：用全流程测试和自省验证工作。init.sh 中的 VERIFY_CMD 是基础，还需要 feature_list.json 中的 per-feature 验证步骤。
+    </li>
+    <li>
+      <strong>Make runtime observable（可观测）</strong>：让运行时可观察可调试。通过 Diagnostic Loop——执行→观察失败→归因到特定 harness 层→修复该层→重新执行。
+    </li>
+  </ol>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">对比分析</div>
+  <div class="ch-title">Harness vs 其他框架</div>
+
+  <table>
+    <thead>
+      <tr><th>维度</th><th>Harness Engineering</th><th>LangChain / AutoGPT</th><th>Copilot</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>核心关注</td><td>工程基础设施</td><td>编排/工作流</td><td>IDE 辅助</td></tr>
+      <tr><td>模型关系</td><td>模型中立，外部约束</td><td>模型可替换</td><td>模型固化</td></tr>
+      <tr><td>验证机制</td><td>内置 + 显式</td><td>弱</td><td>弱</td></tr>
+      <tr><td>状态管理</td><td>持久化 + 跨会话</td><td>内存内</td><td>无</td></tr>
+      <tr><td>适用场景</td><td>长期产品开发</td><td>探索/原型</td><td>实时辅助</td></tr>
+    </tbody>
+  </table>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">方法论</div>
+  <div class="ch-title">Diagnostic Loop：五层故障归因</div>
+
+  <p>每个失败都应归因到特定层：</p>
+
+  <ol>
+    <li><strong>Task specification（任务规范层）</strong>：任务定义是否清晰、Definition of Done 是否明确</li>
+    <li><strong>Context provision（上下文提供层）</strong>：agent 是否能感知必要的项目信息</li>
+    <li><strong>Execution environment（执行环境层）</strong>：依赖、工具版本、环境完整性</li>
+    <li><strong>Verification feedback（验证反馈层）</strong>：是否有测试、lint、验证命令</li>
+    <li><strong>State management（状态管理层）</strong>：跨会话状态是否丢失</li>
+  </ol>
+
+  <div class="callout">
+    <strong>量化改进</strong>：保持简单日志——每个任务是否成功，失败由哪一层导致。几轮后就能看出哪一层是瓶颈，集中精力在那里。
+  </div>
+</div>
+
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">OpenAI 实验</div>
+  <div class="ch-title">百万行代码实验</div>
+
+  <p>2025 年 OpenAI 进行了激进实验：用 Codex 从空 git 仓库构建完整内部产品。五个月后，仓库约有 <strong>100 万行代码</strong>——应用逻辑、基础设施、工具、文档全部由 agent 生成。三名工程师驱动 Codex，开关并合并约 1500 个 PR，平均每人每天 3.5 个。</p>
+
+  <p><strong>关键约束：人类从不直接写代码。</strong>工程师的主要工作不再是写代码，而是设计环境、表达意图、构建反馈循环。</p>
+
+  <p>早期进展比预期慢——不是因为 Codex 能力不足，而是因为环境不够完整。工程师的工作变成了：把大目标拆解成小构建块（设计→代码→审查→测试），让 agent 组装，再用这些块解锁更复杂的任务。</p>
+
+  <div class="info-box">
+    <h3>一个更接地气的案例</h3>
+    <p>某团队用 Claude Sonnet 为一个中等规模 Python Web 应用（FastAPI + PostgreSQL + Redis，~15,000 行代码）添加新的 API 端点。</p>
+    <p>最初只给一句话指令，结果：40% 的上下文用于探索仓库结构，代码不符合项目的错误处理模式，使用了旧版 SQLAlchemy 语法，端点有运行时错误。</p>
+    <p>后来加入 AGENTS.md、显式验证命令、架构决策记录。相同模型在三次独立运行中全部成功，上下文效率提升约 60%。</p>
+    <p><strong>他们没有换模型。他们改变了 harness。</strong></p>
+  </div>
+</div>
+
+---
+
+<div class="section fade-in">
+  <div class="section-title">结语</div>
+
+  <p>Harness Engineering 的核心洞见是：<strong>模型能力和执行可靠性是两回事</strong>。纯种马仍然需要一个好鞍子。</p>
+
+  <p>立即可执行的高 ROI 步骤：</p>
+
+  <ol>
+    <li>在项目根目录创建 AGENTS.md 或 CLAUDE.md</li>
+    <li>为每个任务写明确的 Definition of Done</li>
+    <li>建立 Diagnostic Loop——每次失败都记录归因层</li>
+    <li>使用 claude-progress.md 实现跨会话状态持久化</li>
+  </ol>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li><a href="https://walkinglabs.github.io/learn-harness-engineering/en/" target="_blank">Learn Harness Engineering（WalkingLabs）</a></li>
+      <li><a href="https://openai.com/index/harness-engineering/" target="_blank">OpenAI: Harness engineering: leveraging Codex in an agent-first world</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents" target="_blank">Anthropic: Effective harnesses for long-running agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/harness-design-long-running-apps" target="_blank">Anthropic: Harness design for long-running application development</a></li>
+      <li><a href="https://github.com/walkinglabs/awesome-harness-engineering" target="_blank">Awesome Harness Engineering 资源列表</a></li>
+    </ul>
+  </div>
+</div>
