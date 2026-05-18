@@ -134,9 +134,9 @@
   }, { threshold: 0.1 });
   document.querySelectorAll('.fade-in').forEach(function(el) { observer.observe(el); });
 })();
-// Music toggle
+// Music toggle — uses #float-music-btn
 (function() {
-  var toggleBtn = document.getElementById('music-toggle');
+  var toggleBtn = document.getElementById('float-music-btn');
   var bgm = document.getElementById('bgm');
   if (!toggleBtn || !bgm) return;
 
@@ -145,11 +145,7 @@
   }
 
   toggleBtn.addEventListener('click', function() {
-    if (bgm.paused) {
-      bgm.play();
-    } else {
-      bgm.pause();
-    }
+    if (bgm.paused) { bgm.play(); } else { bgm.pause(); }
   });
 
   bgm.addEventListener('play', updateState);
@@ -323,9 +319,9 @@
   updateActiveToc();
 })();
 
-// Mobile TOC Drawer
+// Mobile TOC Drawer — uses #float-toc-btn
 (function() {
-  var btn = document.getElementById('nav-toc-btn');
+  var btn = document.getElementById('float-toc-btn');
   var drawer = document.getElementById('mobile-toc-drawer');
   var overlay = document.getElementById('mobile-toc-overlay');
   var closeBtn = document.getElementById('mobile-toc-close');
