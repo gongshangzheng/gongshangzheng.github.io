@@ -124,3 +124,28 @@ date = 2025-01-01
 - GitHub Actions → `gh-pages` 分支自动部署
 - 线上地址：https://gongshangzheng.github.io/
 - `config.json` 里 `base_url: "/"` 对应根路径 GitHub Pages
+
+### 自动编译上传流程
+
+```
+修改文件 → git push origin main → GitHub Actions 触发 → build → deploy to gh-pages
+```
+
+**触发条件**：`.github/workflows/deploy.yml`
+- `on.push.branches: [main]` —— 每次 push 到 main 自动触发
+- `workflow_dispatch` —— 支持手动触发
+
+**工作流步骤**：
+1. Checkout 代码
+2. Setup Node.js 20
+3. `npm install`
+4. `npm run build`（含测试门禁）
+5. 将 `public/` 推送到 `gh-pages` 分支
+
+**本地验证**（push 前建议执行）：
+```bash
+node build.js       # 编译 + 测试
+npx serve public    # 本地预览
+```
+
+**注意**：`public/` 由 CI 自动生成，不要手动修改后提交到 main。改源码 → push → 等 Actions 绿勾 → 线上自动更新。
