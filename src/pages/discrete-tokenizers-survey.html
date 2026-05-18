@@ -1,0 +1,209 @@
+---
+title: "离散分词器：从原理到应用的全面综述"
+description: "快手 & 香港城市大学联合发布，系统性综述离散分词器在生成、理解、推荐和信息检索四大领域的 design principles、量化方法与应用路线图。"
+date: "2026-05-18"
+tags: [离散分词器, 视觉编码器, VQ, RQ, LFQ, FSQ, 多模态, 生成模型]
+categories: [研究综述]
+page_style: |
+  .hero { height: 55vh; }
+hero_title: "离散分词器：从原理到应用"
+hero_sub: "全面综述 Discrete Tokenizers"
+hero_tagline: "生成 · 理解 · 推荐 · 信息检索 — 四大领域系统梳理"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2025</span><span class="label">论文发表</span></div>
+  <div class="stat"><span class="num b">30+</span><span class="label">代表性方法</span></div>
+  <div class="stat"><span class="num g">5</span><span class="label">量化方法分类</span></div>
+  <div class="stat"><span class="num">4</span><span class="label">应用领域</span></div>
+</div>
+
+<div class="wrap">
+
+<div class="section fade-in">
+  <h2 class="section-title">背景与核心问题</h2>
+  <p>离散分词器（Discrete Tokenizers）是现代机器学习系统的核心组件，特别是在自回归建模和大语言模型（LLMs）背景下。它们作为关键接口，将来自不同模态的原始非结构化数据转换为离散 token，使 LLM 能够在广泛的任务中有效运作。</p>
+  <p>这篇综述（快手 & 香港城市大学联合发表，arXiv:2502.12448）系统性地回答了以下问题：</p>
+  <ul>
+    <li>分词器的 Encoder-Quantizer-Decoder 子模块如何协同工作？</li>
+    <li>不同的量化方法（VQ / RQ / LFQ / FSQ / GRVQ）各有何技术本质和权衡？</li>
+    <li>离散分词器如何服务于生成、理解、推荐、信息检索四大应用？</li>
+    <li>当前的主要挑战和未来方向是什么？</li>
+  </ul>
+  <div class="callout">
+    <h3>💡 关键洞察</h3>
+    <p><strong>分词器质量直接决定 LLM 性能上限。</strong> 次优的 tokenization 会导致下游任务显著退化——这与"MAGVIT-v2: Language Model Beats Diffusion — Tokenizer is Key to Visual Generation"的核心论点一致。</p>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">整体架构：Encoder — Quantizer — Decoder</h2>
+  <p>离散分词器由三个核心子模块组成：</p>
+  <div class="centered-image">
+    <img src="assets/images/discrete-tokenizers-survey/image_000000_f239541dc1130bf04dbbd540d56b99d7f1a6b21db94eb8f95f144a80f8346139.png" alt="离散分词器整体流程与应用" style="max-width:100%;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.10);" />
+    <p style="text-align:center;color:var(--text-muted);font-size:0.9rem;margin-top:0.5rem;">图 1：离散分词器的通用流程与应用场景</p>
+  </div>
+
+  <h3>编码器（Encoder）</h3>
+  <p>将原始连续输入（像素、音频波形、文本）压缩为潜在表示。Backbone 架构演进：</p>
+  <table>
+    <thead><tr><th>架构类型</th><th>代表工作</th><th>适用模态</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>CNN-based</td><td>VQGAN, MAGVIT, SoundStream</td><td>图像/视频/音频</td><td>高效率，局部特征强</td></tr>
+      <tr><td>Transformer-based</td><td>ViT-VQGAN, SEED, TiTok, OmniTokenizer</td><td>图像/视频</td><td>全局建模强，可扩展性好</td></tr>
+      <tr><td>混合架构</td><td>Chameleon, ShowO</td><td>多模态</td><td>跨模态共享，参数共享</td></tr>
+    </tbody>
+  </table>
+
+  <h3>量化器（Quantizer）</h3>
+  <p>将连续潜在向量映射到离散码本中的最近邻——这是分词器的<strong>核心创新点</strong>。不同的量化方法对应不同的技术路线（见下一节）。</p>
+
+  <h3>解码器（Decoder）</h3>
+  <p>将离散 token 重建回原始数据空间。直通估计器（STE）在反向传播中允许梯度流经离散量化操作，使整个流程端到端可微。</p>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">量化方法分类</h2>
+  <p>这篇综述最重要的贡献之一：首次将 RQ、LFQ、FSQ、GRVQ 等方法纳入统一分类体系。按量化方法可分为五类：</p>
+
+  <h3>VQ（向量量化）— 经典方法</h3>
+  <p><strong>原理：</strong>将高维连续向量映射到有限码本中的最近邻，通过承诺损失（commitment loss）约束编码器输出接近码本向量。</p>
+  <p><strong>代表工作：</strong>VQ-VAE、VQGAN、ViT-VQGAN、SEED、TiTok</p>
+  <p><strong>问题：</strong>码本坍塌（codebook collapse）——大码本中大量条目未被使用，优化困难。</p>
+
+  <h3>RQ（残差量化）— 多层逼近</h3>
+  <p><strong>原理：</strong>每层量化前一层产生的残差误差，逐层精细化。整体表示为 S 个码字的和：</p>
+  <p>$$\mathbf{c} = [\mathcal{C}_0(\mathbf{r}_0), \mathcal{C}_1(\mathbf{r}_1), ..., \mathcal{C}_S(\mathbf{r}_S)]$$</p>
+  <p><strong>代表工作：</strong>RQVAE、SoundStream（4-8层 RQ）、SpeechTokenizer</p>
+  <p><strong>优势：</strong>高压缩率，分层表示；第一层包含主要信息，后续层细化残差。</p>
+
+  <h3>LFQ（无查找量化）— 隐式码本</h3>
+  <p><strong>原理：</strong>将潜在空间分解为二进制维度，每个维度独立量化为 {-1, +1}。码本空间为 $C = \prod_{i=1}^{\log_2 K} C_i$，无需显式码本查找。</p>
+  <p><strong>代表工作：</strong>MAGVIT-v2、ShowO</p>
+  <p><strong>优势：</strong>减少内存占用，适合大规模应用；训练更稳定。</p>
+
+  <h3>FSQ（有限标量量化）— 无码本量化</h3>
+  <p><strong>原理：</strong>通过变换 f 将编码表示投影到几个维度，每个维度舍入到固定值集合，形成隐式码本。</p>
+  <p><strong>代表工作：</strong>Cosmos（NVIDIA）、VidTok、ElasticTok</p>
+  <p><strong>特点：</strong>确定性映射，无 codebook collapse，但表示能力受限。</p>
+
+  <h3>GRVQ（分组残差量化）— 平衡压缩率</h3>
+  <p><strong>原理：</strong>将向量分组后分别进行残差量化，平衡压缩率和重建质量。</p>
+  <p><strong>代表工作：</strong>HiFiCodec（音频）</p>
+
+  <div class="callout">
+    <h3>🔬 技术洞察（来自 Ming 的 AR 建模范式分析）</h3>
+    <p><strong>FSQ vs LFQ 对 AR 建模的影响</strong>：FSQ（确定性映射，无码本）的梯度特性与 LFQ（隐式码本）有本质差异。FSQ 是确定性舍入，梯度由反向传播的 STE 估计；LFQ 的 sign 函数在零点不可导，需要特殊处理。对 AR 模型的训练稳定性来说，这是未充分讨论的空白。</p>
+    <p><strong>1D tokenizer 输出格式 vs 因果掩码</strong>：SEED、TiTok 等 1D tokenizer 的输出是序列化 token，AR 因果约束作用于 token 序列。但如果 tokenizer 输出按量化顺序（而非空间/语义顺序）排列，AR 的因果约束就失去意义——这个细节在 Section 3.1 的 AR 图像生成讨论中没有被深入。</p>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">应用一：生成（Generation）</h2>
+
+  <h3>图像生成</h3>
+  <table>
+    <thead><tr><th>方法</th><th>量化器</th><th>关键贡献</th></tr></thead>
+    <tbody>
+      <tr><td><strong>VQGAN</strong></td><td>VQ</td><td>引入对抗训练 + 感知损失，高分辨率图像生成</td></tr>
+      <tr><td><strong>RQVAE</strong></td><td>RQ</td><td>残差量化减少序列长度，支持更长图像生成</td></tr>
+      <tr><td><strong>SEED</strong></td><td>VQ</td><td>1D 因果依赖 + 高层语义表示，生成离散视觉编码</td></tr>
+      <tr><td><strong>TiTok</strong></td><td>VQ</td><td>1D tokenization，256×256 → 32 tokens，分辨率解耦</td></tr>
+      <tr><td><strong>MAGVIT-v2</strong></td><td>LFQ</td><td>共享码本统一图像/视频 tokenization，因果 3D-CNN</td></tr>
+      <tr><td><strong>Cosmos</strong></td><td>FSQ</td><td>NVIDIA 视频分词器，无码本设计</td></tr>
+    </tbody>
+  </table>
+
+  <h3>视频生成</h3>
+  <p>MAGVIT 系列建立时空联合 tokenization 范式，OmniTokenizer 用空间-时间解耦 Transformer + 渐进训练联合处理图像和视频。Cosmos 和 VidTok 采用 FSQ 替代 VQ，在高压缩比（128-256×）下保持时空一致性。</p>
+
+  <h3>音频生成</h3>
+  <p>SoundStream（因果卷积）、HiFiCodec（多尺度 STFT 损失 + GRVQ）、SpeechTokenizer（语义-声学分离，分层 RQ）构成音频分词器的主流路线。</p>
+
+  <div class="callout">
+    <h3>💡 与我们研究的关系</h3>
+    <p><strong>ProgressiveDiTok 的定位</strong>：这篇综述的应用分类是图像/视频/音频/推荐，但 diffusion-as-encoder（用扩散逆过程做信息传递）是一个独立方向，不是简单的"又一个应用"。ProgressiveDiTok 的编码端耦合加噪过程、解码端逐步恢复，恰好对应这个技术本质。建议在 Section 3 的框架之外单独讨论"diffusion + tokenizer"的互补性。</p>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">应用二：多模态理解（Comprehension）</h2>
+  <p>AR 大模型的出现标志了生成与理解能力的统一。分词器将任意模态离散化为 token 序列，构建通用接口连接多元数据与基于 Transformer 的 LLM。</p>
+
+  <h3>视觉-语言理解</h3>
+  <p>TEAL、AnyGPT 用模态特定分词器将图像、文本、音频信息统一为离散 token 序列。Chameleon（Meta）和 Show-O（LFQ）通过统一 tokenization 实现"token-in-token-out"多模态大模型。</p>
+
+  <h3>动态视觉 tokenization</h3>
+  <p>LaViT 和 ElasticTok 解决"固定 token 数量 vs 视觉内容差异"的矛盾，生成保持高层语义的动态离散 token。</p>
+
+  <h3>音频理解</h3>
+  <p>RepCodec 通过重构语音编码器的表示来学习 VQ 码本；SpeechTokenizer 统一语义 token 和声学 token，分层 RQ 增强语音-语言对齐；NeuralSpeech-3 将语音分解为内容、韵律、音色、声学细节等子空间。</p>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">应用三：推荐系统（Recommendation）</h2>
+  <p>传统推荐系统依赖随机分配的 ItemID/UserID，缺乏语义信息，高度依赖历史交互数据。语义 ID（Semantic ID）通过分词器将 item 内容语义（文本描述、视觉特征）映射为离散 token，有效解决冷启动和长尾分布问题。</p>
+
+  <h3>TIGER（先驱）</h3>
+  <p>生成式推荐框架：内容编码器 → RQVAE 语义 ID 分词器 → Transformer 自回归推荐器。YouTube 线上实验证明语义 ID 方案在冷启动 item 上显著提升泛化能力。</p>
+
+  <h3>技术路线对比</h3>
+  <table>
+    <thead><tr><th>方法</th><th>量化器</th><th>核心技术</th></tr></thead>
+    <tbody>
+      <tr><td>TIGER</td><td>RQ</td><td>内容嵌入 → RQ 语义 ID → AR 推荐</td></tr>
+      <tr><td>TokenRec</td><td>MQ-VQ</td><td>掩码向量量化分词器，增强 token 泛化</td></tr>
+      <tr><td>VQ-Rec</td><td>PQ</td><td>BERT 文本嵌入 + 产品量化，跨域迁移</td></tr>
+      <tr><td>LC-Rec</td><td>RQ</td><td>LLaMA 嵌入 → 分层 item token</td></tr>
+      <tr><td>LETTER / CoST</td><td>RQ</td><td>基于 RQ 的分层 item token，层级结构</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">应用四：信息检索（Information Retrieval）</h2>
+  <p>生成式信息检索是新兴范式，分词器将文档语义结构化为离散 doc token，用于可微搜索索引。</p>
+  <p>DSI 通过层次化 k-means 在文档嵌入上构建语义结构化 doc token；Ultron 用 PQ 压缩稠密向量空间；LMINDEXER 和 GenRet 用编码器-解码器 Transformer 自回归生成语义连续表示，再量化为离散 token；RIPOR 用 RQ 捕捉层次化文档结构，减少 doc token 长度以提升推理效率。</p>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">挑战与未来方向</h2>
+
+  <h3>当前主要挑战</h3>
+  <ul>
+    <li><strong>压缩率 vs 重建质量的权衡</strong>：高压缩（更少 token）导致信息损失；增加 token 数则指数级增加序列长度和计算成本。</li>
+    <li><strong>理解 vs 生成的权衡</strong>：单一视觉编码器难以同时优化理解和生成。DeepSeek Janus 实验表明，VQ Tokenizer 下多模态理解性能显著低于专用语义分词器。</li>
+    <li><strong>码本坍塌与利用率</strong>：有限码本导致训练时只有少数条目被有效使用。LFQ/FSQ 等无码本方法正在解决这一问题。</li>
+    <li><strong>跨模态对齐与一致性</strong>：多模态系统中不同模态 token 之间的语义对齐在实时场景下尤其困难。</li>
+    <li><strong>与基础模型的集成</strong>：token 词汇表与 LLM 架构的对齐、计算开销管理、模态间分布不匹配导致的训练不稳定。</li>
+  </ul>
+
+  <h3>未来研究方向</h3>
+  <ul>
+    <li><strong>自适应动态分词</strong>：自动调整词汇大小、分层结构，兼顾细粒度细节和高层语义。</li>
+    <li><strong>高效训练与推理</strong>：轻量级架构、参数高效适应方法，在资源受限环境下保持高质量。</li>
+    <li><strong>架构创新</strong>：统一分词框架（TEAL）、字节级模型（BLT 绕过 tokenization）、更好的效率-泛化权衡。</li>
+  </ul>
+
+  <div class="callout">
+    <h3>🔬 关于 diffusion + tokenizer 的补充说明</h3>
+    <p>这篇综述将 diffusion 归入"应用"类别（图像/视频/音频生成），但从技术本质看，用扩散逆过程做编码（diffusion-as-encoder）与传统 VQ tokenizer 是平行关系而非子集。建议在后续版本中将 diffusion-as-encoder 独立为 Section 3.x，与 VQ / RQ / LFQ / FSQ 的技术方法并列讨论——因为 ProgressiveDiTok 的核心创新正是这个耦合：编码端逐步传递信息，解码端逐步恢复，编解码过程本身具有时间结构。</p>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <h2 class="section-title">与我们研究的关联</h2>
+  <table>
+    <thead><tr><th>这篇的方法</th><th>我们关注的演进方向</th><th>关联点</th></tr></thead>
+    <tbody>
+      <tr><td>TiTok（1D VQ）</td><td>1D Visual Tokenizer</td><td>固定长度 token，token 数量与分辨率解耦</td></tr>
+      <tr><td>MAGVIT-v2（LFQ）</td><td>无码本量化</td><td>突破码本坍塌，支持大规模</td></tr>
+      <tr><td>HART / SoftVQ-VAE</td><td>连续-离散混合</td><td>双流编码器的技术基础</td></tr>
+      <tr><td>Cosmos（FSQ）</td><td>扩散 + tokenizer</td><td>diffusion-as-encoder 的新路线</td></tr>
+      <tr><td>GigaTok（语义正则化）</td><td>语义外置与规模化</td><td>billion-scale tokenizer 思路</td></tr>
+    </tbody>
+  </table>
+  <p>这篇可作为 Arthur 的 <a href="visual-encoders-survey.html">Visual Encoders Survey</a> 第五节（Visual Tokenizers）的技术细节补充——两篇互补：前者按架构演进分类（2D 离散 / 1D 离散 / 混合），这篇按量化方法分类，是更细粒度的维度。</p>
+</div>
+
+</div>
