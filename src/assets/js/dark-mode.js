@@ -12,7 +12,8 @@
 // Auto-wrap MathJax formula containers so wide formulas can scroll horizontally
 (function() {
   function wrapFormulas() {
-    document.querySelectorAll('.math-wrap mjx-container, mjx-container[jax="TE"]').forEach(function(el) {
+    // mjx-container is the element MathJax creates to wrap each formula
+    document.querySelectorAll('mjx-container').forEach(function(el) {
       if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
       var wrap = document.createElement('div');
       wrap.className = 'math-wrap';
