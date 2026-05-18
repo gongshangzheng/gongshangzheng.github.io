@@ -1,0 +1,272 @@
+---
+title: "连续扩散语言模型路线综述：对视觉编码器研究的系统性启发"
+date: 2026-05-18
+categories: [研究札记]
+tags: [diffusion-language-model, continuous-representation, visual-encoder, semantic-tokenizer]
+mathjax: true
+---
+
+<style>
+body { max-width: 860px; margin: 0 auto; padding: 20px; font-family: Georgia, serif; line-height: 1.7; }
+h1 { font-size: 1.8rem; margin-bottom: 0.5em; }
+h2 { font-size: 1.3rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3em; margin-top: 1.8em; }
+h3 { font-size: 1.05rem; margin-top: 1.4em; }
+.section { margin-bottom: 2em; }
+.ch { background: #f8f8f8; border-left: 3px solid #4a90d9; padding: 1em 1.2em; margin: 1.5em 0; border-radius: 4px; }
+.tbl-wrap { overflow-x: auto; margin: 1.5em 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+th { background: #f0f4fa; font-weight: 600; }
+tr:nth-child(even) { background: #fafafa; }
+.quote { border-left: 3px solid #888; padding: 0.5em 1em; margin: 1em 0; background: #f9f9f9; font-style: italic; }
+.sources { background: #f8f8f8; padding: 1em; border-radius: 6px; margin-top: 2em; }
+.sources h3 { margin-top: 0; font-size: 1rem; }
+.source-list { font-size: 0.88rem; line-height: 1.8; }
+.example-box { background: #f0f7ff; border: 1px solid #b3d4fc; padding: 1em; border-radius: 6px; margin: 1em 0; }
+.example-box .lang { font-size: 0.85rem; color: #555; margin-bottom: 0.5em; }
+</style>
+
+<div class="section">
+
+## 一、研究背景：两条路线同时出现
+
+2026年5月，MIT 何恺明团队和字节跳动 Seed 团队几乎同期发表了研究方向相近的论文：
+
+| 工作 | 机构 | 核心路线 | 参数规模 |
+|------|------|---------|---------|
+| **ELF**: Embedded Language Flows | MIT CSAIL | 单阶段连续 Flow Matching | 105M |
+| **Cola DLM**: Continuous Latent Diffusion Language Model | ByteDance Seed | 两阶段分层 Latent Diffusion | ~2B |
+
+两者共同指向一个核心判断：
+
+> **Token 是人类语言系统的表层载体，不是语义本身。语言智能可以也应该在连续语义空间中建模。**
+
+</div>
+
+<div class="section">
+
+## 二、核心概念：表层载体 vs 底层语义
+
+### Token 不等于语义
+
+同义语义可以对应截然不同的 token 序列：
+
+<div class="example-box">
+<div>中文 paraphrase：</div>
+我今天很开心。<br>
+今天我心情很好。<br>
+今天过得挺愉快。
+<div class="lang" style="margin-top:0.8em;">跨语言 paraphrase：</div>
+英文：I am very happy today.<br>
+法文：Je suis très heureux aujourd'hui.
+</div>
+
+这些序列的 token 差异巨大，但语义几乎一致。Token 是历史演化和 tokenizer 工程的产物，不等于语义本身。
+
+### AR 模型的状态空间假设
+
+自回归模型的状态空间假设：模型的内部状态被绑定在 surface token prefix 上——全局语义规划与局部词面实现，必须共同走完整的、单向的、逐 token 的 filtration。
+
+Cola DLM 把这两件事拆成：
+- **Prior**：学"语义怎么组织"
+- **Decoder**：学"语义怎么实现成文字"
+
+### 连续空间的几何动机
+
+语义具有几何结构：相似的语义应该在 embedding space 里相近。Token simplex 不具备这种自然的光滑性。
+
+在连续 latent 上，可以直接使用 Gaussian smoothing、Vector field transport、logSNR calibration、Interpolation——这些工具在图像 diffusion 里早就成熟，文本领域只是最近才引入。
+
+</div>
+
+<div class="section">
+
+## 三、技术路线对比
+
+### ELF：单阶段流
+
+> ELF predominantly stays within the continuous embedding space until the final time step, where it maps to discrete tokens using a shared-weight network.
+
+设计原则：minimal adaptation to the discrete domain。
+
+关键设计：
+1. **Encoder** 把 token 映射到 continuous embedding space（可 pretrained / jointly trained / frozen）
+2. **Flow Matching** 在 embedding space 里学 velocity field（连续时间 formulation）
+3. **最后一步** 用共享权重的网络把 embedding 离散化到 token——不需要单独 decoder
+
+**关键发现**（论文 Related Work）：之前的连续 DLM（Diffusion-LM、CDCD、DiffuSeq）之所以不如离散模型，不是因为连续表示本身不行，而是因为它们在 denoising 过程中加了 per-step token-level supervision（rounding loss、cross-entropy），在连续轨迹里强行引入离散约束，破坏了 flow 的连续性。**ELF 去掉这个约束后，才第一次让连续模型真正 outperform 离散 baseline。**
+
+Flow Matching 比 DDPM 更适合 language modeling 的原因：语言的核心问题是"从语义到表层的映射"，velocity field 描述的是路径方向而不是绝对位置——这和"语义在哪里、token 怎么走"的问题天然对齐。DDPM 需要在每个时间步预测噪声，而 Flow Matching 只需要预测 velocity（起点到终点的方向），信息量更紧凑，训练更稳定。
+
+### Cola DLM：两阶段分层
+
+设计原则：semantic organization 和 token realization 应该是两个独立的模块。
+
+架构三件套：
+
+1. **Text VAE**：建立稳定的 text-to-latent 映射
+   - Encoder $q_\phi(z_0 | x)$：文本 → 语义 fingerprint
+   - Decoder $p_\theta(x | z_0)$：语义 → 文本
+   - 关键：VAE 而不是 plain embedding，因为需要显式参与 marginalization 的 latent variable
+
+2. **Block-causal DiT + Flow Matching**：学习 $p_\psi(z_0)$
+   - Block 内并行：局部语义的快速组织（如一个子句的主谓宾关系）
+   - Block 间 causal：整体逻辑推进
+   - 从 $\mathcal{N}(0,I)$ 到 latent prior 的 transport map
+
+3. **Conditional Decoder**：把 $z_0$ 实现为文本
+
+### 关键差异
+
+| 维度 | ELF | Cola DLM |
+|------|-----|---------|
+| 阶段数 | 单阶段 | 两阶段 |
+| Decoder | 无（最后一步离散化网络） | 有（显式条件解码器） |
+| Latent space | Token-aligned embedding | Compressed semantic latent |
+| Prior learning | Flow Matching on embedding | Block-causal DiT + Flow Matching on compressed latent |
+| CFG 支持 | 直接迁移（无 decoder 干扰） | 需要额外处理 encoder-prior 解耦 |
+| 信息压缩 | 隐式（去掉 per-step rounding） | 显式 ELBO 三项分解 |
+
+### LLaDA：离散扩散 baseline
+
+LLaDA 在**离散层面**证明了 diffusion 可以替代 AR，但放弃了连续 semantic space——这让它没法像 Cola DLM 那样做到语义级的信息压缩和操控。
+
+**最重要的实验**：LLaDA 打破了 reversal curse——"Alice 的母亲是 Jane"和"Jane 的女儿是 Alice"这类双向推理，AR 模型只能学会正向，LLaDA 学会了双向。原因：LLaDA 的双向 attention 天然支持双向推理，而 AR 的 causal masking 从结构上就禁止了这个能力。
+
+这直接说明：**因果性约束是 AR 生成范式的副产品，不是 tokenizer 的本质约束。**
+
+</div>
+
+<div class="section">
+
+## 四、Cola DLM 的 ELBO 三项分解：最重要的理论贡献
+
+Cola DLM 把 AR 模型里糊在一个损失函数里的东西，拆成了三个可以独立诊断的子目标：
+
+$$\mathcal{L}_{\mathrm{ELBO}}(x) = \underbrace{\mathbb{E}_{q(x,z_0)}[\log p_\theta(x|z_0)]}_{\text{conditional realization}} - \underbrace{I_q(X; Z_0)}_{\text{information compression}} - \underbrace{\mathrm{KL}(\bar q_\phi(z_0) \| p_\psi(z_0))}_{\text{prior matching}}$$
+
+<div class="tbl-wrap">
+
+| 子目标 | 诊断什么 | 什么时候失败 |
+|--------|---------|-------------|
+| **Conditional realization** | decoder 能否把 latent 正确还原成文本 | latent dimension 太小，语义信息不足 |
+| **Information compression** $I_q(X; Z_0)$ | latent 里压缩了多少原文信息 | $I$ 太小 → 语义不够；$I$ 太大 → 退化为逐 token 记忆 |
+| **Prior matching** | learned prior 能否拟合真实数据诱导的 latent 分布 | prior 容量不够，或 block-causal 结构不合理 |
+
+</div>
+
+效果不好时，不再需要猜测是哪里出了问题，分别看三个指标就知道。
+
+### 对视觉编码器的直接映射
+
+| ELBO 项 | 对应视觉问题 |
+|---------|------------|
+| Conditional realization | visual decoder 能否把 latent 正确重建为图像 |
+| Information compression | visual tokenizer 的 compression ratio 够不够保留语义 |
+| Prior matching | diffusion prior 是否与 latent space 的几何结构匹配 |
+
+当前视觉方法把这三个混在一起，遇到瓶颈时很难定位是哪个环节出问题。
+
+### Rate-Distortion 判据
+
+Cola DLM 的成立有一个可被检验的前提：数据中存在低维但高价值的全局语义结构。
+
+$$D(R) = \inf_{q(z_0|x): I_q(X;Z_0) \le R} \inf_{p_\theta(x|z_0)} \mathbb{E}_{q(x,z_0)}[-\log p_\theta(x|z_0)]$$
+
+- 如果 $D(R)$ 在小 $R$ 就已经很低 → 数据具有可压缩的语义结构，latent bottleneck 有利
+- 如果只有 $R \to H(X)$ 时 $D(R)$ 才下降 → 文本几乎不可压缩，强行压缩会损害生成
+
+### RQ1：Latent 共享语义结构的存在性
+
+用反证法证明 latent space 中存在跨维度的共享语义结构（不是纯局部可分的）：
+
+最优 timestep shift $\delta^\star(d)$ 随 latent dimension 单调漂移（$d=16 \to \approx 1.0$，$d=64 \to \approx 1.7$，$d=128 \to \approx 2.3$）→ 零假设（纯局部可分）被否定 → latent 中存在共享语义结构。
+
+这个结论保证了"建模 $p_\psi(z_0)$ 是有意义的"，因为 $z_0$ 不只是 token 的连续替代品。
+
+</div>
+
+<div class="section">
+
+## 五、对视觉编码器研究的系统性启发
+
+### 启发一：语义抽象 vs 像素重建
+
+Cola DLM 的核心洞察：真正重要的是表征，token 只是表征 realize 出来的一种形式。
+
+视觉 tokenizer 的核心问题：我们学的是像素级重建（如 VAE），还是语义级不变性（如 CLIP/MAE）？
+
+当前视觉 tokenizer（VQ-VAE、VQGAN）的主要训练目标是重建像素。这意味着 tokenizer 可能学到的是"如何把图像还原出来"，而不是"图像里有什么语义"。
+
+### 启发二：因果性是 AR 生成范式的副产品
+
+LLaDA 的 reversal curse 实验和 block-causal DiT 的分析共同指向这个结论。
+
+AR 视觉模型（LlamaGen、VAR）的 causal mask 从结构上禁止了 reverse reasoning 类能力。如果视觉生成换用双向 diffusion 而不是 causal AR，这类能力可能自然出现。
+
+**TiTok/MAGVIT 用 causal AR 是因为它们服务于 AR 生成，但如果换成 diffusion 生成，causal constraint 就可以解绑。**这会动摇 1D visual tokenizer 必须用 causal AR 的前提假设。
+
+### 启发三：信息压缩是可独立诊断的变量
+
+Cola DLM 的 ELBO 三项分解（Arthur 提出，ming 细化）和 ELF 的"去掉 per-step rounding loss"实验从两个方向证明了同一个结论：
+
+**当前视觉 tokenizer 的"压缩率"没有作为独立变量来设计，都是跟着其他目标走的。**
+
+视觉 tokenizer 的 compression ratio（原图分辨率 vs token 数量）是否存在类似的"语义承载临界点"？如果 latent dimension 太小，语义信息不足；如果太大，tokenizer 可能退化为逐像素记忆。
+
+### 启发四：分层架构的迁移
+
+图像/视频生成领域（Stable Diffusion、Seedance）早已采用：
+**VAE（语义提取）→ Diffusion Prior（语义生成）→ Decoder（像素实现）**
+
+文本领域的 Cola DLM 在某种意义上完成了同样的分层。这意味着：
+- 视觉编码器研究也许应该区分"语义提取器"和"语义生成器"
+- 一个专门学语义，一个专门把语义实现成像素
+
+### 启发五：Block-wise Tokenization 的潜力
+
+Cola DLM 的 block-causal DiT 比"fully causal AR"和"fully parallel DiT"更细粒度。
+
+对视觉 tokenizer 的启发：block-wise 的 1D tokenization（若干 block，每个 block 内并行编码，block 间 causal）可能比现有的乱序 1D 序列更有结构价值。
+
+Block 内双向——局部语义快速组织；Block 间单向——保证全局逻辑链一致。
+
+</div>
+
+<div class="section">
+
+## 六、开放问题
+
+1. **视觉 tokenizer 的 rate-distortion 曲线**：compression ratio 多少时语义已经充分保留？这需要类似 Cola DLM RQ1 的系统性实验。
+
+2. **视觉 latent space 是否存在类似"共享语义结构"的跨维度模式？** 如果存在，那建模视觉 prior $p_\psi(z_0)$ 就是有意义的；如果不存在，那压缩到连续 latent 的路线在视觉领域可能不 work。
+
+3. **因果性解绑后的视觉生成**：如果视觉 tokenizer 放弃 causal AR 约束，换用双向 diffusion 生成，reverse reasoning 能力会不会自然出现？
+
+4. **连续语义空间 vs 离散量化**：在视觉领域，连续（diffusion latent）vs 离散（VQ codebook）的权衡是否和文本领域一致？ELF 的实验表明连续不一定优于离散，关键是不要在连续轨迹里引入离散约束——这个教训对视觉 VQ 的 design 也有启示。
+
+5. **多层 tokenization 的可行性**：文本可以做到语义层（prior）+ 表层（decoder）的分离，视觉是否也能设计出类似的多层 tokenization？高层 semantic token + 底层 pixel token，而不是当前的单一 VQ codebook？
+
+6. **多模态统一**：文本 latent 和视觉 latent 能否进入同一个语义空间？如果 Cola DLM 的"文本进入连续 latent 后与图像/视频天然对齐"的判断是对的，那跨模态 semantic tokenizer 就是下一步。
+
+</div>
+
+<div class="section sources">
+
+## 参考文献
+
+<div class="source-list">
+
+- **[ELF]** Keya Hu, Linlu Qiu, Yiyang Lu et al. *Embedded Language Flows (ELF): Scaling Diffusion Language Models via Continuous Embedding Space*. arXiv:2605.10938. MIT CSAIL, 2026.
+- **[Cola DLM]** Hongcan Guo, Yan Zeng et al. *Continuous Latent Diffusion Language Model*. arXiv:2605.06548. ByteDance Seed, 2026. [[博客]](https://hongcanguo.github.io/posts/2026-cola-dlm-zh.html)
+- **[LLaDA]** Shen Nie, et al. *Large Language Diffusion Models (LLaDA)*. OpenReview:W2tWu0aikL.人大高瓴AI学院李崇轩组, 2025.
+
+</div>
+
+<div style="margin-top:1em; font-size:0.85rem; color:#666;">
+
+**报告说明**：本报告综合了视觉编码器频道（ch_96021a）的集体研读成果。Arthur 为主报告作者，ming/Hanako/Alex 分别贡献了 Cola DLM / ELF / LLaDA 的精读结果。Org-roam 源笔记：`Continuous-Diffusion-Language-Models-Survey.org`
+
+</div>
+
+</div>
