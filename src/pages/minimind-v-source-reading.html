@@ -1,0 +1,407 @@
+---
+title: "MiniMind-V：从 0 构建多模态视觉语言模型"
+description: "仅用 65M 参数实现图像理解与对话，3 块钱成本 + 2 小时训练，源码级解读 MiniMind-V 极简多模态大模型"
+date: 2026-05-19T14:21:00
+created_at: 2026-05-19T14:21:00
+updated_at: 2026-05-19T14:21:00
+tags: [MiniMind-V, VLM, 源码解读, 视觉语言模型, SigLIP2, MoE]
+categories: ["论文精读"]
+hero_title: MiniMind-V
+hero_sub: "65M 参数 · 多模态视觉语言模型"
+hero_tagline: "源码解读 · 架构分析 · 工程实践"
+---
+
+<!-- 项目概览 -->
+<div class="stats">
+  <div class="stat"><span class="num">65M</span><span class="label">可训练参数</span></div>
+  <div class="stat"><span class="num b">160M</span><span class="label g">推理总参数</span></div>
+  <div class="stat"><span class="num">3¥</span><span class="label">训练成本</span></div>
+  <div class="stat"><span class="num b">2h</span><span class="label g">SFT 训练</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 项目定位与背景                                                  -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 0</div>
+  <div class="ch-title">项目定位与背景</div>
+
+  <p>MiniMind-V 是一个极简多模态视觉语言模型（VLM，Vision-Language Model）开源项目。核心目标：用最低成本实现多模态对话能力。最小版本参数量仅 GPT3 的约 1/2600，单张 NVIDIA RTX 3090 即可完成训练和推理。</p>
+
+  <div class="info-box">
+    <h3>什么是 VLM？</h3>
+    <p>VLM（Vision-Language Model）让大语言模型同时理解图像和文本。传统 LLM 输入输出都是文本；VLM 在此基础上增加了视觉感知能力——给定一张图片，模型可以回答关于这张图片的问题，或者根据图片内容进行对话。</p>
+  </div>
+
+  <p>当前主流 VLM 架构分为两条路线：<strong>架构融合派</strong>（如 LLaVA，用 Projector 连接视觉编码器和 LLM）和<strong>语言模型多模态扩展派</strong>（如 GPT-4V，让 LLM 原生支持图像 token）。MiniMind-V 属于第一种，用极简的方式复现了这条路线的核心设计。</p>
+
+  <div class="quote">
+    <p>「用乐高拼出一架飞机，远比坐在头等舱里飞行更让人兴奋！」</p>
+    <div class="who">—— MiniMind-V 项目作者</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 核心架构总览                                                    -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 1</div>
+  <div class="ch-title">核心架构总览</div>
+
+  <p>MiniMind-V 的架构可以概括为三段式管线：</p>
+
+  <div class="callout">
+    <strong>数据流</strong>：图像 → SigLIP2 Vision Encoder（冻结）→ MLP Projector → 视觉 Token 序列 → 与文本 Token 拼接 → MiniMind LLM（主干语言模型）→ 预测下一个 Token
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/minimind-v-source-reading/VLM-structure.jpg" alt="VLM 架构图" loading="lazy">
+    <div class="cap">MiniMind-V Dense 架构：Vision Encoder + MLP Projector + MiniMind LLM</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>组件</th><th>模型</th><th>参数量</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Vision Encoder</td><td>SiglipVisionModel (siglip2-base-p32-256-ve)</td><td>~95M</td><td>冻结，仅提取特征</td></tr>
+      <tr><td>Projector</td><td>MLP（2 层 Linear + GELU + LayerNorm）</td><td>~1M</td><td>可训练</td></tr>
+      <tr><td>LLM 主干</td><td>MiniMind（8 层，hidden=768）</td><td>~64M</td><td>部分冻结（首尾层解冻）</td></tr>
+    </tbody>
+  </table>
+
+  <p>推理时整机参数量约 <strong>160M</strong>（dense）或 <strong>294M</strong>（MoE 版本）。训练时仅 Projector + LLM 首尾层参与梯度更新，实际可训练参数约 65M。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- 模型结构：MiniMindVLM                                          -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 2</div>
+  <div class="ch-title">模型结构：MiniMindVLM</div>
+
+  <p><code>model/model_vlm.py</code> 中的 <code>MiniMindVLM</code> 是整个项目的核心类，继承自 <code>MiniMindForCausalLM</code>：</p>
+
+  <pre><code class="language-python">class MiniMindVLM(MiniMindForCausalLM):
+    config_class = VLMConfig
+
+    def __init__(self, config: VLMConfig = None,
+                 vision_model_path="./model/siglip2-base-p32-256-ve"):
+        self.config = config or VLMConfig()
+        super().__init__(self.config)
+        # 冻结的视觉编码器
+        self.vision_encoder, self.processor = \
+            self.__class__.get_vision_model(vision_model_path)
+        # 可训练的投影器
+        self.vision_proj = MMVisionProjector(
+            self.config.image_hidden_size,  # SigLIP2 输出维度 768
+            self.config.hidden_size,         # LLM 隐藏层维度 768
+            target_tokens=self.config.image_token_len  # 64
+        )</code></pre>
+
+  <p>关键设计：<code>MMVisionProjector</code> 是一个极简 MLP，将 SigLIP2 的视觉 token 映射为 LLM 可接受的表示。相比 QFormer 等重型投影器（来自 BLIP-2，需额外训练 Query 嵌入），MLP 投影器参数量仅约 1M，训练速度快。</p>
+
+  <pre><code class="language-python">class MMVisionProjector(nn.Module):
+    def __init__(self, in_dim, out_dim,
+                 source_tokens=64, target_tokens=64):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(in_dim),       # 输入归一化
+            nn.Linear(in_dim, out_dim),  # 768 → 768
+            nn.GELU(),                   # 非线性激活
+            nn.Linear(out_dim, out_dim), # 768 → 768
+        )
+
+    def forward(self, x):
+        return self.mlp(x)</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<!-- 视觉 Token 融合                                                -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 3</div>
+  <div class="ch-title">视觉 Token 融合：count_vision_proj</div>
+
+  <p>如何把视觉特征嵌入到文本 token 序列中？MiniMind-V 使用 <code>&lt;|image_pad|&gt;</code> 作为图像占位符 token（token id = 12），在前向传播中通过 <code>count_vision_proj</code> 方法将视觉特征替换进去：</p>
+
+  <div class="photo">
+    <img src="assets/media/images/minimind-v-source-reading/minimind-v-input.jpg" alt="VLM 输入格式示例" loading="lazy">
+    <div class="cap">VLM 输入格式：64 个 &lt;|image_pad|&gt; 占位符 + 文本 prompt → 视觉特征替换后送入 LLM</div>
+  </div>
+
+  <pre><code class="language-python">@torch.compiler.disable
+def count_vision_proj(self, tokens, h,
+                      vision_tensors=None, seqlen=512):
+    marker = self.config.image_ids[0]  # token id = 12
+    vf = vision_tensors
+    out = []
+    for b in range(h.size(0)):
+        hb, seq, k, i = h[b], tokens[b].tolist(), 0, 0
+        while i < len(seq):
+            if seq[i] == marker:        # 找到连续的 image_pad
+                start = i
+                while i < len(seq) and seq[i] == marker:
+                    i += 1
+                if k < vf.size(1):
+                    # 用视觉 token 替换对应位置的 image_pad
+                    hb = torch.cat(
+                        (hb[:start],
+                         vf[b][k][:i - start],
+                         hb[i:]),
+                        dim=0
+                    )[:seqlen]
+                    k += 1
+            else:
+                i += 1
+        out.append(hb)
+    return torch.stack(out)</code></pre>
+
+  <p>设计思路：遍历文本 token 序列，遇到连续的 <code>&lt;|image_pad|&gt;</code> 标记就用对应帧的视觉特征替换。替换后序列长度可能变化，截断到 <code>seqlen</code>。这种方法不需要复杂的 attention mask，实现简洁高效。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- LLM 主干                                                      -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 4</div>
+  <div class="ch-title">LLM 主干：MiniMindForCausalLM</div>
+
+  <p><code>model/model_minimind.py</code> 中的 LLM 主干完全复用 MiniMind 纯语言模型的结构：</p>
+
+  <ul>
+    <li><strong>8 层 Decoder Block</strong>（<code>MiniMindBlock</code>），hidden_size = 768</li>
+    <li><strong>Attention</strong>：GQA（Grouped Query Attention），8 个 query heads，4 个 kv heads；每层有独立的 <code>q_norm</code> 和 <code>k_norm</code>（RMSNorm）</li>
+    <li><strong>MLP</strong>：标准 SwiGLU 激活；如果 <code>use_moe=True</code>，则使用 <code>MOEFeedForward</code>（4 个专家，top-1 路由）</li>
+    <li><strong>位置编码</strong>：YaRN（Yet another RoPE extensioN）支持长上下文扩展，max_position_embeddings = 32768</li>
+  </ul>
+
+  <div class="info-box">
+    <h3>背景：GQA（Grouped Query Attention）</h3>
+    <p>GQA 将 query 分成多个 heads，但只保留少量 key/value heads（这里是 4 个 kv heads 对比 8 个 query heads）。相比标准 Multi-Head Attention，GQA 在保持效果的同时大幅降低 kv cache 占用，对长序列生成尤为重要。Llama 2/3、Mistral 等主流模型均采用此设计。</p>
+  </div>
+
+  <pre><code class="language-python">class MiniMindBlock(nn.Module):
+    def __init__(self, layer_id: int, config: MiniMindConfig):
+        super().__init__()
+        self.self_attn = Attention(config)
+        self.input_layernorm = RMSNorm(config.hidden_size)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size)
+        # Dense 或 MoE 二选一
+        self.mlp = (FeedForward(config) if not config.use_moe
+                    else MOEFeedForward(config))
+
+    def forward(self, hidden_states, position_embeddings, ...):
+        residual = hidden_states
+        hidden_states, present = self.self_attn(
+            self.input_layernorm(hidden_states),
+            position_embeddings, ...)
+        hidden_states += residual           # 残差连接
+        hidden_states = hidden_states + \
+            self.mlp(self.post_attention_layernorm(hidden_states))
+        return hidden_states, present</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<!-- MoE 版本                                                      -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 5</div>
+  <div class="ch-title">MoE 版本：MOEFeedForward</div>
+
+  <p>当 <code>use_moe=True</code> 时，每层的 MLP 被替换为 Mixture-of-Experts（混合专家）模块。总参数量增加到 ~200M，但每次推理仅激活 ~65M（top-1 路由）。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/minimind-v-source-reading/VLM-structure-moe.jpg" alt="MoE 架构图" loading="lazy">
+    <div class="cap">MiniMind-V MoE 架构：4 个 Expert + Top-1 路由 + 辅助损失</div>
+  </div>
+
+  <pre><code class="language-python">class MOEFeedForward(nn.Module):
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.gate = nn.Linear(
+            config.hidden_size, config.num_experts, bias=False)
+        self.experts = nn.ModuleList([
+            FeedForward(config)
+            for _ in range(config.num_experts)  # 4 个专家
+        ])
+
+    def forward(self, x):
+        x_flat = x.view(-1, hidden_dim)
+        scores = F.softmax(self.gate(x_flat), dim=-1)
+        topk_weight, topk_idx = torch.topk(
+            scores, k=1, dim=-1)  # Top-1 路由
+        y = torch.zeros_like(x_flat)
+        for i, expert in enumerate(self.experts):
+            mask = (topk_idx == i)
+            if mask.any():
+                token_idx = mask.any(-1).nonzero().flatten()
+                weight = topk_weight[mask].view(-1, 1)
+                y.index_add_(0, token_idx,
+                    (expert(x_flat[token_idx]) * weight))
+        return y.view(batch_size, seq_len, hidden_dim)</code></pre>
+
+  <div class="info-box">
+    <h3>背景：MoE 辅助损失（Auxiliary Loss）</h3>
+    <p>MoE 的核心问题是<strong>负载不均衡</strong>——如果所有 token 都被路由到同一个 expert，其他 expert 就浪费了。辅助损失通过惩罚 expert 被选中的不均匀程度来缓解这个问题。</p>
+  </div>
+
+  <pre><code class="language-python"># 辅助损失：鼓励负载均衡
+load = F.one_hot(topk_idx, self.config.num_experts).float().mean(0)
+self.aux_loss = (
+    load * scores.mean(0)
+).sum() * self.config.num_experts * self.config.router_aux_loss_coef</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<!-- 训练流程                                                      -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 6</div>
+  <div class="ch-title">训练流程：SFT</div>
+
+  <p>SFT（Supervised Fine-Tuning）训练流程核心步骤如下：</p>
+
+  <div class="info-box">
+    <h3>背景：Pretrain 与 SFT 的区别</h3>
+    <p><strong>Pretrain</strong> 让 Projector 学习"图像→语言"的基础对应关系；<strong>SFT</strong> 则让模型学习"根据图像回答问题"的对话能力。MiniMind-V 的 SFT 数据（290 万条）已包含 Pretrain 子集，可直接跳过 Pretrain 阶段。</p>
+  </div>
+
+  <pre><code class="language-python"># 1. 初始化模型，加载 LLM 基座权重
+model, tokenizer, preprocess = init_vlm_model(
+    vlm_config, from_weight=args.from_weight,
+    freeze_llm=args.freeze_llm
+)
+
+# 2. 冻结策略（默认 freeze_llm=1）：
+#    - vision_proj：全部可训练
+#    - LLM 首尾层（layers.0 和 layers.7）：解冻
+#    - LLM 中间层（layers.1-6）：冻结
+for name, param in model.model.named_parameters():
+    if 'layers.0.' in name or f'layers.{last_idx}.' in name:
+        param.requires_grad = True  # 解冻首尾层
+
+# 3. 数据：Parquet 格式，image_bytes + conversations
+train_ds = VLMDataset(
+    args.data_path, tokenizer, preprocess, ...)
+
+# 4. 训练：bf16 混合精度 + 梯度累积 + 断点续训
+#    每 1000 step 原子性保存（.tmp + os.replace）</code></pre>
+
+  <p>关键训练参数：<code>batch_size=4</code>，<code>learning_rate=5e-6</code>，<code>max_seq_len=450</code>，支持 <code>torchrun --nproc_per_node N</code> 多卡 DDP。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- 数据处理                                                      -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 7</div>
+  <div class="ch-title">数据处理：VLMDataset</div>
+
+  <p>Parquet 格式数据集包含两列：<code>conversations</code>（JSON 字符串）和 <code>image_bytes</code>（图像原始字节列表）。</p>
+
+  <pre><code class="language-python">class VLMDataset(Dataset):
+    def __getitem__(self, index: int):
+        conversations = json.loads(
+            self.table['conversations'][index].as_py())
+        image_bytes = self.table['image_bytes'][index].as_py()
+
+        # 图像处理：Byte → PIL → SigLIP2 processor → tensor
+        image_inputs_list = [
+            MiniMindVLM.image2tensor(
+                Image.open(io.BytesIO(img)), self.preprocess
+            ) for img in image_bytes
+        ]
+
+        # 标签生成：仅 assistant 回复区间有 loss
+        labels = self.generate_labels(input_ids)
+        # <|im_start|>assistant\n ... <|im_end|>\n
+        return input_ids, labels, image_data</code></pre>
+
+  <p><code>generate_labels</code> 的巧妙设计：找到 <code>&lt;|im_start|&gt;assistant\n</code> 的位置，到 <code>&lt;|im_end|&gt;\n</code> 为止的 token 才计算 loss，system 和 user prompt 的 token 被置为 <code>-100</code>（忽略）。这样模型只学习"如何回答"，不会试图记忆用户的提问。</p>
+
+  <div class="info-box">
+    <h3>背景：Parquet 数据格式</h3>
+    <p>2025-12-27 起数据集统一为 Parquet 格式，替代之前的零散图像文件 + JSON 格式。Parquet 列式存储 + 压缩，图文一体化，体积更小，加载更快。290 万条图文对话数据经全局 dictionary encoding 去重后，体积只比 SFT 原版多 ~10%。</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 工程亮点                                                      -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 8</div>
+  <div class="ch-title">工程亮点</div>
+
+  <div class="section fade-in">
+    <div class="section-title">断点续训机制</div>
+    <p>每次保存同时写入两个文件：</p>
+    <ul>
+      <li><strong>模型权重</strong>：<code>out/sft_vlm_768.pth</code>（半精度，仅非 vision_encoder 参数）</li>
+      <li><strong>训练状态</strong>：<code>checkpoints/sft_vlm_768_resume.pth</code>（model + optimizer + scaler + epoch + step + wandb_id）</li>
+    </ul>
+    <p>续训时自动检测 GPU 数量变化，按比例换算 step 数。原子性保存：临时文件 + <code>os.replace</code> 防中断损坏。</p>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">SigLIP2 Vision Encoder</div>
+    <p>使用 <code>siglip2-base-p32-256-ve</code>（P32 配置），输出 256×256 分辨率的 token，冻结不训练。SigLIP2 相比 CLIP 改进了训练目标（sigmoid loss 而非 InfoNCE），在图像描述任务上表现更好。</p>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">多模态生成采样</div>
+    <p>重写了 <code>generate</code> 方法以支持多图片输入和多回复采样：</p>
+    <pre><code class="language-python">def generate(self, *args, num_return_sequences=1, **kwargs):
+    if num_return_sequences > 1 and 'pixel_values' in kwargs:
+        pv = kwargs['pixel_values']
+        # 多图时 repeat pixel_values
+        kwargs['pixel_values'] = {
+            k: v.repeat(num_return_sequences, ...)
+            for k, v in pv.items()
+        }
+    return super().generate(*args, **kwargs)</code></pre>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- LLaVA 对比                                                    -->
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">对比</div>
+  <div class="ch-title">与 LLaVA 的架构对比</div>
+
+  <div class="photo">
+    <img src="assets/media/images/minimind-v-source-reading/llava-structure.png" alt="LLaVA 架构对比" loading="lazy">
+    <div class="cap">LLaVA 架构：CLIP Vision Encoder + MLP Projection + LLM，MiniMind-V 采用类似的极简设计</div>
+  </div>
+
+  <p>MiniMind-V 与 LLaVA 的核心思路一致：冻结的视觉编码器 + 轻量投影器 + 语言模型主干。区别在于 MiniMind-V 将所有组件压缩到极致——65M 可训练参数 vs LLaVA 的 7B/13B，让个人开发者也能从零训练一个多模态模型。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- 总结                                                          -->
+<!-- ============================================================ -->
+<div class="section fade-in">
+  <div class="section-title">总结</div>
+
+  <p>MiniMind-V 的核心价值不在于刷 SOTA，而在于用最少的资源展示 VLM 的完整技术栈：</p>
+
+  <ul>
+    <li><strong>模型层面</strong>：SigLIP2 视觉编码 + MLP 投影 + MiniMind 语言主干，结构清晰</li>
+    <li><strong>训练层面</strong>：DDP 多卡 + bf16 混合精度 + 断点续训 + 梯度裁剪，工程完整</li>
+    <li><strong>成本控制</strong>：65M 可训练参数，3 块钱成本可验证，降低了多模态研究的准入门槛</li>
+  </ul>
+
+  <p>对于想入门多模态大模型的同学，MiniMind-V 是一个极好的起点——它的代码量不大，但覆盖了从图像编码、特征投影、多模态融合到训练的完整闭环。</p>
+</div>
+
+<!-- 参考来源 -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://github.com/jingyaogong/minimind-v" target="_blank">MiniMind-V GitHub 仓库</a></li>
+    <li><a href="https://github.com/jingyaogong/minimind" target="_blank">MiniMind 纯语言模型</a></li>
+    <li><a href="https://huggingface.co/google/siglip2-base-p16-32-ve" target="_blank">SigLIP2 Vision Encoder</a></li>
+    <li><a href="https://modelscope.cn/collections/gongjy/MiniMind-V" target="_blank">ModelScope 模型集合</a></li>
+  </ul>
+</div>

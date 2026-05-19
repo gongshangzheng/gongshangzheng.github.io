@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { CONFIG, RECENT_COUNT, PATHS } = require('./lib/config');
 const { parseFrontmatter, parseListField } = require('./lib/parser');
-const { copyDir } = require('./lib/utils');
+const { copyDir, walkDir } = require('./lib/utils');
 const { buildArticles, buildPostsPage, buildTaxonomyPages, buildSearch, buildIndex } = require('./lib/generator');
 
 // Run unit tests before build (non-blocking)
@@ -59,16 +59,17 @@ function buildContext(pageData = {}) {
   };
 }
 
-// Collect all posts metadata
+// Collect all posts metadata — walks src/pages recursively
 function collectPosts() {
   const posts = [];
-  if (!fs.existsSync(PATHS.pages)) return posts;
+  const pageFiles = walkDir(PATHS.pages);
 
-  for (const file of fs.readdirSync(PATHS.pages)) {
-    if (!file.endsWith('.md') && !file.endsWith('.html')) continue;
-    if (file.startsWith('index.') || file.startsWith('about.')) continue;
+  for (const file of pageFiles) {
+    const bn = path.basename(file);
+    if (!bn.endsWith('.md') && !bn.endsWith('.html')) continue;
+    if (bn.startsWith('index.') || bn.startsWith('about.')) continue;
 
-    const raw = fs.readFileSync(path.join(PATHS.pages, file), 'utf8');
+    const raw = fs.readFileSync(file, 'utf8');
     const { data: fm } = parseFrontmatter(raw);
     const slug = path.basename(file, path.extname(file));
 
@@ -84,7 +85,7 @@ function collectPosts() {
     });
   }
 
-  posts.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  posts.sort((a, b) => ((b.created_at || b.date || '')).localeCompare((a.created_at || a.date || '')));
   return posts;
 }
 

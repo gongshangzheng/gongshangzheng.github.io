@@ -203,6 +203,7 @@
 (function() {
   var sidebar = document.getElementById('toc-sidebar');
   var toggleBtn = document.getElementById('toc-toggle-btn');
+  var floatTocBtn = document.getElementById('float-toc-btn');
   var mainWrapper = document.querySelector('.main-wrapper');
   if (!sidebar || !toggleBtn) return;
 
@@ -222,7 +223,7 @@
   }
 
   // Toggle sidebar
-  toggleBtn.addEventListener('click', function() {
+  function toggleSidebar() {
     var isCollapsed = sidebar.classList.contains('toc-collapsed');
     if (isCollapsed) {
       // Expanding — restore saved width or default
@@ -238,6 +239,14 @@
       clearSidebarWidth();
     }
     localStorage.setItem('toc-collapsed', sidebar.classList.contains('toc-collapsed'));
+  }
+
+  toggleBtn.addEventListener('click', toggleSidebar);
+  if (floatTocBtn) floatTocBtn.addEventListener('click', function(e) {
+    // On mobile (<768px), let the Mobile TOC Drawer IIFE handle it
+    if (window.innerWidth < 768) return;
+    e.stopImmediatePropagation();
+    toggleSidebar();
   });
 
   // Restore state
@@ -401,7 +410,11 @@
     document.body.style.overflow = '';
   }
 
-  btn.addEventListener('click', openDrawer);
+  btn.addEventListener('click', function(e) {
+    // Only open mobile drawer on small screens; desktop uses sidebar toggle
+    if (window.innerWidth >= 768) return;
+    openDrawer();
+  });
   closeBtn.addEventListener('click', closeDrawer);
   overlay.addEventListener('click', closeDrawer);
 

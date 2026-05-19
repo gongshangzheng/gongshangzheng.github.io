@@ -1,7 +1,7 @@
 ---
 title: "TiTok 与 1D Visual Tokenizer：研究现状与演进方向"
 description: "基于 TiTok 及其 263 篇引用文献的系统性调研，梳理 1D Visual Tokenizer 的六大改进方向、三条演进主线，以及我们自己的 ProgressiveDiTok 与双流编码器的定位。"
-date: 2026-05-17
+date: 2026-05-17T10:00:00
 tags: ["arXiv", "视觉编码器", "1D Tokenizer", "TiTok", "研究综述"]
 categories: ["研究综述"]
 hero_title: "TiTok 与 1D Visual Tokenizer"

@@ -1,7 +1,7 @@
 ---
 title: "每日 arXiv 论文简报 · 2026-05-18"
 description: "2026-05-18 自动追踪 arXiv 论文结果：今日无匹配论文。"
-date: 2026-05-18
+date: 2026-05-18T10:00:00
 tags: ["arXiv", "论文", "AI", "视觉编码器"]
 categories: ["每日论文"]
 hero_title: "每日 arXiv 论文简报"

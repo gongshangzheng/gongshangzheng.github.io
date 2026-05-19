@@ -5,7 +5,9 @@
 
 const assert = require('assert');
 const path = require('path');
-const { transformLatex } = require('../lib/generator');
+const fs = require('fs');
+const { transformLatex, buildArticles } = require('../lib/generator');
+const { walkDir } = require('../lib/utils');
 
 // Mock fs/marked deps for unit testing
 const mockFs = {
@@ -42,6 +44,135 @@ function parseListField(val) {
 }
 
 const tests = {
+
+  'walkDir: finds files at any depth': () => {
+    const testDir = '/tmp/walkDir-test-' + Date.now();
+    const clean = () => { if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true }); };
+    clean();
+    fs.mkdirSync(testDir + '/a/b/c', { recursive: true });
+    fs.writeFileSync(testDir + '/root.md', '');
+    fs.writeFileSync(testDir + '/a/x.html', '');
+    fs.writeFileSync(testDir + '/a/b/y.md', '');
+    fs.writeFileSync(testDir + '/a/b/c/z.html', '');
+    fs.writeFileSync(testDir + '/ignored.txt', '');
+    fs.mkdirSync(testDir + '/skip'); // empty dir — should be skipped gracefully
+    try {
+      const files = walkDir(testDir);
+      const names = files.map(f => path.basename(f));
+      assert(names.includes('root.md'), 'root file');
+      assert(names.includes('x.html'), 'nested html');
+      assert(names.includes('y.md'), 'deep nested md');
+      assert(names.includes('z.html'), 'deep nested html');
+      assert(!names.includes('ignored.txt'), 'non .md/.html ignored');
+      assert(!names.some(f => f.includes('skip')), 'empty dir not represented');
+    } finally { clean(); }
+  },
+
+  'walkDir: empty directory returns empty array': () => {
+    const testDir = '/tmp/walkDir-empty-' + Date.now();
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+    fs.mkdirSync(testDir);
+    try {
+      const files = walkDir(testDir);
+      assert.deepEqual(files, []);
+    } finally { fs.rmSync(testDir, { recursive: true }); }
+  },
+
+  'walkDir: non-existent directory returns empty array': () => {
+    const files = walkDir('/tmp/this-dir-does-not-exist-xyz');
+    assert.deepEqual(files, []);
+  },
+
+  'walkDir: skips index and about files (slug filtering)': () => {
+    // walkDir returns ALL files; filtering index/about is done by the caller
+    const testDir = '/tmp/walkDir-skip-' + Date.now();
+    const clean = () => { if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true }); };
+    clean();
+    fs.mkdirSync(testDir + '/sub', { recursive: true });
+    fs.writeFileSync(testDir + '/index.md', '');
+    fs.writeFileSync(testDir + '/about.html', '');
+    fs.writeFileSync(testDir + '/sub/regular.md', '');
+    fs.writeFileSync(testDir + '/sub/index.md', '');
+    fs.writeFileSync(testDir + '/sub/about.html', '');
+    try {
+      const files = walkDir(testDir);
+      const names = files.map(f => path.basename(f));
+      // walkDir returns everything — no filtering at this level
+      assert(names.includes('regular.md'), 'regular file included');
+      assert(names.includes('index.md'), 'walkDir returns index.md (not filtered by walkDir)');
+      assert(names.includes('about.html'), 'walkDir returns about.html (not filtered by walkDir)');
+      // But files from sub/ should also be present
+      assert(names.filter(f => f === 'index.md').length === 2, 'two index.md files from different dirs');
+      // After walkDir, caller-level filtering works on basename only
+      const regularFiles = files.filter(f => {
+        const bn = path.basename(f);
+        return !bn.startsWith('index.') && !bn.startsWith('about.');
+      });
+      assert(regularFiles.length === 1, 'caller filter keeps only regular.md');
+      assert(regularFiles[0].endsWith('regular.md'), 'kept file is regular.md from subdir');
+    } finally { clean(); }
+  },
+
+  'walkDir: slug derivation from nested path is just filename (no dir info)': () => {
+    const testDir = '/tmp/walkDir-slug-' + Date.now();
+    const clean = () => { if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true }); };
+    clean();
+    fs.mkdirSync(testDir + '/a/b', { recursive: true });
+    fs.writeFileSync(testDir + '/a/b/my-article.html', '');
+    fs.writeFileSync(testDir + '/a/b/index.md', '');
+    fs.writeFileSync(testDir + '/a/b/about.html', '');
+    try {
+      const files = walkDir(testDir);
+      const regularFiles = files.filter(f => {
+        const bn = path.basename(f);
+        return !bn.startsWith('index.') && !bn.startsWith('about.');
+      });
+      regularFiles.forEach(f => {
+        const slug = path.basename(f, path.extname(f));
+        assert(!slug.includes('/'), 'slug should be just filename without path');
+      });
+      assert(regularFiles.some(f => path.basename(f) === 'my-article.html'), 'nested file found');
+    } finally { clean(); }
+  },
+
+  'walkDir: sorted order (depth-first, files within same dir sorted alphabetically)': () => {
+    const testDir = '/tmp/walkDir-order-' + Date.now();
+    const clean = () => { if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true }); };
+    clean();
+    fs.mkdirSync(testDir + '/z', { recursive: true });
+    fs.mkdirSync(testDir + '/a', { recursive: true });
+    fs.writeFileSync(testDir + '/aaa.md', '');
+    fs.writeFileSync(testDir + '/zzz.html', '');
+    fs.writeFileSync(testDir + '/z/zz.md', '');
+    fs.writeFileSync(testDir + '/a/aa.md', '');
+    try {
+      const files = walkDir(testDir);
+      const names = files.map(f => path.basename(f));
+      assert(names.indexOf('aaa.md') < names.indexOf('zzz.html'), 'root files sorted');
+      assert(names.indexOf('aa.md') < names.indexOf('zz.md'), 'subdir files sorted');
+    } finally { clean(); }
+  },
+
+  'walkDir: buildArticles integration — slug uniqueness check': () => {
+    const testDir = '/tmp/walkDir-dupslug-' + Date.now();
+    const clean = () => { if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true }); };
+    clean();
+    fs.mkdirSync(testDir + '/sub', { recursive: true });
+    // Two files with same base name in different dirs → same slug → both found
+    fs.writeFileSync(testDir + '/my-article.html', '---\ntitle: Article A\ndate: 2025-01-01\n---\nA');
+    fs.writeFileSync(testDir + '/sub/my-article.html', '---\ntitle: Article B\ndate: 2025-01-02\n---\nB');
+    try {
+      const files = walkDir(testDir);
+      const regularFiles = files.filter(f => {
+        const bn = path.basename(f);
+        return !bn.startsWith('index.') && !bn.startsWith('about.');
+      });
+      // Both files should be found (walkDir does NOT deduplicate)
+      assert.equal(regularFiles.length, 2, 'both nested files found');
+      const slugs = regularFiles.map(f => path.basename(f, path.extname(f)));
+      assert.equal(slugs[0], slugs[1], 'same slug from different dirs');
+    } finally { clean(); }
+  },
 
   // ===== extractFirstDiv =====
 

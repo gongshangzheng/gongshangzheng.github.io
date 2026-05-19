@@ -217,6 +217,15 @@ section('internal link with anchor', () => {
   assert(out.includes('>跳到绳文章节</a>'), 'display wrong, got: ' + out);
 });
 
+section('xref resolves through postMap when title differs from slug', () => {
+  const out = processBody('参见 [[@连续扩散语言模型路线综述：对视觉编码器研究的系统性启发 | 连续扩散语言模型路线综述]]', {
+    ...defaultOpts,
+    postMap: { '连续扩散语言模型路线综述：对视觉编码器研究的系统性启发': 'continuous-diffusion-language-models-survey' }
+  });
+  assert(out.includes('href="./continuous-diffusion-language-models-survey.html"'), 'xref should use known post slug, got: ' + out);
+  assert(out.includes('>连续扩散语言模型路线综述</a>'), 'alias should be preserved, got: ' + out);
+});
+
 // Hide D- elements
 section('[[D-...]] hides element', () => {
   const out = processBody('正常文字[[D-要隐藏的内容]]继续', defaultOpts);
