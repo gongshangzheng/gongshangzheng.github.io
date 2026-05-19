@@ -374,6 +374,97 @@ window.MathJax = {
     assert(statsHtml.includes('1956'), 'stats should contain the stats content');
     assert(!bodyAfterStats.includes('class="stats"'), 'body should not contain stats anymore');
   },
+// ===== MathJax script[type=math/tex] rendering =====
+
+  'MathJax: inline dollar wrapped in script type=math/tex': () => {
+    const bodyHtml = '<p>Solve $x_1 \\sim p_1$ first.</p>';
+    const result = bodyHtml.replace(
+      /\$([^\$\n]+?)\$/g,
+      function(_, latex) {
+        return '<span class="math-inline"><script type="math/tex">' + latex + '</script></span>';
+      }
+    );
+    assert(result.includes('<script type="math/tex">x_1 \\sim p_1</script>'),
+      'inline math in script tag');
+    assert(result.includes('<span class="math-inline">'),
+      'wrapped in span');
+  },
+
+  'MathJax: display double-dollar wrapped in script type=math/tex; mode=display': () => {
+    const bodyHtml = '$$\\| r_k - z \\|_2$$';
+    const result = bodyHtml.replace(
+      /\$\$([\s\S]+?)\$\$/g,
+      function(_, latex) {
+        var clean = latex.replace(/\$([^$]*)\$/g, '$1');
+        return '<div class="math-block"><script type="math/tex; mode=display">' + clean + '</script></div>';
+      }
+    );
+    assert(result.includes('type="math/tex; mode=display"'), 'mode=display attr');
+    assert(result.includes('<div class="math-block">'), 'in math-block div');
+    assert(!result.includes('$$'), 'no $$ left');
+  },
+
+  'MathJax: display backslash-bracket wrapped in script type=math/tex; mode=display': () => {
+    const bodyHtml = '<p>\\[ x_t = (1-t) x_0 + t \\epsilon \\]</p>';
+    const result = bodyHtml.replace(
+      /\\\[\s*([\s\S]+?)\\\]/g,
+      function(_, latex) {
+        var clean = latex.replace(/\$([^$]*)\$/g, '$1');
+        return '<div class="math-block"><script type="math/tex; mode=display">' + clean + '</script></div>';
+      }
+    );
+    assert(result.includes('type="math/tex; mode=display"'), 'mode=display');
+    assert(result.includes('x_t = (1-t) x_0'), 'content preserved');
+  },
+
+  'MathJax: inline backslash-paren wrapped in script type=math/tex': () => {
+    const bodyHtml = '<p>\\( x_0 \\sim p_0 \\)</p>';
+    const result = bodyHtml.replace(
+      /\\\((.*?)\\\)/g,
+      function(_, latex) {
+        return '<span class="math-inline"><script type="math/tex">' + latex + '</script></span>';
+      }
+    );
+    assert(result.includes('<script type="math/tex"> x_0 \\sim p_0 </script>'),
+      'paren math in script tag');
+  },
+
+  'MathJax: nested dollar inside display math is stripped': () => {
+    const bodyHtml = '$$\\| r_k - z \\|_2$$';
+    const result = bodyHtml.replace(
+      /\$\$([\s\S]+?)\$\$/g,
+      function(_, latex) {
+        var clean = latex.replace(/\$([^$]*)\$/g, '$1');
+        return '<div class="math-block"><script type="math/tex; mode=display">' + clean + '</script></div>';
+      }
+    );
+    assert(!result.includes('$\\|'), 'inner dollar stripped');
+    assert(result.includes('\\|_2'), 'content preserved');
+  },
+
+  'MathJax: short $x$ is math (not citation)': () => {
+    const bodyHtml = '<p>Formula $x_1$ and more.</p>';
+    const mathResult = bodyHtml.replace(
+      /\$([^\$\n]+?)\$/g,
+      function(_, latex) {
+        return '<span class="math-inline"><script type="math/tex">' + latex + '</script></span>';
+      }
+    );
+    assert(mathResult.includes('<script type="math/tex">x_1</script>'),
+      '$x_1$ should be math');
+  },
+
+  'MathJax: config injected before </head>\\n anchor': () => {
+    const page = '<html><head>\n<title>Test</title>\n</head>\n<body><p>C</p></body>\n</html>';
+    const mjConfig = '<script>\nwindow.MathJax = { };\n</script>';
+    const mjScript = '<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>';
+    const headEndIdx = page.indexOf('</head>\n');
+    assert(headEndIdx >= 0, 'find </head>\\n anchor');
+    var newPage = page.slice(0, headEndIdx) + mjConfig + mjScript + '\n</head>\n' + page.slice(headEndIdx + 8);
+    assert(newPage.includes('<title>Test</title>\n<script>\nwindow.MathJax'), 'config inside head');
+    assert(newPage.includes('cdn.jsdelivr.net/npm/mathjax@3'), 'cdn script present');
+    assert(newPage.split('</head>').length === 2, 'only one </head>');
+  },
 };
 
 module.exports = { tests, name: 'generator' };
