@@ -5,6 +5,7 @@
 
 const assert = require('assert');
 const path = require('path');
+const { transformLatex } = require('../lib/generator');
 
 // Mock fs/marked deps for unit testing
 const mockFs = {
@@ -374,84 +375,46 @@ window.MathJax = {
     assert(statsHtml.includes('1956'), 'stats should contain the stats content');
     assert(!bodyAfterStats.includes('class="stats"'), 'body should not contain stats anymore');
   },
-// ===== MathJax script[type=math/tex] rendering =====
+// ===== MathJax rendering =====
 
-  'MathJax: inline dollar wrapped in script type=math/tex': () => {
-    const bodyHtml = '<p>Solve $x_1 \\sim p_1$ first.</p>';
-    const result = bodyHtml.replace(
-      /\$([^\$\n]+?)\$/g,
-      function(_, latex) {
-        return '<span class="math-inline"><script type="math/tex">' + latex + '</script></span>';
-      }
-    );
-    assert(result.includes('<script type="math/tex">x_1 \\sim p_1</script>'),
-      'inline math in script tag');
-    assert(result.includes('<span class="math-inline">'),
-      'wrapped in span');
+  'MathJax: inline dollar wrapped and delimiters preserved': () => {
+    const result = transformLatex('<p>Solve $x_1 \\sim p_1$ first.</p>');
+    assert(result.includes('<span class="math-inline">$x_1 \\sim p_1$</span>'),
+      'inline math delimiters are preserved for MathJax');
   },
 
-  'MathJax: display double-dollar wrapped in script type=math/tex; mode=display': () => {
-    const bodyHtml = '$$\\| r_k - z \\|_2$$';
-    const result = bodyHtml.replace(
-      /\$\$([\s\S]+?)\$\$/g,
-      function(_, latex) {
-        var clean = latex.replace(/\$([^$]*)\$/g, '$1');
-        return '<div class="math-block"><script type="math/tex; mode=display">' + clean + '</script></div>';
-      }
-    );
-    assert(result.includes('type="math/tex; mode=display"'), 'mode=display attr');
-    assert(result.includes('<div class="math-block">'), 'in math-block div');
-    assert(!result.includes('$$'), 'no $$ left');
+  'MathJax: display double-dollar protected from inline pass': () => {
+    const result = transformLatex('$$\\| r_k - z \\|_2$$');
+    assert.equal(result, '<div class="math-block">$$\\| r_k - z \\|_2$$</div>');
   },
 
-  'MathJax: display backslash-bracket wrapped in script type=math/tex; mode=display': () => {
-    const bodyHtml = '<p>\\[ x_t = (1-t) x_0 + t \\epsilon \\]</p>';
-    const result = bodyHtml.replace(
-      /\\\[\s*([\s\S]+?)\\\]/g,
-      function(_, latex) {
-        var clean = latex.replace(/\$([^$]*)\$/g, '$1');
-        return '<div class="math-block"><script type="math/tex; mode=display">' + clean + '</script></div>';
-      }
-    );
-    assert(result.includes('type="math/tex; mode=display"'), 'mode=display');
-    assert(result.includes('x_t = (1-t) x_0'), 'content preserved');
+  'MathJax: display backslash-bracket converted to display dollar': () => {
+    const result = transformLatex('<p>\\[ x_t = (1-t) x_0 + t \\epsilon \\]</p>');
+    assert(result.includes('<div class="math-block">$$x_t = (1-t) x_0 + t \\epsilon$$</div>'),
+      'display math content preserved');
   },
 
-  'MathJax: inline backslash-paren wrapped in script type=math/tex': () => {
-    const bodyHtml = '<p>\\( x_0 \\sim p_0 \\)</p>';
-    const result = bodyHtml.replace(
-      /\\\((.*?)\\\)/g,
-      function(_, latex) {
-        return '<span class="math-inline"><script type="math/tex">' + latex + '</script></span>';
-      }
-    );
-    assert(result.includes('<script type="math/tex"> x_0 \\sim p_0 </script>'),
-      'paren math in script tag');
+  'MathJax: inline backslash-paren wrapped and delimiters preserved': () => {
+    const result = transformLatex('<p>\\( x_0 \\sim p_0 \\)</p>');
+    assert(result.includes('<span class="math-inline">\\( x_0 \\sim p_0 \\)</span>'),
+      'paren math delimiters preserved');
   },
 
   'MathJax: nested dollar inside display math is stripped': () => {
-    const bodyHtml = '$$\\| r_k - z \\|_2$$';
-    const result = bodyHtml.replace(
-      /\$\$([\s\S]+?)\$\$/g,
-      function(_, latex) {
-        var clean = latex.replace(/\$([^$]*)\$/g, '$1');
-        return '<div class="math-block"><script type="math/tex; mode=display">' + clean + '</script></div>';
-      }
-    );
-    assert(!result.includes('$\\|'), 'inner dollar stripped');
-    assert(result.includes('\\|_2'), 'content preserved');
+    const result = transformLatex('$$$x_1 + y_1$$$');
+    assert.equal(result, '<div class="math-block">$$x_1 + y_1$$</div>');
   },
 
   'MathJax: short $x$ is math (not citation)': () => {
-    const bodyHtml = '<p>Formula $x_1$ and more.</p>';
-    const mathResult = bodyHtml.replace(
-      /\$([^\$\n]+?)\$/g,
-      function(_, latex) {
-        return '<span class="math-inline"><script type="math/tex">' + latex + '</script></span>';
-      }
-    );
-    assert(mathResult.includes('<script type="math/tex">x_1</script>'),
+    const result = transformLatex('<p>Formula $x_1$ and more.</p>');
+    assert(result.includes('<span class="math-inline">$x_1$</span>'),
       '$x_1$ should be math');
+  },
+
+  'MathJax: maetok display formula is not corrupted by inline pass': () => {
+    const result = transformLatex('<p style="text-align:center">$$n\' = \\Theta \\Bigl(\\frac{K^4 d^5 B^6}{\\epsilon^2}\\Bigr)$$</p>');
+    assert(result.includes('<div class="math-block">$$n\' = \\Theta \\Bigl(\\frac{K^4 d^5 B^6}{\\epsilon^2}\\Bigr)$$</div>'));
+    assert(!result.includes('$<span class="math-inline">$'), 'display delimiter must not be split into inline math');
   },
 
   'MathJax: config injected before </head>\\n anchor': () => {
