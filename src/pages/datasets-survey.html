@@ -193,6 +193,154 @@ hero_tagline: "从 ImageNet 到淘宝拍立淘——数据集的谱系与工程"
 </div>
 
 <div class="section fade-in">
+  <h3 class="section-title">模型训练完成后的 Bad Case 修复方案</h3>
+
+  <p><strong>问题场景</strong>：以虚拟试衣模型（如 CatV2TON）为例，模型训练完成并在大多数场景下表现良好，但在某些特定衣物（如复杂印花、不对称剪裁、特殊材质）上生成效果不佳。如何系统性地解决这些 bad case？</p>
+
+  <h4>一、诊断框架：先归因，再选方案</h4>
+
+  <p>修复 bad case 的前提是定位根因。bad case 通常属于以下三类之一：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>根因类型</th><th>典型表现</th><th>举例</th><th>可修复性</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>分布偏移</strong></td><td>模型有基础能力，但训练数据中该类样本不足</td><td>纯色T恤效果好，碎花/条纹/大面积印花效果差</td><td>高，LoRA 或补数据即可</td></tr>
+        <tr><td><strong>管线瓶颈</strong></td><td>模型某个中间环节能力不足</td><td>衣物纹理编码不够细、几何对齐不准、遮挡处理失败</td><td>中，需定位瓶颈环节</td></tr>
+        <tr><td><strong>架构天花板</strong></td><td>模型本身的设计无法处理某类问题</td><td>极不规则版型（斗篷、披风）、多层级叠穿</td><td>低，需换架构或引入外部模块</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>诊断方法</strong>：将 bad case 按表现归类（纹理丢失、形变异常、遮挡错误、风格不一致），统计每类占比，按「概率 × 严重度」排序优先级。准备两套校验数据（各约100条），一套用于调参，一套用于最终验证。</p>
+
+  <h4>二、方案一：LoRA 适配（推荐首选）</h4>
+
+  <p><strong>核心原理</strong>：LoRA（Low-Rank Adaptation）在模型权重矩阵旁添加低秩旁路 ΔW = BA，只训练旁路参数，冻结原始权重。在 Diffusion Transformer 上，LoRA 可以在不改变模型主体的情况下，让模型在特定风格/分布上补课。</p>
+
+  <p><strong>适用条件</strong>：bad case 属于「分布偏移」类型，即模型本身具备处理这类任务的基础能力，只是训练数据覆盖不足。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>建议</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>挂载位置</td><td>CatV2TON 基于 DiT 架构，建议在 <strong>self-attention 的 Q/K/V/O 投影层</strong>挂载 LoRA。如果效果不够，可扩展到 FFN 层。CatVTON-FLUX 已验证 LoRA 在换衣场景的可行性（仅 37MB）。</td></tr>
+        <tr><td>Rank 选择</td><td>起始 rank=16，若纹理细节丢失严重可提升至 32-64。rank 过高会过拟合，过低学不到细节。</td></tr>
+        <tr><td>数据策略</td><td>收集问题衣物类型的样本 200-2000 条，要求覆盖该类型的典型变体。数据质量远比数量重要。可混合少量全局数据（约 10%）防止灾难性遗忘。</td></tr>
+        <tr><td>训练配置</td><td>学习率 1e-4 至 5e-4，cosine scheduler，3-5 epoch。使用 LoRA+ 10 倍学习率策略（Thinking Machines 2025 研究结论）可获得接近全参微调的效果。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>进阶策略：多 LoRA 组合</strong>。按衣物类型（纹理类、版型类、材质类）分别训练独立 LoRA adapter，推理时根据输入衣物的品类标签加载对应 adapter。优点是单品类的数据需求少、训练快、互不干扰；缺点是推理时需要知道品类标签。可用 Multi-LoRA 框架（如 m-LoRA）统一管理。</p>
+
+  <p><strong>局限</strong>：LoRA 的低秩修正容量有限。如果问题出在 garment encoder（衣物特征提取不够好）或 geometric alignment（几何对齐不准），DiT 上的 LoRA 未必能触及瓶颈。此时需考虑方案二或方案五。</p>
+
+  <h4>三、方案二：定向数据补充 + 继续训练（最稳）</h4>
+
+  <p><strong>核心思路</strong>：将 bad case 归因后，按类型补充针对性训练数据，从原始 checkpoint 继续 full fine-tune。</p>
+
+  <ol>
+    <li><strong>Bad case 归类</strong>：统计 bad case 的分布，找出高频问题类型（如「复杂纹理丢失」占 40%、「袖口形变异常」占 25%）</li>
+    <li><strong>定向数据收集</strong>：针对每个高频问题类型，收集 500-5000 条高质量样本。优先使用真实数据，不足时可辅以合成数据（用更强的模型生成 pseudo ground truth）</li>
+    <li><strong>数据混合</strong>：将补充数据与原始训练数据按 1:3 至 1:5 混合，避免模型偏移到新数据分布上。关键技巧：<strong>去噪</strong>比加噪更重要，先清洗原有数据中的低质量样本</li>
+    <li><strong>继续训练</strong>：从原始 checkpoint 恢复，使用更小的学习率（原始的 1/10），训练 1-3 epoch</li>
+    <li><strong>回归验证</strong>：在新数据上验证 bad case 是否修复，同时在原始测试集上验证是否退化了其他 case</li>
+  </ol>
+
+  <p><strong>腾讯的坏例纠错方案</strong>（专利 CN 120611762 A）提供了一个系统性框架：收集 bad case → 构建纠错数据集 → 按问题类型优化纠错数据 → 用优化后的数据集训练模型。核心创新在于「根据问题类型优化纠错数据」这一步，避免简单的数据堆叠导致模型混乱。</p>
+
+  <h4>四、方案三：后处理级联修复（不动模型）</h4>
+
+  <p><strong>核心思路</strong>：模型输出结果后，用独立的修复模型对问题区域做二次处理。不碰换衣模型本身，修的是生成结果。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>原理</th><th>适用场景</th><th>工具</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Inpainting 修复</strong></td><td>定位生成失败的区域（如袖口、领口），用 inpainting 模型重新生成该区域</td><td>局部纹理丢失、小区域形变</td><td>Stable Diffusion Inpainting、LaMa</td></tr>
+        <tr><td><strong>SDEdit 风格迁移</strong></td><td>对生成结果加噪后重新去噪，在保持结构的同时修正风格</td><td>整体风格不一致</td><td>Diffusers SDEdit pipeline</td></tr>
+        <tr><td><strong>超分 + 细节增强</strong></td><td>用超分模型恢复纹理细节</td><td>生成结果模糊、纹理丢失</td><td>Real-ESRGAN、SwinIR</td></tr>
+        <tr><td><strong>规则后处理</strong></td><td>检测特定的失败模式，用规则修正</td><td>可枚举的固定问题</td><td>OpenCV + 自定义规则</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>后处理方案的优势是<strong>零训练成本、立即可用、不影响原有模型</strong>。缺点是多一个处理阶段会增加推理延迟，且修复效果有天花板。</p>
+
+  <h4>五、方案四：测试时适配（TTA / TTT）</h4>
+
+  <p><strong>核心思路</strong>：在推理阶段，利用当前输入样本本身的信息动态调整模型参数，无需额外训练数据。</p>
+
+  <ul>
+    <li><strong>Tent（熵最小化）</strong>：在推理时优化 BatchNorm 的仿射参数，使模型输出的熵最小化。适用于分布偏移导致的 bad case，实现简单（仅需几行代码），但效果有限。</li>
+    <li><strong>Test-Time Training（TTT）</strong>：对每个测试样本构造自监督任务（如图像旋转预测、掩码恢复），用自监督 loss 临时更新模型参数后再预测。更强大但计算成本更高。</li>
+    <li><strong>动态 Prompt / 条件调整</strong>：对于条件生成模型，在推理时调整条件强度（如 classifier-free guidance 的权重），可以在保真度和多样性之间找到更好的平衡点。</li>
+  </ul>
+
+  <p><strong>局限</strong>：TTA/TTT 对 diffusion 模型的研究相对较少，主要在判别模型上验证过。在换衣场景中，更实际的策略是<strong>调整推理参数</strong>（如 denoising steps、guidance scale、seed）来改善特定 case。</p>
+
+  <h4>六、方案五：前处理与管线优化</h4>
+
+  <p>如果 bad case 的瓶颈不在生成模型本身，而在上游管线，则需优化前处理环节。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>瓶颈环节</th><th>优化方法</th><th>改动侵入性</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>衣物图像质量差</td><td>用超分/去噪模型预处理输入衣物图，提升输入质量</td><td>低</td></tr>
+        <tr><td>人体姿态估计不准</td><td>换更强的姿态估计模型（如 DWPose），或对问题姿态做人工校正</td><td>中</td></tr>
+        <tr><td>衣物掩码不精确</td><td>优化 cloth masking 算法，或使用分割模型（如 SAM）生成更精确的掩码</td><td>中</td></tr>
+        <tr><td>Garment encoder 能力不足</td><td>换更强的视觉编码器（如从 CLIP-ViT 升级到 DINOv2），不动生成端</td><td>中</td></tr>
+        <tr><td>拼接策略不够好</td><td>在 CatV2TON 的 concatenation 机制基础上增加 cross-attention 融合</td><td>高</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>七、决策流程：根据 bad case 类型选择方案</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Bad case 表现</th><th>最可能的根因</th><th>推荐方案（优先级排序）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>特定纹理（印花/条纹）丢失或变形</td><td>分布偏移，训练数据中该纹理不足</td><td>① LoRA 适配 → ② 补数据继续训练</td></tr>
+        <tr><td>袖口/领口/下摆形变异常</td><td>几何对齐或 concatenation 环节瓶颈</td><td>① 前处理优化（姿态/掩码） → ② 后处理 Inpainting → ③ 换 garment encoder</td></tr>
+        <tr><td>衣物与人体之间的遮挡关系错误</td><td>模型缺乏深度/遮挡理解</td><td>① 补数据继续训练（带遮挡标注） → ② 架构升级（加 depth conditioning）</td></tr>
+        <tr><td>整体风格偏移（颜色/色调不准）</td><td>条件注入强度不够或 VAE 编码损失</td><td>① 调整推理参数（guidance scale） → ② 后处理 SDEdit → ③ LoRA</td></tr>
+        <tr><td>特殊版型（斗篷/披风/不对称）完全失败</td><td>架构天花板</td><td>① 后处理补救 → ② 架构升级或引入 3D 先验</td></tr>
+        <tr><td>随机出现、无明显规律的失败</td><td>噪声/标注质量问题</td><td>① 数据清洗 → ② 增加推理步数 → ③ 多次推理取最优</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>🔑 核心原则</strong>：修复 bad case 不是选一个方案直接上，而是「诊断 → 归因 → 选方案 → 验证 → 回归测试」的闭环。每个修复动作都要在两套校验集上验证：<strong>目标 case 是否修复</strong>，以及<strong>原有 case 是否退化</strong>。天下没有免费的午餐，打补丁能快速解决特定问题，但根本提升模型能力始终需要从数据质量入手。
+  </div>
+
+  <h4>参考</h4>
+  <ul class="sources-list">
+    <li>LoRA: Hu et al., ICLR 2022 — Low-Rank Adaptation of Large Language Models</li>
+    <li>CatVTON: Chong et al., ICLR 2025 — Lightweight virtual try-on via concatenation</li>
+    <li>腾讯坏例纠错专利: CN 120611762 A, 2024</li>
+    <li>Tent: Wang et al., ICLR 2021 — Fully Test-Time Adaptation by Entropy Minimization</li>
+    <li>TTT: Sun et al., ICML 2020 — Test-Time Training with Self-Supervision</li>
+    <li>Thinking Machines: LoRA 终极指南（10x 学习率策略）, 2025</li>
+    <li>SDEdit: Meng et al., ICLR 2022 — SDEdit: Guided Image Synthesis and Editing</li>
+    <li>大模型 Bad Case 修复实践 — NewBeeNLP / CSDN Kaiyuan_sjtu</li>
+  </ul>
+</div>
+
+<div class="section fade-in">
   <h3 class="section-title">参考来源</h3>
 
   <ul class="sources-list">
