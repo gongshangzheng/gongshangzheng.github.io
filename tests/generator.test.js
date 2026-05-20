@@ -567,6 +567,79 @@ window.MathJax = {
     assert(newPage.includes('cdn.jsdelivr.net/npm/mathjax@3'), 'cdn script present');
     assert(newPage.split('</head>').length === 2, 'only one </head>');
   },
+
+  // ===== transformMarkdownTables =====
+
+  'transformMarkdownTables: basic table with header and separator': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>| A | B |</p>\n<p>|---|---|</p>\n<p>| 1 | 2 |</p>';
+    const result = transformMarkdownTables(input);
+    assert(result.includes('<div class="table-wrap">'), 'should wrap in table-wrap');
+    assert(result.includes('<th>A</th>'), 'header A');
+    assert(result.includes('<th>B</th>'), 'header B');
+    assert(result.includes('<td>1</td>'), 'data cell 1');
+    assert(result.includes('<td>2</td>'), 'data cell 2');
+    assert(!result.includes('<p>|'), 'no raw pipe rows');
+  },
+
+  'transformMarkdownTables: table with inline math in cells': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>| 阶次 $M$ | 精度 $N$ |</p>\n<p>|------|------|</p>\n<p>| 2 | 3 |</p>';
+    const result = transformMarkdownTables(input);
+    assert(result.includes('<th>阶次 $M$</th>'), 'header preserves $M$');
+    assert(result.includes('<th>精度 $N$</th>'), 'header preserves $N$');
+    // The $ delimiters are preserved — transformLatex handles them later
+  },
+
+  'transformMarkdownTables: table with bold cells': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>| Topic | Method |</p>\n<p>|-------|--------|</p>\n<p>| <strong>IGA</strong> | NURBS |</p>';
+    const result = transformMarkdownTables(input);
+    assert(result.includes('<td><strong>IGA</strong></td>'), 'bold preserved in cells');
+  },
+
+  'transformMarkdownTables: no separator row still works': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>| A | B |</p>\n<p>| 1 | 2 |</p>';
+    const result = transformMarkdownTables(input);
+    assert(result.includes('<th>A</th>'), 'first row becomes header');
+    assert(result.includes('<td>1</td>'), 'second row becomes data');
+  },
+
+  'transformMarkdownTables: non-table paragraphs untouched': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>Hello world</p>\n<p>Another paragraph</p>';
+    const result = transformMarkdownTables(input);
+    assert.equal(result, input, 'non-table content unchanged');
+  },
+
+  'transformMarkdownTables: single row still becomes table': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>| Only | Header |</p>';
+    const result = transformMarkdownTables(input);
+    assert(result.includes('<div class="table-wrap">'), 'single row wrapped');
+    assert(result.includes('<th>Only</th>'), 'single row header');
+    assert(!result.includes('<tbody>'), 'no tbody for header-only table');
+  },
+
+  'transformMarkdownTables: multiple data rows': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>| A | B |</p>\n<p>|---|---|</p>\n<p>| 1 | 2 |</p>\n<p>| 3 | 4 |</p>\n<p>| 5 | 6 |</p>';
+    const result = transformMarkdownTables(input);
+    const tdCount = (result.match(/<td>/g) || []).length;
+    assert.equal(tdCount, 6, 'should have 6 td cells (3 rows x 2 cols)');
+  },
+
+  'transformMarkdownTables: table surrounded by content': () => {
+    const { transformMarkdownTables } = require('../lib/generator');
+    const input = '<p>Before text</p>\n<p>| H |</p>\n<p>|---|</p>\n<p>| D |</p>\n<p>After text</p>';
+    const result = transformMarkdownTables(input);
+    assert(result.includes('<p>Before text</p>'), 'before content preserved');
+    assert(result.includes('<p>After text</p>'), 'after content preserved');
+    assert(result.includes('<div class="table-wrap">'), 'table in the middle');
+    assert(result.indexOf('<p>Before text</p>') < result.indexOf('<div class="table-wrap">'), 'before comes first');
+    assert(result.indexOf('</div>') < result.indexOf('<p>After text</p>'), 'after comes after table');
+  },
 };
 
 module.exports = { tests, name: 'generator' };
