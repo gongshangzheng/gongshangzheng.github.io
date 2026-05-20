@@ -92,6 +92,22 @@ section('googleslides shortcode', () => {
   assert(out.includes('iframe src="https://docs.google.com/presentation/d/xxx"'), 'iframe src wrong, got: ' + out);
 });
 
+section('pdf page shortcode', () => {
+  const out = processShortcodes('{{< pdf "courses/lecture.pdf" page=12 title="示意图" >}}');
+  assert(out.includes('doc-ref pdf-ref'), 'pdf ref card missing, got: ' + out);
+  assert(out.includes('src="./media/courses/lecture.pdf#page=12"'), 'pdf page src wrong, got: ' + out);
+  assert(out.includes('>示意图<'), 'pdf title missing, got: ' + out);
+  assert(out.includes('p.12'), 'pdf page label missing, got: ' + out);
+});
+
+section('ppt page shortcode', () => {
+  const out = processShortcodes('{{< ppt "courses/lecture.pptx" page=8 title="参数化" >}}');
+  assert(out.includes('doc-ref ppt-ref'), 'ppt ref card missing, got: ' + out);
+  assert(out.includes('href="./media/courses/lecture.pptx"'), 'ppt href wrong, got: ' + out);
+  assert(out.includes('slide 8'), 'ppt page label missing, got: ' + out);
+  assert(out.includes('>参数化<'), 'ppt title missing, got: ' + out);
+});
+
 // ============================================================
 // processBody
 // ============================================================

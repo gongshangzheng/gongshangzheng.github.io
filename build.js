@@ -110,10 +110,15 @@ function build() {
   copyDir(PATHS.assets, path.join(PATHS.public, 'assets'));
   console.log('✓ assets/');
 
-  // Copy audio files (if src/audio/ exists)
-  const audioDir = path.join(PATHS.src, 'media');
+  // Copy media files (PDF/PPT/audio/video/images under src/media/)
+  const mediaDir = path.join(PATHS.src, 'media');
+  const mediaDest = path.join(PATHS.public, 'media');
+  copyDir(mediaDir, mediaDest);
+  console.log('✓ media/');
+
+  // Legacy compatibility: older pages reference /audio/*.mp3 from src/media/
   const audioDest = path.join(PATHS.public, 'audio');
-  copyDir(audioDir, audioDest);
+  copyDir(mediaDir, audioDest);
   console.log('✓ audio/');
 
   // Collect posts
