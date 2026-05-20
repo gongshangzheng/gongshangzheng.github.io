@@ -548,6 +548,14 @@ window.MathJax = {
     assert(!result.includes('$<span class="math-inline">$'), 'display delimiter must not be split into inline math');
   },
 
+  'Term syntax: works when definition contains inline MathJax span': () => {
+    const { processBody } = require('../lib/replace');
+    const input = '<ul><li><strong>累加</strong> :: <span class="math-inline">$y[n]=\\sum_{k=-\\infty}^{n}x[k]$</span>，相当于离散积分。</li></ul>';
+    const result = processBody(input, { imgDir: 'assets/media', baseUrl: '', postMap: {} });
+    assert(result.includes('<dl class="term-list">'), 'term syntax should be converted to dl');
+    assert(result.includes('<dd><span class="math-inline">$y[n]=\\sum_{k=-\\infty}^{n}x[k]$</span>，相当于离散积分。</dd>'), 'definition should preserve inline math span');
+  },
+
   'MathJax: config injected before </head>\\n anchor': () => {
     const page = '<html><head>\n<title>Test</title>\n</head>\n<body><p>C</p></body>\n</html>';
     const mjConfig = '<script>\nwindow.MathJax = { };\n</script>';

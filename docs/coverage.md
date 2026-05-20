@@ -2,9 +2,9 @@
 
 | Module | Tests |
 |--------|-------|
-| generator | 44 |
+| generator | 45 |
 | parser | 28 |
 | replace.test.js | 0 |
 | toc | 27 |
 
-**Total:** 99 tests across 4 modules.
+**Total:** 100 tests across 4 modules.
