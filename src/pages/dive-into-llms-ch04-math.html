@@ -1,48 +1,268 @@
 ---
-title: Ch4 · 数学推理 · 动手学大模型
-description: SFT + DeepSeek-R1 数据蒸馏，训练 Qwen2.5-Math-1.5B 学会数学推理
-date: 2026-05-19T00:00:00
-created_at: 2026-05-19T13:48:30
-updated_at: 2026-05-19T13:48:30
-tags: [LLM, 数学推理, SFT, DeepSeek-R1, 蒸馏]
-categories: ["教程"]
+title: "Ch4 · 数学推理 · 动手学大模型"
+description: SFT + DeepSeek-R1 数据蒸馏，训练 Qwen2.5-Math-1.5B 学会数学推理，深入解析蒸馏全流程
+date: 2026-05-20T14:00:00
+created_at: 2026-05-20T14:00:00
+updated_at: 2026-05-20T14:00:00
+tags: [LLM, 数学推理, SFT, DeepSeek-R1, 蒸馏, vLLM, 动手学大模型]
+categories: ["动手学大模型"]
+mathjax: false
+hero_title: "Ch4 · 数学推理"
+hero_sub: "SFT · 数据蒸馏 · DeepSeek-R1"
+hero_tagline: "用蒸馏方法训练小模型学会数学推理，从数据预处理到模型评测全流程"
 ---
 
-<!-- 简介 -->
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 4</div>
-  <div class="ch-title">LLM 数学推理</div>
-  <p>本章通过一个完整的 Jupyter Notebook 实验，演示如何使用 <strong>Supervised Fine-Tuning（SFT）</strong>让大模型学习数学推理能力。数据来源为 DeepSeek-R1 生成的 <strong>DeepMath-103K 数据集</strong>，模型使用 <strong>Qwen2.5-Math-1.5B</strong>。整个流程覆盖数据预处理、模型训练、生成评测三大环节。</p>
+<div class="ch fade-in"><div class="ch-label">Chapter 4</div><div class="ch-title">数学推理：让语言模型学会解数学题</div>
+
+<p>数学推理是大型语言模型（LLM）最引人入胜的能力之一。它要求模型不仅能理解自然语言描述的问题，还需要调用逻辑分析、符号运算与多步推导来解决数学问题。这种能力不同于简单的文本生成——数学推理要求模型真正理解代数、几何、概率等数学概念，并在庞大的搜索空间中找出正确的解题路径。</p>
+
+<p>本章将深入探讨如何通过监督微调（SFT）和数据蒸馏技术，让一个小规模的语言模型（Qwen2.5-Math-1.5B）习得数学推理能力。我们将从数据准备、模型训练、到结果评测，完整走一遍蒸馏学习在数学领域的应用流程。实验表明，通过 DeepSeek-R1 生成的高质量链式推理数据，即使是 1.5B 参数的小模型也能在 MATH 数据集上展现出令人惊讶的数学解题能力。</p>
+
+<p>本章配套 Notebook 为 <code>documents/chapter4/sft_math.ipynb</code>，建议读者配合代码边读边实践。硬件要求方面，至少需要 40GB 显存的 GPU（如 A100 或 H100），磁盘空间建议预留 50GB 以上。</p>
 </div>
 
-<!-- 数据蒸馏 -->
-<div class="ch fade-in">
-  <div class="ch-label">方法</div>
-  <div class="ch-title">数据蒸馏流程</div>
-  <p>用强模型（DeepSeek-R1）生成高质量推理数据，再用这些数据微调小模型，这是将前沿模型的推理能力蒸馏到轻量模型的经典范式。</p>
-  <ul>
-    <li><strong>元认知技能</strong>：模型需学会"反思"与"验算"等元认知行为，不只是输出最终答案</li>
-    <li><strong>数据规模</strong>：DeepMath-103K 包含约 10 万条带完整推理链的数学问题数据</li>
-    <li><strong>国内下载</strong>：通过 <code>hf-mirror.com</code> 镜像加速 HuggingFace 模型与数据下载</li>
-  </ul>
+<div class="ch fade-in"><div class="ch-label">4.1</div><div class="ch-title">数学推理的核心能力</div>
+
+<p>数学推理绝非普通的文本生成任务。一个真正具备数学能力的模型需要同时掌握以下关键能力：</p>
+
+<ul>
+<li><strong>多步推理</strong>：将复杂问题拆解为若干子步骤，每一步都建立在前一步的基础上，形成一条连贯的逻辑链。这要求模型能够「记住」前文的中间结果，并在后续推理中正确使用。</li>
+<li><strong>符号理解</strong>：处理抽象的数学符号与公式，如 $\sqrt{x}$、$\int_a^b f(x)dx$、$\sum_{i=1}^n a_i$ 等。模型需要理解这些符号的语义和运算规则，而非仅仅把它们当作普通文本。</li>
+<li><strong>精准计算</strong>：进行准确的数值运算，包括整数运算、分数化简、多项式展开、因式分解等。这一环节对精度要求极高——一步算错，满盘皆输。</li>
+</ul>
+
+<p>这些能力并非凭空而来。在传统的 GPT 时代，模型往往采用「直接给答案」的方式解题，这种方法在简单题目上尚可，但面对需要多步推理的高难度数学问题时，成功率会急剧下降。思维链（Chain-of-Thought，CoT）的引入改变了这一局面——通过显式生成推理步骤，模型被引导去「思考」，而非「猜测」，从而显著提升了复杂问题的解题准确率。</p>
+
+<div class="info-box"><h3>典型应用场景</h3>
+<p>数学推理在以下场景中发挥关键作用：数学竞赛解题（AMC、AIME、IMO 等）、教育辅导（作业批改、错题讲解）、科学研究中的公式推导、代码生成中的数值计算验证。随着大模型能力的提升，数学推理正逐步成为评估模型「真正智能」的重要标杆。</p>
+</div>
 </div>
 
-<!-- 环境要求 -->
-<div class="ch fade-in">
-  <div class="ch-label">实践</div>
-  <div class="ch-title">环境与硬件要求</div>
-  <ul>
-    <li>Python 3.8+、PyTorch、Transformers、vLLM</li>
-    <li>至少 <strong>40GB 显存</strong>的 GPU（A100/A800 等）</li>
-    <li>建议预留至少 <strong>50GB 磁盘空间</strong>存放模型、数据及训练 checkpoint</li>
-  </ul>
+<div class="ch fade-in"><div class="ch-label">4.2</div><div class="ch-title">实现数学推理的三大技术路径</div>
+
+<p>当前主流的数学推理实现方案可以分为三大类：思维链提示、树搜索策略、工具增强。</p>
+
+<p><strong>思维链（CoT）</strong> 是最基础也是最有效的方案。它的核心思想是在生成最终答案之前，先让模型输出一段推理过程——「让我想想」「先化简这个方程」「然后代入这个值」——这段显式的思考过程本身就构成了一条逻辑链。思维链之所以有效，一个关键原因是它将求解问题这个单一行为，分解为「推理」和「回答」两个子任务，降低了每个子任务的难度。</p>
+
+<p><strong>树搜索（Tree Search）</strong> 是更高级的策略。以蒙特卡洛树搜索（MCTS）为代表的方案，在推理时同时探索多条可能的解题路径，并通过过程奖励模型（Process Reward Model，PRM）为每一步打分。这样模型可以「回退」——当某条路径走入死胡同时，选择另一条更有希望的路径。rStar-Math 等工作正是基于这一思路，在小模型上实现了接近 o1 的推理深度。</p>
+
+<p><strong>自洽性（Self-Consistency）</strong> 是对思维链的升级。模型对同一个问题采样多条不同的推理路径，然后通过投票选择出现频率最高的答案。这种「集思广益」的策略能有效降低单次推理错误带来的影响——即使有些路径出错，只要多数路径正确，最终答案仍然是正确的。</p>
+
+<p><strong>工具增强</strong> 则将计算任务外包给外部工具。复杂的高精度计算容易让 LLM 犯错，但 Python 解释器或计算器可以完美地完成这类任务。Qwen2.5-Math 等数学专用模型甚至在训练时就融入了工具调用能力，能够在推理过程中自动调用 Python 代码执行计算，然后将结果回传。</p>
+
+<div class="callout"><strong>要点</strong>：思维链是数学推理的基础范式，它通过将「解题」分解为「推理」+「回答」两个子任务，显著降低了复杂问题的求解难度。</div>
 </div>
 
-<!-- 相关资源 -->
-<div class="section fade-in">
-  <div class="section-title">相关资源</div>
-  <div class="meta" style="margin-top:0.5rem;">
-    <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter4" target="_blank">GitHub: chapter4 源码与课件</a></span>
-    <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
-  </div>
+<div class="ch fade-in"><div class="ch-label">4.3</div><div class="ch-title">长推理模型与数据蒸馏</div>
+
+<p>2024 年，OpenAI o1 和 DeepSeek-R1 的发布将数学推理推向了一个新的高度——长推理模型。这类模型在推理时产生极长的思维链，其中融入了类人的推理策略：自我反思（「这个思路好像不对」）、切换思路（「换一种证法试试」）、答案验证（「把结果代回去检验一下」）。</p>
+
+<p>长推理的核心逻辑是：增加推理时的生成长度，相当于增大了搜索空间。在较短的推理过程中，模型可能错过正确的解题路径；但当允许模型生成更长的思考过程时，它有机会进行多轮尝试、错误修正和深度探索，最终找到正确答案。这种「慢思考」模式虽然推理成本更高，但在数学证明等需要严密逻辑的任务上效果显著。</p>
+
+<p>然而，长推理模型通常参数量巨大（如 DeepSeek-R1 有 671B 参数），直接部署成本高昂。于是，数据蒸馏成为了将强模型能力迁移到小模型的关键技术。</p>
+
+<div class="info-box"><h3>什么是数据蒸馏？</h3>
+<p>数据蒸馏（Knowledge Distillation）的核心思想是：让大模型（教师）生成高质量的推理数据，然后用这些数据去微调小模型（学生）。具体流程是：教师模型对数学问题生成包含详细推理链的解答 → 筛选出正确答案和逻辑清晰的推理过程 → 小模型通过 SFT 直接学习这些数据。蒸馏后的小模型无需额外的强化学习阶段，就能直接继承教师的推理模式。</p>
+</div>
+
+<p>蒸馏三步法的具体操作如下：</p>
+
+<ul>
+<li><strong>第一步：数据生成</strong>。使用教师模型（如 DeepSeek-R1）为每个数学问题生成多条候选解答。这些解答中包含了丰富的推理过程——自我反思、多路径尝试、验算纠错。</li>
+<li><strong>第二步：拒绝采样</strong>。对所有候选解答进行正确性验证，筛除错误答案，只保留逻辑清晰、格式规范的推理链。这一步至关重要，因为「垃圾进，垃圾出」——用错误数据训练只会让模型学会错误推理。</li>
+<li><strong>第三步：SFT 微调</strong>。小模型直接在这些高质量推理数据上进行监督微调。模型学习的是「给定问题 → 输出推理过程 → 得到答案」这一完整模式。</li>
+</ul>
+
+<p>DeepSeek 的实验表明，经过蒸馏的 Qwen-7B 模型性能可以超越 32B 参数的基线模型。这印证了数据蒸馏的有效性——用强模型教弱模型，弱模型确实能学会强模型的解题思路。</p>
+
+<div class="callout"><strong>要点</strong>：蒸馏的本质是用「高质量数据」换「强模型能力」。当教师模型足够强时，它生成的数据本身就蕴含了丰富的推理策略，小模型通过 SFT 学习这些数据，就能实现能力的跃迁。</div>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">4.4</div><div class="ch-title">数学大模型生态</div>
+
+<p>当前数学大模型领域形成了两个主流技术路线：以 DeepSeek-Math 为代表的代码初始化路线，和以 Qwen2.5-Math 为代表的自研语料路线。</p>
+
+<p><strong>DeepSeek-Math</strong> 的核心创新在于代码模型初始化。不同于直接从通用 LLM 开始训练，DeepSeek 选择基于 DeepSeek-Coder-v1.5 进行数学能力增强。这一选择的背后逻辑是：代码训练已经让模型学会了符号操作和精确执行的能力，这些能力与数学推理高度重叠。因此，以代码模型为起点进行数学微调，效率远高于从零开始。</p>
+
+<p>DeepSeek-Math 还引入了 GRPO（Group Relative Policy Optimization）强化学习算法，用于替代传统的 PPO。GRPO 通过相对比较而非绝对价值估计来优化策略，大幅降低了显存消耗，同时提升了泛化能力——后来成为 DeepSeek-R1 的核心技术之一。</p>
+
+<p><strong>Qwen2.5-Math</strong> 则采用了另一种策略。它构建了 Qwen Math Corpus v2，这是一个包含 1T token 的数学专用预训练语料，其中混合了合成数据和中文数学问题。这种大规模、高质量的数学语料让 Qwen2.5-Math 在预训练阶段就建立了坚实的数学基础。</p>
+
+<p>在数据生成阶段，Qwen2.5-Math 使用 Qwen2-72B-Instruct 来生成高质量的 QA 对，增强数据的多样性。在推理阶段，它融合了思维链（CoT）和工具集成推理（TIR），支持在生成过程中调用 Python 解释器来处理复杂计算，并使用 Qwen2.5-Math-RM 奖励模型来指导 SFT 数据的演化。</p>
+
+<p>最终，Qwen2.5-Math-7B 在 MATH 数据集上的表现超越了当时 30B-70B 规模的开源模型，逼近 GPT-4 的水平。这一结果充分说明了数据质量和训练策略的重要性——并非参数量越大越好。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">4.5</div><div class="ch-title">DeepMath-103K 数据集详解</div>
+
+<p>本章实验使用的数据集是 <strong>DeepMath-103K</strong>，这是一个专为高难度数学任务设计的训练集，包含约 10.3 万条样本。每个样本不仅包含问题和最终答案，还包含了来自 DeepSeek-R1 的三条完整推理路径。</p>
+
+<p>DeepMath-103K 有几个显著特点：</p>
+
+<ul>
+<li><strong>高难度</strong>：数据集中的问题难度覆盖小学到竞赛级别，既有基础的四则运算，也有需要多步推理的复杂证明。</li>
+<li><strong>去污染</strong>：针对主流数学评测集（GSM8K、MATH、AIME 等）进行了严格的去重操作，确保训练集中的样本不会出现在评测集中，从而避免了「模型记住答案」的虚高评测。</li>
+<li><strong>难度标注</strong>：每个样本都附带了难度标签（difficulty）和主题标签（topic），方便进行细粒度的数据筛选和分析。</li>
+<li><strong>R1 回复</strong>：每条数据包含 DeepSeek-R1 生成的三条独立推理路径，这些路径展现了不同的解题思路——有的简洁直接，有的绕道但巧妙，有的则在发现错误后进行了自我纠正。</li>
+</ul>
+
+<pre class="code-block"><code>DatasetDict({
+    train: Dataset({
+        features: ['question', 'final_answer', 'difficulty', 
+                   'topic', 'r1_solution_1', 'r1_solution_2', 'r1_solution_3'],
+        num_rows: 103022
+    })
+})</code></pre>
+
+<p>加载数据集只需要一行代码：</p>
+
+<pre class="code-block"><code>from datasets import load_dataset
+data = load_dataset("zwhe99/DeepMath-103K")</code></pre>
+
+<p>在 Notebook 中，我们对数据集进行了两层筛选：首先是筛选出答案为纯数字的题目（便于自动评测），然后筛选出 token 长度小于 4096 的样本（适配 Qwen2.5-Math-1.5B 的最大上下文长度）。</p>
+
+<pre class="code-block"><code># 筛选答案为纯数字的题目
+data_with_number_answer = data["train"].filter(
+    lambda x: x["final_answer"].isdigit()
+)
+
+# 长度筛选：只保留小于 4096 token 的样本
+train = data_with_number_answer.map(tokenize, batched=False, num_proc=16)</code></pre>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">4.6</div><div class="ch-title">Tokenizer 与 Chat Template</div>
+
+<p>Tokenizer 的作用是将自然语言文本转换为模型可接受的整数 ID 序列。对于 Qwen 系列的数学模型，其 Tokenizer 还有一个关键特性——支持工具调用和思维链的特殊格式。</p>
+
+<p>Qwen2.5-Math 的 chat_template 定义了如何将对话组织成模型可识别的格式。系统提示中默认包含了一条关键指令：「Please reason step by step, and put your final answer within \boxed{}」，这告诉模型两件事：要用逐步推理的方式解题，最终答案要用 LaTeX 的 \boxed{} 格式包裹。</p>
+
+<pre class="code-block"><code># 加载 Tokenizer
+qwen_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-1.5B")
+print(qwen_tokenizer.chat_template)</code></pre>
+
+<p>经过 chat_template 处理后，一条完整的训练样本会包含以下结构：</p>
+
+<pre class="code-block"><code>&lt;|im_start|&gt;system
+Please reason step by step, and put your final answer within \boxed{}.
+&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+Evaluate the limit: \[ \lim_{x \to \infty} \sqrt{x} ... \]&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+&lt;|reserved_20017|&gt;
+... (完整的思维链推理过程) ...
+\boxed{0}&lt;|im_end|&gt;</code></pre>
+
+<p>注意，模型生成的回复以一个特殊标记 <code>&lt;|reserved_20017|&gt;</code> 开头——这是 Qwen 数学模型特有的思考开始标记。模型在 <code>&lt;|reserved_20017|&gt; ... &lt;|reserved_20018|&gt;</code> 区间内输出推理过程，最后的 \boxed{} 包含最终答案。这种结构让模型学会了「先想后答」的推理模式。</p>
+
+<p>在数据预处理时，我们使用了第一条 R1 推理路径作为标准答案。通过 <code>apply_chat_template</code> 方法将问题和回答组装成训练格式，其中 labels 复制了 input_ids，这意味着模型在所有 token 上都会计算损失——包括用户的问题（这部分通常会被 masked，但在学术实验中保留可以提升模型对问题结构的理解）。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">4.7</div><div class="ch-title">模型训练：SFT 全流程</div>
+
+<p>数据准备完成后，进入模型训练阶段。本章使用 Qwen2.5-Math-1.5B 作为基础模型，通过 SFT 在 DeepMath-103K 上进行微调。</p>
+
+<p>训练配置的关键参数包括：</p>
+
+<ul>
+<li><strong>学习率</strong>：设置为 2e-5，这是一个经过大量实验验证的 SFT 学习率。太大会导致训练不稳定，太小则收敛太慢。</li>
+<li><strong>批量大小</strong>：batch_size 根据显存大小调整。对于 1.5B 模型，batch_size=16、gradient_accumulation_steps=4 是比较安全的配置。</li>
+<li><strong>Epoch 数</strong>：数学推理任务通常 2-3 个 epoch 就足够，过多的 epoch 会导致过拟合，模型开始「背诵」训练数据。</li>
+<li><strong>权重衰减</strong>：0.01，用于防止权重过大，提升泛化能力。</li>
+</ul>
+
+<p>训练脚本使用 HuggingFace 的 Trainer API，主要步骤包括：</p>
+
+<pre class="code-block"><code>from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
+
+model = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen2.5-Math-1.5B",
+    device_map="auto",
+    torch_dtype=torch.bfloat16
+)
+
+training_args = TrainingArguments(
+    output_dir="./output",
+    num_train_epochs=2,
+    per_device_train_batch_size=16,
+    gradient_accumulation_steps=4,
+    learning_rate=2e-5,
+    weight_decay=0.01,
+    logging_steps=100,
+    save_steps=500,
+    fp16=False,
+    bf16=True,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train,
+    data_collator=DataCollatorForSeq2Seq(tokenizer=qwen_tokenizer, model=model),
+)
+
+trainer.train()</code></pre>
+
+<p>训练过程中有几个值得关注的细节。首先，bf16（bfloat16）精度在 A100/H100 等 Ampere 架构以后的 GPU 上可以安全使用，它比 fp16 有更大的指数范围，能有效避免训练中途的数值溢出。其次，梯度累积（gradient accumulation）可以在显存有限的情况下模拟更大的批量大小——通过累积多个小批次的梯度，再统一更新参数。最后，学习率调度采用线性衰减，从峰值 2e-5 平滑降到零，确保训练末期不会因为学习率过大而震荡。</p>
+
+<p>训练完成后，模型被保存到指定目录。此时的模型已经学会了 DeepSeek-R1 的推理模式——遇到数学问题时，会先进行分析、尝试多种思路、验算检查，最后输出带 \boxed{} 格式的答案。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">4.8</div><div class="ch-title">生成与评测</div>
+
+<p>训练完成后的模型需要进行标准化评测，以验证其数学能力。我们使用 vLLM 进行高速推理生成，然后与标准答案进行比对。</p>
+
+<p>vLLM 是当前最高效的推理引擎之一，它通过 PagedAttention 技术大幅提升了吞吐量。在评测场景下，我们使用 vLLM 批量生成候选答案，然后通过规则或 LLM Judge 来判断正确性。</p>
+
+<pre class="code-block"><code>from vllm import LLM, SamplingParams
+
+# 加载训练后的模型
+llm = LLM(
+    model="./output/final",
+    tokenizer="Qwen/Qwen2.5-Math-1.5B"
+)
+
+sampling_params = SamplingParams(
+    temperature=0.7,
+    top_p=0.9,
+    max_tokens=2048,
+)
+
+# 批量生成
+outputs = llm.generate(prompts, sampling_params)</code></pre>
+
+<p><strong>答案抽取</strong> 是评测流程中的关键环节。不同数据集有不同的答案格式：</p>
+
+<ul>
+<li>GSM8K：使用四个连续的 <code>####</code> 来标记答案位置。例如：「答案是 42 ####42」</li>
+<li>MATH：使用 <code>\boxed{}</code> LaTeX 格式。例如：「答案是 \boxed{42}」</li>
+</ul>
+
+<p><strong>答案评估</strong> 有两种主流方法：</p>
+
+<ul>
+<li><strong>规则评估</strong>：通过正则表达式或 LaTeX 解析器提取模型输出中的答案，然后与标准答案进行精确比对。这种方法简单高效，适用于有明确格式的问题。HuggingFace 的 Math-Verify 库是这个方向的代表实现。</li>
+<li><strong>LLM Judge</strong>：用另一个训练好的大模型（如 Omni-Judge）来判断模型生成答案与标准答案是否等价。这种方法能处理文字表达的边缘情况，但计算成本较高。</li>
+</ul>
+
+<div class="info-box"><h3>数学评测基准</h3>
+<p>业界标准的数学评测基准包括：GSM8K（小学难度，8500 题）、MATH（高中竞赛难度，12500 题）、AIME（美国数学邀请赛，奥赛级别，每年 30 道题）。当前前沿研究仅针对有明确数值或符号答案的问题，开放式证明题的正确性评估仍是学术难题。</p>
+</div>
+
+<p>评测完成后，我们会得到模型的准确率（Accuracy）和 Pass@k（采样 k 次中至少有一次通过的概率）等指标。这些指标综合反映了模型的数学能力。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">4.9</div><div class="ch-title">本章小结</div>
+
+<p>本章围绕数学推理这一主题，从能力要求、技术路线、蒸馏方法、到实践流程进行了全面深入的介绍。核心要点总结如下：</p>
+
+<ul>
+<li>数学推理要求模型具备多步推理、符号理解、精准计算三大核心能力，这远超普通文本生成任务的复杂度。</li>
+<li>思维链（CoT）是数学推理的基础范式，通过将「解题」分解为「推理」+「回答」两个子任务，显著降低复杂问题的求解难度。</li>
+<li>长推理模型（o1、DeepSeek-R1）通过在推理时产生更长的思维链来增大搜索空间，其中融入了自我反思、思路切换、答案验证等类人策略。</li>
+<li>数据蒸馏是将强模型能力迁移到小模型的关键技术：教师模型生成高质量推理数据 → 拒绝采样筛选正确数据 → SFT 微调小模型。</li>
+<li>DeepMath-103K 数据集包含 10 万条来自 DeepSeek-R1 的高质量数学推理数据，是训练数学模型的优质资源。</li>
+<li>Qwen2.5-Math 等数学专用模型通过预训练语料优化、工具集成、奖励模型迭代，在 7B 参数规模下达到了逼近 GPT-4 的数学水平。</li>
+</ul>
+
+<p>理解数学推理的本质和实现方法，不仅对于构建数学专用模型有重要意义，也为理解 LLM 的推理机制提供了重要窗口。数学推理的思路——将复杂任务分解为可验证的子步骤、通过搜索和验证来提升准确性——正在成为通用 AI 推理的基石。</p>
 </div>

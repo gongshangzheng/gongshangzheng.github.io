@@ -125,7 +125,7 @@ function build() {
   buildArticles(PATHS, allPosts, buildContext, RECENT_COUNT);
   buildPostsPage(PATHS, allPosts, buildContext);
   buildTaxonomyPages(PATHS, allPosts, buildContext);
-  buildSearch(PATHS, allPosts, buildContext);
+  buildSearch(PATHS, allPosts);
   buildIndex(PATHS, allPosts);
 
   console.log('\n✅ Build complete!');
