@@ -1,15 +1,15 @@
 ---
-title: "超低码率生成式图像压缩：双分支、单步扩散与部署之路"
-description: "基于超低码率生成式图像压缩技术报告的精读笔记。在≤0.05 bpp的极端约束下，VQGAN双分支架构和One-Step Diffusion如何维持视觉质量。"
+title: "超低码率生成式图像压缩：语义、幻觉与可部署生成 Codec"
+description: "从 HiFiC 到 DLF、StableCodec、OneDC 与 CoD-Lite：在≤0.05 bpp的极端约束下，图像压缩如何从像素保真转向语义条件、生成先验与可控幻觉。"
 date: 2026-05-20
 created_at: 2026-05-20T13:28:00
-updated_at: 2026-05-20T13:28:00
-tags: [image-compression, ultra-low-bitrate, generative, VQGAN, diffusion, deployment]
+updated_at: 2026-05-20T15:58:00
+tags: [image-compression, ultra-low-bitrate, generative-compression, VQGAN, diffusion, OneDC, StableCodec, CoD-Lite]
 categories: ["图像压缩"]
 mathjax: true
 hero_title: "超低码率生成式压缩"
-hero_sub: "≤0.05 bpp 下如何维持视觉质量"
-hero_tagline: "DLF 双分支 → StableCodec 辅助解码 → CoD-Lite 60FPS：从实验室到部署"
+hero_sub: "从比特不足到语义生成"
+hero_tagline: "≤0.05 bpp 时，压缩不再是像素复原，而是把足够语义送到生成器手里"
 page_style: |
   :root { --hero-grad: linear-gradient(135deg, #0d0a17, #150f28, #1a1238); --accent: #f472b6; --accent-gold: #fbbf24; }
   @media (prefers-color-scheme: dark) { :root { --hero-grad: linear-gradient(135deg, #0d0a17, #150f28, #1a1238); --accent: #f472b6; --accent-gold: #fbbf24; } }
@@ -18,147 +18,210 @@ page_style: |
 ---
 
 <div class="stats">
-  <div class="stat"><span class="num">&lt;0.05</span><span class="label">bpp 约束</span></div>
-  <div class="stat"><span class="num b">2</span><span class="label">主流架构</span></div>
-  <div class="stat"><span class="num g">52</span><span class="label">参考文献</span></div>
+  <div class="stat"><span class="num">≤0.05</span><span class="label">bpp 极低码率</span></div>
+  <div class="stat"><span class="num b">1-step</span><span class="label">扩散解码</span></div>
+  <div class="stat"><span class="num g">60FPS</span><span class="label">CoD-Lite</span></div>
 </div>
 
 <div class="wrap">
 
-<!-- ============================================================
-  问题定义
-  ============================================================ -->
-
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 1 · 问题</div>
-  <div class="ch-title">超低码率意味着什么</div>
-  <p>0.05 bpp 意味着一张 256×256 的 RGB 图像只有 980 比特（约 122 字节）的预算。在这个约束下，传统编码器（JPEG, BPG, VVC）产出的重建图像会出现严重的模糊、块效应和细节丢失。人眼几乎无法辨认图像内容。</p>
-  <p>生成式压缩的核心命题：用这 122 字节传输足够的语义信息，然后在解码端"生成"一张看起来真实的图像。不是忠实重建原图的每一个像素，而是生成一张语义上一致、视觉上可信的图像。</p>
+  <div class="ch-label">Chapter 1 · 问题重新定义</div>
+  <div class="ch-title">0.05 bpp 以下，压缩任务变成了什么？</div>
+  <p>0.05 bpp 意味着一张 256×256 图像只有约 3277 bit，也就是 409 字节左右；如果进一步到 0.01 bpp，则只剩 655 bit，约 82 字节。这个预算不足以传输真实纹理，也不足以保留完整边缘和局部结构。传统 codec 在这个区域会出现严重块效应、振铃、过平滑和语义破坏。</p>
+  <p>因此，超低码率生成式压缩的基本前提是：<strong>编码端不再传输足够重建像素的信息，而是传输足够生成语义一致图像的信息。</strong> 解码端依赖生成先验补全纹理、局部细节和自然图像统计。</p>
+  <p>这不是一个小技巧，而是压缩目标函数的变化。传统压缩优化 rate-distortion：\(R+\lambda D\)。生成式压缩还要引入 perception：\(R, D, P\) 三者之间存在 Blau & Michaeli 所说的 Rate-Distortion-Perception tradeoff。</p>
 
-  <div class="callout"><strong>核心矛盾</strong>：生成式方法在感知指标（LPIPS, FID）上出色，但在像素级指标（PSNR, SSIM）上可能不如传统 codec。Blau & Michaeli 已经证明这是理论上的根本矛盾。</div>
+  <div class="callout"><strong>核心判断</strong>：在 ≤0.05 bpp 区域，PSNR 导向的“忠实重建”会自然走向模糊；感知导向的“可信生成”会自然走向幻觉。整个方向的技术难点，就是在两者之间找到可控边界。</div>
 </div>
 
-<!-- ============================================================
-  VQGAN 双分支
-  ============================================================ -->
-
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 2 · 路线一</div>
-  <div class="ch-title">VQGAN 双分支架构：语义与细节分离</div>
+  <div class="ch-label">Chapter 2 · 历史入口</div>
+  <div class="ch-title">HiFiC 打开的门：用户偏好不等于 PSNR</div>
 
   <div class="photo">
-    <img src="assets/media/images/ic/dlf-dual-branch.png" alt="DLF 双分支架构" loading="lazy">
-    <div class="cap">DLF 双分支架构。语义分支提取核心语义（结构主干），细节分支编码背景细节（纹理增强），独立建模降低干扰和冗余</div>
+    <img src="assets/media/images/ic/hific-arch.png" alt="HiFiC architecture" loading="lazy">
+    <div class="cap">HiFiC 将 GAN 损失引入 learned compression，证明在较低码率下，人类主观偏好可以超过更高码率的传统 codec。</div>
   </div>
 
-  <p>双分支是当前 VQGAN 压缩的主流架构。核心思想：不同维度的特征分离处理，独立建模降低干扰和冗余。</p>
-  <ul>
-    <li><strong>语义分支</strong>：提取图像核心语义（结构主干），用少量比特编码最重要的信息</li>
-    <li><strong>细节分支</strong>：编码背景细节（纹理增强），在语义骨架上补充高频信息</li>
-  </ul>
-  <p>代表工作：DLF（语义+细节融合）、MRIDC（多分辨率双分支）。</p>
+  <p>HiFiC 的意义不在于它是第一个使用 GAN 的 codec，而在于它系统地把用户研究引入学习式压缩，证明“更低失真”并不等价于“人眼更喜欢”。在低码率下，MSE/PSNR 优化倾向于平均多个可能纹理，结果是模糊；GAN/LPIPS 优化则倾向于选择一个自然图像流形上的 plausible 样本，结果更锐利、更真实。</p>
+  <p>这给后续超低码率压缩奠定了心理物理学基础：当人眼无法从少量比特中要求像素忠实，压缩系统可以优先保留语义结构，再由生成模型恢复纹理外观。</p>
 
-  <h3>损失函数设计</h3>
-  <p>VQGAN 压缩的损失函数四件套：</p>
-  <ol>
-    <li><strong>重建损失</strong>（L1/L2）：像素级一致性，几乎所有方法必备</li>
-    <li><strong>VQ 损失</strong>（Commitment + Embedding）：维持编码器输出与码本向量一致</li>
-    <li><strong>感知损失</strong>（Perceptual Loss）：VGG 特征比对，低比特率下至关重要</li>
-    <li><strong>对抗损失</strong>（Adversarial Loss）：PatchGAN 判别器增强高频细节真实感</li>
-  </ol>
-  <p>多分支方法还需额外的语义一致性损失、结构掩模损失、DISTS 等。</p>
-
-  <div class="admonition warning">
-    <div class="admonition-title">双分支的挑战</div>
-    <div class="admonition-content"><p>训练难度大（两个分支的梯度交互）、推理开销高（两个分支各需要一次前向传播）、融合策略设计困难（过早融合导致特征混淆，过晚融合导致信息丢失）、部署不够友好。</p></div>
+  <div class="info-box">
+    <h3>HiFiC 之后的两条路线</h3>
+    <p><strong>路线 A：VQGAN / latent-token 生成压缩</strong>，用离散 token 或 latent code 保存语义和结构；<strong>路线 B：diffusion 生成压缩</strong>，用压缩 latent 作为条件，让扩散模型补全真实细节。DLF、StableCodec、OneDC、CoD-Lite 都是在这两条路线交汇处展开。</p>
   </div>
 </div>
 
-<!-- ============================================================
-  Diffusion 路线
-  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 3 · VQGAN 路线</div>
+  <div class="ch-title">双分支架构：语义与细节必须分开编码</div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/dlf-dual-branch.png" alt="DLF dual branch architecture" loading="lazy">
+    <div class="cap">DLF 双分支架构。语义分支提取结构主干，细节分支补充纹理信息。它反映了超低码率下“语义优先、细节生成”的核心原则。</div>
+  </div>
+
+  <p>VQGAN 压缩路线的基本思想是：先把图像映射到离散或半离散 latent，再在 latent 空间中进行压缩和生成。相比连续 latent，离散 token 的优势是码率清晰、可接入 AR/LM prior；相比传统 codec，它允许 decoder 利用生成先验恢复纹理。</p>
+  <p>但超低码率下，单一路径很容易失败。若所有信息都塞进一个 latent，模型要同时表达全局结构、对象语义、局部边缘、纹理风格，信息竞争非常严重。DLF 类双分支方法的直觉是：<strong>结构和细节不是同一种信息，应该用不同通道承载。</strong></p>
+
+  <h3>语义分支</h3>
+  <p>语义分支负责保存对象类别、空间布局、主要边缘、显著区域。这部分决定图像“是什么”。在极低码率下，语义分支是不可牺牲的，因为一旦语义错了，再真实的纹理也只是 hallucination。</p>
+
+  <h3>细节分支</h3>
+  <p>细节分支负责保存纹理、局部高频、背景模式和感知质量。这部分决定图像“像不像自然图像”。极低码率下细节分支不可能完整传输原图纹理，只能提供生成器的约束或提示。</p>
+
+  <h3>损失函数</h3>
+  <p>这类模型通常不是单一损失，而是多目标加权：</p>
+  <p>\[\mathcal L = R + \lambda_d D(x,\hat x) + \lambda_p \mathcal L_{perc} + \lambda_g \mathcal L_{GAN}+\lambda_s \mathcal L_{sem}\]</p>
+  <p>其中 \(R\) 控制码率，\(D\) 控制像素失真，perceptual/GAN loss 控制自然性，semantic loss 控制语义一致性。真正难点在于这些项互相冲突：增强 GAN 可能降低 PSNR，强化 pixel loss 又会抹掉纹理。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">双分支不是免费午餐</div>
+    <div class="admonition-content"><p>双分支带来结构清晰，但也引入训练不稳定、分支冗余、融合时机难选、推理开销较高等问题。若语义分支和细节分支没有明确分工，模型会退化为两个互相干扰的普通 encoder。</p></div>
+  </div>
+</div>
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 3 · 路线二</div>
-  <div class="ch-title">扩散模型压缩：从多步到单步</div>
-
-  <h3>多步扩散在超低码率下的表现</h3>
-  <p>扩散模型的迭代去噪过程天然适合"从极少信息中重建丰富细节"。PerCo（ICLR 2023）在超低码率下产出"完美真实感"的重建，但解码时间约 3.7 秒（20步）。</p>
-  <p>DiffEIC 引入潜在特征引导 + 扩散先验，但 50 步扩散使解码时间达到 7.4 秒。Text+Sketch 利用文本嵌入作为条件信号，解码时间更是超过 33 秒。</p>
-
-  <h3>单步扩散的突破</h3>
+  <div class="ch-label">Chapter 4 · Diffusion 路线</div>
+  <div class="ch-title">为什么扩散模型适合极低码率？</div>
+  <p>扩散模型的强项是从粗条件中生成高频细节。超低码率压缩正好提供了这样的场景：bitstream 只承载稀薄条件，decoder 要恢复自然图像流形上的一个合理样本。PerCo、DiffEIC 等多步扩散压缩证明了这一点，但也暴露出严重问题：解码太慢。</p>
+  <p>多步扩散的每一步都需要网络前向传播。20 步、50 步甚至更多步数意味着秒级解码，这对于图像 codec 几乎不可接受。于是 2025 年的核心突破变成：<strong>把扩散压缩从多步采样变成单步生成。</strong></p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>方法</th><th>编码(s)</th><th>解码(s)</th><th>硬件</th><th>关键策略</th></tr></thead>
+      <thead><tr><th>方法</th><th>生成机制</th><th>典型解码成本</th><th>主要贡献</th><th>主要风险</th></tr></thead>
       <tbody>
-        <tr><td>StableCodec</td><td>0.159</td><td>0.326</td><td>RTX3090</td><td>辅助解码器 + 扩散生成器</td></tr>
-        <tr><td>DiffO</td><td>0.136</td><td>0.253</td><td>Titan RTX</td><td>单步超低码率</td></tr>
-        <tr><td>OneDC</td><td>0.15</td><td>0.34</td><td>A100</td><td>语义蒸馏 + LoRA</td></tr>
-        <tr><td>CoD-Lite</td><td>—</td><td><strong>60FPS</strong></td><td>—</td><td>局部注意力 + DMD 蒸馏</td></tr>
+        <tr><td>PerCo</td><td>多步 score/diffusion</td><td>秒级</td><td>极低码率高感知质量</td><td>速度慢</td></tr>
+        <tr><td>DiffEIC</td><td>latent guidance + diffusion prior</td><td>多步，秒级</td><td>压缩 latent 引导扩散</td><td>工程部署困难</td></tr>
+        <tr><td>StableCodec</td><td>one-step diffusion</td><td>约 0.3s 级</td><td>辅助解码器分担结构</td><td>生成细节一致性</td></tr>
+        <tr><td>OneDC</td><td>one-step diffusion + semantic distillation</td><td>约 20× 加速</td><td>hyperprior 作为语义条件</td><td>依赖蒸馏语义质量</td></tr>
+        <tr><td>CoD-Lite</td><td>轻量 diffusion codec</td><td>实时级</td><td>局部注意力 + DMD 蒸馏</td><td>轻量模型上限</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 5 · StableCodec</div>
+  <div class="ch-title">辅助解码器：不要让扩散模型同时负责结构与细节</div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/stablecodec-arch.png" alt="StableCodec architecture" loading="lazy">
+    <div class="cap">StableCodec 的关键设计是辅助解码器 + 扩散生成器。辅助解码器负责结构，扩散模型负责真实细节。</div>
+  </div>
+
+  <p>StableCodec 的设计非常值得单独拿出来看。它的基本判断是：单步扩散模型若同时承担结构恢复和细节生成，负担太重。结构一旦错，后续纹理越真实，幻觉越严重。因此 StableCodec 增加辅助解码器，从比特流中直接恢复结构性条件，再让扩散生成器专注高频细节。</p>
+  <p>这实际上把生成式压缩拆成两个问题：</p>
+  <ol>
+    <li>低码率条件下，尽可能忠实恢复结构草图。</li>
+    <li>在结构草图约束下，用生成先验补充自然纹理。</li>
+  </ol>
+  <p>这个分工与 DLF 的语义/细节双分支在思想上是一致的，只是 StableCodec 把“细节生成”交给了扩散模型。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 6 · OneDC</div>
+  <div class="ch-title">Hyperprior 从统计先验升级为语义条件</div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/onedc-arch.png" alt="OneDC architecture" loading="lazy">
+    <div class="cap">OneDC 将 latent compression module 与 one-step diffusion generator 结合，并通过 semantic distillation 强化 hyperprior 的语义能力。</div>
+  </div>
+
+  <p>OneDC 最有价值的地方不是“用了单步扩散”，而是重新解释了 hyperprior。传统 hyperprior 用于预测 latent 的尺度或概率参数：\(p(\hat y\mid \hat z)\)。OneDC 则进一步让 \(\hat z\) 承担语义条件角色：它不只是 entropy model 的 side information，也是生成器的一种 semantic prompt。</p>
+  <p>为了让 hyperprior 真正携带语义，OneDC 引入 semantic distillation，从预训练 generative tokenizer 中迁移语义知识。这把 continuous latent codec 与 visual tokenizer 研究线接了起来：tokenizer 提供语义结构，codec 负责把它压缩成可传输条件。</p>
+
+  <div class="callout"><strong>OneDC 的根本问题</strong>：压缩 hyperprior 能否从“统计先验”升级为“语义先验”？如果答案是肯定的，未来 learned compression 的 side information 就不只是为了省 bit，而是为了指导生成。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 7 · CoD-Lite</div>
+  <div class="ch-title">从论文原型到实时 codec</div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/cod-lite-arch.png" alt="CoD-Lite architecture" loading="lazy">
+    <div class="cap">CoD-Lite 的核心是轻量化扩散 codec：压缩导向预训练、局部注意力替代全局注意力、DMD 蒸馏。</div>
+  </div>
+
+  <p>CoD-Lite 关注的是另一个现实问题：即使单步扩散可行，模型仍可能太重。它发现压缩任务中的注意力模式更偏局部，不需要像通用生成模型那样每一层都做全局注意力。用局部窗口注意力或深度可分离卷积替代全局注意力，可以显著降低计算开销。</p>
+  <p>这说明生成式 codec 的部署不是简单“把 Stable Diffusion 塞进 decoder”。压缩任务有自己的结构先验：输入不是纯噪声，而是带有低熵条件；目标不是任意生成，而是在原图约束下重建。因此轻量模型可以利用这些条件减少搜索空间。</p>
+
+  <div class="info-box">
+    <h3>工程启发</h3>
+    <p>扩散压缩要落地，关键不只是减少采样步数，还要减少每一步的模型成本。CoD-Lite 的价值在于把“one-step”进一步推进到“real-time”。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 8 · 幻觉问题</div>
+  <div class="ch-title">生成式压缩的边界条件</div>
+  <p>超低码率生成式压缩最危险的问题是 hallucination。一个压缩结果可以很自然、很锐利、LPIPS 很低，但语义上偏离原图。对社交图像这可能可以接受；对医学、遥感、安防、司法取证，这是不可接受的。</p>
+  <p>幻觉可以分成三层：</p>
+  <ul>
+    <li><strong>纹理幻觉</strong>：草地、毛发、墙面纹理不一致。通常可接受。</li>
+    <li><strong>结构幻觉</strong>：边缘、形状、物体局部发生变化。需要谨慎。</li>
+    <li><strong>语义幻觉</strong>：物体类别、数量、身份或关键属性改变。高风险。</li>
+  </ul>
+
+  <p>因此，未来的评价指标不能只看 PSNR、MS-SSIM、LPIPS、FID，还需要语义一致性指标，例如 CLIP/BLIP 一致性、检测框保持率、分割 mask 一致性、关键点误差，以及任务驱动指标。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">底线</div>
+    <div class="admonition-content"><p>生成式压缩适合感知消费场景，但不能无条件替代传统 codec。它需要明确标注适用边界，尤其不能在真实性敏感场景中默认使用。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 9 · 部署路线</div>
+  <div class="ch-title">从实验室方法到可用系统</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层面</th><th>问题</th><th>可行路线</th></tr></thead>
+      <tbody>
+        <tr><td>编码端</td><td>不能太重</td><td>轻 encoder、MobileNet/EfficientNet-lite、只提取语义结构</td></tr>
+        <tr><td>码率控制</td><td>极低码率下质量波动大</td><td>多码率训练、可变 token 数、semantic bit allocation</td></tr>
+        <tr><td>解码端</td><td>生成模型太慢</td><td>one-step diffusion、DMD/consistency distillation、局部注意力</td></tr>
+        <tr><td>可靠性</td><td>幻觉不可控</td><td>结构辅助解码器、语义一致性约束、任务指标检测</td></tr>
+        <tr><td>标准化</td><td>bitstream 不兼容</td><td>定义 latent/token 语法、版本化生成器、fallback codec</td></tr>
       </tbody>
     </table>
   </div>
 
-  <p>StableCodec 的核心设计最具启发性：双分支架构中，辅助解码器 D_aux 从比特流直接解码结构信息，扩散生成器 g_θ 专注生成真实细节。没有辅助解码器时，g_θ 需要同时承担结构+细节，负担过重导致去噪指导不佳。</p>
-
-  <div class="callout"><strong>关键发现</strong>：引入辅助解码器后，扩散生成器潜在空间能量显著减少，生成的细节更加语义对齐。这说明"不要让一个模块做所有事"——结构走辅助路径，扩散只负责细节。</div>
+  <p>短期看，生成式超低码率压缩更可能先落地在缩略图、社交媒体预览、云端图像传输、低带宽内容消费等场景。长期看，若语义一致性可控，它可能成为传统 codec 在低码率端的补充层。</p>
 </div>
-
-<!-- ============================================================
-  部署之路
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 4 · 实用化</div>
-  <div class="ch-title">从实验室到部署的迁移路线</div>
-
-  <h3>VQGAN 简化方向</h3>
-  <ul>
-    <li><strong>编码器轻量化</strong>：替换主干为 MobileNet/EfficientNet-lite</li>
-    <li><strong>"轻编码-重解码"架构</strong>：编码端仅传结构语义索引，解码端承担重建主力</li>
-    <li><strong>码本压缩</strong>：Group-VQ 分组量化、多粒度 Token</li>
-    <li><strong>区域冗余</strong>：显著性优先编码（SQ-GAN, MRIDC 的掩码策略）</li>
-  </ul>
-
-  <h3>扩散模型简化方向</h3>
-  <ul>
-    <li><strong>单步扩散</strong>：OneDC 证明一步足够</li>
-    <li><strong>单分支编码 + 双分支解码</strong>：扩散模型仅在最需要的地方使用</li>
-    <li><strong>LoRA 微调</strong>：保持基础模型不变，仅训练少量参数</li>
-    <li><strong>局部注意力</strong>：CoD-Lite 发现 19/26 层注意力是局部的，用局部窗口替代全局注意力</li>
-  </ul>
-
-  <div class="info-box">
-    <h3>CoD-Lite 的关键工程洞察</h3>
-    <p>压缩任务中注意力以局部模式为主（7/26层全局，19层局部）。这意味着压缩场景下不需要像生成场景那样的全局注意力——局部窗口就够了。这个发现直接将推理速度提升了 14 倍。</p>
-  </div>
-</div>
-
-<!-- ============================================================
-  幻觉问题
-  ============================================================ -->
 
 <div class="section fade-in">
-  <div class="section-title">未解决的核心问题：幻觉</div>
-  <p>超低码率生成式压缩最大的隐患：生成内容语义上可能与原图不符。解码器在"生成"而非"重建"，当比特预算极度有限时，模型可能"编造"原图中不存在的细节。</p>
-  <p>在自然图像浏览场景中，人眼可能不会注意到细微的幻觉。但在医疗、遥感、安防、司法取证等应用中，任何语义偏差都是不可接受的。如何量化幻觉、如何约束生成不偏离原图语义，是当前最重要的开放问题之一。</p>
-</div>
+  <div class="section-title">核心结论</div>
 
-<!-- ============================================================
-  参考来源
-  ============================================================ -->
+  <div class="quote">
+    <p>「超低码率不是普通压缩的低码率版本，而是另一个问题。」</p>
+    <div class="who">比特预算不足以还原像素，只能传输生成所需条件。</div>
+  </div>
+
+  <div class="quote">
+    <p>「结构必须被约束，纹理可以被生成。」</p>
+    <div class="who">DLF、StableCodec、OneDC 的共同点都是把结构/语义条件放在核心位置。</div>
+  </div>
+
+  <div class="quote">
+    <p>「单步扩散解决速度问题，但不自动解决真实性问题。」</p>
+    <div class="who">OneDC/StableCodec/CoD-Lite 推进了部署可行性，但 hallucination 仍是边界条件。</div>
+  </div>
+</div>
 
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
     <li>超低码率生成式图像压缩技术报告（水言风语分享）— 内部 PDF</li>
+    <li>Blau & Michaeli (2019) <em>Rethinking Lossy Compression: The Rate-Distortion-Perception Tradeoff</em> — <a href="https://arxiv.org/abs/1901.07821" target="_blank">arXiv:1901.07821</a></li>
+    <li>Mentzer et al. (2020) <em>High-Fidelity Generative Image Compression</em> — <a href="https://arxiv.org/abs/2006.09965" target="_blank">arXiv:2006.09965</a></li>
     <li>DLF (2025) <em>Extreme Image Compression with Dual-generative Latent Fusion</em> — <a href="https://arxiv.org/abs/2503.01428" target="_blank">arXiv:2503.01428</a></li>
-    <li>StableCodec (2025) — <a href="https://arxiv.org/abs/2506.21977" target="_blank">arXiv:2506.21977</a></li>
-    <li>OneDC (2025) — <a href="https://arxiv.org/abs/2505.16687" target="_blank">arXiv:2505.16687</a></li>
-    <li>CoD-Lite (2025) — <a href="https://arxiv.org/abs/2503.17076" target="_blank">arXiv:2503.17076</a></li>
-    <li>PerCo (2023) — <a href="https://arxiv.org/abs/2305.18231" target="_blank">arXiv:2305.18231</a></li>
-    <li>HiFiC (2020) — <a href="https://arxiv.org/abs/2006.09965" target="_blank">arXiv:2006.09965</a></li>
+    <li>StableCodec (2025) <em>Taming One-Step Diffusion for Extreme Image Compression</em> — <a href="https://arxiv.org/abs/2506.21977" target="_blank">arXiv:2506.21977</a></li>
+    <li>OneDC (2025) <em>One-Step Diffusion-Based Image Compression with Semantic Distillation</em> — <a href="https://arxiv.org/abs/2505.16687" target="_blank">arXiv:2505.16687</a></li>
+    <li>CoD-Lite (2025) <em>Real-Time Diffusion-Based Generative Image Compression</em></li>
+    <li>PerCo (2023) <em>High-Fidelity Image Compression with Score-based Generative Models</em> — <a href="https://arxiv.org/abs/2305.18231" target="_blank">arXiv:2305.18231</a></li>
   </ul>
 </div>
 
