@@ -1,0 +1,227 @@
+---
+title: "Infinity：Bitwise 自回归建模与无限词汇表"
+description: "ByteDance Infinity 提出 bitwise 视觉自回归建模，将 tokenizer 词表扩展到 2^64，在 GenEval 0.73 / ImageReward 0.96 超越 SD3-Medium，1024×1024 图像仅需 0.8 秒。"
+created_at: 2026-05-20T20:00:00
+updated_at: 2026-05-20T20:00:00
+tags: [infinity, bitwise, autoregressive, visual-generation, tokenizer, scaling-law, image-compression]
+categories: ["论文精读", "图像压缩"]
+mathjax: true
+hero_title: "Infinity"
+hero_sub: "Bitwise 视觉自回归建模 · ByteDance · arXiv 2024"
+hero_tagline: "2^64 词表 + Bitwise IVC + 自我纠正，离散生成首次在质量和速度上同时超越扩散模型"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2<sup>64</sup></span><span class="label">词表大小</span></div>
+  <div class="stat"><span class="num b">0.73</span><span class="label g">GenEval</span></div>
+  <div class="stat"><span class="num">0.8s</span><span class="label">1024² 延迟</span></div>
+  <div class="stat"><span class="num g">66%</span><span class="label">人评胜率</span></div>
+</div>
+
+<div class="wrap">
+
+<!-- ============================================================
+  第一章：叙事
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 1 · 叙事</div>
+  <div class="ch-title">从 Next-Token 到 Next-Bit</div>
+
+  <p>2024 年视觉自回归生成经历了两次范式转变。年初 VAR 提出 next-scale prediction，将光栅扫描式的 next-token 生成改为 coarse-to-fine 的多尺度预测，大幅提升了 LM 的生成质量和速度。年末，ByteDance 的 Infinity 在此基础上迈出了更激进的一步：把 token 预测从"预测一个 64 位整数"变成"并行预测 64 个二进制位"。</p>
+
+  <p>这看起来只是一个实现细节的改动，但解决了自回归视觉模型三个根深蒂固的问题：离散 tokenizer 的量化误差、大词表分类器的计算爆炸、以及 teacher-forcing 的训练-推理不一致。</p>
+
+  <div class="callout"><strong>核心判断</strong>：Infinity 用 bitwise 建模统一了 tokenizer 容量、分类器效率和训练信号质量这三个互斥的目标。它不是发明了新的生成范式，而是解开了离散建模的最后一层束缚——整数索引。</div>
+</div>
+
+<!-- ============================================================
+  第二章：问题
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 2 · 三个问题</div>
+  <div class="ch-title">离散自回归建模的三重困境</div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/old-core-problem.png" alt="Infinity 核心问题阐述" loading="lazy">
+    <div class="cap">离散 tokenizer 的量化误差、分类器计算瓶颈和 teacher-forcing 的 train-test gap 是自回归视觉生成的核心问题。</div>
+  </div>
+
+  <h3>问题一：量化误差</h3>
+  <p>传统 VQ-VAE 的离散 tokenizer 在词表有限（1K–8K）时量化误差明显，导致高分辨率图像细节丢失。此前的最佳离散 tokenizer（Open-MAGVIT2 的 LFQ，2^18=262K 词表）重建 rFID 约 0.87，而连续 VAE（如 SD 的 VAE）可到 0.87 以下。离散在重建质量上始终比连续差一截。</p>
+
+  <h3>问题二：计算瓶颈</h3>
+  <p>词表 V_d = 2^d 时，传统分类器的 softmax 层需要一个形状为 [hidden_dim, V_d] 的权重矩阵。d=16 时已需要 124M 参数（hidden_dim=768），d=18 时需近 500M 参数。这意味着 tokenizer 的容量扩大直接导致生成器参数被分类器大量消耗——一个纯粹的计算罪。</p>
+
+  <h3>问题三：Teacher-Forcing 的不一致</h3>
+  <p>自回归模型在训练时看到的都是 ground-truth 输入，但在推理时输入来自自己前一尺度的预测。微小的量化扰动在跨尺度传播中持续放大。模型从未在训练中"见过"自己的错误，因此不具备纠正能力。</p>
+
+  <div class="info-box">
+    <h3>Bitwise 的核心洞察</h3>
+    <p>把图像离散表示为 d 个二进制位，而不是一个 d 位的整数索引。预测 64 个独立的二进制位，与预测一个 64 位整数，在信息论上等价。但在计算上：前者需要 64 个二分类器（线性增长），后者需要 2^64 类分类器（指数增长）。在优化上：某个位的近零值混淆不影响其他位的清晰监督。</p>
+  </div>
+</div>
+
+<!-- ============================================================
+  第三章：方法
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 3 · 三大模块</div>
+  <div class="ch-title">Infinity 的 Bitwise 架构</div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig1-arch-overview.png" alt="Infinity 整体架构" loading="lazy">
+    <div class="cap">Fig.1 Infinity 整体架构。图像经编码器提取多尺度特征，BSQ 量化器将各尺度映射为二元编码，Infinite-Vocabulary Classifier 用并行二分类头预测每个位，Bitwise Self-Correction 通过随机翻转 bits 模拟错误并重新量化。</div>
+  </div>
+
+  <p>Infinity 由三个核心模块组成：Bitwise 多尺度视觉 Tokenizer（BSQ）、Infinite-Vocabulary Classifier（IVC）、Bitwise Self-Correction（BSC）。</p>
+
+  <h3>Bitwise Visual Tokenizer（BSQ）</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/old-bsq-formula.png" alt="BSQ 量化公式" loading="lazy">
+    <div class="cap">Binary Spherical Quantization：将连续特征归一化到超球面后逐元素取符号。量化输出 q_k = sign(z_k) / sqrt(d)，索引为 0/1 二进制位。</div>
+  </div>
+
+  <p>继承自 MAGVIT-v2 的 LFQ 思想，BSQ 进一步将量化扩展到超球面：编码器输出在 L2 归一化后做 sign() 量化，每个维度的输出为 -1 或 +1。d=64 时词表 V_d = 2^64，远超此前所有离散 tokenizer。</p>
+
+  <p>BSQ 的熵正则化复杂度仅为 O(d)，而 LFQ 在大词表下需要近似。BSQ 支持从 d=16（2^16）到 d=64（2^64）无缝扩展。</p>
+
+  <div class="callout"><strong>重建质变</strong>：词表从 2^16 扩展到 2^64 时，rFID 从 0.87 降至 0.33（ImageNet 256×256），首次超越连续 SD VAE（0.87）。离散 tokenizer 在重建质量上首次击败连续方案。</div>
+
+  <h3>Infinite-Vocabulary Classifier（IVC）</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig2-bitwise-ivc.png" alt="IVC vs 传统分类器" loading="lazy">
+    <div class="cap">Fig.2 传统分类器（上）需要预测 2^d 个类别，参数随 d 指数增长；IVC（下）用 d 个并行二分类器预测每个 bit，参数线性增长。</div>
+  </div>
+
+  <p>IVC 用 d 个并行二分类器替代一个 V_d 分类器。对于 d=16（词表 65,536）：传统分类器需 124M 参数和 2GB vRAM；IVC 只需 0.65M 参数和 10MB vRAM，节省 99.95%。</p>
+
+  <p>更关键的是优化上的优势：在 index-wise 预测中，某个维度 z_i 接近 0 的正负混淆会完全改变整数索引标签，给予完全不同的监督信号。在 bitwise 预测中，z_i 的混淆只影响第 i 位的监督，其他 63 位完全不受影响——更稳定的梯度、更有效的大词表学习。</p>
+
+  <h3>Bitwise Self-Correction（BSC）</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/old-bsc-flow.png" alt="BSC 流程" loading="lazy">
+    <div class="cap">BSC 流程：在训练中随机翻转 R_k 的部分 bits（概率从 [0, p] 均匀采样），用翻转后的特征重新量化得到新目标标签 R_{k+1}，迫使模型学会识别和纠正错误。</div>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/old-bsc-mechanism.png" alt="BSC 必要性图示" loading="lazy">
+    <div class="cap">Teacher-forcing 导致模型只能细化特征，无法识别和纠正错误。BSC 通过模拟推理时的预测错误，赋予模型自我纠正能力。</div>
+  </div>
+
+  <p>BSC 在训练中随机翻转 R_k 的部分 bits（从 [0, p] 均匀采样），模拟推理时可能出现的预测错误，然后用翻转后的特征重新计算 Transformer 输入并重新量化得到新标签 R_{k+1}。最优翻转比例约 30%，FID 从 9.76 降至 3.33，且无额外推理开销。</p>
+</div>
+
+<!-- ============================================================
+  第四章：Scaling
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 4 · Scaling Law</div>
+  <div class="ch-title">词汇表与模型的协同缩放</div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig3-scaling-results.png" alt="词汇表和模型协同缩放" loading="lazy">
+    <div class="cap">Fig.3 词汇表从 2^16 扩展到 2^32 时，大模型（2.2B）下生成质量显著提升，小模型（361M）下提升不明显。词汇表大小和模型大小需要同步扩展，存在协同效应。</div>
+  </div>
+
+  <p>Infinity 最重要的发现：词汇表大小和 transformer 大小之间存在协同缩放效应。单独扩大词汇表而保留小模型，生成质量的提升有限；单独扩大模型而保留小词表，模型容量被浪费。只有当两个维度同时扩展时，收益才最大化。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig4-pearson-scaling.png" alt="验证 loss 与评估指标的相关性" loading="lazy">
+    <div class="cap">Fig.4 模型从 125M 扩展到 4.7B，验证 loss 与 GenEval、ImageReward、HPSv2 的 Pearson 相关系数均 > -0.98，呈近线性关系。</div>
+  </div>
+
+  <p>Infinity 报告了从 125M 到 4.7B 共 5 个规模的模型验证 loss 和评估指标的关系。Pearson 相关系数均大于 0.98，表明自回归视觉模型存在清晰的 scaling law。这为"继续扩大模型会继续提升性能"提供了预测依据。</p>
+</div>
+
+<!-- ============================================================
+  第五章：实验
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 5 · 实验结果</div>
+  <div class="ch-title">超越扩散模型</div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/old-eval-results.png" alt="基准测试结果" loading="lazy">
+    <div class="cap">Infinity 2B 在 GenEval 0.73、ImageReward 0.96、HPSv2.1 32.25，全面超越 SD3-Medium 和 SDXL。人类评估 66% 胜率。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>类型</th><th>参数量</th><th>GenEval↑</th><th>ImageReward↑</th><th>HPSv2.1↑</th><th>延迟↓</th></tr></thead>
+      <tbody>
+        <tr><td>SD3-Medium</td><td>Diffusion</td><td>2B</td><td>0.62</td><td>0.87</td><td>30.91</td><td>2.1s</td></tr>
+        <tr><td>SDXL</td><td>Diffusion</td><td>2.6B</td><td>0.74</td><td>0.60</td><td>30.06</td><td>2.7s</td></tr>
+        <tr><td>PixArt-Sigma</td><td>Diffusion</td><td>2B</td><td>0.74</td><td>0.87</td><td>31.47</td><td>1.1s</td></tr>
+        <tr><td><strong>Infinity 2B</strong></td><td><strong>AR</strong></td><td><strong>2B</strong></td><td><strong>0.73</strong></td><td><strong>0.96</strong></td><td><strong>32.25</strong></td><td><strong>0.8s</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Infinity 在 GenEval 上以 0.73 基本持平 SDXL/PixArt-Sigma（0.74），在 ImageReward 上 0.96 显著领先（第二 0.87）。推理速度 0.8 秒，比 SD3-Medium 快 2.6 倍，比同参数量的 PixArt-Sigma 快 37%，且无需任何工程优化（纯 PyTorch 推理）。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig5-gen-samples-1.png" alt="生成样本对比" loading="lazy">
+    <div class="cap">Infinity 的文本到图像生成样本。相比 SDXL、SD3-Medium 和 PixArt-Sigma，Infinity 在细节丰富度、文本跟随准确度和美学质量上均表现更优。</div>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig6-gen-samples-2.png" alt="生成样本对比 2" loading="lazy">
+    <div class="cap">更多 Infinity 生成样本，展示其对复杂提示词的跟随能力以及宽高比灵活性。</div>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity/fig7-human-preference.png" alt="人类偏好评测" loading="lazy">
+    <div class="cap">人类偏好评测：Infinity 在整体质量、提示词跟随和视觉美学三个维度上获得最高比例的人类选择。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第六章：写作与启示
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 6 · 启示</div>
+  <div class="ch-title">Bitwise 思维与图像压缩的连接</div>
+
+  <div class="quote">
+    <p>「Bitwise 建模将高维离散问题分解为二进制位预测，同时解决了计算和优化问题。」</p>
+  </div>
+
+  <p>Infinity 最深刻的启示是"bitwise 思维"：当一个问题在高维离散空间中难以计算和优化时，分解到二进制位层面可能自然解决。这在 tokenizer（BSQ）、classifier（IVC）、纠错机制（BSC）三个模块上都得到了验证。</p>
+
+  <h3>与图像压缩的连接</h3>
+  <p>Infinity 与图像压缩频道的研究直接相关：</p>
+  <p><strong>无限词汇表的压缩潜力</strong>：2^64 的离散词表使重建质量超越连续 VAE，这意味着将图像压缩为离散 token 不再是"有损"的代名词。在压缩任务中，更大的 tokenizer 容量意味着更小的量化误差和更低的比特率。</p>
+  <p><strong>Bitwise 编码的算术编码效率</strong>：BSQ 将图像表示为二进制位序列，天然适合算术编码。每个位的概率分布由 IVC 直接给出（正/负的二分类 logits），不需要额外的熵模型。</p>
+  <p><strong>IVC 与熵模型的类比</strong>：IVC 本质上是一个概率模型：64 个独立二分类器给出每个位为 +1 的概率，这与熵模型的"估计 latent 分布的参数"是同构的。IVC 的训练过程与熵模型训练高度吻合。</p>
+  <p>直接后继：RDVQ（CVPR 2026 Oral）正是在 Infinity/BSQ 基础上将 RD 优化引入 tokenization。</p>
+
+  <h3>与 MAGVIT-v2 的对比</h3>
+  <p>两条路线都在扩大 tokenizer 词表，但路径不同：MAGVIT-v2 用 LFQ 将词表推到 2^18（262K），Infinity 用 BSQ 推到 2^64。前者使用掩码语言模型（MLM）生成，后者使用 next-scale 自回归。两者共同验证了同一个假设：tokenizer 容量是生成质量的关键瓶颈。</p>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Han et al. (2024) <em>Infinity: Scaling Bitwise AutoRegressive Modeling for High-Resolution Image Synthesis</em> — <a href="https://arxiv.org/abs/2412.04431" target="_blank">arXiv:2412.04431</a></li>
+    <li>Infinity 代码仓库 — <a href="https://github.com/FoundationVision/Infinity" target="_blank">GitHub</a></li>
+    <li>Tian et al. (2024) <em>Visual Autoregressive Modeling: Generating Scalable Image Generators via Next-Scale Prediction</em> — <a href="https://arxiv.org/abs/2404.02905" target="_blank">arXiv:2404.02905</a></li>
+    <li>Yu et al. (2024) <em>Language Model Beats Diffusion — Tokenizer is Key to Visual Generation (MAGVIT-v2)</em> — <a href="https://arxiv.org/abs/2310.05737" target="_blank">arXiv:2310.05737</a></li>
+    <li>Yu et al. (2023) <em>MAGVIT: Masked Generative Video Transformer</em> — <a href="https://arxiv.org/abs/2212.05199" target="_blank">arXiv:2212.05199</a></li>
+    <li>RDVQ (2026) <em>Differentiable Vector Quantization for Rate-Distortion Optimization of Generative Image Compression</em> — <a href="https://arxiv.org/abs/2604.10546" target="_blank">arXiv:2604.10546</a></li>
+  </ul>
+</div>
+
+</div>
