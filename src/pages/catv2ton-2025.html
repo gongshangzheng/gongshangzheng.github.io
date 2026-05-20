@@ -8,14 +8,12 @@ tags: [virtual-try-on, diffusion-transformer, video-generation, image-to-video, 
 categories: ["论文解读"]
 page_style: |
   .hero { height: 45vh; }
-  .arch-diagram { background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
-  .code-block { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
   .metric-table { width: 100%; border-collapse: collapse; }
-  .metric-table th, .metric-table td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
-  .metric-table th { background: #f0f0f0; }
+  .metric-table th, .metric-table td { border: 1px solid var(--border-color, #ddd); padding: 8px 12px; text-align: left; }
+  .metric-table th { background: var(--bg-block); }
   .flow-chart { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; padding: 16px 0; }
-  .flow-step { background: #e8f0fe; border: 1px solid #a0c0ff; border-radius: 6px; padding: 8px 16px; font-size: 14px; }
-  .flow-arrow { color: #666; font-size: 18px; }
+  .flow-step { background: var(--bg-block); border: 1px solid var(--border-color, #a0c0ff); border-radius: 6px; padding: 8px 16px; font-size: 14px; }
+  .flow-arrow { color: var(--text-muted, #666); font-size: 18px; }
   img.centered { display: block; margin: 0 auto; max-width: 90%; }
 ---
 
@@ -61,10 +59,10 @@ page_style: |
 
   <p>Pipeline 的 <code>denoising</code> 方法中，多个 latent 按通道拼接后送入 DiT：</p>
 
-  <div class="code-block"><pre>masked_latents_cat  = concat([conditioned_latents, masked_latents], dim=2)
+  <pre class="language-python"><code>masked_latents_cat  = concat([conditioned_latents, masked_latents], dim=2)
 mask_latents_cat   = concat([conditioning_mask_latents, mask_latents], dim=2)
 inpaint_latents    = concat([mask_latents_cat, masked_latents_cat], dim=1)
-# inpaint_latents shape: (b, 4c, f, h, w)</pre></div>
+# inpaint_latents shape: (b, 4c, f, h, w)</code></pre>
 
   <ul>
     <li><code>conditioned_latents</code>：目标人物图像（不含服装）的 VAE encoding</li>
@@ -86,7 +84,7 @@ inpaint_latents    = concat([mask_latents_cat, masked_latents_cat], dim=1)
 
   <p><code>init_transformer3d_model</code> 中明确禁用了以下模块（这些是 EasyAnimate 原有但 CatV2TON 不需要的功能）：</p>
 
-  <div class="code-block"><pre>for block in transformer3d.blocks:
+  <pre class="language-python"><code>for block in transformer3d.blocks:
     block.attn_temporal = None   # 时间注意力
     block.attn_norm = None        # CLIP guided attention
     block.attn_clip = None        # CLIP attention
@@ -94,19 +92,19 @@ inpaint_latents    = concat([mask_latents_cat, masked_latents_cat], dim=1)
     block.gate_clip = None        # CLIP gate
     block.norm_clip_out = None    # CLIP norm out
     block.norm2 = None            # FFN 前的第二个 norm
-    block.attn2 = None            # 第二个注意力（Cross attention）</pre></div>
+    block.attn2 = None            # 第二个注意力（Cross attention）</code></pre>
 
   <h3>4. JointAttnProcessor2_0：SD3 风格的注意力</h3>
 
   <p>这是最值得关注的实现细节。<code>JointAttnProcessor2_0</code> 采用 SD3（Stable Diffusion 3）的 MM-DiT 思路，核心是 Q/K/V 三元组的 concat，而非传统 cross-attention：</p>
 
-  <div class="code-block"><pre># Q/K/V 均由两部分 concat 而成
+  <pre class="language-python"><code># Q/K/V 均由两部分 concat 而成
 query = concat([to_q(hidden_states), add_q_proj(encoder_hidden_states)], dim=1)
 key   = concat([to_k(hidden_states), add_k_proj(encoder_hidden_states)], dim=1)
 value = concat([to_v(hidden_states), add_v_proj(encoder_hidden_states)], dim=1)
 hidden_states = F.scaled_dot_product_attention(query, key, value)
 # SDPA 一次完成自注意力 + 条件注入，再沿 seq 维度 split 回两部分
-hidden_states, encoder_hidden_states = split(..., dim=1)</pre></div>
+hidden_states, encoder_hidden_states = split(..., dim=1)</code></pre>
 
   <p>传统 cross-attention 的 Q 来自 hidden_states，K/V 来自 encoder_hidden_states；而 JointAttnProcessor 的 Q,K,V 均由两部分 concat，使得自注意力和条件注入在同一个 SDPA 操作中完成。这种设计的优势是条件注入更直接、无需独立的 cross-attention 路径。</p>
 
@@ -127,14 +125,14 @@ hidden_states, encoder_hidden_states = split(..., dim=1)</pre></div>
 
   <p>AdaCN 的核心公式——通过匹配均值/方差来消除片段间的颜色不匹配和闪烁：</p>
 
-  <div class="code-block"><pre>def adacn_params(content_feat, style_feat, eps=1e-5):
+  <pre class="language-python"><code>def adacn_params(content_feat, style_feat, eps=1e-5):
     content_mean, content_std = content_feat.mean/var(dim=(2,3,4))
     style_mean, style_std     = style_feat.mean/var(dim=(2,3,4))
     return content_mean, content_std, style_mean, style_std
 
 # 在重叠区域和后续区域应用归一化调整：
 result_normed = (content - content_mean) / content_std * style_std + style_mean
-# content_feat：当前片段重叠区输出；style_feat：上一片段对应位置输出</pre></div>
+# content_feat：当前片段重叠区输出；style_feat：上一片段对应位置输出</code></pre>
 
   <h3>7. AutoMasker：服装无关掩码生成</h3>
 
@@ -206,7 +204,7 @@ result_normed = (content - content_mean) / content_std * style_std + style_mean
 <div class="section">
   <h2>代码架构速查</h2>
 
-  <div class="code-block"><pre>CatV2TON/
+  <pre class="language-bash"><code>CatV2TON/
 ├── modules/
 │   ├── pipeline.py              # V2TONPipeline，核心推理类
 │   │   ├── init_transformer3d_model()  # 加载 + 裁剪 DiT
@@ -232,11 +230,11 @@ result_normed = (content - content_mean) / content_std * style_std + style_mean
 ├── eval_image_try_on.py        # VITON-HD / DressCode 推理
 ├── eval_video_try_on.py        # ViViD-S / VVT 推理
 ├── eval_image_metrics.py       # 图像指标计算
-└── eval_video_metrics.py      # 视频指标计算</pre></div>
+└── eval_video_metrics.py      # 视频指标计算</code></pre>
 
   <p><code>V2TONPipeline</code> 的核心调用路径：</p>
 
-  <div class="code-block"><pre># 图像换装
+  <pre class="language-python"><code># 图像换装
 image_try_on(source_image, source_mask, conditioned_image, pose_image)
   → prepare_image()              # 图像 → tensor [-1,1]
   → F.max_pool2d(source_mask)   # 掩码空间池化（核=11）
@@ -256,7 +254,7 @@ video_try_on(source_video, mask_video, condition_image, pose_video)
       → adacn_params()          # 重叠区域 AdaCN 统计
       → 片段拼接（用 AdaCN 对齐重叠区）
   → decode_latents()            # VAE decode + smooth_output
-  → output video tensor (b,t,h,w,c)</pre></div>
+  → output video tensor (b,t,h,w,c)</code></pre>
 </div>
 
 <div class="section">
