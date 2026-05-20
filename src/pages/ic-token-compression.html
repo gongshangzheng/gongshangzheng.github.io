@@ -1,15 +1,15 @@
 ---
 title: "Token-based 图像压缩：当视觉 Tokenizer 遇上信息论"
-description: "从 VQ-VAE 到 TiTok 32 个 1D token，从 AR-VFM 到 RDVQ 可微量化。Token-based 压缩与 LLM 的万物 tokenize 范式天然对接，是图像压缩与视觉编码器研究的最前沿交叉。"
+description: "从 VQ-VAE、RVQ、FSQ 到 Lookup-Free Quantization，再到 TiTok 32 个 1D token 与 AR-VFM 压缩。本文把 token-based 图像压缩放回量化器、熵编码和视觉 tokenizer 的统一框架中。"
 date: 2026-05-20
 created_at: 2026-05-20T13:28:00
-updated_at: 2026-05-20T13:28:00
-tags: [image-compression, tokenizer, VQ-VAE, VQGAN, 1D-tokenizer, AR-VFM, TiTok]
+updated_at: 2026-05-20T14:18:00
+tags: [image-compression, tokenizer, VQ-VAE, VQGAN, LFQ, FSQ, RVQ, TiTok]
 categories: ["图像压缩"]
 mathjax: true
 hero_title: "Token-based 图像压缩"
-hero_sub: "当视觉 Tokenizer 遇上信息论"
-hero_tagline: "VQ-VAE → VQGAN → TiTok → AR-VFM：离散化连续信号，在 token 空间做熵编码"
+hero_sub: "量化器、视觉 Tokenizer 与信息论"
+hero_tagline: "VQ-VAE → VQGAN → RVQ/FSQ/LFQ → TiTok → AR-VFM：离散化连续信号，在 token 空间做熵编码"
 page_style: |
   :root { --hero-grad: linear-gradient(135deg, #0a0e17, #0f1628, #131d38); --accent: #34d399; --accent-gold: #fbbf24; }
   @media (prefers-color-scheme: dark) { :root { --hero-grad: linear-gradient(135deg, #0a0e17, #0f1628, #131d38); --accent: #34d399; --accent-gold: #fbbf24; } }
@@ -19,172 +19,215 @@ page_style: |
 
 <div class="stats">
   <div class="stat"><span class="num">32</span><span class="label">Tokens (TiTok)</span></div>
-  <div class="stat"><span class="num b">1D</span><span class="label">Tokenizer 范式</span></div>
-  <div class="stat"><span class="num g">100K</span><span class="label">码本 (VQGAN-LC)</span></div>
+  <div class="stat"><span class="num b">LFQ</span><span class="label">Lookup-free</span></div>
+  <div class="stat"><span class="num g">RVQ</span><span class="label">Residual Coding</span></div>
 </div>
 
 <div class="wrap">
 
-<!-- ============================================================
-  核心区别
-  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 0 · 先把格局放大</div>
+  <div class="ch-title">Token-based 压缩的核心不是 Token，而是量化器</div>
+  <p>Token-based 图像压缩常被理解为「把图像变成 token，然后用语言模型压缩」。这个说法只说到了表层。真正决定压缩性能的第一层结构，是<strong>量化器</strong>：连续视觉特征如何被离散化，离散符号如何被建模，码本是否会坍缩，梯度如何穿过不可微的取整或查表操作。</p>
+  <p>从 Ballé 系列的连续 latent 压缩到 VQ-VAE/VQGAN 的离散 latent，再到 TiTok 的 1D token 与 MAGVIT-v2 的 lookup-free tokenizer，研究主线不是简单地「从像素到 token」，而是从<strong>标量量化</strong>、<strong>向量量化</strong>、<strong>残差量化</strong>、<strong>有限标量量化</strong>到<strong>无码本查找量化</strong>的演化。</p>
+
+  <div class="callout"><strong>一句话判断</strong>：如果连续 latent 压缩的关键词是「概率模型」，那么 token-based 压缩的关键词就是「离散化机制 + token 先验」。量化器决定 token 的信息容量，先验模型决定 token 的熵编码效率。</div>
+</div>
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 1 · 核心问题</div>
-  <div class="ch-title">Token-based 压缩与连续 latent 压缩的根本差异</div>
-  <p>传统学习式压缩（Ballé 2017/2018）使用连续 latent 空间 + 标量量化：encoder 输出连续向量，量化为整数值，用参数化概率分布（高斯/GMM）估计熵，再用算术编码压缩。</p>
-  <p>Token-based 方法走了不同的路：用<strong>向量量化（VQ）</strong>替代标量量化，将连续向量映射到码本中的最近码字。编码的对象是码本索引（离散 token），而非连续值的概率分布。先验模型可以利用 AR/LM 风格的 token 级先验。</p>
+  <div class="ch-label">Chapter 1 · 基础对照</div>
+  <div class="ch-title">连续 latent 压缩 vs Token-based 压缩</div>
+  <p>传统学习式压缩通常采用连续 latent + 标量量化。Encoder 输出连续特征 \(y=g_a(x)\)，训练时用加性均匀噪声近似量化，测试时取整得到 \(\hat y=\mathrm{round}(y)\)，再用熵模型估计 \(p(\hat y)\)，最后算术编码。</p>
+  <p>Token-based 方法先把局部或全局视觉特征映射为离散索引：</p>
+  <p>\[q(z)=\arg\min_i \lVert z-e_i\rVert_2,\quad z_q=e_{q(z)}\]</p>
+  <p>其中 \(E=\{e_1,\dots,e_K\}\) 是码本。压缩时传输的是索引 \(q(z)\)，也就是视觉 token。若每个 token 独立以固定长度编码，则每个 token 至少需要 \(\log_2 K\) bit；若使用 AR/LM 先验，则实际码长接近 \(-\log_2 p(t_i\mid t_{<i})\)。</p>
 
   <div class="info-box">
-    <h3>为什么这很重要</h3>
-    <p>Token-based 压缩将图像压缩与视觉 tokenizer 研究、LLM 的"下一个 token 预测"范式统一到同一个离散表示空间。这意味着压缩研究可以站在 LLM 和视觉 tokenizer 研究的肩膀上——同一个 tokenizer 既可以用于压缩，也可以用于生成、理解、编辑。</p>
+    <h3>真正的压缩率公式</h3>
+    <p>粗略估算：\(R \approx N_{token}\log_2 K\)。更准确地说，熵编码后码长是 \(R=\sum_i -\log_2 p(t_i\mid c_i)\)，其中 \(c_i\) 可以是上下文、语义条件、hyperprior 或 AR hidden state。</p>
   </div>
 </div>
 
-<!-- ============================================================
-  VQ-VAE → VQGAN
-  ============================================================ -->
-
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 2 · 奠基</div>
-  <div class="ch-title">VQ-VAE 与 VQGAN：离散表示的基础</div>
+  <div class="ch-label">Chapter 2 · 量化器谱系</div>
+  <div class="ch-title">从 Scalar Quantization 到 Lookup-Free Quantization</div>
 
-  <h3>VQ-VAE (Oord et al., 2017)</h3>
-  <p>离散隐表示的变分自编码器。Encoder 输出连续向量 → 最近邻查找到码本中的码字 → 传输码本索引 → Decoder 从码字重建图像。损失函数由三部分组成：重建损失（L1/L2）+ Commitment Loss（保持编码器输出与码字一致）+ Embedding Loss（更新码本）。</p>
-  <p>问题：生成质量有限，码本坍缩（codebook collapse）——只有少量码字被使用，大量码本空间浪费。</p>
+  <h3>1. Scalar Quantization：Ballé 系连续压缩的默认基底</h3>
+  <p>标量量化对 latent 的每个维度独立取整。优点是简单、天然适配高斯/拉普拉斯熵模型；缺点是无法利用向量维度之间的联合结构。Ballé 2017/2018 的学习式压缩本质上仍是连续特征经过标量量化，再由 hyperprior/context model 建模其概率分布。</p>
 
-  <h3>VQGAN (Esser et al., CVPR 2021) ★★</h3>
+  <h3>2. Vector Quantization：VQ-VAE 的基本操作</h3>
+  <p>VQ 把整个向量映射到码本最近邻。损失通常写作：</p>
+  <p>\[\mathcal L = \lVert x-\hat x\rVert + \lVert \mathrm{sg}[z_e]-e\rVert_2^2 + \beta\lVert z_e-\mathrm{sg}[e]\rVert_2^2\]</p>
+  <p>第一项是重建损失，第二项更新码本，第三项是 commitment loss，防止 encoder 输出在码本外漂移。由于最近邻选择不可微，训练时通常使用 straight-through estimator：前向传播使用硬量化，反向传播近似令 \(\partial z_q/\partial z_e \approx I\)。</p>
 
-  <div class="photo">
-    <img src="assets/media/images/ic/vqgan-arch.png" alt="VQGAN 架构" loading="lazy">
-    <div class="cap">VQGAN 架构：GAN 判别器与 VQ-VAE 的结合。判别器约束感知质量，Transformer 解码器在 token 序列上做自回归生成</div>
-  </div>
+  <h3>3. Codebook Collapse：VQ 的核心病灶</h3>
+  <p>VQ 最大的问题是码本坍缩：只有少数码字被频繁使用，大量码字从不被选中，因而拿不到梯度。坍缩会带来两个后果：第一，表面码本很大，实际信息容量很小；第二，token 分布高度不均匀，后续 AR 先验容易学到偏置而非结构。</p>
+  <p>常见缓解方法包括 EMA 更新码本、dead code 重启、entropy regularization、commitment loss 调权、码本归一化、分组量化、残差量化和 lookup-free 量化。</p>
 
-  <p>关键创新：将 GAN 判别器引入 VQ-VAE 训练。判别器约束感知质量，解决 VQ-VAE 生成模糊的问题。Transformer 解码器（GPT-2 风格）在 token 序列上做自回归生成。码本大小通常 1024 或 4096。</p>
+  <h3>4. Residual Vector Quantization (RVQ)：渐进式 token 化</h3>
+  <p>RVQ 用多个码本逐层量化残差：</p>
+  <p>\[r_0=z,\quad i_m=\arg\min_i\lVert r_{m-1}-e_i^{(m)}\rVert_2,\quad r_m=r_{m-1}-e_{i_m}^{(m)}\]</p>
+  <p>最终重建为 \(\hat z=\sum_m e_{i_m}^{(m)}\)。直观地说，第一层码本编码粗结构，后续码本补残差细节。这与传统压缩中的 bit-plane/progressive coding 很接近。音频 codec（如 SoundStream/EnCodec）广泛使用 RVQ，图像 tokenizer 中 MAGVIT 系列、Residual Quantization for Tokenized Image Synthesis 等工作也沿着这条线推进。</p>
 
-  <div class="admonition note">
-    <div class="admonition-title">VQ-VAE 压缩的关键发现</div>
-    <div class="admonition-content">
-      <p>从已有笔记（VQVAE Compression Investigation）中提取的关键结论：</p>
-      <ul>
-        <li>普通自编码器在潜空间通道数大、浮点精度高时无法实现真正压缩</li>
-        <li>VQ-VAE 通过存储码本索引而非完整向量实现真实压缩</li>
-        <li>码本大小对潜空间维度的收益存在硬性限制</li>
-        <li>残差量化（RVQ）用更少比特数实现更好重建</li>
-        <li>重建误差与比特数呈幂律关系</li>
-      </ul>
-    </div>
-  </div>
-</div>
+  <h3>5. Product / Group Quantization：把大码本拆成多个小码本</h3>
+  <p>Product Quantization 将高维向量拆成若干子向量，每个子向量独立查表。Group Scalar/Vector Quantization（GSVQ）也遵循类似思想：组内保持紧凑表达，组间降低组合复杂度。它的核心价值是用多个小码本近似一个指数级大码本，使表达能力随组数乘法增长，而存储和查找开销线性增长。</p>
 
-<!-- ============================================================
-  TiTok：1D Tokenizer
-  ============================================================ -->
+  <h3>6. Finite Scalar Quantization (FSQ)：去掉可学习码本</h3>
+  <p>FSQ 的思路是：不再学习一个高维码本，而是为每个维度指定有限个标量 level，再把多维离散 level 的笛卡尔积视为隐式码本。例如维度 levels 为 \([8,5,5,5]\)，隐式码本大小就是 \(8\times5\times5\times5=1000\)。</p>
+  <p>FSQ 的优点是训练稳定、无码本坍缩、实现简单；缺点是每个维度的离散结构相对刚性，不如 VQ 那样能学习任意形状的语义聚类。它适合需要稳定 tokenizer、但不想维护大码本的视觉生成和压缩场景。</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 3 · 突破</div>
-  <div class="ch-title">TiTok：256×256 图像 → 32 个 1D Token</div>
+  <h3>7. Lookup-Free Quantization (LFQ)：把码本查找替换为 bit 决策</h3>
+  <p>LFQ 在 MAGVIT-v2 / Language Model Beats Diffusion 一线中变得重要。它的核心做法是取消显式 embedding codebook，把每个 latent 维度二值化为 \(\{-1,+1\}\)，一个 d 维二值向量天然对应 \(2^d\) 个离散码。也就是说，码本从「显式存储的一组向量」变成「所有 bit pattern 的全集」。</p>
+  <p>LFQ 的价值很明确：没有码本查找，没有 dead code，没有大表存储；码字天然被 bit 表示，适合大规模视觉 tokenizer。代价是表达空间被限制在超立方体顶点，需要靠 encoder/decoder 和 entropy regularization 学会使用这些顶点。</p>
 
-  <div class="photo">
-    <img src="assets/media/images/ic/titok-arch.png" alt="TiTok 1D Tokenizer" loading="lazy">
-    <div class="cap">TiTok (ByteDance, 2024)：将 256×256 图像量化为仅 32 个 1D 离散 token，比传统 2D tokenization 提速一个数量级</div>
-  </div>
-
-  <p>TiTok 是图像压缩与 1D Visual Tokenizer 研究线交叉的里程碑。传统方法将图像切成 16×16 的 patch，256×256 的图像需要 256 个 2D token。TiTok 将图像"展平"为 1D 序列，仅用 32 个 token 就能编码整张图像。</p>
-  <p>这不仅大幅降低了 token 数量（从 256 到 32，8 倍压缩），更重要的是改变了建模方式：1D 序列天然适合 AR/LM 风格的先验模型。</p>
-
-  <div class="callout"><strong>极端压缩场景的强力方案</strong>：32 个 token，假设码本大小 4096（12 bit/token），总比特数 = 32 × 12 = 384 bit。对于 256×256×3 的图像（1,572,864 bit），这相当于 0.00024 bpp 的极端压缩。</div>
-</div>
-
-<!-- ============================================================
-  自适应与生成式
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 4 · 演化</div>
-  <div class="ch-title">从固定长度到自适应、从编码到生成</div>
-
-  <h3>ALIT — 自适应长度 Image Tokenization (ICLR 2025)</h3>
-  <p>根据信息熵和上下文动态分配计算资源。为不同输入图像分配自适应不定长 token——高密度信息区域获得更多 token，低密度区域减少 token。这本质上是内容感知的比特分配，是传统压缩中率失真优化（RDO）的 token 级版本。</p>
-
-  <h3>GLC — Generative Latent Coding (CVPR 2024 / IEEE TCSVT 2025)</h3>
-  <p>在生成式 VQ-VAE 的潜在空间中进行变换编码。潜在空间提供更大稀疏性、丰富语义和更好感知对齐。Semantic Token-Guided 版本（ICASSP 2026）进一步增强。</p>
-
-  <h3>RDVQ — 可微向量量化 (CVPR 2026)</h3>
-  <p>解决 VQ 不可微分导致的梯度中断问题。在传统 VQ 中，最近邻查找是离散操作，梯度无法回传。RDVQ 通过可微近似使梯度可以穿过量化层，实现端到端的率失真优化。</p>
-
-  <h3>码本规模扩展</h3>
+  <h3>8. Soft-to-Hard Quantization：训练时软，推理时硬</h3>
+  <p>另一类方法在训练时用 softmax/Gumbel-softmax 对码字做软分配，随着温度下降逐渐逼近硬分配。它缓解了不可微问题，但会引入训练/推理 mismatch，并且在大码本场景下 softmax 计算成本不低。</p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>策略</th><th>方法</th><th>码本大小</th><th>效果</th></tr></thead>
+      <thead><tr><th>量化器</th><th>是否有显式码本</th><th>核心优势</th><th>主要问题</th><th>典型应用</th></tr></thead>
       <tbody>
-        <tr><td>小码本</td><td>标准 VQGAN</td><td>1024</td><td>10 bit/token，压缩率高但重建受限</td></tr>
-        <tr><td>大码本扩展</td><td>VQGAN-LC (NeurIPS 2024)</td><td>100,000</td><td>99% 码本利用率，兼顾表达力与紧凑性</td></tr>
-        <tr><td>聚类缩减</td><td>Fine-tuned VQGAN (DCC 2024)</td><td>缩减后</td><td>&lt;0.04 bpp 保持感知质量</td></tr>
-        <tr><td>残差量化</td><td>RVQ</td><td>多个小码本</td><td>渐进式编码，高效率</td></tr>
-        <tr><td>自适应粒度</td><td>Control-GIC</td><td>动态</td><td>单模型多比特率自适应</td></tr>
+        <tr><td>Scalar Q</td><td>无</td><td>简单、适合概率建模</td><td>不能表达向量级语义聚类</td><td>Ballé/Minnen 系学习式压缩</td></tr>
+        <tr><td>VQ</td><td>有</td><td>离散 token 清晰，适合 AR/LM</td><td>码本坍缩、查表开销</td><td>VQ-VAE, VQGAN, TiTok</td></tr>
+        <tr><td>RVQ</td><td>多个小码本</td><td>渐进式残差编码，率失真灵活</td><td>多层量化带来训练复杂度</td><td>RQVAE, MAGVIT, neural codec</td></tr>
+        <tr><td>Product/GSVQ</td><td>多个子码本</td><td>指数级组合容量，线性存储</td><td>组间依赖难建模</td><td>大码本 tokenizer</td></tr>
+        <tr><td>FSQ</td><td>隐式码本</td><td>稳定、无码本坍缩</td><td>语义聚类能力受限</td><td>稳定视觉 tokenizer</td></tr>
+        <tr><td>LFQ</td><td>无显式码本</td><td>lookup-free、无 dead code、大规模友好</td><td>表达空间受 bit 超立方体约束</td><td>MAGVIT-v2, LlamaGen-style tokenizer</td></tr>
+        <tr><td>Soft-to-Hard</td><td>有</td><td>梯度更平滑</td><td>训练/推理 mismatch</td><td>Gumbel VQ, differentiable tokenization</td></tr>
       </tbody>
     </table>
   </div>
 </div>
 
-<!-- ============================================================
-  AR-VFM for Compression
-  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 3 · 奠基</div>
+  <div class="ch-title">VQ-VAE 与 VQGAN：离散表示的基础</div>
+
+  <h3>VQ-VAE (Oord et al., 2017)</h3>
+  <p>VQ-VAE 第一次把深度自编码器的 latent 明确做成离散码字。它让「压缩」不再只是连续 latent 的熵估计，也可以是对离散 token 序列的建模。对于图像压缩而言，VQ-VAE 的关键意义在于：只要传输码本索引，就可以避免存储完整浮点 latent。</p>
+
+  <h3>VQGAN (Esser et al., CVPR 2021)</h3>
+  <div class="photo">
+    <img src="assets/media/images/ic/vqgan-arch.png" alt="VQGAN 架构" loading="lazy">
+    <div class="cap">VQGAN 架构：GAN 判别器与 VQ-VAE 结合。它把离散 token 从「压缩表示」推进为「高保真生成表示」</div>
+  </div>
+  <p>VQGAN 的真正贡献是把离散 tokenizer 的重建质量提升到可用水平。感知损失和对抗损失缓解了 VQ-VAE 的模糊问题；Transformer prior 证明 token 序列可以被语言模型式架构有效建模。</p>
+
+  <div class="admonition note">
+    <div class="admonition-title">从已有笔记提取的压缩结论</div>
+    <div class="admonition-content">
+      <ul>
+        <li>普通自编码器的 latent 若以浮点存储，并不构成真正压缩。</li>
+        <li>VQ-VAE 的压缩性来自「码本共享 + 索引传输」。</li>
+        <li>码本大小决定每个 token 的基础码长，但 token 分布和先验模型决定实际熵编码码长。</li>
+        <li>RVQ 在同等码率下通常比单一码本更灵活，因为它允许粗到细渐进表达。</li>
+      </ul>
+    </div>
+  </div>
+</div>
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 5 · 统一</div>
-  <div class="ch-title">AR-VFM：当视觉基础模型遇上压缩</div>
+  <div class="ch-label">Chapter 4 · 1D Tokenizer</div>
+  <div class="ch-title">TiTok：256×256 图像 → 32 个 1D Token</div>
 
-  <p>预训练 AR 视觉基础模型（Cosmos, LlamaGen, VAR）直接用作图像编解码器——不需要微调编解码器，直接利用预训练模型的"下一个 token 预测"能力。</p>
-  <p>核心洞察：AR-VFM 的 token 预测能力本质上是高效的统计模型，可以用于熵编码。生成与压缩统一：解码器可重新用于无条件图像生成。</p>
+  <div class="photo">
+    <img src="assets/media/images/ic/titok-arch.png" alt="TiTok 1D Tokenizer" loading="lazy">
+    <div class="cap">TiTok (ByteDance, 2024)：用 K 个 latent query 汇聚整图信息，再量化为 1D token 序列</div>
+  </div>
 
-  <div class="callout"><strong>范式转变</strong>：传统压缩研究从头训练编解码器。AR-VFM 表明，当图像被 tokenize 之后，可以利用 LLM 规模的预训练模型直接做压缩。这意味着压缩研究可以"站在巨人的肩膀上"——不需要自己的大规模预训练，直接复用 LLM/视觉 tokenizer 的成果。</div>
+  <p>TiTok 的关键不是简单减少 token 数，而是改变 token 的空间假设。传统 2D tokenizer 让 token 与图像网格位置强绑定，16×16 网格就是 256 个 token；TiTok 用 ViT encoder 将 patch 序列与少量 latent tokens 交互，最后只保留 latent tokens。每个 token 不再对应一个固定 patch，而是全局聚合后的信息瓶颈。</p>
+  <p>这对压缩非常重要：2D token 适合局部重建，1D token 更接近「整图语义摘要 + 细节索引」。如果后续接 AR prior，1D 序列也更符合语言模型的建模习惯。</p>
+
+  <div class="callout"><strong>极端码率估算</strong>：32 个 token，码本大小 4096，则基础码长为 \(32\times\log_2 4096=384\) bit。对于 256×256 RGB 图像，bpp 约为 \(384/(256\times256)=0.00586\) bpp。若按原始 RGB bit 数比值计算，则约为 1/4096 的原始比特预算。注意：这里的 bpp 应以像素数为分母，不应再乘以 3 个通道。</div>
 </div>
 
-<!-- ============================================================
-  核心洞察
-  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 5 · Tokenizer 横向地图</div>
+  <div class="ch-title">视觉 Tokenizer 不止 VQGAN 与 TiTok</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tokenizer</th><th>量化器</th><th>Token 组织</th><th>压缩意义</th><th>主要限制</th></tr></thead>
+      <tbody>
+        <tr><td>VQ-VAE</td><td>VQ</td><td>2D grid</td><td>首次稳定离散 latent</td><td>重建质量弱，码本坍缩</td></tr>
+        <tr><td>VQGAN</td><td>VQ</td><td>2D grid</td><td>高保真视觉 token 基础</td><td>token 数多，AR prior 慢</td></tr>
+        <tr><td>RQVAE</td><td>RVQ</td><td>多层 token</td><td>粗到细渐进码率控制</td><td>多码本训练复杂</td></tr>
+        <tr><td>MAGVIT / MAGVIT-v2</td><td>VQ / LFQ</td><td>图像视频统一 token</td><td>为生成模型提供高效视觉词表</td><td>压缩评价通常不是主目标</td></tr>
+        <tr><td>TiTok</td><td>VQ + 1D latent</td><td>1D sequence</td><td>极少 token，适合超低码率</td><td>细节保真依赖 decoder hallucination</td></tr>
+        <tr><td>ALIT</td><td>自适应 tokenization</td><td>variable length</td><td>把 RDO 变成 token 数分配</td><td>熵编码和训练调度复杂</td></tr>
+        <tr><td>DINO-Tok</td><td>语义引导 tokenizer</td><td>语义 token</td><td>强化理解/生成通用性</td><td>不一定最优于像素级压缩</td></tr>
+        <tr><td>SemHiTok</td><td>层次化语义码本</td><td>hierarchical tokens</td><td>语义与细节分层</td><td>结构复杂，依赖任务权衡</td></tr>
+        <tr><td>AR-VFM Compression</td><td>依赖预训练 tokenizer</td><td>AR sequence</td><td>直接复用视觉基础模型先验做熵编码</td><td>模型规模和解码成本高</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 6 · 从固定长度到自适应</div>
+  <div class="ch-title">Token 数本身就是码率控制旋钮</div>
+
+  <h3>ALIT：自适应长度 Image Tokenization</h3>
+  <p>ALIT 的思想可以放回压缩语言中理解：不同图像、不同区域的信息量不同，固定 token 数等价于固定码率，不符合率失真优化。自适应长度 tokenizer 让高信息区域获得更多 token，让低信息区域获得更少 token，本质上是 token 级 bit allocation。</p>
+
+  <h3>GLC：在生成式 latent 空间做压缩</h3>
+  <p>Generative Latent Coding 的关键是：生成模型 latent 往往已经具有语义对齐和稀疏结构，因此在生成式 latent 空间做变换编码，可能比在像素或普通 latent 空间更接近感知压缩目标。</p>
+
+  <h3>RDVQ：把 VQ 放回率失真优化</h3>
+  <p>RDVQ 的问题意识非常明确：传统 VQ 的硬最近邻操作会阻断梯度，导致 rate-distortion 目标难以真正端到端优化。可微 VQ 试图让量化器本身也成为 RDO 的可学习组成部分。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 7 · AR-VFM</div>
+  <div class="ch-title">当视觉基础模型变成熵模型</div>
+
+  <p>AR-VFM for Compression 的核心不是训练一个新 codec，而是复用预训练 AR 视觉基础模型的 token 预测能力。若模型能准确预测下一个视觉 token，则它天然给出了条件概率 \(p(t_i\mid t_{<i})\)，这正是算术编码需要的概率模型。</p>
+  <p>这把「生成」和「压缩」统一到同一件事：生成模型学的是数据分布，压缩模型需要的是数据分布的概率估计。区别只在于生成时采样 token，压缩时用概率分布编码真实 token。</p>
+
+  <div class="callout"><strong>范式转变</strong>：传统 learned compression 从头训练 analysis/synthesis transform 与 entropy model。AR-VFM 路线意味着压缩可以直接继承视觉基础模型的 token prior，尤其适合 token-based compression。</div>
+</div>
 
 <div class="section fade-in">
-  <div class="section-title">四条核心洞察</div>
+  <div class="section-title">五条核心洞察</div>
 
   <div class="quote">
-    <p>「Token-based 压缩的本质是先离散化，再压缩。」</p>
-    <div class="who">——与连续 latent + 标量量化的路线相比，先完成离散化，再在离散空间做熵编码。天然适合 AR/LM 风格的先验模型</div>
+    <p>「Token-based 压缩的第一性问题是量化器，而不是 Transformer。」</p>
+    <div class="who">如果量化器产生的 token 语义混乱、码本坍缩或熵过高，再强的 prior 也只能补救，无法从根本上修复表示瓶颈。</div>
   </div>
 
   <div class="quote">
-    <p>「码本是瓶颈也是机会。」</p>
-    <div class="who">——码本大小直接决定比特率，但太大的码本引入存储和计算开销。RVQ 和自适应粒度是两条突破路径</div>
+    <p>「码本大小不等于信息容量。」</p>
+    <div class="who">一个 100K 码本如果只使用 5K 个码字，实际容量远低于标称容量。码本利用率和 token 熵比 nominal codebook size 更重要。</div>
   </div>
 
   <div class="quote">
-    <p>「与 LLM 的统一是趋势。」</p>
-    <div class="who">——TiTok + AR-VFM 表明压缩和生成共享同一套基础设施。压缩研究可以站在 LLM/视觉 tokenizer 研究的肩膀上</div>
+    <p>「RVQ 是 token-based 压缩最自然的率控机制之一。」</p>
+    <div class="who">多层残差码本天然对应粗到细、低码率到高码率的渐进式编码。</div>
   </div>
 
   <div class="quote">
-    <p>「ALIT 的自适应长度是关键创新。」</p>
-    <div class="who">——不同区域分配不同数量 token，本质上是内容感知的比特分配——传统 RDO 的 token 级版本</div>
+    <p>「LFQ 的重要性在于去掉了码本这个中心化瓶颈。」</p>
+    <div class="who">当视觉 tokenizer 要服务大规模生成模型时，lookup-free 和无 dead code 的特性会越来越重要。</div>
+  </div>
+
+  <div class="quote">
+    <p>「TiTok 的 1D token 化把压缩与 LLM prior 真正接上了。」</p>
+    <div class="who">2D 网格 token 更像图像 patch；1D token 序列更像语言序列，适合 AR/LM 直接建模。</div>
   </div>
 </div>
-
-<!-- ============================================================
-  参考来源
-  ============================================================ -->
 
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
     <li>Oord et al. (2017) <em>Neural Discrete Representation Learning (VQ-VAE)</em> — <a href="https://arxiv.org/abs/1711.00937" target="_blank">arXiv:1711.00937</a></li>
     <li>Esser et al. (2021) <em>Taming Transformers for High-Resolution Image Synthesis (VQGAN)</em> — <a href="https://arxiv.org/abs/2012.09841" target="_blank">arXiv:2012.09841</a></li>
+    <li>Mentzer et al. (2023) <em>Finite Scalar Quantization: VQ-VAE Made Simple</em> — <a href="https://arxiv.org/abs/2309.15505" target="_blank">arXiv:2309.15505</a></li>
+    <li>Yu et al. (2023) <em>Language Model Beats Diffusion — Tokenizer is Key to Visual Generation</em> — <a href="https://arxiv.org/abs/2310.05737" target="_blank">arXiv:2310.05737</a></li>
     <li>TiTok (2024) <em>An Image is Worth 32 Tokens for Reconstruction and Generation</em> — <a href="https://arxiv.org/abs/2406.07550" target="_blank">arXiv:2406.07550</a></li>
+    <li>Factorized Visual Tokenization and Generation (2024) — <a href="https://arxiv.org/abs/2411.16681" target="_blank">arXiv:2411.16681</a></li>
     <li>ALIT (2025) <em>Adaptive Length Image Tokenization</em> — ICLR 2025</li>
     <li>GLC (2024) <em>Generative Latent Coding for Image Compression</em> — CVPR 2024 / IEEE TCSVT 2025</li>
     <li>RDVQ (2026) <em>Differentiable Vector Quantization for Rate-Distortion Optimization</em> — CVPR 2026</li>
-    <li>VQGAN-LC (2024) — NeurIPS 2024</li>
     <li>AR-VFM for Compression (2025) — 探索自回归视觉基础模型在压缩中的应用</li>
   </ul>
 </div>
