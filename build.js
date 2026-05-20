@@ -77,15 +77,14 @@ function collectPosts() {
       slug,
       title: fm.title || slug,
       description: fm.description || '',
-      date: fm.date || '',
       tags: parseListField(fm.tags),
       categories: parseListField(fm.categories),
-      created_at: fm.created_at || fm.date || '',
+      created_at: fm.created_at || '',
       url: `./${slug}.html`,
     });
   }
 
-  posts.sort((a, b) => ((b.created_at || b.date || '')).localeCompare((a.created_at || a.date || '')));
+  posts.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   return posts;
 }
 
