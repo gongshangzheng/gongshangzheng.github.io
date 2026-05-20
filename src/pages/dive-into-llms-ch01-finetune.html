@@ -1,49 +1,325 @@
 ---
-title: Ch1 · 微调与部署 · 动手学大模型
-description: HuggingFace Transformers 微调 + Gradio Spaces 部署，以虚假新闻检测为实践场景
-date: 2026-05-19T00:00:00
-created_at: 2026-05-19T13:48:30
-updated_at: 2026-05-19T13:48:30
-tags: [LLM, SFT, LoRA, 部署, Gradio]
-categories: ["教程"]
+title: "Ch1 · 微调与部署 · 动手学大模型"
+description: HuggingFace Transformers 微调 + Gradio Spaces 部署，以虚假新闻检测为实践场景，深入解析微调全流程
+date: 2026-05-20T14:00:00
+created_at: 2026-05-20T14:00:00
+updated_at: 2026-05-20T14:00:00
+tags: [LLM, SFT, LoRA, 部署, Gradio, HuggingFace, 动手学大模型]
+categories: ["动手学大模型"]
+mathjax: false
+hero_title: "Ch1 · 微调与部署"
+hero_sub: "Transformers 微调 · Gradio 部署"
+hero_tagline: "以虚假新闻检测为场景，深入理解预训练模型微调全流程"
 ---
 
-<!-- 简介 -->
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 1</div>
-  <div class="ch-title">预训练语言模型微调与部署</div>
-  <p>本章以<strong>虚假新闻检测</strong>为实践场景，介绍如何使用 HuggingFace Transformers 进行预训练模型微调，并最终通过 Gradio Spaces 完成在线 Demo 部署。教程提供了两条路径：<strong>解耦可定制版本</strong>模块清晰适合学习原理，<strong>默认集成版本</strong>代码丰富适合直接调用。</p>
+<div class="ch fade-in"><div class="ch-label">章节</div><div class="ch-title">预训练语言模型微调与部署</div>
+
+<p>预训练语言模型（Pre-trained Language Models, PLMs）已经成为自然语言处理领域的基础设施。从 BERT、RoBERTa 到 GPT 系列，这些在大规模语料上预训练的模型蕴含了丰富的语言知识和世界知识。然而，当我们将这些模型应用到具体的垂直领域任务时，比如虚假新闻检测、情感分类、命名实体识别，直接使用预训练模型往往无法达到最优效果。原因在于预训练阶段学习的是通用语义表示，而下游任务往往有其独特的分布和需求。</p>
+
+<p>微调（Fine-tuning）正是解决这一问题的核心方法。通过在特定任务的标注数据上继续训练，微调能够让通用预训练模型快速适配目标任务，获得显著优于从头训练的效果。本章将以 <strong>虚假新闻检测（Fake News Detection）</strong> 作为实践场景，详细讲解如何使用 HuggingFace Transformers 工具包完成模型微调的全流程，并最终通过 Gradio Spaces 将模型部署为可在线体验的 Demo。</p>
+
+<p>本章的学习目标是：熟悉 Transformers 工具包的核心 API；掌握预训练模型的微调与推理方法（提供解耦可定制版本和集成版本两条路径）；学会利用 Gradio Spaces 进行 Demo 部署；了解不同类型预训练模型的选型策略和应用场景。</p>
 </div>
 
-<!-- 关键知识点 -->
-<div class="ch fade-in">
-  <div class="ch-label">核心知识</div>
-  <div class="ch-title">关键知识点</div>
-  <ul>
-    <li><strong>Transformers 工具包</strong>：支持 NLP、CV、音频、多模态等多类任务，是大模型时代的基础设施</li>
-    <li><strong>文本分类微调流程</strong>：数据加载 → 模型实例化 → 训练/验证/预测四步闭环</li>
-    <li><strong>网络问题处理</strong>：手动下载模型权重、本地化 evaluate 评价指标，解决国内环境常见障碍</li>
-    <li><strong>Gradio Spaces 部署三要素</strong>：<code>app.py</code> 推理脚本 + <code>requirements.txt</code> 环境配置 + 模型文件</li>
-    <li><strong>进阶方向</strong>：问答模型、文本摘要、Llama2 推理、LoRA 轻量化微调</li>
-  </ul>
+<div class="ch fade-in"><div class="ch-label">核心原理</div><div class="ch-title">预训练模型微调的技术原理</div>
+
+<p>理解微调的本质，需要从预训练模型学到的知识类型说起。以 BERT 为代表的掩码语言模型（Masked Language Model, MLM）在训练时，模型需要预测被随机掩码的 token。这个过程迫使模型学习上下文相关的语义表示——每一个词的表示不再是孤立的词向量，而是融合了左右两侧语境信息的动态表征。这种表示方式使得模型能够捕捉词语的多义性、句法依存、语义关联等深层语言规律。</p>
+
+<p>预训练完成后，模型参数中存储的是一种「通用但中性」的知识状态。当我们希望模型在特定任务上表现更好时，简单的做法是直接用预训练模型做推理，但效果往往不如预期。原因是预训练阶段并没有针对目标任务进行优化，模型的参数停留在一种「泛化但不够专门化」的状态。</p>
+
+<p>微调的本质是<strong>任务自适应参数更新</strong>。我们固定住预训练模型的大部分参数，只在顶部添加一个随机初始化的任务头（Task Head），然后在目标任务的标注数据上进行训练。在反向传播过程中，梯度会从损失函数一路传回到底层参数，底层的 Transformer 编码器会「微调」其表示，使其更贴合当前任务的决策边界。这个过程可以类比为：一个在各行各业都有基本了解的全才，通过短期专业培训成为某个特定领域的专家。</p>
+
+<p>微调过程中有几个关键设计决策：</p>
+
+<ul>
+<li><strong>学习率设置</strong>：预训练模型的底层参数通常使用比顶层任务头更小的学习率，这被称为「分层学习率衰减」（Layer-wise Learning Rate Decay）。直觉上，底层参数编码的是更通用、更底层的语言知识，这些知识已经相对稳定，不宜大幅修改；而顶层参数则需要较大的调整空间来学习任务相关的模式。</li>
+
+<li><strong>数据规模需求</strong>：与传统从头训练相比，微调对标注数据量的需求大幅降低。BERT 论文的实验表明，在 NLU 任务上，仅需 1 万条标注数据就能通过微调获得优异表现。这是因为预训练阶段已经让模型具备了足够的语言理解能力，微调阶段只需要「唤醒」相关能力。</li>
+
+<li><strong>训练轮次与早停</strong>：微调的训练轮次通常远少于从头训练，一般设置 2-5 个 epoch。过长的训练可能导致灾难性遗忘（Catastrophic Forgetting），即模型过度适应目标任务而丢失预训练阶段习得的有用知识。使用验证集监控性能并在最佳点早停是标准做法。</li>
+
+<li><strong>正则化策略</strong>：微调中常用的正则化手段包括 dropout、权重衰减，以及在部分参数上使用较小的学习率。对于参数量巨大的模型，有时会采用「参数高效微调」（Parameter-Efficient Fine-tuning, PEFT）方法，如 LoRA、Adapter，只更新少量额外参数。</li>
+</ul>
 </div>
 
-<!-- 实践路径 -->
-<div class="ch fade-in">
-  <div class="ch-label">实践</div>
-  <div class="ch-title">双轨实践路径</div>
-  <p>教程提供两条并行的代码路径，适合不同学习目标：</p>
-  <ul>
-    <li><strong>解耦版本</strong>：每个步骤独立实现，模块边界清晰，便于理解底层原理和二次开发</li>
-    <li><strong>集成版本</strong>：代码高度整合，直接运行即可出结果，适合快速验证想法和课程展示</li>
-  </ul>
+<div class="ch fade-in"><div class="ch-label">实战场景</div><div class="ch-title">虚假新闻检测任务解析</div>
+
+<p>虚假新闻检测（Fake News Detection）是信息素养领域的重要研究课题，也是检验微调技术的一个理想场景。其任务定义相对清晰：给定一段新闻文本，模型需要判断该新闻是真实的还是虚假的。这是一个典型的二分类问题，但实际操作中存在诸多挑战。</p>
+
+<p>从数据角度看，虚假新闻检测面临的首要问题是数据分布的不平衡。在真实场景中，真新闻的数量远多于假新闻，因此收集到的数据集往往存在类别不均衡问题。此外，假新闻的表述方式多种多样，有些刻意模仿真实新闻的写作风格，有些则充满夸张和煽动性语言。模型需要学会捕捉这些细微差异。</p>
+
+<p>从特征角度看，虚假新闻检测涉及多个层次的文本分析。词汇层面，假新闻可能包含更多的情感词、极端词、阴谋论相关的特定词汇；句法层面，假新闻可能使用更多的感叹句、疑问句来制造紧迫感；语义层面，假新闻可能在事实陈述上存在逻辑漏洞或与已知事实矛盾。优秀的检测模型需要综合这些多层次的特征。</p>
+
+<p>本教程采用 Kaggle 上的虚假推文数据集作为实践数据。虽然名为「推文」数据集，但其文本特性与新闻文本有相通之处，非常适合作为入门的实验素材。该数据集包含真实灾难相关的推文和虚构或夸大的推文，模型需要根据文本内容进行二分类判断。</p>
+
+<div class="info-box"><h3>任务特点总结</h3><p>虚假新闻检测是一个看似简单实则复杂的任务。其简单之处在于定义明确——二分类问题；其复杂之处在于需要模型理解语言背后的真伪判断逻辑，这涉及世界知识、逻辑推理和语言分析的综合能力。通过微调预训练语言模型，我们可以让模型具备这种综合判断能力。</p></div>
 </div>
 
-<!-- 相关资源 -->
-<div class="section fade-in">
-  <div class="section-title">相关资源</div>
-  <div class="meta" style="margin-top:0.5rem;">
-    <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter1" target="_blank">GitHub: chapter1 源码与课件</a></span>
-    <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
-  </div>
+<div class="ch fade-in"><div class="ch-label">代码深度解析</div><div class="ch-title">解耦可定制版本架构</div>
+
+<p>为了兼顾教学清晰性和工程实用性，本教程提供了两条微调路径。第一条是<strong>解耦可定制版本</strong>，将整个流程拆分为三个独立模块：数据处理（utils_data.py）、模型构建（modeling_bert.py）和主程序（main.py）。这种设计让每个模块的职责边界清晰，便于理解核心逻辑和按需修改。</p>
+
+<h3>数据加载与处理模块（utils_data.py）</h3>
+
+<p>数据模块的核心职责是将原始文本转换为模型可接受的输入格式。这涉及几个关键步骤：</p>
+
+<p>首先是<strong>数据读取</strong>。根据数据集格式（CSV、JSON 或其他），使用 pandas 等工具将数据加载到内存中。数据通常包含文本字段和标签字段，需要进行列名映射和数据清洗。</p>
+
+<p>其次是<strong>分词器调用</strong>。HuggingFace Transformers 提供了统一的分词器接口，加载预训练模型时会自动下载对应的分词器。分词过程包括：将原始文本切分为 token 序列，将 token 映射为词汇表中的索引，添加特殊标记（如 [CLS] 表示分类输入的开始，[SEP] 表示句子分隔），以及将序列 padding 到统一长度以支持批量处理。</p>
+
+<pre class="code-block"><code>from transformers import BertTokenizer
+
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+encoded = tokenizer(
+    text="Breaking news: Earthquake hits downtown!",
+    padding='max_length',
+    truncation=True,
+    max_length=128,
+    return_tensors='pt'
+)
+# 返回包含 input_ids, attention_mask 等张量的字典</code></pre>
+
+<p>第三是<strong>数据集封装</strong>。将处理好的数据封装为 PyTorch Dataset 对象，提供 __len__ 和 __getitem__ 方法，以便 DataLoader 进行批量加载和随机打乱。</p>
+
+<div class="callout"><strong>关键点</strong>：分词策略直接影响模型性能。BERT 使用的 WordPiece 分词器将未登录词（OOV）分解为已知子词，这种设计使其能够处理任意词汇。但对于特定领域的术语，最好检查分词结果是否符合预期，必要时可添加领域相关的词表。</div>
+
+<h3>模型结构模块（modeling_bert.py）</h3>
+
+<p>模型模块负责构建完整的网络结构。在解耦版本中，我们显式定义了 BERT + 分类头的架构：</p>
+
+<pre class="code-block"><code>import torch.nn as nn
+from transformers import BertModel, BertConfig
+
+class BertForFakeNewsDetection(nn.Module):
+    def __init__(self, model_name='bert-base-uncased', num_labels=2):
+        super().__init__()
+        self.bert = BertModel.from_pretrained(model_name)
+        self.dropout = nn.Dropout(0.1)
+        self.classifier = nn.Linear(self.bert.config.hidden_size, num_labels)
+    
+    def forward(self, input_ids, attention_mask, token_type_ids=None):
+        outputs = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
+        pooled_output = outputs.pooler_output  # [CLS] token 的表示
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+        return logits</code></pre>
+
+<p>这个实现展示了微调的标准范式：加载预训练的 BERT 编码器，保留其全部参数，在顶部添加随机初始化的分类层。训练时，只有分类层和 BERT 编码器的顶层参数会被显著更新。如果希望更激进地微调，可以将 BERT 的全部参数设为可训练；如果资源受限，也可以冻结更多底层参数。</p>
+
+<h3>主程序模块（main.py）</h3>
+
+<p>主程序整合数据、模型和训练流程。其核心逻辑包括：</p>
+
+<ul>
+<li><strong>训练循环</strong>：遍历 DataLoader，对每个 batch 进行前向传播计算损失，反向传播更新参数。标准做法是每个 epoch 后在验证集上评估性能，保存最佳模型。</li>
+
+<li><strong>优化器配置</strong>：通常使用 AdamW 优化器，配合线性学习率衰减策略。权重衰减用于正则化，防止过拟合。</li>
+
+<li><strong>评价指标</strong>：对于二分类任务，常用准确率（Accuracy）、精确率（Precision）、召回率（Recall）和 F1 分数。可根据任务特点选择主要指标。</li>
+
+<li><strong>日志记录</strong>：使用 wandb 或 TensorBoard 记录训练过程中的各项指标，便于可视化分析和实验追踪。</li>
+</ul>
+
+<pre class="code-block"><code># 训练循环核心代码
+for epoch in range(num_epochs):
+    model.train()
+    for batch in train_loader:
+        optimizer.zero_grad()
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        labels = batch['labels'].to(device)
+        
+        logits = model(input_ids, attention_mask)
+        loss = nn.CrossEntropyLoss()(logits, labels)
+        
+        loss.backward()
+        optimizer.step()
+    
+    # 验证
+    model.eval()
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for batch in val_loader:
+            # ... 前向传播 ...
+            predictions = torch.argmax(logits, dim=1)
+            correct += (predictions == labels).sum().item()
+            total += labels.size(0)
+        accuracy = correct / total
+        print(f"Epoch {epoch}: Accuracy = {accuracy:.4f}")</code></pre>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">集成版本</div><div class="ch-title">HuggingFace Trainer API 快速上手</div>
+
+<p>对于追求开发效率的场景，HuggingFace 提供了集成版本的微调方案。run_classification.py 脚本封装了完整的训练流程，通过命令行参数即可完成模型微调，无需编写任何 Python 代码。这种方式适合快速实验和标准化的模型训练场景。</p>
+
+<pre class="code-block"><code>python run_classification.py \
+    --model_name_or_path bert-base-uncased \
+    --train_file data/train.csv \
+    --validation_file data/val.csv \
+    --test_file data/test.csv \
+    --metric_name accuracy \
+    --text_column_name "text" \
+    --label_column_name "target" \
+    --do_train \
+    --do_eval \
+    --do_predict \
+    --max_seq_length 512 \
+    --per_device_train_batch_size 32 \
+    --learning_rate 2e-5 \
+    --num_train_epochs 3 \
+    --output_dir experiments/</code></pre>
+
+<p>Trainer API 的优势在于其丰富的内置功能：自动混合精度训练（FP16）、分布式训练支持、早停机制、自定义回调函数等。对于大规模数据和模型的场景，这些功能可以显著提升训练效率。同时，通过继承 Trainer 类并重写特定方法，可以方便地添加自定义评估逻辑或训练行为。</p>
+
+<div class="callout"><strong>网络问题应对</strong>：首次运行时会从 HuggingFace Hub 下载模型和数据集。如果遇到网络问题导致下载失败，可以手动下载模型到本地目录，然后通过本地路径加载。此外，evaluate 库加载评测指标时也可能遇到网络问题，此时可下载 evaluate 仓库到本地，修改 --metric_name 参数指向本地路径。</div>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">模型选型</div><div class="ch-title">预训练模型的选择策略</div>
+
+<p>面对众多种类的预训练模型，如何选择是实际应用中必须考虑的问题。以下是几条选型原则：</p>
+
+<p><strong>任务适配性</strong>是首要考量。BERT 系列模型采用双向编码架构，适合需要理解完整上下文的任务，如文本分类、命名实体识别、问答系统等。GPT 系列采用自回归解码架构，更适合文本生成任务。如果任务涉及序列到序列的转换（如翻译、摘要），T5、BART 等编码器-解码器架构是更好的选择。</p>
+
+<p><strong>模型规模</strong>需要根据实际资源条件权衡。参数量越大的模型通常性能越好，但推理延迟和显存需求也越高。以 BERT 为例，base 版本有 110M 参数，large 版本有 340M 参数。在资源受限的场景下，可以考虑使用蒸馏模型（如 DistilBERT）或更小的预训练模型（如 BERT-tiny）。</p>
+
+<p><strong>训练语料和领域相关性</strong>会影响模型在特定任务上的表现。RoBERTa 在更大、更多样化的语料上训练，在许多任务上超越了 BERT。如果预训练语料与目标任务领域接近，选择在该领域相关语料上训练的模型可能效果更好。例如，BioBERT 在生物医学文献上训练，在医疗文本处理任务上表现优异。</p>
+
+<ul>
+<li><strong>情感分析</strong>：RoBERTa-base、DistilBERT（轻量级）</li>
+<li><strong>新闻分类</strong>：BERT-base、ERNIE</li>
+<li><strong>问答系统</strong>：BERT-large、RoBERTa-large</li>
+<li><strong>代码相关任务</strong>：CodeBERT、GraphCodeBERT</li>
+</ul>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">模型部署</div><div class="ch-title">Gradio Spaces 在线 Demo 部署</div>
+
+<p>训练好模型后，如何让更多人方便地使用你的成果？Gradio Spaces 提供了免费的托管服务，支持创建和分享基于 Gradio 的交互式 Web 应用。通过简单的三步操作，就能将微调好的模型部署为可在线体验的 Demo。</p>
+
+<h3>部署三要素</h3>
+
+<p>Gradio Spaces 项目只需要三个核心文件：推理代码（app.py）、环境配置（requirements.txt）和模型文件。</p>
+
+<h3>推理代码（app.py）</h3>
+
+<pre class="code-block"><code>import gradio as gr
+import torch
+from transformers import BertTokenizer, BertForSequenceClassification
+
+# 加载本地模型和分词器
+model_path = "your-model-path"
+tokenizer = BertTokenizer.from_pretrained(model_path)
+model = BertForSequenceClassification.from_pretrained(model_path)
+model.eval()
+
+def predict(text):
+    # 分词
+    inputs = tokenizer(text, return_tensors="pt", 
+                       truncation=True, max_length=128)
+    # 推理
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = torch.softmax(outputs.logits, dim=1)
+        fake_prob = probs[0][1].item()
+        real_prob = probs[0][0].item()
+    
+    return {
+        "真实新闻": f"{real_prob:.2%}",
+        "虚假新闻": f"{fake_prob:.2%}"
+    }
+
+# 创建 Gradio 界面
+iface = gr.Interface(
+    fn=predict,
+    inputs=gr.Textbox(label="输入新闻文本", placeholder="请输入待检测的新闻内容..."),
+    outputs=gr.Label(label="检测结果"),
+    title="虚假新闻检测 Demo",
+    description="基于 BERT 微调的虚假新闻检测模型"
+)
+
+iface.launch()</code></pre>
+
+<h3>环境配置（requirements.txt）</h3>
+
+<pre class="code-block"><code>transformers==4.30.2
+torch==2.0.0
+gradio==3.40.0</code></pre>
+
+<h3>上传流程</h3>
+
+<p>登录 Hugging Face 官网，点击「New Space」创建新项目，选择 Gradio 作为 SDK。上传 app.py、requirements.txt 和模型文件后，Spaces 平台会自动配置环境并启动应用。部署完成后，你将获得一个公开可访问的 URL，可以分享给任何人使用。</p>
+
+<p>成功部署的案例可参考：<a href="https://huggingface.co/spaces/cooelf/text-classification" target="_blank">虚假新闻检测 Demo</a>，其中包含了完整的源码和部署配置，可作为参考模板。</p>
+
+<div class="callout"><strong>部署注意</strong>：Gradio Spaces 的免费版本对硬件资源有限制，较大的模型可能需要申请更高的硬件配置或将模型quantized 后部署。另外，首次冷启动时需要下载模型，可能会有一定延迟。</div>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">实践要点</div><div class="ch-title">环境配置与常见问题</div>
+
+<h3>环境配置步骤</h3>
+
+<p>完整的开发环境配置建议按以下顺序进行：</p>
+
+<ol>
+<li><strong>创建独立的 conda 环境</strong>，避免依赖冲突：<code>conda create -n llm python=3.9 && conda activate llm</code></li>
+
+<li><strong>安装 PyTorch</strong>，建议使用 conda 安装 GPU 版本，以支持 CUDA 加速训练</li>
+
+<li><strong>安装 transformers</strong>：<code>pip install transformers</code></li>
+
+<li><strong>安装其他依赖</strong>：根据项目需求安装 datasets、accelerate、evaluate 等库</li>
+</ol>
+
+<p>如果遇到下载速度慢的问题，可以配置国内镜像源。pip 支持通过 -i 参数指定镜像站点，常见的国内镜像包括清华源、阿里云源等。但需要注意，使用国内源安装 PyTorch 时，可能会自动选择 CPU 版本，需要额外配置 CUDA 版本。</p>
+
+<h3>常见问题排查</h3>
+
+<ul>
+<li><strong>模型下载失败</strong>：显示「Network is unreachable」错误时，说明网络连接 HuggingFace Hub 失败。解决方案是手动下载模型到本地目录，然后修改代码中的模型路径为本地路径。</li>
+
+<li><strong>评测指标加载卡住</strong>：如果程序在训练开始后卡住，Ctrl+C 终止后显示卡在「connection」，说明 evaluate 库加载评测指标时网络超时。可下载 evaluate 仓库到本地，修改参数指向本地路径。</li>
+
+<li><strong>显存不足</strong>：减少 batch_size 或使用 gradient accumulation。也可以将模型转为半精度（FP16）以降低显存占用。</li>
+
+<li><strong>训练效果不佳</strong>：检查数据标注质量，确认 train/val/test 数据分布是否合理。尝试不同的学习率和训练轮次。</li>
+</ul>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">进阶方向</div><div class="ch-title">后续学习路径</div>
+
+<p>完成本章内容后，可以从以下几个方向继续深入：</p>
+
+<p><strong>轻量化微调技术</strong>：当预训练模型规模越来越大时，全参数微调的成本变得不可承受。LoRA（Low-Rank Adaptation）、Adapter、Prefix Tuning 等方法通过引入少量可训练参数实现高效微调，大幅降低了训练成本。这些方法已成为大模型时代的主流训练范式。</p>
+
+<p><strong>其他 NLP 任务</strong>：本章聚焦于文本分类任务，但微调范式同样适用于其他任务类型。问答系统需要预测答案的起止位置；命名实体识别需要为每个 token 预测标签；文本摘要则需要生成式的解码过程。HuggingFace 提供了丰富的示例脚本，可供迁移学习。</p>
+
+<p><strong>多模态扩展</strong>：CLIP、BLIP 等多模态模型的出现，使得图像+文本的联合建模成为可能。将微调技术应用到多模态任务，如图文匹配、视觉问答，是值得探索的方向。</p>
+
+<p><strong>模型蒸馏与压缩</strong>：将大模型的知识迁移到小模型，在保持性能的同时降低推理成本。这对于边缘部署和实时应用场景尤为重要。</p>
+
+<div class="info-box"><h3>延伸学习资源</h3>
+<p><a href="https://github.com/huggingface/transformers/tree/main/examples/pytorch/question-answering" target="_blank">问答模型示例</a></p>
+<p><a href="https://github.com/huggingface/transformers/tree/main/examples/pytorch/summarization" target="_blank">文本摘要示例</a></p>
+<p><a href="https://huggingface.co/docs/transformers/en/model_doc/llama2" target="_blank">Llama2 推理教程</a></p>
+<p><a href="https://arxiv.org/abs/2402.06196" target="_blank">Large Language Models: A Survey 论文</a></p>
+</div>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">参考资源</div><div class="ch-title">相关链接与论文</div>
+
+<ul>
+<li><a href="https://github.com/huggingface/transformers" target="_blank">HuggingFace Transformers GitHub</a></li>
+<li><a href="https://huggingface.co/docs/transformers/main/zh/index" target="_blank">Transformers 中文文档</a></li>
+<li><a href="https://github.com/zjunlp/EasyEdit" target="_blank">EasyEdit 知识编辑工具包</a></li>
+<li><a href="https://huggingface.co/docs/hub/en/spaces-sdks-gradio" target="_blank">Gradio Spaces 部署文档</a></li>
+<li><a href="https://github.com/peremartra/Large-Language-Model-Notebooks-Course" target="_blank">LoRA 微调教程</a></li>
+</ul>
+
+<p>本章源码与实验数据可通过项目仓库获取，包含完整的解耦版本和集成版本代码，以及预处理好的虚假新闻数据集。</p>
 </div>

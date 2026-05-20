@@ -1,55 +1,470 @@
 ---
-title: Ch3 · 知识编辑 · 动手学大模型
-description: EasyEdit 框架：ROME / MEMIT 精准修改语言模型中的特定知识，不干扰其他能力
-date: 2026-05-19T00:00:00
-created_at: 2026-05-19T13:48:30
-updated_at: 2026-05-19T13:48:30
-tags: [LLM, 知识编辑, EasyEdit, ROME, MEMIT]
-categories: ["教程"]
+title: "Ch3 · 知识编辑 · 动手学大模型"
+description: 基于 EasyEdit 框架的大模型知识编辑方法，包括 ROME、MEMIT、Knowledge Neurons 等技术，以 GPT-2 知识修改为实践场景
+date: 2026-05-20T14:00:00
+created_at: 2026-05-20T14:00:00
+updated_at: 2026-05-20T14:00:00
+tags: [LLM, 知识编辑, ROME, MEMIT, EasyEdit, Model Editing, 动手学大模型]
+categories: ["动手学大模型"]
+mathjax: false
+hero_title: "Ch3 · 知识编辑"
+hero_sub: "ROME · MEMIT · 知识神经元"
+hero_tagline: "精准修改预训练语言模型中的过时或错误知识"
 ---
 
-<!-- 简介 -->
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 3</div>
-  <div class="ch-title">大模型知识编辑</div>
-  <p>本章介绍如何使用 <strong>EasyEdit 工具包</strong>对语言模型中的特定知识进行精准编辑，而不干扰模型其他能力。以 GPT-2-XL 为例，演示如何将"梅西踢足球"修改为"梅西打篮球"。核心框架由 Editor（场景）、Method（方法）、Evaluate（评估）三层组成。</p>
+<div class="ch fade-in"><div class="ch-label">章节</div><div class="ch-title">大模型知识编辑</div>
+
+<p>预训练语言模型在训练过程中会从海量文本中学习世界知识。这些知识被编码在模型的参数中，构成了模型回答各类问题的基础。然而，存储在模型中的知识并非完美无缺——可能存在错误信息（如「梅西踢篮球」而非足球）、过时信息（如「当前某国总统是 XXX」），或者偏见内容。如何精准地修改模型参数中的特定知识，同时保持其他知识不受影响，成为了一个重要的研究问题。</p>
+
+<p>传统方法是通过继续预训练或微调来更新模型知识，但这种方式存在明显缺陷：计算成本高昂，且可能导致灾难性遗忘——在更新新知识的同时，模型可能丢失其他重要的知识。知识编辑（Knowledge Editing）技术的出现，为这一问题提供了更优雅的解决方案。</p>
+
+<p>本章将以 <a href="https://github.com/zjunlp/EasyEdit" target="_blank">EasyEdit</a> 工具包为核心，详细介绍大模型知识编辑的方法与实践。通过「将梅西的职业从足球改为篮球」这一具体案例，你将理解知识编辑的核心原理、主要方法和评估策略。</p>
 </div>
 
-<!-- EasyEdit 框架 -->
-<div class="ch fade-in">
-  <div class="ch-label">框架</div>
-  <div class="ch-title">EasyEdit 统一框架</div>
-  <ul>
-    <li><strong>Editor</strong>：描述编辑场景，定义需要修改的知识对（输入 prompt + 期望输出）</li>
-    <li><strong>Method</strong>：执行具体技术，如 ROME、MEMIT、KN（Knowledge Neurons）等</li>
-    <li><strong>Evaluate</strong>：从四个维度评估编辑效果</li>
-  </ul>
+<div class="ch fade-in"><div class="ch-label">核心原理</div><div class="ch-title">知识编辑的问题定义与挑战</div>
+
+<h3>问题定义</h3>
+
+<p>知识编辑的目标是：对预训练语言模型中的特定知识进行修改，使得模型能够正确回答与新知识相关的查询，同时保持模型在无关知识上的性能不变。</p>
+
+<p>形式化地说，假设我们有一个预训练模型 M，以及一个待编辑的知识三元组 (s, r, o)，其中 s 是主语（如「梅西」），r 是关系（如「从事的运动」），o 是原始对象（如「足球」）。我们希望将对象修改为 o'（如「篮球」）。编辑后，模型 M' 应该满足：</p>
+
+<ul>
+<li><strong>可靠性（Reliability）</strong>：对于编辑涉及的知识，模型能够正确输出新对象 o'</li>
+
+<li><strong>通用性（Generalization）</strong>：对于用不同表述方式询问同一知识的泛化查询，模型仍能正确回答</li>
+
+<li><strong>局部性（Locality）</strong>：对于与编辑无关的知识查询，模型的输出保持不变</li>
+
+<li><strong>可移植性（Portability）</strong>：模型能够将编辑的知识迁移到相关的下游任务中</li>
+</ul>
+
+<h3>核心挑战</h3>
+
+<p>知识编辑面临三个主要挑战：</p>
+
+<p><strong>精确定位问题</strong>：知识在神经网络中以分布式表示存储，不存在「梅西知识存储区域」这样清晰的物理对应。如何找到存储特定知识的关键参数，是一个尚未完全解决的问题。</p>
+
+<p><strong>保持全局一致性</strong>：模型中的知识不是孤立存在的，不同知识之间存在复杂的关联。例如，更改梅西的职业后，模型可能需要理解「足球」和「篮球」这两个运动的差异，以及它们与梅西其他属性（国籍、俱乐部）的关联。简单的参数修改可能导致知识体系的不一致。</p>
+
+<p><strong>可扩展性问题</strong>：某些场景需要批量修改大量知识。如何高效地进行多知识编辑，同时保证编辑的稳定性和一致性，是一个实际需求。</p>
+
+<div class="info-box"><h3>知识编辑 vs 微调</h3><p>微调是通用性的参数更新方法，旨在让整个模型适配新任务或新分布。知识编辑则更加精准，只针对特定知识进行修改，尽量不影响模型的其他能力。如果把模型比作一本书，微调就像重写整个章节，知识编辑则像是橡皮擦擦除并重新书写某个句子。</p></div>
 </div>
 
-<!-- 评估四性 -->
-<div class="ch fade-in">
-  <div class="ch-label">评估</div>
-  <div class="ch-title">评估四性</div>
-  <ul>
-    <li><strong>可靠性（Reliability）</strong>：编辑后的知识是否按预期改变</li>
-    <li><strong>通用性（Generalization）</strong>：相同知识的多种表达方式是否都能被修正</li>
-    <li><strong>局部性（Locality）</strong>：周边知识是否被影响，用 neighborhood prompts 检验</li>
-    <li><strong>可移植性（Portability）</strong>：编辑后的知识能否迁移到不同场景</li>
-  </ul>
+<div class="ch fade-in"><div class="ch-label">框架解析</div><div class="ch-title">EasyEdit 三层架构</div>
+
+<p>EasyEdit 是浙江大学提出的知识编辑工具包，集成了多种主流的知识编辑方法。其核心设计是一个统一的三层架构，将知识编辑的流程分解为 <strong>Editor</strong>、<strong>Method</strong> 和 <strong>Evaluate</strong> 三个层次。</p>
+
+<h3>Editor 层：编辑场景描述</h3>
+
+<p>Editor 层负责描述整个编辑场景，包括：待编辑的模型（如 GPT-2-XL、Llama）、待修改的知识（提示、原始答案、目标答案）、以及必要的超参数配置。</p>
+
+<pre class="code-block"><code># Editor 实例化示例
+from easyeditor import BaseEditor, ROMEHyperParams
+
+# 加载方法配置
+hparams = ROMEHyperParams.from_hparams('./hparams/ROME/gpt2-xl.yaml')
+
+# 实例化编辑器
+editor = BaseEditor.from_hparams(hparams)</code></pre>
+
+<h3>Method 层：编辑技术实现</h3>
+
+<p>Method 层包含具体的编辑算法实现。EasyEdit 集成了多种主流方法：</p>
+
+<ul>
+<li><strong>ROME</strong>（Rank-One Model Editing）：通过定位-替换的方式实现单条知识编辑</li>
+
+<li><strong>MEMIT</strong>（Memory Editing with Meta-Increment Trees）：支持批量高效编辑</li>
+
+<li><strong>MEND</strong>（Model Editor Networks with Gradient Decomposition）：通过辅助网络学习参数更新方向</li>
+
+<li><strong>KN</strong>（Knowledge Neurons）：基于激活模式分析的知识定位</li>
+
+<li><strong>T-Parser</strong>：基于句法分析的知识编辑</li>
+
+<li><strong>KE-Tuning</strong>：知识可编辑性驱动的参数更新</li>
+</ul>
+
+<h3>Evaluate 层：性能评估</h3>
+
+<p>Evaluate 层提供统一的评估接口，从四个维度衡量编辑效果：</p>
+
+<ul>
+<li><strong>Reliability（可靠性）</strong>：编辑后的模型是否能正确回答目标问题</li>
+
+<li><strong>Generalization（通用性）</strong>：模型是否能泛化到同义表述的问题</li>
+
+<li><strong>Locality（局部性）</strong>：无关知识是否保持不变</li>
+
+<li><strong>Portability（可移植性）</strong>：编辑的知识能否迁移到下游任务</li>
+</ul>
+
+<pre class="code-block"><code># 评估指标示例
+metrics = {
+    'reliability': 0.95,    # 目标问题的正确率
+    'generalization': 0.88,  # 泛化问题的正确率
+    'locality': 0.92,        # 无关知识的保持率
+    'portability': 0.80     # 下游任务的准确率
+}</code></pre>
+
+<h3>Trainer 层：训练过程管理</h3>
+
+<p>部分编辑方法（如 MEND）需要额外的训练过程来学习参数更新方向。Trainer 层负责管理这些训练流程，包括梯度计算、优化器配置和训练循环。</p>
 </div>
 
-<!-- ROME 与 MEMIT -->
-<div class="ch fade-in">
-  <div class="ch-label">方法</div>
-  <div class="ch-title">ROME 与 MEMIT</div>
-  <p><strong>ROME</strong>（Rank-One Model Editing）通过干预模型中间层权重实现知识的定位与替换。<strong>MEMIT</strong>（Memory Editing with Meta-Increment Trees）支持多条数据并行编辑，是批量更新的推荐方法。</p>
+<div class="ch fade-in"><div class="ch-label">方法详解</div><div class="ch-title">ROME：单条知识精准编辑</div>
+
+<p>ROME（Rank-One Model Editing）是知识编辑领域的重要方法，由加州大学圣迭戈分校提出。其核心思想是：将知识修改视为一个低秩矩阵补全问题，通过定位存储目标知识的参数位置，并用低秩更新替换原有知识。</p>
+
+<h3>定位-替换范式</h3>
+
+<p>ROME 的工作流程分为两个阶段：</p>
+
+<p><strong>第一阶段：知识定位</strong></p>
+
+<p>首先需要找到存储目标知识的「神经回路」。ROME 利用了因果追踪（Causal Tracing）的思想：通过干预隐藏状态，观察输出变化的程度，来判断某个位置的表示是否包含目标知识。</p>
+
+<p>具体而言，对于问题「梅西从事什么运动？」，模型通过中间层表示来预测答案。ROME 逐层分析每个 token 位置的激活值对最终答案的贡献，定位到贡献最大的若干层和位置。</p>
+
+<p><strong>第二阶段：知识替换</strong></p>
+
+<p>定位到目标位置后，ROME 使用低秩矩阵分解来实现知识替换。其核心公式是：</p>
+
+<pre class="code-block"><code># ROME 知识替换的数学表达
+# 目标：修改 MLP 中间层，使其对 "梅西" 的响应从 "足球" 变为 "篮球"
+
+# 原始知识表示
+W_orig = model.mlp.layer[layer_idx].weight
+
+# 计算新的知识表示
+# 通过优化：让 MLP 对 "梅西" 的输出接近 "篮球" 的表示
+# 同时保持对其他实体的输出不变
+
+# 低秩更新：添加一个 rank-1 矩阵
+delta_W = u @ v.T
+W_new = W_orig + delta_W</code></pre>
+
+<p>低秩更新的设计具有重要含义：它限制了每次编辑影响的参数范围，降低了对无关知识的干扰。这种「精准打击」的策略，是知识编辑区别于全量微调的关键。</p>
+
+<h3>ROME 实践</h3>
+
+<p>使用 EasyEdit 进行 ROME 编辑的完整流程：</p>
+
+<pre class="code-block"><code># 1. 准备编辑数据
+prompts = ['Question: What sport does Lionel Messi play? Answer:']
+ground_truth = ['football']      # 原始答案
+target_new = ['basketball']     # 目标答案
+subject = ['Lionel Messi']      # 主题实体
+
+# 2. 加载方法配置
+from easyeditor import ROMEHyperParams, BaseEditor
+hparams = ROMEHyperParams.from_hparams('./hparams/ROME/gpt2-xl.yaml')
+
+# 3. 实例化编辑器
+editor = BaseEditor.from_hparams(hparams)
+
+# 4. 执行编辑
+metrics, edited_model, _ = editor.edit(
+    prompts=prompts,
+    ground_truth=ground_truth,
+    target_new=target_new,
+    subject=subject,
+    keep_original_weight=False
+)
+
+print(metrics)</code></pre>
+
+<div class="callout"><strong>首次运行注意</strong>：首次编辑某个模型时，EasyEdit 需要下载 Wikipedia 语料并计算各层的统计信息（存储在 data/stats 目录）。这些信息会被后续编辑复用，因此首次编辑耗时较长。确保网络通畅的情况下可耐心等待。</div>
 </div>
 
-<!-- 相关资源 -->
-<div class="section fade-in">
-  <div class="section-title">相关资源</div>
-  <div class="meta" style="margin-top:0.5rem;">
-    <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter3" target="_blank">GitHub: chapter3 源码与课件</a></span>
-    <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
-  </div>
+<div class="ch fade-in"><div class="ch-label">方法详解</div><div class="ch-title">MEMIT：批量知识高效编辑</div>
+
+<p>MEMIT（Memory Editing with Meta-Increment Trees）是 ROME 的扩展版本，专门针对批量编辑场景设计。当需要同时修改多条知识时，MEMIT 通过累积更新的方式，实现了高效且稳定的批量编辑。</p>
+
+<h3>累积更新机制</h3>
+
+<p>MEMIT 的核心创新是「元增量树」（Meta-Increment Trees）结构。对于 k 条知识的批量编辑，MEMIT 不再逐条独立编辑后再合并结果，而是利用梯度分析，预先计算所有编辑的联合效应，一次性地应用所有更新。</p>
+
+<pre class="code-block"><code># MEMIT 批量编辑示例
+# 同时编辑多条知识
+
+prompts = [
+    'Question: What sport does Lionel Messi play? Answer:',
+    'The law in Ikaalinen declares the language'
+]
+ground_truth = ['football', 'Finnish']
+target_new = ['basketball', 'Swedish']
+subject = ['Lionel Messi', 'Ikaalinen']
+
+# MEMIT 自动处理多条知识的累积更新
+# 无需额外修改调用方式
+metrics, edited_model, _ = editor.edit(
+    prompts=prompts,
+    ground_truth=ground_truth,
+    target_new=target_new,
+    subject=subject,
+    keep_original_weight=False
+)</code></pre>
+
+<p>MEMIT 的优势在于：编辑的稳定性更好（多条编辑之间不会相互干扰）、效率更高（计算量不随编辑数量线性增长）。对于实际应用场景中的批量知识更新需求，MEMIT 是更合适的选择。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">方法详解</div><div class="ch-title">Knowledge Neurons：激活模式分析</div>
+
+<p>Knowledge Neurons（知识神经元）方法从另一个角度切入知识编辑问题：不依赖外部工具或梯度信息，而是直接分析模型的激活模式，找出与特定知识相关的神经元。</p>
+
+<h3>激活模式分析原理</h3>
+
+<p>该方法的直觉是：如果某个知识被编码在模型的参数中，那么当我们询问涉及这个知识的句子时，相关的神经元会产生特定的激活模式。通过比较「包含该知识的句子」和「不包含该知识的句子」的激活差异，可以定位到知识神经元。</p>
+
+<pre class="code-block"><code># Knowledge Neurons 方法示意
+# 1. 收集激活数据
+# 对于包含目标知识的句子，收集 MLP 层的激活值
+prompts_with = ["Messi plays football professionally."]
+prompts_without = ["The sky is blue."]
+
+# 2. 计算激活差异
+import torch
+activations_with = collect_activations(prompts_with)
+activations_without = collect_activations(prompts_without)
+
+# 差异表示知识相关程度
+importance_score = torch.abs(activations_with - activations_without)
+
+# 3. 定位知识神经元
+threshold = importance_score.mean() + 2 * importance_score.std()
+knowledge_neurons = importance_score > threshold
+
+# 4. 修改知识：仅增强相关神经元的激活
+for neuron_idx in knowledge_neurons:
+    model.activations[neuron_idx] *= scaling_factor</code></pre>
+
+<h3>方法对比</h3>
+
+<p>Knowledge Neurons 方法的优势在于不需要梯度信息和外部语料，理论上可以更快地定位知识。但其局限性也很明显：定位的精确度依赖于激活模式分析的质量，且修改策略（简单缩放激活值）可能不如 ROME 的低秩替换精确。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">评估体系</div><div class="ch-title">四维度评估框架</div>
+
+<p>评估知识编辑效果需要综合考虑多个维度。EasyEdit 定义了四个核心评估指标，每个指标反映了编辑效果的某个重要方面。</p>
+
+<h3>可靠性（Reliability）</h3>
+
+<p>可靠性衡量编辑后模型能否正确回答目标问题。这是编辑的「基本要求」——如果连直接的编辑问题都无法正确回答，说明编辑完全失败。</p>
+
+<pre class="code-block"><code># 可靠性评估示例
+# 测试问题：What sport does Lionel Messi play?
+# 期望回答：basketball（经过编辑后）
+
+test_prompt = 'Question: What sport does Lionel Messi play? Answer:'
+expected = 'basketball'
+
+output = edited_model.generate(test_prompt, max_new_tokens=10)
+reliability_score = 1.0 if expected in output else 0.0</code></pre>
+
+<h3>通用性（Generalization）</h3>
+
+<p>通用性衡量模型是否能泛化到同义或近义的问题表述。例如，「梅西踢什么运动？」和「梅西从事的运动是什么？」表达的是同一知识，但表述形式不同。</p>
+
+<pre class="code-block"><code># 通用性评估
+generalization_prompts = [
+    'Lionel Messi is known for playing',
+    'The sport of Lionel Messi is',
+    'Messi, the player of'
+]
+# 检查模型对这些表述是否都能给出正确答案</code></pre>
+
+<h3>局部性（Locality）</h3>
+
+<p>局部性是知识编辑的核心挑战之一。修改梅西的职业后，「C 罗踢足球」「巴西的首都是里约热内卢」等无关知识应该保持不变。</p>
+
+<pre class="code-block"><code># 局部性评估
+locality_prompts = [
+    ('Joseph Fischhof plays the', 'piano'),
+    ('Larry Bird is a professional', 'basketball'),
+    ('In Forssa, they understand', 'Finnish')
+]
+
+# 检查编辑后模型对无关知识的回答是否正确
+# 如果这些回答出错，说明编辑产生了「副作用」</code></pre>
+
+<h3>可移植性（Portability）</h3>
+
+<p>可移植性衡量编辑的知识能否迁移到下游任务。例如，修改了「梅西踢足球」后，模型在涉及梅西体育相关的推理任务中是否也能正确表现。</p>
+
+<div class="callout"><strong>评估实践</strong>：EasyEdit 提供了完整的评估接口，只需在 edit 方法中传入 locality_inputs 等评估数据，即可自动计算各维度指标。对于可靠性评估，ground_truth 参数隐含了测试用例；对于局部性评估，需要显式提供 locality_inputs。</div>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">实践案例</div><div class="ch-title">完整编辑流程演示</div>
+
+<p>以下是一个完整的知识编辑案例，将「梅西踢足球」改为「梅西打篮球」。</p>
+
+<h3>完整代码流程</h3>
+
+<pre class="code-block"><code># 完整示例代码
+from easyeditor import ROMEHyperParams, BaseEditor
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import torch
+
+# ============================================
+# 第一步：准备编辑数据
+# ============================================
+prompts = ['Question: What sport does Lionel Messi play? Answer:']
+ground_truth = ['football']      # 原知识
+target_new = ['basketball']     # 新知识
+subject = ['Lionel Messi']      # 目标实体
+
+# ============================================
+# 第二步：加载编辑器
+# ============================================
+hparams = ROMEHyperParams.from_hparams('./hparams/ROME/gpt2-xl.yaml')
+editor = BaseEditor.from_hparams(hparams)
+
+# ============================================
+# 第三步：执行编辑
+# ============================================
+metrics, edited_model, _ = editor.edit(
+    prompts=prompts,
+    ground_truth=ground_truth,
+    target_new=target_new,
+    subject=subject,
+    keep_original_weight=False
+)
+
+print(f"编辑完成！可靠性得分: {metrics['reliability']}")
+
+# ============================================
+# 第四步：验证编辑效果
+# ============================================
+tokenizer = GPT2Tokenizer.from_pretrained('./hugging_cache/gpt2')
+test_prompt = "Lionel Messi, the"
+
+batch = tokenizer(test_prompt, return_tensors='pt', padding=True, max_length=30)
+outputs = edited_model.generate(
+    input_ids=batch['input_ids'].to('cuda'),
+    attention_mask=batch['attention_mask'].to('cuda'),
+    max_new_tokens=3
+)
+
+result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+print(f"模型输出: {result}")
+# 期望输出包含 "basketball"</code></pre>
+
+<h3>前后对比验证</h3>
+
+<pre class="code-block"><code># 前后模型对比
+generation_prompts = [
+    "Lionel Messi, the",
+    "The law in Ikaalinen declares the language"
+]
+
+# 原始模型输出
+pre_edit_outputs = original_model.generate(...)
+print("编辑前:", tokenizer.decode(pre_edit_outputs[0]))
+
+# 编辑后模型输出
+post_edit_outputs = edited_model.generate(...)
+print("编辑后:", tokenizer.decode(post_edit_outputs[0]))</code></pre>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">Benchmark</div><div class="ch-title">标准化评测数据集</div>
+
+<p>为了公平比较不同知识编辑方法的效果，研究者提出了多个标准化的评测数据集。</p>
+
+<h3>CounterFact 数据集</h3>
+
+<p>CounterFact 是 ROME 论文提出的数据集，包含 21,919 条编辑请求。每条请求包含：</p>
+
+<ul>
+<li>prompt：关系型知识查询模板，如「{} debuted on」</li>
+
+<li>target_true：原始正确对象，如「MTV」</li>
+
+<li>target_new：需要修改的目标对象，如「CBS」</li>
+
+<li>subject：主语实体，如「Singled Out」</li>
+
+<li>paraphrase_prompts：同义表述列表，用于测试通用性</li>
+
+<li>neighborhood_prompts：相关但不同的查询，用于测试局部性</li>
+</ul>
+
+<pre class="code-block"><code># CounterFact 数据格式示例
+{
+    "case_id": 4402,
+    "requested_rewrite": {
+        "prompt": "{} debuted on",
+        "target_new": {"str": "CBS", "id": "Q43380"},
+        "target_true": {"str": "MTV", "id": "Q43359"},
+        "subject": "Singled Out"
+    },
+    "paraphrase_prompts": [
+        "No one on the ground was injured. v",
+        "The sex ratio was 1063. Singled Out is to debut on"
+    ],
+    "neighborhood_prompts": [
+        "Daria premieres on",
+        "Teen Wolf was originally aired on",
+        ...
+    ]
+}</code></pre>
+
+<h3>ZsRE 数据集</h3>
+
+<p>ZsRE（Zero-shot Relation Extraction）数据集来源于问答系统的关系抽取任务，包含 48,971 条编辑请求。数据格式与 CounterFact 类似，但涵盖的关系类型更加多样。</p>
+
+<pre class="code-block"><code># ZsRE 使用示例
+# 参考: https://github.com/zjunlp/EasyEdit/blob/main/examples/run_zsre_llama2.py
+
+from easyeditor import ZsreDataset
+
+# 加载 ZsRE 数据集
+dataset = ZsreDataset('./data/zsre/')
+
+# 执行批量编辑评测
+for item in dataset[:100]:  # 取前 100 条进行测试
+    results = editor.edit(item)</code></pre>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">进阶方向</div><div class="ch-title">知识编辑的研究前沿</div>
+
+<h3>大模型时代的知识编辑</h3>
+
+<p>随着 GPT-4、Llama 等超大模型的出现，知识编辑面临着新的挑战：模型的参数量远超可编辑范围，简单的参数修改可能导致不稳定的更新效果。如何针对超大模型设计高效的知识编辑方法，是当前的研究热点。</p>
+
+<h3>时序知识更新</h3>
+
+<p>现实世界的知识是动态变化的——领导人更替、公司合并、事件发展等。要求模型能够「与时俱进」地更新知识，而不是永久存储某个时间点的快照。</p>
+
+<h3>跨语言知识对齐</h3>
+
+<p>多语言模型中的知识存储是否存在语言无关的「概念层」？同一知识用不同语言编码时，是否共享相似的表示？理解这些问题，有助于设计更高效的知识编辑方法。</p>
+
+<h3>编辑安全与对齐</h3>
+
+<p>知识编辑技术可能被用于恶意目的，如修改模型的安全过滤器、植入虚假信息等。如何在发展编辑技术的同时，防止其被滥用，是负责任 AI 研究的重要议题。</p>
+
+<div class="info-box"><h3>相关工作推荐</h3>
+<ul>
+<li><a href="https://arxiv.org/abs/2106.01054" target="_blank">ROME 论文</a>：Rank-One Model Editing 的原始论文</li>
+<li><a href="https://arxiv.org/abs/2212.04408" target="_blank">MEMIT 论文</a>：批量知识编辑方法</li>
+<li><a href="https://arxiv.org/abs/2212.09758" target="_blank">KE-Tuning 论文</a>：知识可编辑性驱动的微调</li>
+<li><a href="https://arxiv.org/abs/2210.07229" target="_blank">Unified Knowledge Editing 论文</a>：统一知识编辑框架</li>
+</ul>
+</div>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">参考资源</div><div class="ch-title">相关链接与延伸阅读</div>
+
+<ul>
+<li><a href="https://github.com/zjunlp/EasyEdit" target="_blank">EasyEdit GitHub 仓库</a></li>
+<li><a href="https://github.com/zjunlp/EasyEdit/blob/main/examples/run_zsre_llama2.py" target="_blank">ZsRE + Llama2 示例</a></li>
+<li><a href="https://colab.research.google.com/drive/1KkyWqyV3BjXCWfdrrgbR-QS3AAokVZbr" target="_blank">ROME Colab Notebook</a></li>
+<li><a href="https://colab.research.google.com/drive/1P1lVklP8bTyh8uxxSuHnHwB91i-1LW6Z" target="_blank">MEMIT Colab Notebook</a></li>
+<li><a href="https://github.com/zjunlp/EasyEdit/tree/main/hparams" target="_blank">EasyEdit 超参数配置</a></li>
+</ul>
+
+<p>完整的实验代码和预训练模型可在 EasyEdit 仓库中获取。推荐从 ROME 的 Colab Notebook 开始，体验单条知识编辑的完整流程；然后尝试 MEMIT 批量编辑，理解累积更新机制的威力。</p>
 </div>

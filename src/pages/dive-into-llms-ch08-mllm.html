@@ -1,53 +1,292 @@
 ---
 title: Ch8 · 多模态大模型 · 动手学大模型
-description: MLLM 类型与架构，NExT-GPT"任意到任意"模态系统，三阶段训练
+description: MLLM 类型与架构，NExT-GPT"任意到任意"模态系统，ImageBind + Vicuna 三阶段训练
 date: 2026-05-19T00:00:00
 created_at: 2026-05-19T13:48:30
 updated_at: 2026-05-19T13:48:30
-tags: [LLM, 多模态, MLLM, NExT-GPT, ImageBind]
-categories: ["教程"]
+tags: [LLM, 多模态, MLLM, NExT-GPT, ImageBind, Vicuna]
+categories: ["动手学大模型"]
 ---
 
-<!-- 简介 -->
+<!-- 章节导言 -->
 <div class="ch fade-in">
   <div class="ch-label">Chapter 8</div>
   <div class="ch-title">多模态大语言模型</div>
-  <p>本章深入探讨多模态大语言模型（MLLM）的类型、架构与构建方法。课程核心理念：<strong>语言智能是多模态智能的枢纽</strong>，几乎所有 MLLM 都以 LLM 为核心决策单元，外挂编码器赋予多模态感知能力。实践环节以 <strong>NExT-GPT</strong> 为例，实现"任意模态到任意模态"的通用多模态系统。</p>
+  <p>大语言模型的出现让研究者们清晰地看到了一个事实：高阶智能在语言模态上得到了充分体现——无论是推理、规划还是创造性生成，语言模型展现出的能力远超此前的预期。那么问题是：如果语言已经足以承载如此丰富的智能，能否以语言为"枢纽"，将视觉、听觉等其他模态的能力也一并整合进来？这正是多模态大语言模型（Multimodal Large Language Model，MLLM）研究的核心命题。</p>
+  <p>本章分为理论与实践两部分。理论部分系统梳理 MLLM 的类型划分与架构范式，阐明为什么当前几乎所有 MLLM 都以 LLM 为核心决策单元。实践部分以 NExT-GPT 为例，这是首个实现"任意模态到任意模态"（Any-to-Any）的多模态系统，支持文本、图像、视频、音频四种模态的任意组合输入与输出。我们将深入分析其技术栈设计、数据构建流程和三阶段训练方法。</p>
 </div>
 
-<!-- 架构范式 -->
+<!-- 语言智能的枢纽地位 -->
+<div class="ch fade-in">
+  <div class="ch-label">前提</div>
+  <div class="ch-title">为什么语言是枢纽？</div>
+  <p>理解 MLLM 的设计哲学，首先要理解一个关键共识：语言智能是多模态智能的枢纽。这句话包含三层含义：</p>
+
+  <div class="info-box">
+    <h3>第一：语言具备通用表示能力</h3>
+    <p>语言是人类用来描述任意事物的通用符号系统——我们可以用语言描述图像中的场景、声音中的情绪、视频中的动作序列，甚至描述另一个模态本身。这种描述的通用性意味着，如果一个模型能深入理解语言，它就拥有了一个可用于理解其他任何模态的"概念框架"。一张照片可以用"一只猫在窗台上打盹"来描述，一段音乐可以用"低音在第 30 秒开始渐强"来描述——这些描述本质上是对模态内容的语言化蒸馏，而语言模型天然擅长处理这种抽象的语义表示。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>第二：规模定律在语言模态上率先突破</h3>
+    <p>GPT-2、GPT-3、LLaMA 等纯语言模型已经展示了明确的规模定律（Scaling Law）——随着参数规模、数据量和计算量的增加，模型能力出现质的飞跃。这些能力包括推理、上下文学习、指令遵循等"涌现性"技能。这些技能的获得并不依赖于图像或音频的参与，而是纯粹通过语言数据训练实现的。这意味着语言模态本身已经足以训练出高级认知能力。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>第三：LLM 具备任务规划与决策能力</h3>
+    <p>语言模型不仅仅是"特征提取器"，它还是一个具备规划能力和决策能力的智能体。它可以理解复杂的指令、分解多步骤任务、判断当前状态是否满足目标、并根据反馈调整行为。这种"通用问题解决者"的定位，是 MLLM 架构设计的核心基础——我们不需要为每种模态单独训练一个"大脑"，只需要给这个已有的"大脑"添加眼睛（视觉编码器）、耳朵（音频编码器）和发声器官（生成器），它就能自然地调度这些能力。</p>
+  </div>
+
+  <p>综合以上三点，当前 MLLM 的主流设计范式就变得自然而清晰了：以预训练的大语言模型为"核心决策单元"（类似于大脑或中央处理器），通过添加额外的外部模态编码器和输出解码器，赋予 LLM 多模态感知与多模态生成的能力。这种"LLM 中心化"的设计哲学不仅降低了训练成本，更关键的是，复用了 LLM 在语言数据上习得的推理、规划和决策能力。</p>
+</div>
+
+<!-- MLLM 分类 -->
+<div class="ch fade-in">
+  <div class="ch-label">分类</div>
+  <div class="ch-title">MLLM 的类型划分</div>
+  <p>现有的 MLLM 可以从两个维度进行分类：模态支持（输入×输出）和功能支持。理解这个分类体系有助于把握整个领域的发展全景。</p>
+
+  <div class="info-box">
+    <h3>输入模态×输出模态</h3>
+    <p>模态支持是 MLLM 最直接的分类维度。输入模态可以是文本（Text）、图像（Image）、音频（Audio）或视频（Video），输出模态同理。早期 MLLM 主要是"看图说话"（Image→Text），如 LLaVA、InstructBLIP 等。随着研究深入，出现了更多的组合：</p>
+    <ul>
+      <li><strong>T+I → T</strong>：输入文本+图像，输出文本。视觉问答、图像描述都属于这一类。</li>
+      <li><strong>T+I → T+I</strong>：输入文本+图像，输出文本+图像。这要求模型不仅理解图像内容，还要能生成新的图像（如 GPT-4V 支持此能力）。</li>
+      <li><strong>T+I → T+V/A</strong>：输入图像描述或指令，生成视频或音频。如 NExT-GPT 的图像到视频生成。</li>
+      <li><strong>T → T+I/V/A</strong>：仅输入文本，输出多模态内容。这是文本到媒体的生成任务。</li>
+      <li><strong>T+I/V/A → T+I/V/A</strong>：任意模态到任意模态。NExT-GPT 是这一类的代表。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>功能支持：通用ist vs 专用ist</h3>
+    <p>从功能支持角度，MLLM 可以分为"通用ist"（Generalist）和"专用ist"（Specialist）。通用ist模型追求在尽可能多的模态和任务上具备泛化能力，如 NExT-GPT、GPT-4V、Gemini 等。专用ist模型则专注于某一类任务，例如，专门处理医学影像理解的 RadFM，或者专门做视频理解的长视频语言模型。这两种路线各有优势：通用ist覆盖面广但深度可能不足，专用ist在特定任务上精度更高但泛化能力受限。</p>
+  </div>
+
+  <div class="callout">
+    <strong>趋势</strong>：从2023年到2026年的发展趋势来看，通用ist是明显的主流方向。随着模型规模的增大和训练数据的丰富，单个模型已经能够同时处理多种模态且保持良好性能。"任意到任意"的模态支持成为越来越多工作的目标。
+  </div>
+</div>
+
+<!-- 两大架构范式 -->
 <div class="ch fade-in">
   <div class="ch-label">架构</div>
   <div class="ch-title">两大架构范式</div>
-  <ul>
-    <li><strong>LLM as Task Scheduler</strong>：LLM 充当离散调度器，向下游模块发出文本命令，控制各模态的生成</li>
-    <li><strong>编码器-LLM-解码器</strong>：最流行架构，LLM 作为系统的关键联合部分，直接感知多模态输入并委派输出</li>
-  </ul>
+  <p>在具体实现层面，当前社区存在两种主流的 MLLM 架构。这两种架构的核心区别在于 LLM 在系统中的角色定位。</p>
+
+  <div class="info-box">
+    <h3>架构一：LLM as Task Scheduler（LLM 作为调度器）</h3>
+    <p>在第一种架构中，LLM 的角色是"离散调度器"或"控制器"。系统的工作流程是：LLM 接收来自用户的多模态输入（如文本指令），经过语义理解后，输出纯文本形式的命令或指令，发送给下游的功能模块。各功能模块（视觉生成器、语音合成器、文本生成器等）执行完成后，将结果反馈给 LLM，由 LLM 继续调度下一个模块。</p>
+    <p>这种架构的特点是：<strong>系统内部的所有消息传递都是通过 LLM 输出的纯文本命令作为媒介</strong>。不同功能模块之间不存在直接交互，它们只接收来自 LLM 的指令并返回执行结果。在这种架构中，LLM 更像是一个"总指挥"，而各模态模块是听令行事的"执行者"。HuggingGPT、Visual ChatGPT 等采用了类似的设计思路。</p>
+    <p>这种架构的优势在于模块化程度高，各模态模块可以独立开发和替换。但它的缺点也很明显：跨模态信息传递需要经过语言这个"中转站"，效率和自然度都会打折扣。此外，LLM 的输出是离散文本，需要额外的解析器将文本转换为具体的 API 调用或动作指令，引入了误差链。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>架构二：编码器-LLM-解码器（LLM 作为联合决策者）</h3>
+    <p>第二种架构是目前最流行的方案。在这种架构中，LLM 不再是外部的调度器，而是系统的"关键联合部分"——它直接感知来自各编码器的多模态信息，并直接委派指令给解码器。具体来说：编码器处理来自不同模态（图像、音频、视频）的原始信号，将其转换为统一的特征表示；LLM 接收这些多模态特征，进行深度的语义理解和推理，生成文本响应和"信号 token"（Signal Token）来指明期望的输出模态；解码器接收 LLM 的输出，生成对应的图像、音频或视频。</p>
+    <p>与第一种架构的关键区别在于：<strong>LLM 在这里是从外部直接接收多模态信息，而不是通过文本命令的间接传递</strong>。这使得信息的流转更加顺畅和自然——视觉信息、听觉信息和文本信息在 LLM 内部进行深层次的融合，而不是在外部通过文本命令进行"翻译"。这种架构更接近人类处理多模态信息的真实方式。</p>
+  </div>
+
+  <p>用一个生活化的类比来理解这两种架构的差异：第一种架构就像一位餐厅经理（LLM），顾客用不同的语言（多模态）描述需求，经理需要将每种语言翻译成统一的"服务指令"再发给后厨。第二种架构则像是经理直接配备了懂各种语言的副手，各语言的信息直接在经理脑中融合，经理直接向各后厨下达具体指令——信息流转不经过"翻译"这一中间环节。</p>
 </div>
 
-<!-- NExT-GPT -->
+<!-- NExT-GPT 详解 -->
 <div class="ch fade-in">
   <div class="ch-label">实践</div>
-  <div class="ch-title">NExT-GPT 三阶段训练</div>
-  <ol>
-    <li><strong>编码端多模态对齐</strong>：训练编码器与 LLM 之间的对齐层，实现多模态输入的理解</li>
-    <li><strong>解码端指令跟随对齐</strong>：训练 LLM 与各模态解码器的对齐层，实现输出生成</li>
-    <li><strong>完整 LoRA 指令微调</strong>：全参数微调，整体提升系统的指令遵循能力</li>
-  </ol>
+  <div class="ch-title">NExT-GPT：任意到任意的多模态系统</div>
+  <p>NExT-GPT（全称 "NExT Generative Pre-trained Transformer"）是2023年由新加坡国立大学（NUS）和德克萨斯大学奥斯汀分校（UT Austin）联合提出的工作。它的核心贡献是首次实现了"任意模态到任意模态"的 MLLM——用户可以输入任意模态的组合（例如文本+图像），系统可以输出任意模态的组合（例如文本+视频+音频），且支持多轮上下文交互。</p>
+
+  <div class="info-box">
+    <h3>技术栈总览</h3>
+    <p>NExT-GPT 的技术栈由三大组件构成：</p>
+    <ul>
+      <li><strong>ImageBind</strong>（统一编码器）：Meta 提出的多模态编码器，能够用统一的特征空间编码图像、视频、音频、文本等多种模态。ImageBind 的关键创新在于：它证明了不同模态的表示可以在同一个嵌入空间中实现对齐，这意味着用一个编码器就能处理多种模态的输入。</li>
+      <li><strong>Vicuna-7B</strong>（LLM 基座）：基于 LLaMA 的对话模型，作为系统的"大脑"，负责语义理解、任务规划和多模态协调。</li>
+      <li><strong>扩散模型解码器</strong>：图像生成使用 Stable Diffusion v1-5，视频生成使用 ZeroScope v2_576w，音频生成使用 AudioLDM-l-full。解码器的任务是接收 LLM 输出的高层语义描述（通过 Signal Token 指定），生成对应的媒体内容。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>Signal Token 机制</h3>
+    <p>NExT-GPT 引入了一个关键设计——Signal Token。这是一些特殊定义的 token，用于在 LLM 的输出中"标记"模态转换的时机。当 LLM 决定需要生成图像时，它输出一个特定的 Signal Token，解码器接收到这个信号后开始执行图像生成。这种机制使得 LLM 能够以完全文本化的方式"指令"多模态输出，同时保持了系统的端到端可微分性。</p>
+    <p>类比一下：Signal Token 就像是演出剧本中的"舞台指示"——"灯光变暗"、"音乐响起"这样的文字指示本身不是演出内容，但它们告诉技术部门何时执行什么操作。LLM 生成文本内容的同时附带 Signal Token，Signal Token 触发对应解码器的工作。</p>
+  </div>
 </div>
 
-<!-- 技术栈 -->
+<!-- 三阶段训练 -->
 <div class="ch fade-in">
-  <div class="ch-label">技术栈</div>
-  <div class="ch-title">核心技术栈</div>
-  <p><strong>ImageBind</strong>（统一编码器）+ <strong>Vicuna</strong>（LLM 基座）+ <strong>扩散模型解码器</strong>（图像/音频/视频生成）。支持 T/I/V/A 四种模态的任意组合输入输出，是首个"任意到任意"的多模态系统。</p>
+  <div class="ch-label">训练</div>
+  <div class="ch-title">三阶段渐进式训练</div>
+  <p>NExT-GPT 的训练分为三个阶段，每个阶段有明确的目标和冻结策略。这种渐进式的训练方法有效避免了"灾难性遗忘"问题——即在学习新能力的同时丢失已有的语言智能。</p>
+
+  <div class="info-box">
+    <h3>阶段一：编码端多模态对齐（Enc-side Alignment）</h3>
+    <p>训练目标：让 LLM 能够正确"理解"来自各编码器的多模态特征表示。具体操作是：冻结 ImageBind（编码器）、LLM（Vicuna）和解码器，只训练编码器与 LLM 之间的<strong>输入投影层</strong>（Input Projection Layer）。</p>
+    <p>这个阶段的核心问题是"模态鸿沟"——ImageBind 输出的特征空间与 LLM 预期的文本嵌入空间并不天然对齐。例如，一张狗的图片经过 ImageBind 编码后产生的向量，与文本"a dog"经过分词和嵌入后的向量，在数值空间中并不接近。我们需要训练一个投影层，将 ImageBind 的输出"翻译"成 LLM 能理解的语言。</p>
+    <p>训练数据使用 T-X 对数据（Text-X pairs）——即图像-文本对、视频-文本对、音频-文本对。例如，给定一张狗的图片和文本"a dog"，模型需要学会将图像编码与"a dog"这个文本描述在语义空间中对齐。训练完成后，LLM 就能像理解文本一样理解图像、音频、视频的编码表示。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>阶段二：解码端指令跟随对齐（Dec-side Alignment）</h3>
+    <p>训练目标：让 LLM 的输出能够正确"驱动"各模态的解码器生成内容。具体操作是：冻结 ImageBind、LLM 和输入投影层，只训练 LLM 与解码器之间的<strong>输出投影层</strong>（Output Projection Layer）和扩散模型的文本编码器。</p>
+    <p>这个阶段的核心问题是"生成鸿沟"——LLM 输出的语义描述与解码器期望的输入格式之间存在差距。例如，LLM 说"生成一幅日落图片"，Stable Diffusion 需要接收"a beautiful sunset over the ocean, golden hour, cinematic lighting"这样的详细文本描述才能生成高质量图像。输出投影层的任务是将 LLM 的高层语义输出转换为各解码器能理解的详细描述。</p>
+    <p>训练数据同样使用 T-X 对数据，但关注的是反向对齐——文本到图像、文本到音频、文本到视频的配对数据。例如，给定文本描述"a cat sitting on a windowsill"，模型需要学会生成对应的图像（或音频、视频）。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>阶段三：指令微调（Instruction Tuning）</h3>
+    <p>训练目标：让整个系统具备指令遵循能力和多轮对话能力。具体操作是：使用 LoRA（Low-Rank Adaptation）同时微调 <strong>LLM</strong>、<strong>输入投影层</strong>和<strong>输出投影层</strong>。</p>
+    <p>前两个阶段分别解决了"感知"和"生成"的对齐问题，但尚未让系统学会"如何响应用户的指令"。阶段三使用指令微调数据——包括 Alpaca（文本指令）、LLaVA（视觉指令）、VideoChat（视频指令）以及 MosIT（模态切换指令）——来训练系统理解多样化的指令格式，并在多轮对话中保持上下文一致性。</p>
+    <p>MosIT 数据尤其重要，它专门用于训练模型在多模态输出之间正确切换的能力。例如，用户说"给我讲个笑话然后画出来"，模型需要正确识别这是一个文本回复任务，而在"画出来"这个部分插入 Signal Token 触发图像生成。</p>
+  </div>
+
+  <div class="callout">
+    <strong>三阶段设计的智慧</strong>：这种"先对齐、后微调"的策略避免了让 LLM 同时学习太多东西——感知和生成的对齐是相对机械的过程，适合单独进行；指令遵循能力的培养则是语义层面的，需要 LLM 参与但不需要编码器和解码器同时更新。如果一次性端到端训练，编码器和解码器的随机初始化梯度会干扰 LLM 已经学到的语言智能。
+  </div>
+</div>
+
+<!-- 数据准备 -->
+<div class="ch fade-in">
+  <div class="ch-label">数据</div>
+  <div class="ch-title">数据准备与处理流程</div>
+  <p>训练 NExT-GPT 需要多种类型的数据，整个数据准备流程颇为复杂。</p>
+
+  <div class="info-box">
+    <h3>T-X 对数据（模态配对）</h3>
+    <p>用于前两个阶段的编码-解码对齐训练。包括：</p>
+    <ul>
+      <li><strong>CC3M</strong>：文本-图像对数据，约 300 万对，用于训练图像理解与生成的对齐。</li>
+      <li><strong>WebVid</strong>：文本-视频对数据，约 1000 万对，用于训练视频理解与生成的对齐。</li>
+      <li><strong>AudioCap</strong>：文本-音频对数据，用于训练音频理解与生成的对齐。</li>
+    </ul>
+    <p>这些数据的格式是简单的 (x, text) 配对，训练目标是让编码器和解码器在语义空间中建立对应关系。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>指令微调数据</h3>
+    <p>用于第三阶段的高质量指令遵循能力培养。包括：</p>
+    <ul>
+      <li><strong>Alpaca</strong>：纯文本指令数据，用于基础指令遵循能力的培养。</li>
+      <li><strong>LLaVA</strong>：图像-文本指令数据，用于让模型学会处理视觉输入。</li>
+      <li><strong>VideoChat</strong>：视频-文本指令数据，用于视频理解。</li>
+      <li><strong>MosIT</strong>：模态切换指令数据，专门训练模型在不同输出模态之间切换的能力。</li>
+      <li><strong>T2M 合成数据</strong>：文本到多模态的合成指令数据，用于训练文本驱动的多模态生成能力。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>嵌入向量预计算</h3>
+    <p>为提高训练效率，NExT-GPT 在解码端对齐训练之前，会预先使用扩散模型的文本编码器计算各模态数据（如图像、视频）的描述文本的嵌入向量。这些嵌入向量在训练时被用作解码器的"目标参考"，以最小化 Signal Token 特征与描述文本特征之间的距离。这一步通过运行 <code>process_embeddings.py</code> 脚本完成。</p>
+  </div>
+</div>
+
+<!-- 代码实践要点 -->
+<div class="ch fade-in">
+  <div class="ch-label">代码</div>
+  <div class="ch-title">关键代码结构</div>
+  <p>以下是 NExT-GPT 代码库的核心结构解析，完整代码请参考 <a href="https://github.com/NExT-GPT/NExT-GPT" target="_blank">GitHub: NExT-GPT</a>。</p>
+
+  <pre class="code-block"><code># NExT-GPT 项目结构（核心部分）
+├── code/
+│   ├── config/
+│   │   ├── base.yaml         # 基础系统配置（模型路径、模态设置）
+│   │   ├── stage_1.yaml      # 编码端对齐训练配置
+│   │   ├── stage_2.yaml      # 解码端对齐训练配置
+│   │   └── stage_3.yaml      # 指令微调训练配置
+│   ├── datast/
+│   │   ├── cc3m_datast.py    # 图像-文本对数据加载器
+│   │   ├── audiocap_datast.py # 音频-文本对数据加载器
+│   │   ├── webvid_dataset.py  # 视频-文本对数据加载器
+│   │   ├── T+X-T_instruction_dataset.py  # 多模态到文本指令数据
+│   │   └── MosIT_instruction_dataset.py  # 模态切换指令数据
+│   ├── model/
+│   │   ├── ImageBind/        # ImageBind 统一编码器实现
+│   │   ├── anyToImageVideoAudio.py  # 主模型文件（核心）
+│   │   ├── layers.py         # 输入/输出投影层定义
+│   │   ├── custom_sd.py      # Stable Diffusion 解码器
+│   │   ├── custom_vd.py      # 视频扩散解码器
+│   │   └── custom_ad.py      # 音频扩散解码器
+│   ├── train.py              # 训练入口（支持三阶段切换）
+│   └── inference.py          # 推理入口
+├── ckpt/
+│   ├── delta_ckpt/           # 可训练参数（LoRA + 投影层）
+│   └── pretrained_ckpt/       # 冻结的预训练模型权重
+└── data/
+    ├── T-X_pair_data/        # 模态配对数据
+    └── IT_data/              # 指令微调数据</code></pre>
+
+  <p>训练命令通过 <code>scripts/train.sh</code> 脚本启动，关键参数包括：<code>--stage</code>（1/2/3 指定训练阶段）、<code>--save_path</code>（delta 权重保存路径）和 <code>--log_path</code>（日志路径）。使用 DeepSpeed 进行分布式训练，默认配置下需要至少一张 80GB 显存的 GPU。</p>
+
+  <p>推理通过 <code>demo_app.py</code> 启动 Gradio 演示界面，用户可以上传图像或输入文本，观察模型的多模态理解和生成能力。</p>
+</div>
+
+<!-- 能力展示 -->
+<div class="ch fade-in">
+  <div class="ch-label">效果</div>
+  <div class="ch-title">NExT-GPT 的能力展示</div>
+  <p>经过三阶段训练后，NExT-GPT 能够完成多种跨模态任务，以下是几个典型案例：</p>
+
+  <div class="info-box">
+    <h3>Case 1：T+I → T+A（图像理解 + 语音生成）</h3>
+    <p>输入一张森林中的鹿的照片和文字"Describe what you see in a poetic voice"。模型理解图像内容后，用诗意的语音描述森林中的鹿。这是一个典型的跨模态理解+生成任务，展示了模型在感知视觉信息后，将其转化为多模态输出的能力。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>Case 2：T+V → T+A（视频理解 + 音频生成）</h3>
+    <p>输入一段钢琴演奏的视频和指令"Describe the music style and create a similar melody"。模型理解视频中的钢琴演奏风格后，生成一段符合该风格的语音分析，并创作一段类似旋律的音频输出。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>Case 3：T+I → T+I+V（图像到图像+视频）</h3>
+    <p>输入一张风景照片和指令"Imagine this as an animation and generate a short clip"。模型首先描述图像内容，然后生成该场景的动画版本，同时输出一段短视频。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>Case 4：T → T+I+V+A（文本到全模态生成）</h3>
+    <p>输入文本"Create a short scene of a rainy day in Tokyo with ambient sounds"。模型理解这个场景描述后，同时生成：描述场景的文字叙述、东京雨天的图像、延时摄影风格的短视频，以及雨声的环境音。这个案例最能体现"任意到任意"模态系统的能力——一个文本输入驱动四种模态的协同输出。</p>
+  </div>
+</div>
+
+<!-- 局限与挑战 -->
+<div class="ch fade-in">
+  <div class="ch-label">挑战</div>
+  <div class="ch-title">当前局限与未来方向</div>
+  <p>尽管 NExT-GPT 开创了任意到任意多模态的先河，但它仍面临一些局限：</p>
+
+  <ul>
+    <li><strong>生成质量</strong>：扩散模型解码器生成的图像、音频和视频在质量上不如单独训练的最先进生成模型。例如，Stable Diffusion 生成质量显著低于 DALL-E 3 或 Midjourney。</li>
+    <li><strong>模态数量</strong>：当前只支持文本、图像、视频、音频四种模态。现实世界中的模态远不止这些——触觉、味觉、嗅觉、深度图、医学影像等都是重要的模态。</li>
+    <li><strong>长上下文</strong>：处理长视频和长音频的能力有限。视频帧数增加会导致显存爆炸，而音频的时间长度也给注意力机制带来挑战。</li>
+    <li><strong>实时性</strong>：当前系统需要数秒到数十秒才能完成多模态生成，离实时交互还有距离。</li>
+  </ul>
+
+  <p>未来的发展方向包括：更大的模型规模（参数从 7B 向 70B 乃至更大演进）、更细粒度的模态支持（如支持 3D 场景、体积视频）、更高效的多模态注意力机制，以及端到端的 diffusion-LLM 融合架构（而非当前的编码器-解码器拼接）。</p>
+</div>
+
+<!-- 本章小结 -->
+<div class="ch fade-in">
+  <div class="ch-label">小结</div>
+  <div class="ch-title">本章小结</div>
+  <p>本章系统梳理了多模态大语言模型的理论基础与实践方法。核心要点如下：</p>
+
+  <ul>
+    <li><strong>语言智能是枢纽</strong>：语言模型因规模定律和通用表示能力，成为多模态智能的核心。几乎所有 MLLM 都建立在 LLM 之上，将语言作为跨模态的统一接口。</li>
+    <li><strong>两大架构</strong>：LLM as Task Scheduler（离散调度器）和 编码器-LLM-解码器（联合决策者）。后者是当前主流方案，信息流转更自然。</li>
+    <li><strong>NExT-GPT</strong>：首个任意到任意模态系统，ImageBind 统一编码 + Vicuna LLM + 扩散解码器，Signal Token 机制实现模态切换。</li>
+    <li><strong>三阶段训练</strong>：编码端对齐 → 解码端对齐 → 指令微调，渐进式训练避免灾难性遗忘。</li>
+  </ul>
+
+  <p>多模态能力使 LLM 从"文字大师"进化为"全感官智能体"。下一章我们将看到，当这种多模态感知能力与 Agent 框架结合时，AI 系统将能够理解屏幕截图、规划操作步骤并执行真实世界的 GUI 任务——这是 Ch9 GUI 智能体的核心命题。</p>
 </div>
 
 <!-- 相关资源 -->
 <div class="section fade-in">
   <div class="section-title">相关资源</div>
   <div class="meta" style="margin-top:0.5rem;">
-    <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter8" target="_blank">GitHub: chapter8 源码与课件</a></span>
+    <span>🔗 <a href="https://github.com/NExT-GPT/NExT-GPT" target="_blank">GitHub: NExT-GPT 源码</a></span>
+    <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter8" target="_blank">GitHub: chapter8 课件与源码</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch07-stega/">← Ch7 大模型隐写术</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch09-gui-agent/">Ch9 GUI 智能体 →</a></span>
     <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
   </div>
 </div>

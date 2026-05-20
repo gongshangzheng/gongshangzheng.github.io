@@ -1,40 +1,253 @@
 ---
-title: Ch7 · 大模型隐写 · 动手学大模型
-description: 霍夫曼编码 + GPT-2 token 采样，在正常文本中隐藏秘密信息
+title: Ch7 · 大模型隐写术 · 动手学大模型
+description: 霍夫曼编码 + GPT-2 token 采样，在正常文本中隐藏秘密信息，隐写容量与文本质量的博弈
 date: 2026-05-19T00:00:00
 created_at: 2026-05-19T13:48:30
 updated_at: 2026-05-19T13:48:30
-tags: [LLM, 隐写, 霍夫曼编码, 信息隐藏]
-categories: ["教程"]
+tags: [LLM, 隐写, 霍夫曼编码, 信息隐藏, GPT-2]
+categories: ["动手学大模型"]
 ---
 
-<!-- 简介 -->
+<!-- 章节导言 -->
 <div class="ch fade-in">
   <div class="ch-label">Chapter 7</div>
   <div class="ch-title">大模型隐写术</div>
-  <p>本章实现基于 <strong>GPT-2 的文本隐写术（Steganography）</strong>，即在看似正常的文本中隐藏秘密信息。隐写过程对读者完全不可感知，信息可被完整提取。展示了语言模型在信息隐藏领域的独特潜力。</p>
+  <p>隐写术（Steganography）是一门古老的技艺，中文语境里常称之为"密写"——把秘密信息藏在看似寻常的载体之中，让观察者毫无察觉。我国古代早有"以药水书字、见火即显"的密信术，而西方也有在信件放大后才会显出隐藏图案的"隐形墨水"故事。这些古典方法有一个共同特点：信息隐藏的载体本身是经过刻意加工的，发送方和接收方都需要事先约定一种特殊规则。</p>
+  <p>大语言模型为隐写术打开了一扇全新的大门。语言模型天然地生成人类可读的文本流，如果能在 token 采样的过程中"约束"生成方向，使得每个 token 恰好携带一部分二进制位信息，那么生成出来的文本表面完全正常——没有任何特殊字符、没有语法异常、没有任何人工痕迹——但其中却暗藏了一段完整的秘密信息。接收方只需知道使用了哪个模型和哪段提示词，就能无损地提取出隐藏内容。</p>
+  <p>本章基于 GPT-2 实现完整的文本隐写系统，涵盖两种编码方案——霍夫曼编码和固定长度编码——的核心原理、实现细节，以及容量与质量之间的权衡分析。</p>
 </div>
 
-<!-- 原理 -->
+<!-- 隐写基本原理 -->
 <div class="ch fade-in">
   <div class="ch-label">原理</div>
-  <div class="ch-title">隐写原理</div>
-  <ol>
-    <li>将秘密信息转换为紧凑的二进制序列（霍夫曼编码或固定长度编码）</li>
-    <li>通过编码规则约束 GPT-2 的 token 采样过程，使选中的 token 携带二进制位</li>
-    <li>生成表面完全正常的文本，读者无法察觉任何异常</li>
-    <li>解码：使用相同的模型和上下文，逆向提取隐藏的二进制序列，还原原始信息</li>
-  </ol>
+  <div class="ch-title">隐写的基本工作流程</div>
+  <p>大模型隐写的核心思想极为简洁：既然语言模型在每个生成 step 输出的是下一个 token 的概率分布，我们就可以在这个概率分布上做文章。具体来说，整个隐写-解码过程分为以下四个步骤：</p>
+
+  <div class="info-box">
+    <h3>步骤一：秘密信息 → 二进制序列</h3>
+    <p>将待隐藏的文本（例如"Meet me at the library at 8pm"）转换为二进制比特流。这一步通常使用 ASCII 或 UTF-8 编码完成。以 ASCII 为例，每个字符对应 8 个比特。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>步骤二：编码规则映射比特到 token</h3>
+    <p>设计一套编码规则，将二进制比特序列映射为 token 集合。这里的编码规则既可以是霍夫曼编码（根据 token 频率自适应分配编码长度），也可以是固定长度编码（每个 token 携带固定位数的比特）。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>步骤三：约束采样生成隐写文本</h3>
+    <p>在生成过程中，根据待嵌入的比特信息，从模型输出的概率分布中"筛选"出符合编码规则的 token。具体操作是：计算累积分布函数（CDF），找到与目标比特序列对应的 token 索引，然后使用贪婪采样或受控采样策略选择该 token。由于只从合法 token 集合中选取，生成质量不会显著下降。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>步骤四：解码</h3>
+    <p>接收方使用完全相同的模型、分词器和编码规则，对隐写文本重新走一遍生成过程（或者仅做概率分布分析），就能逆向提取出隐藏的二进制序列，还原为原始秘密信息。整个过程无需额外传输任何元数据——编码规则本身就是"密钥"的一部分。</p>
+  </div>
+
+  <p>值得强调的是，步骤三中的约束采样并不意味着一定要拒绝所有"不合法"的 token。在实际实现中，我们通常是：先计算所有合法 token 的累积概率质量，然后根据待嵌入的比特值在这个概率质量区间内做一次"加权均匀采样"。这样既保证了每个 token 的选择都与目标比特精确对应，又保持了采样的随机性，使输出文本更接近真实分布。</p>
 </div>
 
-<!-- 编码方案 -->
+<!-- k 值与信息容量 -->
+<div class="ch fade-in">
+  <div class="ch-label">参数</div>
+  <div class="ch-title">k 值：每个 token 携带多少比特</div>
+  <p>隐写系统有一个关键参数 k，决定了每个生成的 token 最多能携带多少比特的信息。k 的含义是：将 token 按概率从高到低排序，取前 2<sup>k</sup> 个 token 作为"合法 token 集合"。</p>
+
+  <ul>
+    <li><strong>k=1</strong>：每个 token 携带 1 bit 信息。需要从概率最高的 2 个 token 中选择。以 GPT-2 的词表大小（50,257）为例，合法 token 集合只有前 2 个——这几乎等价于强制选择 top-1，文本质量严重下降。</li>
+    <li><strong>k=2</strong>：每个 token 携带 2 bits 信息。合法 token 集合扩展到前 4 个 tokens。这是实践中常用的折中方案——容量提升了一倍，同时仍然有足够的选择空间来维持文本的自然度。</li>
+    <li><strong>k=3</strong>：合法 token 集合扩展到前 8 个 tokens，容量更高但每步的选择范围也更大，采样过程需要更精确的数值计算。</li>
+  </ul>
+
+  <div class="callout">
+    <strong>要点</strong>：k 值的选择本质上是在"信息容量"和"文本质量"之间做权衡。k 越大，隐藏的信息越多，但合法 token 集合越小，约束越严格，文本的随机性和自然度越低。在实际应用中，k=2 是最为常见的配置，它在容量和质量之间取得了良好平衡。
+  </div>
+
+  <p>一个直观的类比：想象你是一位图书管理员，要把情报藏在图书馆的书架上。k=1 意味着你只能在每本书的第一页做标记——选择极其有限，容易被发现且书的外观会被改变。k=2 意味着你可以用第一页或第二页做标记——灵活性增加了一倍，但仍然需要精准操控。如果你不做隐藏（k=0），那么书架看起来完全正常，你可以自由地在任何位置做任何事——这就是普通文本生成。</p>
+</div>
+
+<!-- 两种编码方案 -->
+<div class="ch fade-in">
+  <div class="ch-label">编码方案</div>
+  <div class="ch-title">霍夫曼编码 vs 固定长度编码</div>
+  <p>编码规则是隐写系统的核心构件。本节详细对比两种编码方案的设计思路、优缺点和实现差异。</p>
+
+  <div class="info-box">
+    <h3>固定长度编码（FLC）</h3>
+    <p>固定长度编码是最朴素也是最容易理解的方法：将 token 按概率从高到低排序，然后均匀地将前 2<sup>k</sup> 个 token 划分为 2<sup>k</sup> 个等大的区间，每个区间对应一个 k-bit 的二进制值。例如，当 k=2 时，前 4 个 token 的区间划分如下：token[0] → "00"，token[1] → "01"，token[2] → "10"，token[3] → "11"。</p>
+    <p>FLC 的优点是实现极为简单、编解码速度快。但它的缺点也很明显：所有 token 不论其真实出现频率如何，都被分配了相同的编码长度。如果某个 token 在自然语言中极为罕见（例如"fantastic"），而另一个 token 极为常见（例如"the"），FLC 给它们分配了等长的编码，这实际上是一种信息容量的浪费——我们本可以用更短的编码来表示高频 token，从而在同样的文本长度内嵌入更多秘密信息。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>霍夫曼编码（Huffman Coding）</h3>
+    <p>霍夫曼编码的核心理念是：根据 token 的实际概率分布，为每个 token 分配变长的编码——概率越高的 token，编码越短。这意味着在相同的 token 生成数量下，高频 token 用较短的编码，整体上能嵌入更多的秘密信息。</p>
+    <p>具体操作是：首先统计 GPT-2 分词器在大量文本语料上的 token 频率，然后构建霍夫曼树。树的叶子节点对应具体 token，从根到叶子的路径（向左记为 0，向右记为 1）即为该 token 的二进制编码。在隐写过程中，我们根据待嵌入的比特序列，沿着霍夫曼树走到对应的叶子节点，选择该 token。这种方式与 FLC 的本质区别在于：高频 token 的编码长度往往远小于 k，从而节省出比特空间。</p>
+  </div>
+
+  <p>用一个具体例子说明两者的差异。假设我们有四个 token A、B、C、D，频率分别为 0.5、0.25、0.125、0.125。FLC（k=2）为每个 token 分配 2 bits 的等长编码，总比特开销为 2×4=8 bits。但如果用霍夫曼编码：A（频率最高）可能只需要 1 bit（"0"），B 需要 2 bits（"10"），C 和 D 各需 3 bits（"110"和"111"），总比特开销为 0.5×1+0.25×2+0.125×3+0.125×3=1.625 bits——远小于 FLC 的 8 bits。这是一个夸张的简化例子，但足以说明问题：在足够长的文本中，霍夫曼编码能比 FLC 节省约 20%-40% 的文本开销。</p>
+</div>
+
+<!-- 约束采样详解 -->
+<div class="ch fade-in">
+  <div class="ch-label">采样</div>
+  <div class="ch-title">约束采样：如何在概率分布上做选择</div>
+  <p>约束采样是整个隐写系统最关键的技术环节。当我们需要嵌入一个特定的 k-bit 序列时，如何在模型输出的概率分布中找到对应的合法 token？</p>
+
+  <p>假设 k=2，我们需要嵌入 "10"（即十进制 2）。我们的策略是：将合法 token 集合（概率最高的 2<sup>k</sup>=4 个 token）按概率从高到低排序，将 [0, 1] 区间划分为 4 个子区间，每个子区间的宽度正比于该 token 的概率。然后根据目标值 2/4=0.5，在累积概率中找到对应的 token。</p>
+
+  <p>更正式地描述：设合法 token 集合为 {t<sub>0</sub>, t<sub>1</sub>, ..., t<sub>m-1</sub>}，其中 m=2<sup>k</sup>，且 P(t<sub>0</sub>) ≥ P(t<sub>1</sub>) ≥ ... ≥ P(t<sub>m-1</sub>)。设目标比特对应的数值为 v（0 ≤ v < m）。计算累积概率阈值 α = v/m。然后找到最小的 i 使得 ∑<sub>j=0</sub><sup>i</sup> P(t<sub>j</sub>) ≥ α，从 t<sub>i</sub> 中采样。</p>
+
+  <p>这个过程类似于在一条有 m 个"权重格"的尺子上，根据 v 的位置找到落在哪个格子里。如果某个区间的宽度更大（即对应 token 的概率更高），那么目标值落在该区间的概率也更高，这保持了采样的概率正确性。</p>
+
+  <div class="callout">
+    <strong>要点</strong>：约束采样并不会改变模型的概率分布本身——它只是在一组预定义的合法 token 中，按照原始概率进行加权采样。这确保了即使在严格的隐写约束下，生成的文本仍然尽可能接近语言模型的原始分布，从而在视觉上与普通文本几乎无法区分。
+  </div>
+</div>
+
+<!-- 代码实现 -->
 <div class="ch fade-in">
   <div class="ch-label">实现</div>
-  <div class="ch-title">两种编码方案</div>
+  <div class="ch-title">核心代码结构</div>
+  <p>以下是隐写系统的核心数据结构与函数设计，完整代码请参考 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter7" target="_blank">GitHub: chapter7</a> 中的 <code>llm_stega.ipynb</code>。</p>
+
+  <pre class="code-block"><code>import torch
+import numpy as np
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+
+class Huffman:
+    """霍夫曼编码隐写处理器"""
+    def __init__(self, k, bits):
+        self.k = k
+        self.bits = bits  # 待嵌入的二进制比特序列
+        self.alphabet_size = 2 ** k  # 编码表大小
+
+    def encode(self, model, input_ids):
+        """根据当前上下文和待嵌入比特，从模型logits中选取合法token"""
+        # 获取当前 step 的 logits
+        logits = model(input_ids).logits[-1]
+        probs = torch.softmax(logits, dim=-1)
+
+        # 取概率最高的 2^k 个 token 作为合法集合
+        top_k_probs, top_k_indices = torch.topk(probs, self.alphabet_size)
+
+        # 计算累积分布，找到与目标比特对应的token
+        # ...（根据比特序列和累积概率选择）
+        return selected_token
+
+class FLC:
+    """固定长度编码隐写处理器"""
+    def __init__(self, k, bits):
+        self.k = k
+        self.bits = bits
+        self.alphabet_size = 2 ** k
+
+    def encode(self, model, input_ids):
+        """固定长度编码：均匀划分概率空间"""
+        # ...（均匀区间划分与采样）
+        return selected_token
+
+def generate_text_with_steganography(model, tokenizer, prompt, handle):
+    """带隐写功能的文本生成主函数"""
+    input_ids = tokenizer.encode(prompt, return_tensors='pt')
+    generated = input_ids.clone()
+    bits_index = 0
+
+    # 逐 token 生成，直到嵌入完所有比特或达到最大长度
+    for _ in range(max_new_tokens):
+        # 约束采样
+        next_token = handle.encode(model, generated)
+        generated = torch.cat([generated, next_token.unsqueeze(0)], dim=1)
+        bits_index += handle.k  # 每个 token 携带 k bits
+
+        if bits_index >= len(handle.bits):
+            break
+
+    stega_text = tokenizer.decode(generated[0])
+    # 同时生成不带隐写约束的"正常"版本用于对比
+    normal_output = model.generate(input_ids, max_new_tokens=max_new_tokens)
+    normal_text = tokenizer.decode(normal_output[0])
+
+    return stega_text, normal_text</code></pre>
+
+  <p>这个代码框架清晰地展示了隐写系统的三大组件：编码处理器（Handle）、约束采样器（encode 方法）和生成循环。霍夫曼编码和固定长度编码的区别主要体现在 <code>encode()</code> 方法中概率区间的划分策略——霍夫曼编码根据 token 频率动态调整区间宽度，而固定长度编码使用等宽区间。</p>
+</div>
+
+<!-- 输出对比 -->
+<div class="ch fade-in">
+  <div class="ch-label">效果</div>
+  <div class="ch-title">隐写文本 vs 普通文本：肉眼无差异</div>
+  <p>程序运行后会在 <code>outputs/</code> 目录下生成两个文件：</p>
+
   <ul>
-    <li><strong>霍夫曼编码</strong>：根据 token 频率自适应分配编码长度，高频 token 用短编码，提高容量效率</li>
-    <li><strong>固定长度编码</strong>：每个 token 携带固定位数的信息，实现简单但效率较低</li>
+    <li><code>outputs-gpt2-stega.txt</code>：带隐写的生成文本，其中每个 token 的选择都受到待嵌入比特的约束。</li>
+    <li><code>outputs-gpt2-normal.txt</code>：使用标准 top-k 采样或 nucleus 采样生成的"普通"文本，作为对照基准。</li>
   </ul>
+
+  <p>比较两个文件，你会发现隐写文本在语法正确性、语义连贯性和风格自然度上与普通文本几乎无法区分。这是因为约束采样只在概率最高的 2<sup>k</sup> 个 token 中做选择，而这些 token 本身就已经是模型认为最合理的后续词——差异只在极其细微的用词选择上。一个典型的场景：你可能看到隐写版本写的是 "the" 而普通版本写的是 "a"，两者在当前语境下都是完全合理的。</p>
+
+  <div class="callout">
+    <strong>隐蔽性验证</strong>：如果你将隐写文本交给第三方（包括语言学家、专业编辑），在不知道使用了隐写技术的前提下，他们不会察觉任何异常。这是隐写系统区别于加密系统的关键特性：加密后的密文一眼就能看出"这不是正常文本"，而隐写文本看起来完全正常——威胁在于，审查者甚至不知道这里藏着秘密。
+  </div>
+</div>
+
+<!-- 实用场景与局限 -->
+<div class="ch fade-in">
+  <div class="ch-label">讨论</div>
+  <div class="ch-title">实用场景与局限性</div>
+  <p>大模型隐写术在以下几个场景中具有实际价值：</p>
+
+  <div class="info-box">
+    <h3>隐蔽通信</h3>
+    <p>在审查严格的环境中，发送方和接收方可以事先约定好模型、分词器和编码规则。发送方将敏感信息嵌入看似正常的文章中，接收方收到后运行解码程序即可还原信息。整个过程对第三方完全透明——他们看到的只是一段普通文本，不构成任何可疑的"加密通信"行为。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>版权追踪</h3>
+    <p>内容创作者可以在生成文本中嵌入唯一标识符（类似数字水印）。如果文本被未授权地复制和传播，创作者可以通过解码确认来源，而复制者甚至不知道水印的存在。这与 Ch5 模型水印的不同之处在于：隐写水印是嵌入文本语义中的，不依赖模型的采样统计特性。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>数据泄漏检测</h3>
+    <p>企业可以在内部 AI 助手的输出中嵌入监控信息。如果员工将 AI 生成的内容故意传播到外部，安全团队可以通过解码追踪泄漏源头，实现一种"主动式"的数据泄漏防护机制。</p>
+  </div>
+
+  <p>然而，隐写术也面临一些固有限制：</p>
+
+  <ul>
+    <li><strong>容量限制</strong>：每个 token 只能携带 k bits，在 k=2 的常见配置下，嵌入一段有意义的信息需要较长的文本。对于短消息，隐写的"性价比"不高。</li>
+    <li><strong>同步问题</strong>：发送方和接收方必须使用完全相同的模型、分词器和编码规则。如果模型版本更新或分词器发生变化，解码可能失败。</li>
+    <li><strong>鲁棒性问题</strong>：如果隐写文本经过了 paraphrase（改写）、translation（翻译）甚至摘要压缩，隐藏的信息可能被破坏——这与 Ch5 中模型水印面临的鲁棒性挑战类似。</li>
+    <li><strong>检测风险</strong>：虽然隐写文本看起来正常，但学术研究表明某些隐写方法产生的文本在 token 分布上存在微弱但可检测的统计异常。如果审查方有足够强的统计工具，隐写行为可能被发现。</li>
+  </ul>
+</div>
+
+<!-- 进阶方向 -->
+<div class="ch fade-in">
+  <div class="ch-label">延伸</div>
+  <div class="ch-title">进阶方向：多模型与自适应编码</div>
+  <p>基于本章的基础框架，有几个值得探索的进阶方向：</p>
+
+  <p><strong>第一，使用更大的模型。</strong> GPT-2 只是一个 774M 参数的模型，词表相对较小（50,257 个 token），且对中文的处理能力有限。如果使用 ChatGPT、Claude 或开源的 LLaMA 系列模型，隐写系统可以在更丰富的语言表达空间中选择合法 token，生成质量更高、隐蔽性更强的隐写文本。</p>
+
+  <p><strong>第二，动态 k 值。</strong> 固定 k 值意味着每个 token 携带相同数量的比特。但在实际语言中，某些位置的选择空间更大（可以选很多合理的词），某些位置的选择空间更小（几乎只有一个词合理）。一个自适应的方案是：根据当前 step 的熵（entropy）动态调整 k——高熵位置用较大的 k 嵌入更多比特，低熵位置用较小的 k 甚至不嵌入。这可以在不显著损害文本质量的前提下提高整体容量。</p>
+
+  <p><strong>第三，多模型协同隐写。</strong> 可以设计一种"双层隐写"机制：先用一个模型嵌入第一层信息，再用另一个模型在第一层的基础上嵌入第二层信息。这在多方通信场景中特别有用——每个接收方只能解码属于自己的那一层信息。</p>
+</div>
+
+<!-- 本章小结 -->
+<div class="ch fade-in">
+  <div class="ch-label">小结</div>
+  <div class="ch-title">本章小结</div>
+  <p>本章以 GPT-2 为载体，完整实现了一个基于大语言模型的文本隐写系统。核心要点如下：</p>
+
+  <ul>
+    <li>隐写的本质是在语言模型的概率分布上做"约束采样"——选择符合编码规则的 token，使其携带二进制位信息。</li>
+    <li>k 值控制每个 token 携带的比特数，k=2 是容量与质量的最佳折中。</li>
+    <li>霍夫曼编码根据 token 频率自适应分配编码长度，优于固定长度编码，尤其在长文本场景下。</li>
+    <li>隐写文本在语法、语义和风格上与普通文本几乎无法区分，具有极高的隐蔽性。</li>
+    <li>隐写术面临容量限制、同步要求、鲁棒性挑战和潜在的统计检测风险。</li>
+  </ul>
+
+  <p>本章的内容为后续章节奠定了基础——Ch8 多模态大模型将展示 LLM 如何感知图像、音频、视频等多种模态；而 Ch9 GUI 智能体则将展示 LLM 如何"看懂"屏幕截图并执行具体操作。这些能力都是在语言智能这一核心枢纽上逐步扩展的。</p>
 </div>
 
 <!-- 相关资源 -->
@@ -42,6 +255,9 @@ categories: ["教程"]
   <div class="section-title">相关资源</div>
   <div class="meta" style="margin-top:0.5rem;">
     <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter7" target="_blank">GitHub: chapter7 源码与课件</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch05-watermark/">← Ch5 模型水印</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch06-jailbreak/">← Ch6 越狱攻击</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch08-mllm/">Ch8 多模态大模型 →</a></span>
     <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
   </div>
 </div>

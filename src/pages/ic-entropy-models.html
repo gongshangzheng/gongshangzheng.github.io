@@ -1,0 +1,253 @@
+---
+title: "Hyperprior 之后：学习式图像压缩熵模型演化全景"
+description: "从 Ballé Scale Hyperprior 到 MambaIC 和 HPCM-1B，追踪端到端图像压缩熵模型的完整演化路径。11个Phase深度拆解。"
+date: 2026-05-20
+created_at: 2026-05-20T13:28:00
+updated_at: 2026-05-20T13:28:00
+tags: [image-compression, entropy-model, hyperprior, transformer, mamba, scaling-law]
+categories: ["图像压缩"]
+mathjax: true
+hero_title: "Hyperprior 之后"
+hero_sub: "学习式图像压缩熵模型的十年演化"
+hero_tagline: "Factorized → Hyperprior → AR → Checkerboard → Transformer → Mamba → Scaling Law"
+page_style: |
+  :root { --hero-grad: linear-gradient(135deg, #0a0f1a, #101828, #0d2137); --accent: #4fc3f7; --accent-gold: #ffd54f; }
+  @media (prefers-color-scheme: dark) { :root { --hero-grad: linear-gradient(135deg, #0a0f1a, #101828, #0d2137); --accent: #4fc3f7; --accent-gold: #ffd54f; } }
+  .light-mode { --hero-grad: linear-gradient(135deg, #0a0f1a, #101828, #0d2137); --accent: #4fc3f7; --accent-gold: #ffd54f; }
+  .dark-mode { --hero-grad: linear-gradient(135deg, #0a0f1a, #101828, #0d2137); --accent: #4fc3f7; --accent-gold: #ffd54f; }
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">11</span><span class="label">演化阶段</span></div>
+  <div class="stat"><span class="num b">8</span><span class="label">年跨度</span></div>
+  <div class="stat"><span class="num g">3</span><span class="label">架构范式</span></div>
+</div>
+
+<div class="wrap">
+
+<!-- ============================================================
+  第一章：为什么熵模型是核心
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 1 · 核心问题</div>
+  <div class="ch-title">为什么熵模型决定压缩率</div>
+  <p>端到端学习式图像压缩的标准框架（Ballé 2016/2017）由四步组成：分析变换 g_a 将图像编码为潜在表示 y，量化器将 y 离散化为 ŷ，熵编码器将 ŷ 压缩为比特流，合成变换 g_s 将 ŷ 解码为重建图像 x̂。</p>
+  <p>训练目标是最小化 Rate-Distortion 损失 L = λR + D。其中 D（失真）由分析/合成变换网络决定，而 R（比特率）由熵模型决定。具体地，R = −log₂ p(ŷ)，即比特率等于潜在表示在熵模型下的负对数似然。</p>
+
+  <div class="callout"><strong>核心洞察</strong>：熵模型估计的 p(ŷ) 越精准，同样失真下所需的比特数越少。熵模型的质量直接决定压缩效率。</div>
+
+  <p>问题在于：量化后的潜在表示 ŷ 的元素之间并非独立——相邻空间位置存在强相关性，不同通道之间也存在统计依赖。如何建模这些依赖，是熵模型演化的核心线索。</p>
+</div>
+
+<!-- ============================================================
+  第二章：从独立假设到超先验
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 2 · Phase 1–2</div>
+  <div class="ch-title">Factorized Prior 与 Scale Hyperprior</div>
+
+  <h3>Phase 1: Factorized Prior（Ballé 2017）</h3>
+  <p>最简单的假设：ŷ 的各元素独立同分布。每个元素用一个非参数概率分布（由卷积网络预测）建模。这是一个粗略但高效的起点——完全并行，解码速度极快。</p>
+  <p>代价显而易见：latent 元素之间的空间相关性被完全忽略，导致熵估计偏高，比特率浪费严重。</p>
+
+  <h3>Phase 2: Scale Hyperprior（Ballé 2018, ICLR）★★★</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/balle-hyperprior-arch.png" alt="Ballé Scale Hyperprior 架构" loading="lazy">
+    <div class="cap">Ballé et al. Scale Hyperprior 架构。超先验网络 h_a/h_s 传递额外的边信息 z，用于预测每个潜在元素的高斯尺度参数 σ</div>
+  </div>
+
+  <p>Ballé 的核心创新：引入第二层 VAE——超先验（Hyperprior）。在分析变换 g_a 之后，再接一个超分析变换 h_a，将潜在表示 y 压缩为超先验 z。z 作为边信息单独编码传输。</p>
+  <p>在解码端，超合成变换 h_s 从 z 预测每个潜在元素的高斯分布参数（σ），从而将 p(y_i) 从固定先验提升为条件先验 p(y_i | z)。</p>
+  <p>这一架构引出了一个极其优雅的层次化概率模型：超先验 z 捕获全局的、粗粒度的空间依赖（如"这片区域纹理丰富，那片区域平坦"），而主 latent y 在给定 z 的条件下近似独立。</p>
+
+  <div class="callout"><strong>贡献</strong>：引用 4000+，几乎所有后续工作的基础架构。Hyperprior 的思想（用额外信息条件化主 latent 的概率估计）贯穿了整个演化过程。</div>
+</div>
+
+<!-- ============================================================
+  第三章：自回归上下文
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 3 · Phase 3</div>
+  <div class="ch-title">Joint AR + Hyperprior：从全局到局部</div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/minnen-ar-hp-arch.png" alt="Minnen Joint AR+Hyperprior 架构" loading="lazy">
+    <div class="cap">Minnen et al. Joint AR + Hyperprior 架构。在超先验基础上加入空间自回归上下文模型</div>
+  </div>
+
+  <p>Minnen et al.（NeurIPS 2018）的洞察：超先验捕获全局依赖，但局部依赖仍然被忽略。解决方案：在超先验基础上加入空间自回归（Autoregressive）上下文。</p>
+  <p>概率模型从 p(y_i | z) 提升为 p(y_i | y_{<i}, z)——每个元素的概率不仅依赖超先验 z，还依赖所有已解码的先前元素。</p>
+  <p>同时，将单高斯似然替换为离散化高斯混合模型（GMM），进一步提高了概率估计的灵活性。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">速度瓶颈</div>
+    <div class="admonition-content"><p>AR 解码是严格串行的：对于 H×W 大小的 latent，需要 H×W 步顺序解码。在实际分辨率下，这意味着极慢的解码速度。这个问题成为了后续 5 年的核心技术驱动力。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第四章：并行化革命
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 4 · Phase 4–6</div>
+  <div class="ch-title">从 AR 到并行：三条路径</div>
+
+  <h3>Phase 4: Channel-Conditional AR（Cheng 2020）★★</h3>
+  <p>核心洞察：latent 的通道间相关性远强于空间相关性。将 AR 从像素级改为通道级——先解码前面的通道组，再用于预测后面的通道组。</p>
+  <p>通道数（通常 192 或 320）远小于 H×W，因此解码步数从 H×W 降低到 C。速度大幅提升，RD 性能损失极小。</p>
+
+  <h3>Phase 5: Checkerboard Context Model（He 2021, CVPR）★★</h3>
+
+  <div class="callout"><strong>Checkerboard CCM 的核心思想</strong>：将空间位置分为「棋盘格」两组，先解码所有"黑格"，再并行解码所有"白格"。两组之间只需两步即可完成解码，大幅并行化，RD 性能接近完整 AR。</div>
+
+  <p>更激进的洞察：空间上下文不一定需要严格的光栅扫描顺序。将空间位置分为"棋盘格"两组——先解码所有"黑格"，再并行解码所有"白格"。</p>
+  <p>两组之间只需两步（而非 H×W 步），解码速度提升数倍。RD 性能接近完整 AR，是压缩实用化的关键技术。</p>
+
+  <h3>Phase 6: ELIC — Uneven Grouped Space-Channel Context（He 2022, CVPR）★★</h3>
+  <p>将通道分组与空间上下文结合，利用 latent 中能量聚集的特性——前面的通道包含更多信息，后面的通道信息较少。不均匀分组策略：前面通道组少但包含更多上下文，后面通道组多但依赖更少。</p>
+  <p>在 VVC 4:4:4 配置下 BD-Rate 降低 7.88%。</p>
+
+  <div class="info-box">
+    <h3>并行化的本质</h3>
+    <p>Phase 4–6 解决的是同一个问题：如何减少 AR 的串行依赖步数。三条路径对应三个维度——通道维度（Cheng）、空间维度（Checkerboard）、空间-通道联合维度（ELIC）。每条路径都保留了大量上下文信息，同时将解码步数从 O(HW) 降低到 O(C) 或 O(2)。</p>
+  </div>
+</div>
+
+<!-- ============================================================
+  第五章：注意力机制
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 5 · Phase 7–8</div>
+  <div class="ch-title">Transformer：长程依赖的全局建模</div>
+
+  <h3>Phase 7: Transformer Entropy Model（2022）</h3>
+  <p>Entroformer（2022）和 Contextformer（ECCV 2022）将多头注意力机制引入熵建模。核心思想：注意力天然可以捕获任意距离的依赖，不受 AR 扫描顺序的限制。</p>
+  <p>Contextformer 将标准多头注意力推广为空间-通道联合注意力，同时建模两种依赖。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">复杂度问题</div>
+    <div class="admonition-content"><p>注意力机制的 O(n²) 复杂度是硬伤。对于高分辨率图像，latent 的空间维度 n 可能很大，注意力的计算和存储开销成为瓶颈。</p></div>
+  </div>
+
+  <h3>Phase 8: TCM — Transformer-CNN Mixture（2023, CVPR）</h3>
+  <p>混合架构：CNN 处理局部特征（高效），Transformer 捕获全局依赖（精准）。这种设计平衡了局部建模与全局注意力。</p>
+</div>
+
+<!-- ============================================================
+  第六章：Mamba 与 SSM
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 6 · Phase 9–10</div>
+  <div class="ch-title">Mamba SSM：线性复杂度的全局感受野</div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/mambaic-arch.png" alt="MambaIC 架构" loading="lazy">
+    <div class="cap">MambaIC (CVPR 2025)：状态空间模型实现线性复杂度的全局依赖建模</div>
+  </div>
+
+  <h3>Phase 9: MambaIC / CMIC（2025, CVPR）★★★</h3>
+  <p>2024–2025 年最活跃的新兴方向。状态空间模型（SSM）提供了线性复杂度的全局感受野——理论上兼具 CNN 的高效和 Transformer 的全局建模能力。</p>
+  <p>MambaIC 相比 CNN-Transformer 混合架构降低了 63.9% 的计算量，同时 RD 性能有所提升。CMIC 进一步引入内容感知机制，根据图像局部复杂度自适应调整建模粒度。</p>
+
+  <h3>Phase 10: Dictionary-based Entropy Model（2025, CVPR）</h3>
+  <p>全新思路：通过可学习字典（codebook）从训练集提取典型结构，辅助熵模型预测。不再依赖参数化的概率分布假设，而是用数据驱动的方式直接从数据中学习先验知识。</p>
+</div>
+
+<!-- ============================================================
+  第七章：Scaling Law
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 7 · Phase 11</div>
+  <div class="ch-title">HPCM-1B：压缩领域的 Scaling Law</div>
+
+  <h3>Phase 11: HPCM — Hierarchical Progressive Context Modeling（2025, ICCV）★★★</h3>
+  <p>以多尺度编码顺序（1/4 → 1/2 → 1×）高效建模长程依赖。分层渐进式上下文：不同层级的 latent 使用不同粒度的上下文。</p>
+  <p>HPCM-1B 将模型扩展到 10 亿参数，发现了压缩领域的 Scaling Law：测试损失与模型规模/训练计算之间存在可预测的幂律关系。这是压缩领域首次验证 Scaling Law 的存在。</p>
+
+  <div class="callout"><strong>意义</strong>：如果压缩模型可以像 LLM 一样通过扩大参数获得可预测的性能提升，那么压缩研究可能进入"堆算力"阶段——理论创新的重要性可能让位于工程规模。</div>
+</div>
+
+<!-- ============================================================
+  技术对比总表
+  ============================================================ -->
+
+<div class="section fade-in">
+  <div class="section-title">演化全景对比</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>年份</th><th>上下文类型</th><th>并行度</th><th>复杂度</th><th>关键创新</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Factorized Prior</td><td>2017</td><td>无（独立）</td><td>全并行</td><td>O(1)</td><td>基线</td></tr>
+        <tr><td><strong>Scale Hyperprior</strong></td><td>2018</td><td>全局尺度</td><td>全并行</td><td>O(n)</td><td>超先验边信息</td></tr>
+        <tr><td><strong>Joint AR+HP</strong></td><td>2018</td><td>像素级 AR</td><td>串行</td><td>O(n²)</td><td>GMM 似然 + AR</td></tr>
+        <tr><td>Channel-Conditional</td><td>2020</td><td>通道级 AR</td><td>半并行</td><td>O(C·n)</td><td>通道替代像素</td></tr>
+        <tr><td><strong>Checkerboard</strong></td><td>2021</td><td>棋盘格</td><td>2 步并行</td><td>O(n)</td><td>并行化解码</td></tr>
+        <tr><td><strong>ELIC</strong></td><td>2022</td><td>不均匀分组</td><td>分组并行</td><td>O(n)</td><td>能量感知分组</td></tr>
+        <tr><td>Transformer</td><td>2022</td><td>全局注意力</td><td>全并行</td><td>O(n²)</td><td>长程依赖</td></tr>
+        <tr><td>TCM 混合</td><td>2023</td><td>局部+全局</td><td>全并行</td><td>O(n²)</td><td>CNN+Transformer</td></tr>
+        <tr><td><strong>MambaIC</strong></td><td>2025</td><td>SSM</td><td>全并行</td><td><strong>O(n)</strong></td><td>线性复杂度全局</td></tr>
+        <tr><td>Dictionary</td><td>2025</td><td>数据驱动</td><td>全并行</td><td>O(n)</td><td>可学习字典</td></tr>
+        <tr><td><strong>HPCM-1B</strong></td><td>2025</td><td>分层渐进</td><td>分层并行</td><td>O(n)</td><td><strong>Scaling Law</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  核心洞察
+  ============================================================ -->
+
+<div class="section fade-in">
+  <div class="section-title">四条核心洞察</div>
+
+  <div class="quote">
+    <p>「AR 的速度问题贯穿整个演化。」</p>
+    <div class="who">——从像素级 AR（极慢）→ 通道级 AR（较快）→ 棋盘格（近实时）→ Transformer/SSM（并行），每一步都在解决上一步的速度瓶颈</div>
+  </div>
+
+  <div class="quote">
+    <p>「先验建模的抽象层次不断提升。」</p>
+    <div class="who">——参数化高斯（Ballé）→ GMM（Minnen）→ 注意力（Transformer）→ 状态空间模型（Mamba）→ 数据驱动字典 → Scaling Law</div>
+  </div>
+
+  <div class="quote">
+    <p>「并行化是实用化的关键。」</p>
+    <div class="who">——Checkerboard 和 Mamba 代表两条不同的并行化路径：前者重新组织解码顺序，后者改变模型架构本身</div>
+  </div>
+
+  <div class="quote">
+    <p>「Scaling Law 的出现改变了游戏规则。」</p>
+    <div class="who">——HPCM-1B 证明压缩模型可以像 LLM 一样通过扩大参数获得可预测的性能提升</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Ballé et al. (2018) <em>Variational Image Compression with a Scale Hyperprior</em> — <a href="https://arxiv.org/abs/1802.01436" target="_blank">arXiv:1802.01436</a></li>
+    <li>Minnen et al. (2018) <em>Joint Autoregressive and Hierarchical Priors</em> — <a href="https://arxiv.org/abs/1809.02736" target="_blank">arXiv:1809.02736</a></li>
+    <li>Cheng et al. (2020) <em>Learned Image Compression with Discretized Gaussian Mixture Likelihoods and Attention Modules</em> — <a href="https://arxiv.org/abs/2001.01568" target="_blank">arXiv:2001.01568</a></li>
+    <li>He et al. (2021) <em>Checkerboard Context Model for Efficient Learned Image Compression</em> — <a href="https://arxiv.org/abs/2103.15306" target="_blank">arXiv:2103.15306</a></li>
+    <li>He et al. (2022) <em>ELIC: Efficient Learned Image Compression with Unevenly Grouped Space-Channel Contextual Adaptive Coding</em> — <a href="https://arxiv.org/abs/2203.10886" target="_blank">arXiv:2203.10886</a></li>
+    <li>Entroformer (2022) — <a href="https://arxiv.org/abs/2202.05492" target="_blank">arXiv:2202.05492</a></li>
+    <li>MambaIC (2025) — <a href="https://arxiv.org/abs/2503.12461" target="_blank">arXiv:2503.12461</a></li>
+    <li>HPCM / NVC-1B (2025) — <a href="https://arxiv.org/abs/2508.09075" target="_blank">arXiv:2508.09075</a></li>
+  </ul>
+</div>
+
+</div>

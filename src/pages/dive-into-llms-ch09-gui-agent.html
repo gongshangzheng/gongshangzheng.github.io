@@ -1,39 +1,416 @@
 ---
 title: Ch9 · GUI 智能体 · 动手学大模型
-description: Qwen2-VL-7B + OS-Kairos 数据集，构建"看懂截图 + 预测点击"的 Agent
+description: Qwen2-VL-7B + OS-Kairos 数据集，构建"看懂截图 + 预测操作"的 Agent
 date: 2026-05-19T00:00:00
 created_at: 2026-05-19T13:48:30
 updated_at: 2026-05-19T13:48:30
-tags: [LLM, Agent, GUI, Qwen2-VL, OS-Kairos]
-categories: ["教程"]
+tags: [LLM, Agent, GUI, Qwen2-VL, OS-Kairos, 多模态, LLaMA-Factory]
+categories: ["动手学大模型"]
 ---
 
-<!-- 简介 -->
+<!-- 章节导言 -->
 <div class="ch fade-in">
   <div class="ch-label">Chapter 9</div>
   <div class="ch-title">GUI 智能体构建</div>
-  <p>GUI 智能体的本质是<strong>可执行语言接地（Executable Language Grounding）</strong>——模型接收截图画面和高层次任务指令（如"打开网易云音乐搜索某首歌并播放"），输出具体操作行为（CLICK 坐标、TYPE 文本、SCROLL 方向）和置信度评分。教程采用 <strong>OS-Kairos</strong> 开源数据，涵盖 27 种细分场景。</p>
+  <p>在 Ch8 中，我们看到多模态大语言模型能够理解图像、音频、视频，并通过 LLM 的规划能力协调多种模态的输出。现在，我们把这种能力推向更具体的场景——GUI（图形用户界面）操作。</p>
+  <p>GUI 智能体要解决的核心问题是：给定一张手机或电脑的屏幕截图，加上一个高层次的任务指令（例如"打开网易云音乐，搜索 Shape of You 并播放"），模型需要输出具体的操作行为——在屏幕的哪个坐标点击、在哪里输入什么文字、向上还是向下滚动。这些操作统称为"可执行语言接地"（Executable Language Grounding），即把抽象的自然语言指令映射为可在真实界面上执行的动作。</p>
+  <p>本章以 OS-Kairos 数据集为基础，展示如何基于 Qwen2-VL-7B 构建一个实用的 GUI 智能体——从数据预处理、有监督微调（SFT），到推理部署的完整流程。</p>
 </div>
 
-<!-- 数据 -->
+<!-- 核心任务定义 -->
+<div class="ch fade-in">
+  <div class="ch-label">任务</div>
+  <div class="ch-title">可执行语言接地：GUI Agent 的本质</div>
+  <p>Executable Language Grounding 是一个相对学术化的表述，但它描述的场景非常具体：你的人类助手能够根据你的一句话"帮我打开网易云音乐搜索 Shape of You 并播放"，自动在你的手机上完成这一系列操作。GUI Agent 的目标就是让 AI 模型具备这种能力。</p>
+
+  <div class="info-box">
+    <h3>任务输入</h3>
+    <p>GUI Agent 接收两类输入：</p>
+    <ul>
+      <li><strong>视觉信息</strong>：当前界面的截图（Screenshot）。这是模型"看"到的界面状态。</li>
+      <li><strong>文本信息</strong>：任务描述（Task）和历史操作记录（Previous Actions）。任务描述告诉模型用户想要完成什么目标；历史操作记录告诉模型之前已经做了哪些操作，以避免重复或冲突。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>任务输出</h3>
+    <p>模型输出一对信息：</p>
+    <ul>
+      <li><strong>Action</strong>：当前应当执行的具体操作，使用预定义的操作格式表示。</li>
+      <li><strong>Score</strong>：模型对当前操作的置信度评分，范围 1-5。</li>
+    </ul>
+  </div>
+
+  <p>这里的关键设计是置信度评分机制。并非所有任务 AI 都能完成——某些操作可能超出模型的能力边界（例如，涉及系统权限的深层次操作、从未见过的应用界面、需要复杂手势的交互等）。置信度评分让系统能够识别"不确定"的情况，建议人类介入而不是盲目执行一个低质量的操作。</p>
+
+  <div class="callout">
+    <strong>1-5 分的含义</strong>：<br>
+    1分 = 模型认为当前操作绝对无法完成目标<br>
+    2分 = 模型认为当前操作极不可能完成目标<br>
+    3分 = 模型认为当前操作有中等概率完成目标<br>
+    4分 = 模型认为当前操作极可能完成目标<br>
+    5分 = 模型认为当前操作必定完成目标<br>
+    <br>
+    当置信度过低时（如 1-2 分），系统应主动提示用户："这个任务超出了我的能力范围，建议您手动操作"。
+  </div>
+</div>
+
+<!-- 操作类型 -->
+<div class="ch fade-in">
+  <div class="ch-label">操作集</div>
+  <div class="ch-title">预定义操作类型</div>
+  <p>GUI Agent 的操作空间被预定义为一套标准化的"动作词汇"，这是自然语言指令能够精确映射为可执行操作的关键设计。</p>
+
+  <div class="info-box">
+    <h3>基础操作</h3>
+    <p>基础操作在所有平台上都是标准化的，提供核心交互功能：</p>
+    <ul>
+      <li><strong>CLICK [x, y]</strong>：在屏幕坐标 (x, y) 处执行点击操作。例如，<code>CLICK <point>[[381,367]]</point></code> 表示点击坐标 (381, 367)。</li>
+      <li><strong>TYPE [文本]</strong>：在当前焦点位置输入指定文本。例如，<code>TYPE [Shanghai shopping mall]</code> 表示输入"Shanghai shopping mall"。</li>
+      <li><strong>SCROLL [方向]</strong>：执行滚动操作，方向可以是 UP/DOWN/LEFT/RIGHT。例如，<code>SCROLL [DOWN]</code> 表示向下滚动。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>自定义操作</h3>
+    <p>自定义操作是特定于用户平台和环境的功能扩展，使模型能够支持新的、未见过的操作定义：</p>
+    <ul>
+      <li><strong>PRESS_BACK</strong>：按下返回按钮，导航到上一个界面。</li>
+      <li><strong>PRESS_HOME</strong>：按下主页按钮，导航到主屏幕。</li>
+      <li><strong>ENTER</strong>：按下回车键，确认当前输入或选择。</li>
+      <li><strong>IMPOSSIBLE</strong>：标记当前任务在界面上无法完成，模型应停止尝试。</li>
+    </ul>
+  </div>
+
+  <p>值得注意的是，IMPOSSIBLE 操作的设计体现了一种"安全兜底"思维。当模型判断当前任务在其能力边界之外时，它不是给出一个低质量的 CLICK 操作碰运气，而是明确输出 IMPOSSIBLE 让系统知道这里需要人类接管。这种设计对于将 AI Agent 部署到真实产品场景中至关重要——没有安全兜底的系统，要么会不断失败导致用户体验崩溃，要么会给出错误操作造成严重后果。</p>
+</div>
+
+<!-- OS-Kairos 数据集 -->
 <div class="ch fade-in">
   <div class="ch-label">数据</div>
-  <div class="ch-title">数据与预处理</div>
-  <ul>
-    <li><strong>OS-Kairos 数据格式</strong>：JSON 含 task、image_path、list（操作步骤链）、score（1-5 置信度）、teacher_action 等字段</li>
-    <li><strong>格式转换</strong>：将 OS-Kairos 转换为 sharpgpt 多模态对话格式，输入为"任务+历史动作+截图"，输出为"action + score"</li>
-  </ul>
+  <div class="ch-title">OS-Kairos 数据集</div>
+  <p>OS-Kairos 是一个针对移动端 GUI 操作的开源数据集，涵盖了 27 种细分场景，包括音乐播放、地图导航、电商购物、社交媒体等真实应用场景。数据集的设计目标是训练能够理解自然语言指令并执行 GUI 操作的智能体。</p>
+
+  <div class="info-box">
+    <h3>数据格式</h3>
+    <p>OS-Kairos 的每条数据是一个 JSON 对象，包含以下字段：</p>
+    <pre class="code-block"><code>{
+  "task": "打开网易云音乐，搜索《Shape of You》，并播放这首歌。",
+  "image_path": "/data1/wuzh/cloud_music/images/1736614680.6518524_1.png",
+  "list": [
+    "打开网易云音乐",
+    "点击首页顶部的搜索框",
+    "输入：Shape of You",
+    "选择正确的搜索结果",
+    "点击歌名以播放"
+  ],
+  "now_step": 1,
+  "previous_actions": [
+    "CLICK <point>[[381,367]]</point>"
+  ],
+  "score": 5,
+  "osatlas_action": "CLICK <point>[[454,87]]</point>",
+  "teacher_action": "CLICK <point>[[500,100]]</point>",
+  "success": false
+}</code></pre>
+
+    <p>各字段的含义：</p>
+    <ul>
+      <li><strong>task</strong>：最终用户目标，一段自然语言描述的高层次指令。</li>
+      <li><strong>image_path</strong>：当前截图的文件路径。</li>
+      <li><strong>list</strong>：完成任务所需的操作步骤序列。</li>
+      <li><strong>now_step</strong>：当前应执行的步骤编号（从 1 开始）。</li>
+      <li><strong>previous_actions</strong>：已经执行过的操作历史。</li>
+      <li><strong>score</strong>：操作置信度评分（1-5）。</li>
+      <li><strong>osatlas_action</strong>：当前步骤的"建议操作"（由另一个系统生成）。</li>
+      <li><strong>teacher_action</strong>：当前步骤的标准答案（专家标注的操作）。</li>
+      <li><strong>success</strong>：该操作是否成功（用于评估）。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>数据集规模与场景覆盖</h3>
+    <p>OS-Kairos 涵盖了 27 种应用场景，包括但不限于：音乐播放器（网易云音乐、QQ音乐）、地图导航（高德地图、Google Maps）、电商购物（淘宝、京东）、社交媒体（微信、微博）、新闻阅读（今日头条）、支付工具（支付宝、微信支付）等。</p>
+    <p>每个场景包含多个任务，每个任务有多轮交互数据（记录从初始状态到完成目标的每一步操作）。这种设计使得模型不仅能学习"单步操作"，还能学习"多步规划"——理解如何在操作历史的基础上选择下一步。</p>
+  </div>
 </div>
 
-<!-- 训练 -->
+<!-- 数据预处理 -->
+<div class="ch fade-in">
+  <div class="ch-label">预处理</div>
+  <div class="ch-title">格式转换：OS-Kairos → sharpgpt</div>
+  <p>原始的 OS-Kairos 数据格式是"专家操作标注 + 多步记录"的形态，不适合直接用于有监督微调（SFT）。我们需要将其转换为多模态对话格式，即符合 LLaMa-Factory 训练框架要求的 sharpgpt 格式。</p>
+
+  <p>转换的核心思路是：将每条 OS-Kairos 记录重新组织为一个 "user-assistant" 对话，user 侧包含任务描述、历史操作和截图图像（通过 <code>&lt;image&gt;</code> 占位符引用），assistant 侧包含建议操作和置信度评分。</p>
+
+  <pre class="code-block"><code>import json
+
+# 读取原始 OS-Kairos 数据
+with open('Kairos_train.json', 'r', encoding='utf-8') as f:
+    data = json.load(f)
+
+preprocessed_data = []
+
+for item in data:
+    task = item.get("task", "")
+    previous_actions = item.get("previous_actions", "")
+    image_path = item.get("image_path", "")
+
+    # 构建多模态对话格式的 prompt
+    prompt_text = f"""You are now operating in Executable Language Grounding mode. 
+Your goal is to help users accomplish tasks by suggesting executable actions 
+that best fit their needs and give a score. Your skill set includes both basic 
+and custom actions:
+
+1. Basic Actions
+- CLICK <point>[[x-axis, y-axis]]</point>: Click at the specified position.
+- TYPE [input text]: Enter specified text at the designated location.
+- SCROLL [direction (UP/DOWN/LEFT/RIGHT)]: Scroll in the specified direction.
+
+2. Custom Actions
+- PRESS_BACK: Press a back button to navigate to the previous screen.
+- PRESS_HOME: Press a home button to navigate to the home page.
+- ENTER: Press the enter button.
+- IMPOSSIBLE: Indicate the task is impossible.
+
+In most cases, task instructions are high-level and abstract. Carefully read 
+the instruction and action history, then perform reasoning to determine the 
+most appropriate next action. Evaluate your action and give it a score from 1 
+to 5 (higher = more likely to accomplish the goal).
+
+Final goal: {task}
+previous actions: {previous_actions}
+screenshot:<image>
+
+Your output must strictly follow the format below:
+action:
+score:
+"""
+
+    action = item.get("osatlas_action", "")
+    score = item.get("score", "")
+
+    # 转换为 sharpgpt 格式
+    preprocessed_item = {
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt_text,
+            },
+            {
+                "role": "assistant",
+                "content": f"action: {action}\nscore:{score}",
+            }
+        ],
+        "images": [image_path]
+    }
+    preprocessed_data.append(preprocessed_item)
+
+# 保存处理后的数据
+with open('Kairos_qwenscore.json', 'w', encoding='utf-8') as f:
+    json.dump(preprocessed_data, f, ensure_ascii=False, indent=4)</code></pre>
+
+  <p>转换完成后，数据格式从"单条 JSON 包含任务+标注+图像路径"的形态，变为"对话数组+图像路径列表"的形态，每个样本对应一对 user-assistant 对话。这正是 LLaMa-Factory 在 <code>dataset_info.json</code> 中声明 sharpgpt 格式时所期望的结构。</p>
+
+  <div class="callout">
+    <strong>关键设计细节</strong>：prompt 中使用 <code>&lt;image&gt;</code> 作为截图图像的占位符。在 LLaMa-Factory 的多模态训练中，这个占位符会被替换为实际的图像特征。模型需要学会将这个视觉输入与任务描述和历史操作结合起来，推理出正确的下一步操作。
+  </div>
+</div>
+
+<!-- 模型选择与训练配置 -->
+<div class="ch fade-in">
+  <div class="ch-label">模型</div>
+  <div class="ch-title">Qwen2-VL-7B：视觉语言模型的最新力作</div>
+  <p>本教程选用 Qwen2-VL-7B-Instruct 作为基座模型。Qwen2-VL 是阿里巴巴通义千问团队开源的视觉语言模型系列，7B 版本在保持较强视觉理解能力的同时，具有良好的推理效率和部署便利性。</p>
+
+  <div class="info-box">
+    <h3>为什么选择 Qwen2-VL-7B？</h3>
+    <ul>
+      <li><strong>多模态能力成熟</strong>：Qwen2-VL 在视觉问答、图像理解、视频理解等任务上达到了开源模型的领先水平，且原生支持多图像输入。</li>
+      <li><strong>指令遵循能力强</strong>：经过大规模指令微调，Qwen2-VL 能够精确理解复杂的多模态指令，理解 GUI 操作这种"结构化指令"对它来说并不困难。</li>
+      <li><strong>开源且可商用</strong>：Qwen2-VL-7B 基于 Apache 2.0 许可证开源，适合学术研究和商业应用。</li>
+      <li><strong>LoRA 微调效果好</strong>：实验表明，Qwen2-VL 对 LoRA 微调的反应良好，在 GUI Agent 任务上可以通过适度训练快速获得专业能力。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>模型资源准备</h3>
+    <p>在开始训练前，需要准备好以下资源：</p>
+    <ul>
+      <li>从 HuggingFace 下载 <a href="https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct" target="_blank">Qwen2-VL-7B-Instruct</a> 模型权重。</li>
+      <li>从 GitHub 下载 <a href="https://github.com/hiyouga/LLaMA-Factory" target="_blank">LLaMA-Factory</a> 源码（用于训练框架）。</li>
+      <li>准备 OS-Kairos 数据集（从 GitHub 下载并解压）。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- LLaMa-Factory 配置 -->
 <div class="ch fade-in">
   <div class="ch-label">训练</div>
-  <div class="ch-title">训练与推理</div>
+  <div class="ch-title">LLaMa-Factory 全量 SFT 配置</div>
+  <p>LLaMa-Factory 是目前最流行的开源 LLM 微调框架，提供了统一的命令行接口来执行 SFT、LoRA、QLoRA、DPO 等多种训练模式。对于 GUI Agent 训练，我们采用全量 SFT（Supervised Fine-Tuning）策略。</p>
+
+  <div class="info-box">
+    <h3>注册数据集</h3>
+    <p>修改 <code>data/dataset_info.json</code>，添加以下内容注册 Karios 数据集：</p>
+    <pre class="code-block"><code>"Karios": {
+  "file_name": "Kairos_qwenscore.json",
+  "formatting": "sharegpt",
+  "columns": {
+    "messages": "messages",
+    "images": "images"
+  },
+  "tags": {
+    "role_tag": "role",
+    "content_tag": "content",
+    "user_tag": "user",
+    "assistant_tag": "assistant"
+  }
+}</code></pre>
+    <p>其中 <code>formatting: "sharegpt"</code> 指定了数据格式（与转换脚本输出的格式对应），<code>columns</code> 声明了字段映射关系。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>训练配置文件</h3>
+    <p>修改 <code>examples/train_full/qwen2vl_full_sft.yaml</code>，以下是关键配置项：</p>
+    <pre class="code-block"><code>### model
+model_name_or_path: /path/to/Qwen2-VL-7B-Instruct
+stage: sft
+do_train: true
+finetuning_type: full
+deepspeed: examples/deepspeed/ds_z3_config.json
+
+### dataset
+dataset: Karios
+template: qwen2_vl
+cutoff_len: 4096
+max_samples: 9999999
+overwrite_cache: true
+preprocessing_num_workers: 4
+
+### output
+output_dir: /path/to/output
+logging_steps: 10
+save_steps: 60000
+plot_loss: true
+overwrite_output_dir: true
+
+### train
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 2
+learning_rate: 1.0e-5
+num_train_epochs: 5.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+ddp_timeout: 180000000</code></pre>
+
+    <p>关键配置说明：</p>
+    <ul>
+      <li><code>finetuning_type: full</code>：全量参数微调，而非 LoRA。GUI Agent 任务相对垂直，数据量不大，全量微调可以让模型更彻底地适应任务。</li>
+      <li><code>per_device_train_batch_size: 2</code>：每张卡 2 个样本。7B 模型+高分辨率图像输入的显存占用很大，需要控制 batch size。</li>
+      <li><code>gradient_accumulation_steps: 2</code>：梯度累积 2 步，等效 batch size = 2×2=4（在多卡场景下会更大）。</li>
+      <li><code>bf16: true</code>：使用 BF16 混合精度训练，减少显存占用。</li>
+      <li><code>learning_rate: 1.0e-5</code>：学习率设置为 1e-5，略高于 LoRA 的典型值（1e-4），因为全量微调需要更大的梯度更新。</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h3>硬件要求与启动命令</h3>
+    <p>全量微调 Qwen2-VL-7B 对显存要求极高，至少需要 <strong>3×80GB A100</strong>（或等效的显存配置）。单卡 80GB 无法容纳整个模型的激活值和优化器状态。</p>
+    <p>启动训练的命令：</p>
+    <pre class="code-block"><code>CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+FORCE_TORCHRUN=1 \
+llamafactory-cli train examples/train_full/qwen2vl_full_sft.yaml</code></pre>
+    <p>其中 <code>CUDA_VISIBLE_DEVICES</code> 指定了 8 张 GPU（至少需要 3 张），<code>FORCE_TORCHRUN=1</code> 强制使用 torchrun 而非老旧的启动了器。</p>
+  </div>
+
+  <div class="callout">
+    <strong>全量 SFT vs LoRA</strong>：对于 GUI Agent 这类垂直任务，全量 SFT 通常优于 LoRA。原因在于：GUI 操作是一种需要精确定位坐标、理解细粒度 UI 元素的能力，这种能力在预训练阶段几乎没有被训练过，需要通过大量梯度更新来重塑模型的注意力模式。LoRA 的低秩约束在这种场景下可能限制模型的表达能力。当然，全量 SFT 的代价是更高的计算资源和更长的训练时间。
+  </div>
+</div>
+
+<!-- 推理部署 -->
+<div class="ch fade-in">
+  <div class="ch-label">推理</div>
+  <div class="ch-title">推理验证与置信度机制</div>
+  <p>训练完成后，我们需要对模型进行推理验证。LLaMa-Factory 提供了便捷的推理工具，可以通过 <code>webchat</code> 命令启动一个 Gradio 界面，实现在线交互测试。</p>
+
+  <div class="info-box">
+    <h3>推理配置</h3>
+    <p>修改 <code>examples/inference/qwen2_vl.yaml</code>：</p>
+    <pre class="code-block"><code>model_name_or_path: /path/to/trained/checkpoint
+template: qwen2_vl</code></pre>
+    <p><code>model_name_or_path</code> 指向训练好的 checkpoint 目录。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>启动推理</h3>
+    <pre class="code-block"><code>CUDA_VISIBLE_DEVICES=0 \
+FORCE_TORCHRUN=1 \
+llamafactory-cli webchat examples/inference/qwen2_vl.yaml</code></pre>
+    <p>命令启动后，Gradio 会自动在本地启动一个 Web 界面，用户可以上传手机截图、输入任务描述，观察模型输出的 action 和 score。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>置信度的实际应用</h3>
+    <p>置信度评分的实际价值在于构建一个人机协作的工作流，而非让模型"独自完成任务"。具体来说：</p>
+    <ul>
+      <li>当模型输出 score ≥ 4 时，系统可以自动执行该操作（高置信度表明模型很有把握）。</li>
+      <li>当模型输出 score = 3 时，系统提示用户"我建议执行此操作，您确认吗？"，等待用户确认后再执行。</li>
+      <li>当模型输出 score ≤ 2 时，系统明确告知用户"此任务超出我的能力边界，需要您手动操作"，并将控制权交还用户。</li>
+    </ul>
+    <p>这种分级决策机制既保证了自动化场景下的效率，又避免了低置信度操作可能造成的错误。一个典型的使用场景是：用户在开车时让手机 AI 助手自动完成导航操作——涉及驾驶安全的关键操作需要高置信度才能执行，而简单的"打开音乐"类操作可以适度自动化。</p>
+  </div>
+</div>
+
+<!-- 技术细节与进阶 -->
+<div class="ch fade-in">
+  <div class="ch-label">进阶</div>
+  <div class="ch-title">关键技术与未来方向</div>
+
+  <div class="info-box">
+    <h3>坐标回归 vs 坐标分类</h3>
+    <p>GUI Agent 的一个核心问题是：模型如何输出坐标？现有方案大致分为两类：</p>
+    <ul>
+      <li><strong>坐标回归</strong>：将坐标预测视为一个回归问题，模型输出两个连续值（x, y）。优点是可以预测任意坐标，缺点是精度难以保证（尤其是模型训练数据中的坐标是离散的）。</li>
+      <li><strong>坐标分类</strong>：将屏幕划分为网格（如 1000×1000），每个网格对应一个类别。优点是训练简单、输出稳定，缺点是精度受限于网格粒度。</li>
+    </ul>
+    <p>OS-Kairos 采用的是"描述性坐标"（如 <code>CLICK &lt;point&gt;[[381, 367]]&lt;/point&gt;</code>），本质上是一种符号化的坐标表示——模型学习的是生成特定格式的文本，而非直接回归数值。这种方法的优势在于它利用了 LLM 的语言理解能力，让模型将坐标视为"语言中的一部分"而非"数值回归目标"。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>多轮规划与状态追踪</h3>
+    <p>GUI 操作通常需要多轮完成（打开应用→搜索→选择→播放）。OS-Kairos 数据中的 <code>previous_actions</code> 字段正是为了训练模型理解操作历史。在推理时，模型需要基于历史操作和当前界面状态，判断下一步应该做什么。</p>
+    <p>一个进阶方向是引入"状态机"机制——将每个 GUI 界面建模为一个状态节点，模型输出的操作是状态之间的边。这种方法可以让模型在操作失败时进行回溯，而不是盲目重试。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>视觉 grounding 的挑战</h3>
+    <p>GUI Agent 面临的一个独特挑战是"视觉 grounding"——模型需要理解截图中的 UI 元素及其功能。例如，"点击搜索框"要求模型从截图中识别出哪个区域是搜索框；"点击播放按钮"要求模型识别出哪个图标是播放。这些能力对于通用的视觉语言模型来说并不容易，因为 UI 元素通常是高度抽象化的图标，与自然图像中的实体（如猫、树）有显著差异。</p>
+    <p>一个解决思路是：在预训练阶段引入专门的 UI 数据（如 RICO 数据集，包含大量移动端 UI 截图和元素标注），让模型提前学习 UI 元素的语义和功能。</p>
+  </div>
+
+  <div class="callout">
+    <strong>Agent 的演进路径</strong>：从单步 GUI Agent 到多步规划 Agent，再到结合工具调用的复合 Agent。未来的 GUI Agent 将不仅能执行操作，还能自主决定调用哪些工具（如计算器、日历、搜索引擎），并将多步操作整合为一条完整的任务执行链。这种能力需要在更大规模的预训练和 RLHF 中获得。
+  </div>
+</div>
+
+<!-- 本章小结 -->
+<div class="ch fade-in">
+  <div class="ch-label">小结</div>
+  <div class="ch-title">本章小结</div>
+  <p>本章完整实现了从数据处理到模型训练再到推理部署的 GUI 智能体构建流程。核心要点如下：</p>
+
   <ul>
-    <li><strong>模型</strong>：Qwen2-VL-7B，全量 SFT，使用 LLaMa-Factory</li>
-    <li><strong>硬件</strong>：至少 3×80GB A100</li>
-    <li><strong>推理输出</strong>：包含 action 指令（CLICK/TYPE/SCROLL）和置信度分数；分数越低说明任务超出模型能力边界，需要人工介入</li>
+    <li><strong>核心任务</strong>：Executable Language Grounding——将自然语言任务指令映射为可执行的具体操作（CLICK、TYPE、SCROLL 等）。</li>
+    <li><strong>置信度机制</strong>：1-5 分的置信度评分让系统能够识别超出能力边界的任务，主动请求人类介入，避免错误操作。</li>
+    <li><strong>数据流程</strong>：OS-Kairos（原生 JSON）→ 格式转换 → sharpgpt 对话格式 → LLaMa-Factory 训练。</li>
+    <li><strong>训练配置</strong>：Qwen2-VL-7B 全量 SFT，至少 3×80GB A100，学习率 1e-5，5 个 epoch。</li>
+    <li><strong>关键挑战</strong>：坐标输出的精确性、多轮操作的状态追踪、UI 元素的视觉 grounding。</li>
   </ul>
+
+  <p>GUI Agent 代表着 LLM 从"文本对话"走向"真实世界操作"的关键一步。它不仅需要理解语言和视觉信息，还需要将理解转化为精确的行动。随着多模态模型能力的提升和训练数据的丰富，GUI Agent 将成为人机交互的基础设施，让 AI 真正成为能够替你操作手机的智能助手。</p>
 </div>
 
 <!-- 相关资源 -->
@@ -41,6 +418,11 @@ categories: ["教程"]
   <div class="section-title">相关资源</div>
   <div class="meta" style="margin-top:0.5rem;">
     <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter9" target="_blank">GitHub: chapter9 源码与课件</a></span>
+    <span>🔗 <a href="https://github.com/hiyouga/LLaMA-Factory" target="_blank">GitHub: LLaMa-Factory</a></span>
+    <span>🔗 <a href="https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct" target="_blank">HuggingFace: Qwen2-VL-7B-Instruct</a></span>
+    <span>🔗 <a href="https://github.com/Wuzheng02/OS-Kairos" target="_blank">GitHub: OS-Kairos 数据集</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch08-mllm/">← Ch8 多模态大模型</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch10-agent-safety/">Ch10 Agent 安全 →</a></span>
     <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
   </div>
 </div>
