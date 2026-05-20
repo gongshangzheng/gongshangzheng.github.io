@@ -1,0 +1,250 @@
+---
+title: "CliffordNet: All You Need is Geometric Algebra"
+description: "用 Clifford Geometric Product 替代 Attention + FFN，1.4M 参数匹配 ResNet-18 (11.2M)，Lite 变体 CIFAR-100 达 79.05% SOTA"
+created_at: 2026-05-20T22:54:00
+updated_at: 2026-05-20T23:16:54
+tags: ["vision-backbone", "geometric-algebra", "efficient-model", "no-ffn", "linear-complexity"]
+categories: ["论文精读"]
+mathjax: true
+hero_title: "CliffordNet"
+hero_sub: "几何代数视觉骨干 · 2026"
+hero_tagline: "一个代数完备的几何积，同时替代 Attention 和 FFN"
+---
+
+<div class="ch fade-in">
+  <div class="ch-title">核心贡献</div>
+
+  <p>CliffordNet 的核心主张很直接：现代视觉架构（CNN、Transformer、ConvNeXt）依赖「空间混合器 + 通道混合器（FFN）」的启发式堆叠，缺乏数学第一性原理。作者用 <strong>Clifford Geometric Product</strong> 作为唯一的交互算子，同时完成 token mixing 和 channel mixing，实现 <strong>No-FFN</strong> 设计。</p>
+
+  <p>结果：在 CIFAR-100 上，CliffordNet-Nano（1.4M 参数）匹配 ResNet-18（11.2M），压缩比 8×；CliffordNet-Lite（2.6M）达到 79.05%，创下 tiny 模型新 SOTA。</p>
+
+  <div class="stats">
+    <div class="stat"><span class="num b">8×</span><span class="label g">参数压缩</span></div>
+    <div class="stat"><span class="num b">79.05%</span><span class="label l">CIFAR-100 SOTA</span></div>
+    <div class="stat"><span class="num">O(N)</span><span class="label">线性复杂度</span></div>
+    <div class="stat"><span class="num">0</span><span class="label g">FFN 冗余</span></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">背景：Geometry for Attention → Geometry as Computation</div>
+
+  <p>CliffordNet 处于三条研究脉络的交汇处：</p>
+
+  <ul>
+    <li><strong>几何代数神经网络</strong>：Clifford Neural Layers (ICLR 2023)、Clifford Group Equivariant NNs (NeurIPS 2023 oral)、GCAN (ICML 2023) 证明 geometric product 可用于构建具有明确几何性质的神经层</li>
+    <li><strong>线性复杂度视觉模型</strong>：Mamba/SSM 通过状态空间模型替代 quadratic attention；VMamba 用 cross-scan 序列化 2D 图像，核心问题是其扫描破坏了 2D 流形连续性</li>
+    <li><strong>数学第一性原理叙事</strong>：KAN 以 Kolmogorov-Arnold 定理为据；RiemannFormer 用 Riemannian geometry 改造 attention；CliffordNet 则将「几何本身」作为计算</li>
+  </ul>
+
+  <p>作者 Zhongping Ji（杭州电子科技大学）的研究路线很清晰：2025 年 RiemannFormer 用几何改造 attention → 2026 年 CliffordNet 用几何积直接替换 attention + FFN。两篇均为单作者 arXiv 预印本。</p>
+
+  <div class="callout"><strong>核心转向</strong>：从「Geometry for Attention」（几何用来修正 attention）到「Geometry as Computation」（几何本身就是 token 交互机制）。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">核心机制：Clifford Geometric Product</div>
+
+  <p>CliffordNet 的理论基础是 <strong>Clifford Geometric Product</strong>：</p>
+
+  <p style="text-align:center">
+  \[uv = u \cdot v + u \wedge v\]
+  </p>
+
+  <p>其中：</p>
+
+  <ul>
+    <li><strong>内积</strong> $u \cdot v$：捕获特征相干性（标量相似度），类似通道注意力</li>
+    <li><strong>外积</strong> $u \wedge v$：生成 bivector（双向量），表示 $u$ 和 $v$ 张成的 oriented plane，捕获结构变化和正交性</li>
+  </ul>
+
+  <p>标准的 dot-product attention 只保留标量相似度 $q \cdot k$，丢弃了方向性和结构信息。CliffordNet 使用完整的 geometric product，同时保留 scalar coherence 和 bivector structure，每次局部交互的信息密度远高于标量点积。</p>
+
+  <div class="callout"><strong>代数完备性</strong>：标准神经网络只用对称标量分量 $u \cdot v$（丢弃反对称 bivector 分量 $u \wedge v$）。CliffordNet 显式建模两者，称其为 <em>algebraic completeness</em>。</div>
+
+  <p>连续的 Clifford Interaction Ansatz：</p>
+
+  <p style="text-align:center">
+  \[F(H, C) = P(H \cdot C \oplus H \wedge C)\]
+  </p>
+
+  <p>其中 $P$ 是投影回 $\mathbb{R}^D$ 的线性算子。$H$ 是特征状态，$C(H)$ 是几何上下文。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">稀疏滚动：线性复杂度的关键</div>
+
+  <p>完整计算几何积需要 $O(D^2)$ 的外积展开（所有 channel 两两配对），维度爆炸。CliffordNet 用 <strong>Sparse Rolling</strong> 机制规避：</p>
+
+  <p>定义 channel 循环平移算子 $T_s$，对 offset $s \in S$（例如 $S = \{1, 2, 4, 8, 16\}$ for Lite）：</p>
+
+  <p style="text-align:center">
+  \[D_s(H, C) = \mathrm{SiLU}(H \odot T_s(C))\]
+  </p>
+
+  <p style="text-align:center">
+  \[W_s(H, C) = H \odot T_s(C) - T_s(H) \odot C\]
+  </p>
+
+  <p>$D_s$ 是内积分支（通过 Hadamard + SiLU），$W_s$ 是外积分支（反对称差分，生成 bivector coefficients）。两者 Concat 后线性投影回 $\mathbb{R}^C$。</p>
+
+  <p>复杂度：从 $O(ND^2)$ 降到 $O(ND|S|)$，对序列长度 $N$ 和通道 $D$ 线性，$|S|$ 是小常数（Nano 用 2 个 shifts，Lite 用 5 个 shifts）。</p>
+
+  <div class="info-box">
+    <h3>循环平移的几何意义</h3>
+    <p>循环平移 $T_s$ 采样 dense correlation matrix 的特定对角线。这种 structured circulant sparsity 可以理解为在 channel 维度上建立 ring-like topology，logarithmic path length 内传播全局信息，同时保持线性复杂度。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">架构详解：Dual-Stream + GGR</div>
+
+  <p>CliffordNet Block（No-gFFN-G variant）的 forward pass：</p>
+
+  <ol>
+    <li><strong>Input Norm</strong>: LayerNorm</li>
+    <li><strong>Dual-Stream Generation</strong>: 从 $X$ 生成两条支路 — Deterministic stream $Z_{\text{det}} = \text{Linear}(X)$ 和 Context stream $Z_{\text{ctx}} = \text{SiLU}(\text{BN}(\text{DWConv}(X)))$</li>
+    <li><strong>Differential Mode</strong>（主要结果使用）: $Z_{\text{ctx}} \leftarrow Z_{\text{ctx}} - Z_{\text{det}}$，把上下文变成离散 Laplacian $C \approx \Delta H$，作为高频滤波</li>
+    <li><strong>Sparse Rolling Interaction</strong>: 对每个 $s \in S$，计算 $W^{(s)}$（wedge）和 $D^{(s)}$（dot），Concat 后 Linear proj → $G_{\text{feat}}$</li>
+    <li><strong>Gated Geometric Residual (GGR)</strong>: 先 concat $[X, G_{\text{feat}}]$ 过 sigmoid gate 生成 $\alpha$，再 $H_{\text{mix}} = \text{SiLU}(X) + \alpha \odot G_{\text{feat}}$</li>
+    <li><strong>Output Update</strong>: $X_l = X_{l-1} + \gamma \odot H_{\text{mix}}$，<strong>无 FFN</strong></li>
+  </ol>
+
+  <p>GGR 的物理含义：一阶 Euler 离散化，SiLU 预滤波抑制背景噪声，Gated injection 确保几何更新由显著特征驱动。</p>
+
+  <p>gFFN 家族（可选增强）：</p>
+
+  <ul>
+    <li><strong>gFFN-L</strong>: $C = \Delta H$，local 高频边缘捕捉</li>
+    <li><strong>gFFN-G</strong>: $C = \text{GlobalAvg}(H)$，global 语义相干性</li>
+    <li><strong>gFFN-H</strong>: $C = \Delta H + \beta \cdot \text{GlobalAvg}(H)$，多层叠加</li>
+  </ul>
+
+  <p>关键设计选择：CliffordNet 不使用 Clifford-valued weights，只把 geometric product 作为轻量交互算子。这样既保留了 Clifford algebra 的代数结构，又避免了 GATr 等方法中 multivector 权重导致的参数爆炸（4D spacetime algebra 有 16 个分量）。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">Figure 1：稀疏滚动 Wedge Product 可视化</div>
+
+  <p>循环平移操作将当前状态 $h$ 与通道距离的上下文配对，而非计算完整二次外积。</p>
+
+  <div class="photo">
+    <img src="/assets/media/images/cliffordnet-2601/fig1.png" alt="CliffordNet Sparse Rolling Wedge Product" loading="lazy">
+    <div class="cap">图 1：稀疏滚动 Wedge Product 机制。循环平移 $T_s$ 通过采样固定 channel offset 来实现外积，避免显式构建 $D \times D$ 二次张量。几何上，这构造了一个 bivector（绿色平面），表示 $h$ 和 $c$ 张成的 oriented area 和正交性。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">实验结果</div>
+
+  <p>基准测试均在 CIFAR-100、相同训练配方下进行：200 epochs、AdamW、cosine annealing (no warmup)、AutoAugment + Random Erasing、patch size 2。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>模型</th><th>参数量</th><th>FFN</th><th>Shifts</th><th>训练时间(min)</th><th>CIFAR-100 Top-1</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>ShuffleNetV2 1.0×</td><td>1.4M</td><td>Yes</td><td>-</td><td>66.2</td><td>74.60%</td></tr>
+        <tr><td><strong>CliffordNet-Nano</strong></td><td><strong>1.4M</strong></td><td><strong>No</strong></td><td><strong>2</strong></td><td>79.9</td><td><strong>77.82%</strong></td></tr>
+        <tr><td>MobileNetV2</td><td>2.3M</td><td>Yes</td><td>-</td><td>64.5</td><td>70.90%</td></tr>
+        <tr><td>ViT-Tiny (mlp=1.0)</td><td>2.7M</td><td>Yes</td><td>-</td><td>149.9</td><td>65.87%</td></tr>
+        <tr><td><strong>CliffordNet-Lite</strong></td><td><strong>2.6M</strong></td><td><strong>No</strong></td><td><strong>5</strong></td><td>125.0</td><td><strong>79.05% (SOTA)</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>关键观察：</p>
+
+  <ul>
+    <li><strong>ViT-Tiny mlp ratio=1.0 掉到 65.87%</strong>：标准 attention 缺乏几何密度，减少 FFN 后崩溃，证明 dot-product attention 无法替代 FFN</li>
+    <li><strong>Nano 用 1.4M 参数匹配 ResNet-18 的 ~78%</strong>：8× 参数压缩，CliffordNet 无需 heavy FFN</li>
+    <li><strong>No-FFN 设计首次在 tiny 模型中达到 SOTA</strong>：几何积的表示密度足以替代通道混合器</li>
+  </ul>
+
+  <div class="callout"><strong>训练时间说明</strong>：CliffordNet 的 PyTorch 实现（torch.roll）尚未利用 cuDNN 优化，Nano 训练时间 79.9min vs ShuffleNetV2 66.2min。作者已在 README 中预告 Triton fused kernel 可实现 RTX 4090 上 10× kernel speedup 和 2× 端到端加速。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">技术对比：为什么 CliffordNet 有效</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>CliffordNet</th><th>ViT/Attention</th><th>MobileNetV2/CNN</th><th>Mamba/VMamba</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>核心交互</td><td>$H \cdot C + H \wedge C$</td><td>$q \cdot k$（标量）</td><td>卷积核混合</td><td>状态转移</td></tr>
+        <tr><td>信息密度</td><td>标量 + bivector</td><td>仅标量</td><td>卷积核参数</td><td>recurrent compression</td></tr>
+        <tr><td>复杂度</td><td>$O(ND|S|)$</td><td>$O(N^2)$</td><td>$O(N)$</td><td>$O(N)$</td></tr>
+        <tr><td>FFN 依赖</td><td>冗余</td><td>必需</td><td>隐式</td><td>仍有</td></tr>
+        <tr><td>2D 拓扑</td><td>原生 2D grid</td><td>展平为序列</td><td>原生 2D</td><td>cross-scan 序列化</td></tr>
+        <tr><td>全局建模</td><td>局部涌现 / gFFN-G</td><td>显式 attention</td><td>receptive field 堆叠</td><td>recurrent state</td></tr>
+        <tr><td>主要归纳偏置</td><td>代数完备性</td><td>token 全局匹配</td><td>局部平移等变</td><td>序列扫描路径</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>与 ViT/Attention 的核心差异</strong>：dot-product attention 将 token 间关系压缩为标量相似度，丢弃方向性、有向面积、张成平面等几何结构。CliffordNet 用 geometric product 保留 scalar + bivector 两个分量，每次交互的信息密度更高，因此 No-FFN 仍能维持高性能。</p>
+
+  <p><strong>与 CNN 的差异</strong>：ShuffleNetV2 的 channel shuffle 是手工工程启发式，CliffordNet 的 rolling interaction 可解释为 structured circulant sparsity（采样 correlation matrix 特定对角线），但提供了更明确的代数解释。</p>
+
+  <p><strong>与 SSM/VMamba 的差异</strong>：VMamba 的 cross-scan 把 2D 图像切成离散 1D 路径，破坏流形连续性。CliffordNet 保持原生 2D feature grid，用 depth-wise convolution 建立局部上下文。</p>
+
+  <p><strong>与已有 Clifford 网络的差异</strong>：GATr/Clifford Neural Layers 把 weights 作为 multivectors，导致 4D spacetime algebra 有 16 个分量，参数组合爆炸。CliffordNet 仅将 geometric product 作为轻量交互算子，在 real-valued feature maps 上执行，兼顾效率与代数完备性。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">复现注意事项</div>
+
+  <p>核心算子和 Algorithm 1 伪代码完整，复现可行。但以下细节原文未明确给出：</p>
+
+  <ul>
+    <li>完整 loss function（cross-entropy？label smoothing？）</li>
+    <li>Learning rate、weight decay、batch size、DropPath rate、LayerScale $\gamma$ 初始化值</li>
+    <li>每个 variant 的 depth $L$ 和 channel $D$ 具体值（Nano/Lite 的 32/64/96 命名约定未说明）</li>
+    <li>gFFN-G 的 broadcasting 细节和 projection 是否共享</li>
+    <li>数据处理：mean/std、CIFAR-100 normalization 参数</li>
+  </ul>
+
+  <p>最小可复现版本应优先实现 No-gFFN-G variant：PatchEmbed + 重复 CliffordNet Block（LayerNorm/Linear det/DWConv+BN+SiLU/diff mode/shift set rolling/Dot+Wedge/Linear projection/sigmoid gate/SiLU state prefilter/LayerScale residual/DropPath）+ global pooling + classifier，训练用 CIFAR-100/AdamW/cosine/200 epochs/AutoAugment/Random Erasing/patch size 2，超参数从开源代码补齐。</p>
+
+  <div class="info-box">
+    <h3>官方代码仓库</h3>
+    <p><a href="https://github.com/ParaMind2025/CAN" target="_blank">ParaMind2025/CAN</a> — stars=149, forks=19, 最近更新 2026-03-31。支持两种运行模式：High-performance mode（自定义 CUDA/Triton kernel，RTX 4090 优化）和 Compatibility mode（纯 PyTorch fallback）。实验覆盖 CIFAR-100、Kvasir-Dataset-v2、ISIC2018，暂未在 ImageNet-1K/COCO/ADE20K 上验证。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">局限性与未验证问题</div>
+
+  <ul>
+    <li><strong>CIFAR-100 验证为主</strong>：ImageNet 等大规模数据集结果缺失，医疗图像（Kvasir/ISIC）分类也属小规模验证</li>
+    <li><strong>序列化批评缺乏严格证明</strong>：CliffordNet 认为 cross-scan 破坏 2D 流形，但 VMamba 用四方向扫描已部分缓解单一路径偏置，当前 CIFAR-100 结果支持其有效性，还不足以完全证明理论解释的因果性</li>
+    <li><strong>几何严格性边界</strong>：当前只是 Grade 1 × Grade 1 向量乘积（生成 Grade 0 scalar + Grade 2 bivector），未来扩展到 vector-bivector product 未实现</li>
+    <li><strong>训练细节不透明</strong>：完整超参数和模型配置缺失，影响严谨复现</li>
+    <li><strong>arXiv preprint 状态</strong>：尚无正式会议接收信息</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">结论</div>
+
+  <p>CliffordNet 提出了一个野心勃勃的主张：用代数完备的 Clifford Geometric Product 同时替代 attention 和 FFN，实现参数效率突破。其核心洞察是「几何积的表示密度足够高，使得 FFN 变得冗余」。</p>
+
+  <p>这一工作的价值不在于在 CIFAR-100 上超过 ResNet-18，而在于它提出了一种新的架构设计范式：从数学第一性原理（代数完备性）出发，而非启发式工程模块堆叠。如果 local geometric interaction 足够密集，全局理解可以从中涌现——这暗示了「geometry is all you need」的可能性。</p>
+
+  <p>关键开放问题：这种几何驱动的架构能否扩展到 ImageNet 等大规模任务？bivector 结构在更高分辨率、更复杂视觉场景中是否仍然有效？No-FFN 设计在下游任务（检测、分割）中能否维持优势？</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2601.06793" target="_blank">CliffordNet: All You Need is Geometric Algebra — arXiv:2601.06793</a></li>
+    <li><a href="https://github.com/ParaMind2025/CAN" target="_blank">ParaMind2025/CAN — 官方代码仓库</a></li>
+    <li><a href="https://arxiv.org/abs/2506.07405" target="_blank">RiemannFormer — arXiv:2506.07405 (同作者前序工作)</a></li>
+    <li><a href="https://arxiv.org/abs/2209.04934" target="_blank">Clifford Neural Layers for PDE Modeling — arXiv:2209.04934</a></li>
+    <li><a href="https://arxiv.org/abs/2305.18415" target="_blank">Geometric Algebra Transformer (GATr) — arXiv:2305.18415</a></li>
+    <li><a href="https://arxiv.org/abs/2312.00752" target="_blank">Mamba: Linear-Time Sequence Modeling — arXiv:2312.00752</a></li>
+  </ul>
+</div>
