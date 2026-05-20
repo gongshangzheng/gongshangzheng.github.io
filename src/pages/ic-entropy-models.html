@@ -3,7 +3,7 @@ title: "Hyperprior 之后：学习式图像压缩熵模型演化全景"
 description: "从 Ballé Scale Hyperprior 到 MambaIC 和 HPCM-1B，追踪端到端图像压缩熵模型的完整演化路径。11个Phase深度拆解。"
 date: 2026-05-20
 created_at: 2026-05-20T13:28:00
-updated_at: 2026-05-20T13:28:00
+updated_at: 2026-05-20T17:55:00
 tags: [image-compression, entropy-model, hyperprior, transformer, mamba, scaling-law]
 categories: ["图像压缩"]
 mathjax: true
@@ -33,11 +33,18 @@ page_style: |
   <div class="ch-label">Chapter 1 · 核心问题</div>
   <div class="ch-title">为什么熵模型决定压缩率</div>
   <p>端到端学习式图像压缩的标准框架（Ballé 2016/2017）由四步组成：分析变换 g_a 将图像编码为潜在表示 y，量化器将 y 离散化为 ŷ，熵编码器将 ŷ 压缩为比特流，合成变换 g_s 将 ŷ 解码为重建图像 x̂。</p>
-  <p>训练目标是最小化 Rate-Distortion 损失 L = λR + D。其中 D（失真）由分析/合成变换网络决定，而 R（比特率）由熵模型决定。具体地，R = −log₂ p(ŷ)，即比特率等于潜在表示在熵模型下的负对数似然。</p>
+  <p>训练目标是最小化 Rate-Distortion 损失 \(L = R + \lambda D\)。其中 \(D\)（失真）由分析/合成变换网络决定，而 \(R\)（比特率）由熵模型决定。具体地，\(R = -\log_2 p(\hat{y})\)，即比特率等于潜在表示在熵模型下的负对数似然。</p>
 
-  <div class="callout"><strong>核心洞察</strong>：熵模型估计的 p(ŷ) 越精准，同样失真下所需的比特数越少。熵模型的质量直接决定压缩效率。</div>
+  <div class="callout"><strong>核心洞察</strong>：熵模型估计的 \(p(\hat{y})\) 越精准，同样失真下所需的比特数越少。熵模型的质量直接决定压缩效率。</div>
 
-  <p>问题在于：量化后的潜在表示 ŷ 的元素之间并非独立——相邻空间位置存在强相关性，不同通道之间也存在统计依赖。如何建模这些依赖，是熵模型演化的核心线索。</p>
+  <p>这里有一个容易被忽略的细节：熵模型并不直接改变重建图像，它改变的是算术编码器给每个 latent 符号分配的码长。如果概率估计偏低，符号会被分配更长的码字；如果概率估计贴近真实分布，平均码长接近 Shannon 下界。因此，熵模型的改进通常表现为 BD-Rate 下降，而非单张图视觉效果的显著变化。</p>
+
+  <div class="info-box">
+    <h3>从信息论看熵模型</h3>
+    <p>真实 latent 分布记为 \(q(\hat{y})\)，模型估计分布记为 \(p(\hat{y})\)。平均码长对应交叉熵 \(H(q,p)=H(q)+D_{KL}(q\Vert p)\)。其中 \(H(q)\) 是数据本身无法绕开的熵，真正可优化的是 KL 项。所有后续工作，本质上都在减少这个概率模型错配。</p>
+  </div>
+
+  <p>问题在于：量化后的潜在表示 ŷ 的元素之间并非独立。相邻空间位置存在强相关性，不同通道之间也存在统计依赖。如何建模这些依赖，是熵模型演化的核心线索。</p>
 </div>
 
 <!-- ============================================================
@@ -59,9 +66,14 @@ page_style: |
     <div class="cap">Ballé et al. Scale Hyperprior 架构。超先验网络 h_a/h_s 传递额外的边信息 z，用于预测每个潜在元素的高斯尺度参数 σ</div>
   </div>
 
-  <p>Ballé 的核心创新：引入第二层 VAE——超先验（Hyperprior）。在分析变换 g_a 之后，再接一个超分析变换 h_a，将潜在表示 y 压缩为超先验 z。z 作为边信息单独编码传输。</p>
-  <p>在解码端，超合成变换 h_s 从 z 预测每个潜在元素的高斯分布参数（σ），从而将 p(y_i) 从固定先验提升为条件先验 p(y_i | z)。</p>
-  <p>这一架构引出了一个极其优雅的层次化概率模型：超先验 z 捕获全局的、粗粒度的空间依赖（如"这片区域纹理丰富，那片区域平坦"），而主 latent y 在给定 z 的条件下近似独立。</p>
+  <p>Ballé 的核心创新：引入第二层 VAE，也就是超先验（Hyperprior）。在分析变换 \(g_a\) 之后，再接一个超分析变换 \(h_a\)，将潜在表示 \(y\) 压缩为超先验 \(z\)。\(z\) 作为边信息单独编码传输。</p>
+  <p>在解码端，超合成变换 \(h_s\) 从 \(z\) 预测每个潜在元素的高斯分布参数（\(\sigma\)），从而将 \(p(y_i)\) 从固定先验提升为条件先验 \(p(y_i \mid z)\)。</p>
+  <p>这一架构引出了一个极其优雅的层次化概率模型：超先验 \(z\) 捕获全局的、粗粒度的空间依赖，例如“这片区域纹理丰富，那片区域平坦”，而主 latent \(y\) 在给定 \(z\) 的条件下近似独立。</p>
+
+  <div class="info-box">
+    <h3>为什么要额外传输 z？</h3>
+    <p>直觉上，发送 \(z\) 会增加码率。但如果 \(z\) 能显著降低 \(y\) 的不确定性，总代价 \(R_y + R_z\) 反而下降。这和视频编码里先传运动信息、再传残差的思想相似：边信息本身花费比特，但它让主体信号更容易编码。</p>
+  </div>
 
   <div class="callout"><strong>贡献</strong>：引用 4000+，几乎所有后续工作的基础架构。Hyperprior 的思想（用额外信息条件化主 latent 的概率估计）贯穿了整个演化过程。</div>
 </div>
@@ -80,8 +92,13 @@ page_style: |
   </div>
 
   <p>Minnen et al.（NeurIPS 2018）的洞察：超先验捕获全局依赖，但局部依赖仍然被忽略。解决方案：在超先验基础上加入空间自回归（Autoregressive）上下文。</p>
-  <p>概率模型从 p(y_i | z) 提升为 p(y_i | y_{<i}, z)——每个元素的概率不仅依赖超先验 z，还依赖所有已解码的先前元素。</p>
-  <p>同时，将单高斯似然替换为离散化高斯混合模型（GMM），进一步提高了概率估计的灵活性。</p>
+  <p>概率模型从 \(p(y_i \mid z)\) 提升为 \(p(y_i \mid y_{<i}, z)\)。每个元素的概率不仅依赖超先验 \(z\)，还依赖所有已解码的先前元素。</p>
+  <p>同时，将单高斯似然替换为离散化高斯混合模型（GMM），进一步提高了概率估计的灵活性。GMM 的意义在于允许 latent 分布呈现多峰结构，而不是强行用一个均值和尺度解释所有局部模式。</p>
+
+  <div class="info-box">
+    <h3>AR 上下文的收益来自哪里</h3>
+    <p>空间 AR 模型利用的是“已经解码的邻居”。在自然图像中，边缘、纹理和局部重复结构会让相邻 latent 呈现强条件依赖。给定左上区域后，当前符号的不确定性下降，码长随之下降。这就是 AR 能显著提升 RD 性能的根本原因。</p>
+  </div>
 
   <div class="admonition warning">
     <div class="admonition-title">速度瓶颈</div>
@@ -143,6 +160,18 @@ page_style: |
 
   <h3>Phase 8: TCM — Transformer-CNN Mixture（2023, CVPR）</h3>
   <p>混合架构：CNN 处理局部特征（高效），Transformer 捕获全局依赖（精准）。这种设计平衡了局部建模与全局注意力。</p>
+  <p>从写作线索上看，Transformer 进入熵模型并不是为了替代所有卷积，而是为了解决卷积上下文模型的感受野上限。局部 CNN 能快速捕获边缘、纹理、重复块；全局注意力则补足远距离结构依赖，例如天空大面积平滑区域、建筑立面重复纹理、前景物体与背景之间的统计关系。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>擅长建模</th><th>主要代价</th><th>适合位置</th></tr></thead>
+      <tbody>
+        <tr><td>CNN</td><td>局部连续性、边缘、纹理</td><td>长程依赖弱</td><td>analysis/synthesis transform、局部 entropy parameters</td></tr>
+        <tr><td>Transformer</td><td>远距离依赖、全局结构</td><td>O(n²) 计算与显存</td><td>低分辨率 latent、窗口化上下文</td></tr>
+        <tr><td>Hybrid</td><td>局部与全局折中</td><td>结构复杂、调参成本高</td><td>实用神经 codec 的主干</td></tr>
+      </tbody>
+    </table>
+  </div>
 </div>
 
 <!-- ============================================================
@@ -159,11 +188,15 @@ page_style: |
   </div>
 
   <h3>Phase 9: MambaIC / CMIC（2025, CVPR）★★★</h3>
-  <p>2024–2025 年最活跃的新兴方向。状态空间模型（SSM）提供了线性复杂度的全局感受野——理论上兼具 CNN 的高效和 Transformer 的全局建模能力。</p>
+  <p>2024–2025 年最活跃的新兴方向。状态空间模型（SSM）提供了线性复杂度的全局感受野，理论上兼具 CNN 的高效和 Transformer 的全局建模能力。</p>
   <p>MambaIC 相比 CNN-Transformer 混合架构降低了 63.9% 的计算量，同时 RD 性能有所提升。CMIC 进一步引入内容感知机制，根据图像局部复杂度自适应调整建模粒度。</p>
+  <p>SSM 路线的关键不是“更换一个 backbone”这么简单，而是给熵模型提供一种新的序列化方式：把二维 latent 展平成若干扫描序列，通过选择性状态更新捕获长程依赖。它避免了注意力矩阵的二次复杂度，又保留了跨区域信息传递能力。</p>
+
+  <div class="callout"><strong>判断</strong>：Mamba/SSM 的吸引力主要在高分辨率和实时场景。若目标是极限 RD 性能，Transformer 仍可能有优势；若目标是压缩系统部署，SSM 的线性复杂度更有工程价值。</div>
 
   <h3>Phase 10: Dictionary-based Entropy Model（2025, CVPR）</h3>
   <p>全新思路：通过可学习字典（codebook）从训练集提取典型结构，辅助熵模型预测。不再依赖参数化的概率分布假设，而是用数据驱动的方式直接从数据中学习先验知识。</p>
+  <p>字典式熵模型可以理解为“把常见 latent 模式显式存起来”。当局部 latent 与某些字典原型接近时，模型可以借助原型给出更尖锐的概率分布。这条路线与传统 GMM 不同：GMM 假设概率分布的形状，字典方法更接近检索式先验或记忆增强模型。</p>
 </div>
 
 <!-- ============================================================
@@ -178,6 +211,12 @@ page_style: |
   <p>以多尺度编码顺序（1/4 → 1/2 → 1×）高效建模长程依赖。分层渐进式上下文：不同层级的 latent 使用不同粒度的上下文。</p>
   <p>HPCM-1B 将模型扩展到 10 亿参数，发现了压缩领域的 Scaling Law：测试损失与模型规模/训练计算之间存在可预测的幂律关系。这是压缩领域首次验证 Scaling Law 的存在。</p>
   <p>更准确地说，HPCM-1B 不是单纯“模型更大”，而是把 learned image compression 从小模型架构搜索推进到 scaling-law 实验范式。它说明 entropy/context model 的容量可能仍是 RD 性能瓶颈。</p>
+  <p>这对研究策略的影响很直接：过去的论文常以模块创新为主，例如换一个 context model、换一个 prior、换一种分组顺序；Scaling Law 视角则要求我们同时报告模型规模、训练计算、数据规模和测试损失之间的关系。压缩模型开始接近基础模型研究范式。</p>
+
+  <div class="admonition note">
+    <div class="admonition-title">需要谨慎的地方</div>
+    <div class="admonition-content"><p>Scaling Law 并不自动意味着“越大越好”。压缩系统还受编码/解码延迟、内存、算术编码吞吐、设备端部署约束限制。HPCM-1B 的意义主要是证明容量仍能换取 RD 收益，而不是证明 1B 参数 codec 已经适合实际部署。</p></div>
+  </div>
 
   <div class="table-wrap">
     <table>
@@ -250,6 +289,23 @@ page_style: |
   </div>
 </div>
 
+<div class="section fade-in">
+  <div class="section-title">研究雷达：下一步优先读什么</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>优先级</th><th>论文/方向</th><th>为什么值得读</th><th>预期产出</th></tr></thead>
+      <tbody>
+        <tr><td>高</td><td>CMIC / Content-Aware Mamba</td><td>直接延续 MambaIC，验证内容自适应 SSM 是否能成为新一代高效 entropy model</td><td>补充 SSM 熵模型专题</td></tr>
+        <tr><td>高</td><td>FlashGMM</td><td>回到 GMM 似然本身，关注熵编码速度与复杂度，是“老范式工程化”的代表</td><td>补充 GMM 到快速似然建模线索</td></tr>
+        <tr><td>高</td><td>HPCM / NVC-1B</td><td>把压缩研究推向 scaling law，需要单篇深读</td><td>独立论文精读 + scaling law 小综述</td></tr>
+        <tr><td>中</td><td>Dictionary-based Entropy Model</td><td>引入检索式/记忆式先验，可能连接 codebook、tokenizer 与 compression prior</td><td>补一节“记忆增强熵模型”</td></tr>
+        <tr><td>中</td><td>GLIC / GNN-based Compression</td><td>用图结构建模空间关系，与 CNN/Transformer/SSM 构成第四种依赖建模范式</td><td>图神经网络压缩专题</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <!-- ============================================================
   参考来源
   ============================================================ -->
@@ -257,14 +313,19 @@ page_style: |
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
+    <li>Ballé et al. (2017) <em>End-to-end Optimized Image Compression</em> — <a href="https://arxiv.org/abs/1611.01704" target="_blank">arXiv:1611.01704</a></li>
     <li>Ballé et al. (2018) <em>Variational Image Compression with a Scale Hyperprior</em> — <a href="https://arxiv.org/abs/1802.01436" target="_blank">arXiv:1802.01436</a></li>
     <li>Minnen et al. (2018) <em>Joint Autoregressive and Hierarchical Priors</em> — <a href="https://arxiv.org/abs/1809.02736" target="_blank">arXiv:1809.02736</a></li>
     <li>Cheng et al. (2020) <em>Learned Image Compression with Discretized Gaussian Mixture Likelihoods and Attention Modules</em> — <a href="https://arxiv.org/abs/2001.01568" target="_blank">arXiv:2001.01568</a></li>
     <li>He et al. (2021) <em>Checkerboard Context Model for Efficient Learned Image Compression</em> — <a href="https://arxiv.org/abs/2103.15306" target="_blank">arXiv:2103.15306</a></li>
     <li>He et al. (2022) <em>ELIC: Efficient Learned Image Compression with Unevenly Grouped Space-Channel Contextual Adaptive Coding</em> — <a href="https://arxiv.org/abs/2203.10886" target="_blank">arXiv:2203.10886</a></li>
-    <li>Entroformer (2022) — <a href="https://arxiv.org/abs/2202.05492" target="_blank">arXiv:2202.05492</a></li>
+    <li>Qian et al. (2022) <em>Entroformer: A Transformer-based Entropy Model for Learned Image Compression</em> — <a href="https://arxiv.org/abs/2202.05492" target="_blank">arXiv:2202.05492</a></li>
+    <li>Zhu et al. (2022) <em>Contextformer: A Transformer with Spatio-Channel Attention for Context Modeling in Learned Image Compression</em> — <a href="https://arxiv.org/abs/2203.02452" target="_blank">arXiv:2203.02452</a></li>
+    <li>Liu et al. (2023) <em>Learned Image Compression with Mixed Transformer-CNN Architectures</em> — <a href="https://openaccess.thecvf.com/content/CVPR2023/html/Liu_Learned_Image_Compression_With_Mixed_Transformer-CNN_Architectures_CVPR_2023_paper.html" target="_blank">CVPR 2023</a></li>
     <li>MambaIC (2025) — <a href="https://arxiv.org/abs/2503.12461" target="_blank">arXiv:2503.12461</a></li>
+    <li>CMIC / Content-Aware Mamba for Learned Image Compression (2026) — <a href="https://arxiv.org/abs/2508.02192" target="_blank">arXiv:2508.02192</a></li>
     <li>HPCM / NVC-1B (2025) — <a href="https://arxiv.org/abs/2508.09075" target="_blank">arXiv:2508.09075</a></li>
+    <li>cshw2021 <em>Learned-Image-Video-Compression</em> 论文索引 — <a href="https://github.com/cshw2021/Learned-Image-Video-Compression" target="_blank">GitHub</a></li>
   </ul>
 </div>
 
