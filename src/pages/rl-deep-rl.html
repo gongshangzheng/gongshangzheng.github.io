@@ -1,0 +1,344 @@
+---
+title: "深度强化学习：DQN、策略梯度、PPO 与 GRPO"
+description: "详解深度强化学习的核心算法：DQN 的经验回放与目标网络、策略梯度定理、PPO 的裁剪目标函数、GRPO 在大模型对齐中的应用，以及 On-Policy 与 Off-Policy 的深度对比。"
+date: 2026-05-20T10:37:10
+created_at: 2026-05-20T10:37:10
+updated_at: 2026-05-20T11:10:00
+tags: [强化学习, 深度学习, DQN, PPO, GRPO, 策略梯度]
+categories: ["教程"]
+mathjax: true
+hero_title: "深度强化学习"
+hero_sub: "模块 04 · DQN、策略梯度、PPO 与 GRPO"
+hero_tagline: "当状态空间爆炸，表格方法失效，深度网络登场"
+---
+
+<!-- INJECT toc_sidebar -->
+
+<div class="wrap">
+
+<!-- ===== 为什么需要深度 RL ===== -->
+<div class="section fade-in">
+  <div class="section-title">为什么需要深度强化学习？</div>
+
+  <p>表格型方法（Q 表格）有两个致命问题：</p>
+
+  <ol>
+    <li><strong>维度灾难</strong>：围棋有 $10^{170}$ 个状态，Atari 游戏的状态空间（像素组合）几乎是无限的。无法为每个状态存一行。</li>
+    <li><strong>泛化缺失</strong>：两个只差一个像素的画面，在 Q 表中是完全独立的条目。但它们几乎相同，应该有相似的价值。</li>
+  </ol>
+
+  <p>解决方案：<strong>用一个函数 $F(s) = [q_{a_1}, q_{a_2}, \ldots]$ 来替代 Q 表格</strong>。输入状态，输出每个动作的 Q 值。这个函数就是<strong>神经网络</strong>。</p>
+
+  <div class="callout"><strong>函数近似</strong>：神经网络通过已有样本学习规律，对未见过或极少见过的相似状态也能估计出合理的 Q 值，从而克服维度灾难并实现泛化。</div>
+</div>
+
+<!-- ===== DQN ===== -->
+<div class="ch fade-in">
+  <div class="ch-label">Section 01</div>
+  <div class="ch-title">DQN：深度 Q 网络</div>
+
+  <p>Deep Q-Network（DQN）由 DeepMind 在 2015 年提出，首次让 AI 在 Atari 游戏上达到人类水平。它的核心是用深度神经网络 $Q(s, a; \theta)$ 来近似 Q 函数。</p>
+
+  <h3>损失函数</h3>
+
+  <p>通过最小化 TD 误差的均方差来更新网络参数 $\theta$：</p>
+  <p style="text-align:center">$$L(\theta) = \mathbb{E}\Bigl[\bigl(r + \gamma \max_{a'} Q_{\text{target}}(s', a'; \theta^-) - Q(s, a; \theta)\bigr)^2\Bigr]$$</p>
+
+  <p>其中 $\theta^-$ 是目标网络的参数。</p>
+
+  <h3>DQN 的两大核心创新</h3>
+
+  <p>DQN 之所以能成功训练，归功于两个关键技巧：</p>
+
+  <div class="info-box">
+    <h3>1. 经验回放（Experience Replay）</h3>
+    <p>智能体与环境交互的数据 $(s, a, r, s', \text{done})$ 存入回放池 $D$。训练时从 $D$ 中<strong>随机采样</strong>一个 mini-batch。</p>
+    <p><strong>为什么有效</strong>：交互数据具有极强的时序相关性（连续帧几乎相同）。如果逐帧训练，网络会"学了后面的，忘了前面的"（类似灾难性遗忘）。随机采样打破了时间相关性，让训练更稳定。</p>
+    <p><strong>类比</strong>：用《超级玛丽》第一关训练的 agent，可能无法处理第二关。当它学第二关时，又会遗忘第一关。经验回放让 agent 能反复回顾第一关的经验。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>2. 目标网络（Target Network）</h3>
+    <p>使用两个结构相同的网络：</p>
+    <ul>
+      <li><strong>主网络</strong> $Q(s, a; \theta)$：每步都更新</li>
+      <li><strong>目标网络</strong> $Q_{\text{target}}(s, a; \theta^-)$：参数冻结，每隔 $C$ 步复制主网络的参数</li>
+    </ul>
+    <p><strong>为什么有效</strong>：如果只有一个网络，TD 目标 $r + \gamma \max Q(s', a'; \theta)$ 中的 $\theta$ 也在被更新。这就像"追逐一个不断移动的目标"，训练极不稳定。目标网络冻结了 TD 目标，让主网络有一个稳定的优化方向。</p>
+  </div>
+
+  <h3>DQN 算法流程</h3>
+
+  <ol>
+    <li>初始化回放池 $D$、主网络 $Q$ 和目标网络 $Q_{\text{target}}$（参数相同）</li>
+    <li>对每个时间步：
+      <ol>
+        <li>用 $\epsilon$-Greedy 策略选择动作 $a$</li>
+        <li>执行 $a$，获得 $r, s'$</li>
+        <li>将 $(s, a, r, s')$ 存入 $D$</li>
+        <li>从 $D$ 随机采样 mini-batch</li>
+        <li>计算目标值 $y = r + \gamma \max_{a'} Q_{\text{target}}(s', a'; \theta^-)$</li>
+        <li>梯度下降更新 $\theta$ 以减小 $L(\theta)$</li>
+        <li>每隔 $C$ 步：$\theta^- \leftarrow \theta$</li>
+      </ol>
+    </li>
+  </ol>
+</div>
+
+<!-- ===== 补充：Dueling DQN ===== -->
+<div class="section fade-in">
+  <div class="section-title">补充：Dueling DQN 架构</div>
+
+  <p>标准 DQN 网络直接输出每个动作的 Q 值。Dueling DQN 将网络拆分为两条流：</p>
+
+  <ul>
+    <li><strong>状态价值流</strong> $V(s; \theta, \beta)$：衡量状态本身的好坏，与动作无关</li>
+    <li><strong>优势函数流</strong> $A(s, a; \theta, \alpha)$：衡量在状态 $s$ 下选择动作 $a$ 比平均水平好多少</li>
+  </ul>
+
+  <p>合并公式：</p>
+  <p style="text-align:center">$$Q(s, a; \theta, \alpha, \beta) = V(s; \theta, \beta) + \Bigl(A(s, a; \theta, \alpha) - \frac{1}{|A|}\sum_{a'} A(s, a'; \theta, \alpha)\Bigr)$$</p>
+
+  <p>减去均值是为了可识别性（否则 $V$ 和 $A$ 可以同时加减一个常数而不改变 $Q$）。</p>
+
+  <div class="callout"><strong>为什么更好</strong>：在许多状态下，动作的选择对价值影响不大（比如路很宽，往哪走都差不多）。Dueling 架构让状态价值流直接学习这种"无关动作"的信息，而不必为每个动作单独学习一遍，提高了学习效率。</div>
+</div>
+
+<!-- ===== 策略网络 ===== -->
+<div class="ch fade-in">
+  <div class="ch-label">Section 02</div>
+  <div class="ch-title">策略网络与策略梯度</div>
+
+  <p>DQN 系列方法学习的是<strong>价值函数</strong>（Q 值），然后从中推导策略。另一种思路是<strong>直接学习策略</strong>——用一个神经网络 $\pi_\theta(a|s)$ 直接输出每个动作的概率。</p>
+
+  <h3>目标函数</h3>
+
+  <p>我们希望最大化期望回报：</p>
+  <p style="text-align:center">$$J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\Bigl[\sum_{t=0}^{\infty} \gamma^t r_t\Bigr]$$</p>
+
+  <h3>策略梯度定理</h3>
+
+  <p>经过推导，策略梯度为：</p>
+  <p style="text-align:center">$$\nabla_\theta J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\Bigl[\sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t|s_t) \cdot G_t\Bigr]$$</p>
+
+  <p>其中 $G_t = \sum_{k=t}^{T} \gamma^{k-t} r_k$ 是从时间步 $t$ 开始的累积折扣回报。</p>
+
+  <div class="info-box">
+    <h3>策略梯度的直觉</h3>
+    <p>核心思想极其优雅：</p>
+    <ul>
+      <li>如果一条轨迹的回报 $G_t$ 是正数，梯度方向增加这条轨迹上所有动作的概率</li>
+      <li>如果回报是负数，梯度方向降低这些动作的概率</li>
+      <li>回报越大，调整幅度越大</li>
+    </ul>
+    <p>就像一个教练看比赛回放：赢球了就加强那些动作，输球了就减少。但教练不关心"为什么输"（不需要价值函数），只关心"输了就要改"。</p>
+  </div>
+
+  <h3>三个重要的改进</h3>
+
+  <p>原始策略梯度有三个问题，对应三个改进：</p>
+
+  <ol>
+    <li><strong>引入 $\gamma$</strong>：远期奖励权重递减，减少方差。</li>
+    <li><strong>引入因果性</strong>：$t$ 时刻的动作不应影响 $t$ 之前的奖励。所以用 $G_t$（从 $t$ 开始的回报）而非整条轨迹的总回报。</li>
+    <li><strong>引入 Baseline</strong>：减去一个基线 $b(s_t)$ 来减小方差。直觉：如果所有回报都是正的，即使很差的动作也会被增加概率。减去基线后，只有"比平均水平好"的动作才被强化。</li>
+  </ol>
+
+  <p>改进后的梯度：</p>
+  <p style="text-align:center">$$\nabla_\theta J(\theta) = \mathbb{E}\Bigl[\sum_{t} \nabla_\theta \log \pi_\theta(a_t|s_t) \cdot \hat{A}_t\Bigr]$$</p>
+
+  <p>其中 $\hat{A}_t = G_t - b(s_t)$ 是<strong>优势函数</strong>（Advantage Function）的估计。</p>
+
+  <h3>方差与偏差的权衡</h3>
+
+  <p>$\hat{A}_t$ 的估计有多种方式，对应不同的偏差-方差权衡：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>估计方式</th><th>偏差</th><th>方差</th></tr></thead>
+      <tbody>
+        <tr><td>蒙特卡洛</td><td>$G_t$（完整回报）</td><td>无</td><td>高</td></tr>
+        <tr><td>TD(0)</td><td>$r_t + \gamma V(s_{t+1}) - V(s_t)$</td><td>高</td><td>低</td></tr>
+        <tr><td>GAE（PPO 用）</td><td>$\lambda$-加权多步回报</td><td>中</td><td>中</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ===== PPO ===== -->
+<div class="ch fade-in">
+  <div class="ch-label">Section 03</div>
+  <div class="ch-title">PPO：近端策略优化</div>
+
+  <p>PPO（Proximal Policy Optimization）由 OpenAI 在 2017 年提出，是当前最流行的深度 RL 算法之一。</p>
+
+  <h3>普通策略网络的问题</h3>
+
+  <ol>
+    <li>当前动作只应影响其后的奖励，不应影响之前的</li>
+    <li>当前动作对后续动作的影响应随步数衰减</li>
+    <li><strong>最致命</strong>：策略梯度可能一步更新太大，直接把策略搞崩溃</li>
+  </ol>
+
+  <h3>PPO 的核心思想</h3>
+
+  <p>PPO 的核心：<strong>限制策略更新的幅度</strong>，确保新策略不会偏离旧策略太远。</p>
+
+  <p>用"学生改正"的类比：</p>
+  <ul>
+    <li><strong>On-Policy</strong>：老师批评小明，小明改之</li>
+    <li><strong>Off-Policy</strong>：老师批评小明，其他人改之</li>
+  </ul>
+
+  <h3>重要性采样</h3>
+
+  <p>PPO 使用旧策略收集数据，新策略更新。这需要<strong>重要性采样</strong>来修正分布差异：</p>
+  <p style="text-align:center">$$r_t(\theta) = \frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{\text{old}}}(a_t|s_t)}$$</p>
+
+  <p>如果旧策略选某个动作的概率是 10%，新策略是 20%，那么重要性权重就是 2——新策略下这个动作更可能出现，所以要打折。</p>
+
+  <h3>裁剪目标函数</h3>
+
+  <p>直接使用重要性权重可能导致更新幅度过大（新策略偏离太远）。PPO 的解决方案：<strong>裁剪</strong>。</p>
+  <p style="text-align:center">$$L^{\text{CLIP}}(\theta) = \mathbb{E}_t\Bigl[\min\bigl(r_t(\theta) \hat{A}_t,\; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t\bigr)\Bigr]$$</p>
+
+  <p>其中 $\epsilon$ 通常取 0.1-0.2。</p>
+
+  <div class="info-box">
+    <h3>裁剪的直觉</h3>
+    <p>我们不让概率比 $r_t(\theta)$ 超出 $[1-\epsilon, 1+\epsilon]$ 的范围。类比：对一个差学生有用的反馈对好学生可能有害。所以我们只在"新旧策略足够接近"时才信任重要性采样的结果，超出范围的部分被裁剪掉。</p>
+    <p><code>min</code> 的作用：在裁剪和非裁剪之间取更保守的那个，确保目标函数是真实目标的下界。</p>
+  </div>
+
+  <h3>PPO 算法流程</h3>
+
+  <ol>
+    <li>用当前策略 $\pi_{\theta_{\text{old}}}$ 收集一批轨迹数据</li>
+    <li>用 GAE 计算优势函数估计 $\hat{A}_t$</li>
+    <li>对这批数据做多个 epoch 的 SGD，优化 $L^{\text{CLIP}}$</li>
+    <li>更新旧策略参数：$\theta_{\text{old}} \leftarrow \theta$</li>
+    <li>重复</li>
+  </ol>
+
+  <div class="callout"><strong>PPO 为什么成功</strong>：它平衡了样本效率（通过重要性采样复用数据）和训练稳定性（通过裁剪限制更新幅度）。实现简单，超参数不敏感，适用于离散和连续动作空间。</div>
+</div>
+
+<!-- ===== GRPO ===== -->
+<div class="ch fade-in">
+  <div class="ch-label">Section 04</div>
+  <div class="ch-title">GRPO：大模型时代的强化学习</div>
+
+  <p>GRPO（Group Relative Policy Optimization）是大模型对齐领域的新兴方法，用于 RLHF 流程中的策略优化阶段。</p>
+
+  <h3>背景：为什么大模型需要 RL？</h3>
+
+  <p>大语言模型的训练流程通常是：预训练 → SFT（监督微调）→ RLHF（基于人类反馈的强化学习）。RLHF 的目的是让模型的输出更符合人类偏好。</p>
+
+  <p>传统 RLHF 使用 PPO，但 PPO 需要额外的价值网络（Critic），在 LLM 场景下训练代价大。GRPO 的创新：<strong>不需要价值网络</strong>。</p>
+
+  <h3>GRPO 的核心思想</h3>
+
+  <p>对于同一个 prompt，生成一组（group）回答，用奖励模型对每个回答打分。然后<strong>用组内的相对排名</strong>来计算优势函数：</p>
+  <p style="text-align:center">$$\hat{A}_i = \frac{r_i - \text{mean}(r)}{\text{std}(r)}$$</p>
+
+  <p>其中 $r_i$ 是第 $i$ 个回答的奖励，mean 和 std 是在组内计算的。</p>
+
+  <p>这样就不需要单独训练一个价值网络来估计基线——<strong>组内其他回答的奖励就是天然的基线</strong>。</p>
+
+  <h3>GRPO 的损失函数</h3>
+
+  <p>GRPO 的优化目标通常包含两部分：</p>
+  <p style="text-align:center">$$\mathcal{L} = \mathcal{L}_{\text{RL}} + \lambda_1 \mathcal{L}_{\text{BC}} + \lambda_2 \mathcal{L}_{\text{REG}}$$</p>
+
+  <ul>
+    <li>$\mathcal{L}_{\text{RL}}$：策略梯度损失（最大化高奖励回答的概率）</li>
+    <li>$\mathcal{L}_{\text{BC}}$：行为克隆损失（保持在 SFT 阶段学到的能力，防止遗忘）</li>
+    <li>$\mathcal{L}_{\text{REG}}$：正则化项（如 KL 散度，防止偏离参考策略太远）</li>
+  </ul>
+
+  <div class="info-box">
+    <h3>GRPO vs PPO（在 LLM 场景下）</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>维度</th><th>PPO</th><th>GRPO</th></tr></thead>
+        <tbody>
+          <tr><td>价值网络</td><td>需要（Critic）</td><td>不需要</td></tr>
+          <tr><td>基线估计</td><td>由 Critic 提供</td><td>组内相对排名</td></tr>
+          <tr><td>计算开销</td><td>高（两个大模型）</td><td>低（只需策略模型）</td></tr>
+          <tr><td>稳定性</td><td>依赖 Critic 质量</td><td>更稳定（无 Critic 误差）</td></tr>
+          <tr><td>应用</td><td>通用 RL</td><td>LLM 对齐</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== On-Policy vs Off-Policy 终极对比 ===== -->
+<div class="section fade-in">
+  <div class="section-title">On-Policy vs Off-Policy：终极对比</div>
+
+  <p>这是贯穿整个 RL 的核心区分。总结如下：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>On-Policy</th><th>Off-Policy</th></tr></thead>
+      <tbody>
+        <tr><td>定义</td><td>采样策略 = 目标策略</td><td>采样策略 ≠ 目标策略</td></tr>
+        <tr><td>数据复用</td><td>不能（收集后丢弃）</td><td>可以（存入回放池反复用）</td></tr>
+        <tr><td>样本效率</td><td>低</td><td>高</td></tr>
+        <tr><td>稳定性</td><td>更稳定</td><td>可能不稳定</td></tr>
+        <tr><td>代表算法</td><td>SARSA, REINFORCE, PPO</td><td>Q-Learning, DQN</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ===== 补充：Actor-Critic ===== -->
+<div class="section fade-in">
+  <div class="section-title">补充：Actor-Critic 方法</div>
+
+  <p>策略梯度（纯 Actor）和 DQN（纯 Critic）各有优劣。Actor-Critic 将两者结合：</p>
+
+  <ul>
+    <li><strong>Actor（策略网络）</strong>：$\pi_\theta(a|s)$，负责选择动作</li>
+    <li><strong>Critic（价值网络）</strong>：$V_\phi(s)$ 或 $Q_\phi(s,a)$，负责评估 Actor 的表现</li>
+  </ul>
+
+  <p>Critic 提供的基线比蒙特卡洛回报更准确（方差更低），Actor 利用 Critic 的反馈来更新策略。</p>
+
+  <h3>常见变体</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>算法</th><th>特点</th><th>并行度</th></tr></thead>
+      <tbody>
+        <tr><td>A2C</td><td>同步 Advantage Actor-Critic</td><td>多线程同步</td></tr>
+        <tr><td>A3C</td><td>异步 Advantage Actor-Critic</td><td>多线程异步</td></tr>
+        <tr><td>SAC</td><td>Soft Actor-Critic（最大熵）</td><td>单机</td></tr>
+        <tr><td>TD3</td><td>Twin Delayed DDPG</td><td>单机</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>其中 <strong>SAC</strong>（Soft Actor-Critic）引入了<strong>最大熵</strong>目标：在最大化回报的同时，也最大化策略的熵。这鼓励智能体保持探索，避免过早收敛到次优策略。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">学习路线总结</div>
+  <p>至此，强化学习的四大模块全部完成。从 MDP 基础到深度 RL，从表格型方法到大模型对齐，你已经掌握了 RL 的完整知识脉络。回到 → <a href="reinforcement-learning.html">中枢页</a> 查看完整的知识地图。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Mnih, V., et al. (2015). Human-level control through deep reinforcement learning. <em>Nature</em>.</li>
+    <li>Schulman, J., et al. (2017). Proximal Policy Optimization Algorithms. <em>arXiv:1707.06347</em>.</li>
+    <li><a href="https://www.bilibili.com/video/BV1iz421h7gb" target="_blank">零基础学习强化学习算法：PPO</a></li>
+    <li>Sutton, R. S., & Barto, A. G. (2018). <em>Reinforcement Learning: An Introduction</em>, Chapters 9-13. MIT Press.</li>
+    <li><a href="https://spinningup.openai.com/" target="_blank">OpenAI Spinning Up</a></li>
+  </ul>
+</div>
+
+</div>
+
+<!-- INJECT related_posts -->
