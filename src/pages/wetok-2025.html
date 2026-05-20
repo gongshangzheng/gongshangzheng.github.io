@@ -1,0 +1,587 @@
+---
+title: "WeTok: Powerful Discrete Tokenization for High-Fidelity Visual Reconstruction"
+description: "通过 Group-wise Lookup-Free Quantization 与 Generative Decoder，将离散视觉 tokenizer 推向高压缩与高保真的 Pareto 前沿"
+created_at: 2026-05-20T20:24:06
+updated_at: 2026-05-20T20:24:06
+tags: ["visual-tokenizer", "discrete-tokenization", "GQ", "GD"]
+categories: ["论文精读"]
+mathjax: true
+hero_title: "WeTok"
+hero_sub: "离散视觉 Tokenization · ICLR 2026"
+hero_tagline: "GQ 扩展 codebook，GD 补回高压缩细节"
+---
+
+<!-- 参考来源 -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2508.05599" target="_blank">arXiv:2508.05599</a></li>
+    <li><a href="https://github.com/zhuangshaobin/WeTok" target="_blank">GitHub: WeTok</a></li>
+    <li><a href="https://huggingface.co/GrayShine/WeTok" target="_blank">HuggingFace: GrayShine/WeTok</a></li>
+    <li><a href="https://zhuangshaobin.github.io" target="_blank">一作主页: Shaobin Zhuang (SJTU)</a></li>
+  </ul>
+</div>
+
+<!-- 简介 -->
+<div class="ch fade-in">
+  <div class="ch-title">简介</div>
+
+  <p>WeTok 是一篇值得读的视觉 tokenizer 论文，原因不只是它把重建 rFID 做到了很低，而是它直接挑战了一个长期默认判断：离散 tokenizer 通常压缩率高，但重建保真度弱于 continuous VAE。论文用两个很小但抓住瓶颈的设计把这个 trade-off 往前推了一步：</p>
+
+  <ol>
+    <li><strong>GQ（Group-wise Lookup-Free Quantization）</strong>：把 LFQ 的指数级 entropy loss 计算拆成分组计算，使大 codebook 训练不再被显存卡住，同时避免 BSQ 逐 bit 独立假设带来的过大近似误差。</li>
+    <li><strong>GD（Generative Decoder）</strong>：把 decoder 从确定性重建器改成带噪声先验的条件生成器，让高压缩 token 只负责结构和语义，细节由 learned prior 补齐。</li>
+  </ol>
+
+  <p>这篇论文的价值在于，它给出了一个非常工程化的启发：视觉生成系统的上游瓶颈往往不是 transformer 主干，而是 tokenizer 的压缩-保真 Pareto frontier。WeTok 在 ImageNet 50K zero-shot reconstruction 上达到 rFID 0.12，超过 FLUX-VAE 0.18 和 SD-VAE 3.5 0.19；在 768× 高压缩下达到 rFID 3.49，也优于 Cosmos 在 384× 下的 4.57。这说明离散 tokenization 仍有很大空间，不应过早让位给 continuous latent。</p>
+</div>
+
+<!-- 相关工作 -->
+<div class="ch fade-in">
+  <div class="ch-title">相关工作</div>
+
+  <div class="section">
+    <h3 class="section-title">视觉 tokenizer 的技术谱系</h3>
+
+    <p>视觉 tokenizer 把像素空间压缩为更短的 latent 表示，让生成模型在 latent space 中高效操作。这个方向分为两条路线：</p>
+
+    <ul>
+      <li><strong>Continuous tokenizer</strong>：用 VAE 把图像映射到连续浮点 latent，如 SD-VAE、FLUX-VAE。重建质量高，但 latent 是 float32/bfloat16，压缩率受限，且与语言模型式的离散 token prediction 不兼容。</li>
+      <li><strong>Discrete tokenizer</strong>：用量化器把图像映射到有限词表中的离散 code，如 VQ-VAE、VQGAN、MAGVIT-v2、Open-MAGVIT2、BSQ、WeTok。压缩率高，token 与语言 token 同构，适合 AR/MLM 视觉生成，但重建质量通常不如 continuous tokenizer。</li>
+    </ul>
+
+    <p>WeTok 的核心论点是：离散 tokenizer 的"压缩率高但保真度低"不是结构宿命，而是 codebook scaling 和 decoder 建模方式没有处理好。通过 GQ 和 GD，WeTok 在离散 tokenizer 上同时实现了高压缩和高保真。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">主要前置工作对比</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>年份</th><th>核心思路</th><th>ImageNet rFID</th><th>与 WeTok 关系</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>VQ-VAE</td><td>2017</td><td>显式 learnable codebook + nearest-neighbor lookup</td><td>~8.30 (16×)</td><td>祖先范式；WeTok 放弃显式 codebook</td></tr>
+          <tr><td>VQGAN</td><td>2021</td><td>VQ + perceptual loss + GAN loss</td><td>4.99 (16K codebook)</td><td>WeTok 继承 GAN/perceptual 训练框架</td></tr>
+          <tr><td>SD-VAE 3.5</td><td>2024</td><td>Continuous VAE for latent diffusion</td><td>0.19 (zero-shot)</td><td>WeTok 的 continuous baseline；WeTok rFID 0.12 超过它</td></tr>
+          <tr><td>FLUX-VAE</td><td>2025</td><td>Leading continuous tokenizer</td><td>0.18 (zero-shot)</td><td>WeTok 的 continuous baseline</td></tr>
+          <tr><td>MAGVIT-v2/LFQ</td><td>2024</td><td>Lookup-free quantization，用隐式二值 codebook</td><td>1.17 (16×)</td><td>WeTok 的直接前身；GQ 解决 LFQ entropy loss 内存瓶颈</td></tr>
+          <tr><td>BSQ</td><td>2024</td><td>Binary Spherical Quantization，bit-wise independence 降复杂度</td><td>~4.57 (384×)</td><td>WeTok 的直接对比对象；GQ 理论误差严格小于 BSQ</td></tr>
+          <tr><td>Open-MAGVIT2</td><td>2025</td><td>MAGVIT-v2 开源复现，CNN encoder/decoder</td><td>1.17 (16×)</td><td>WeTok 的架构基础</td></tr>
+          <tr><td>Cosmos</td><td>2025</td><td>NVIDIA image/video tokenizer suite</td><td>4.57 (384×)</td><td>WeTok 高压缩对比对象；WeTok 768× rFID 3.49 优于 Cosmos</td></tr>
+          <tr><td>WeTok</td><td>2025</td><td>GQ + GD</td><td>0.12 (16×, zero-shot)</td><td>本文</td></tr>
+          <tr><td>UniWeTok</td><td>2026</td><td>WeTok + 2^128 codebook + PPD/GAP + unified MLLM</td><td>1.38 (generation)</td><td>WeTok 后续扩展</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">核心技术脉络</h3>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="year">2017</div>
+        <div class="event">VQ-VAE / VQGAN（显式 codebook，lookup cost）</div>
+      </div>
+      <div class="timeline-item">
+        <div class="year">2024</div>
+        <div class="event">MAGVIT-v2 / LFQ（lookup-free binary codebook，entropy loss 内存瓶颈）</div>
+      </div>
+      <div class="timeline-item">
+        <div class="year">2024</div>
+        <div class="event">BSQ（bit-wise independence 降复杂度，approximation error 大）</div>
+      </div>
+      <div class="timeline-item">
+        <div class="year">2025</div>
+        <div class="event">WeTok GQ（group-wise LFQ，在 LFQ 内存效率和 BSQ 近似误差之间取折中）</div>
+      </div>
+      <div class="timeline-item">
+        <div class="year">2025</div>
+        <div class="event">WeTok GD（generative decoder，把 deterministic decoder 改为条件生成模型）</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">论文对已有方法的批评</h3>
+
+    <ol>
+      <li><strong>VQ-VAE/VQGAN</strong>：codebook utilization 不稳定，lookup 操作引入额外训练/推理成本</li>
+      <li><strong>LFQ</strong>：entropy loss 计算复杂度随 codebook size 线性增长，$d=24$ 起即 OOM，无法扩展到更大 codebook</li>
+      <li><strong>BSQ</strong>：bit-wise independence 假设引入 approximation error，导致性能下降</li>
+      <li><strong>传统离散 tokenizer decoder</strong>：deterministic mapping，高压缩下容易学到"平均图像"，高频纹理丢失</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 前置知识 -->
+<div class="ch fade-in">
+  <div class="ch-title">前置知识</div>
+
+  <ul>
+    <li><strong>Vector Quantization (VQ)</strong> :: 将连续向量映射到有限 codebook 中最近邻 code 的过程。VQ-VAE 用这个机制建立离散 bottleneck，使图像可以被表示为 token 序列。</li>
+    <li><strong>Lookup-Free Quantization (LFQ)</strong> :: MAGVIT-v2 提出的量化方式，不使用可学习的 codebook，而是把 latent feature 的每个 channel 直接二值化为 $\{-1,1\}$。隐式 codebook 大小为 $2^d$，可以极大扩展词表，且不需要 nearest-neighbor lookup 操作。</li>
+    <li><strong>Entropy Loss</strong> :: 为防止 LFQ 的 codebook utilization collapse，引入 entropy regularization 鼓励 code 均匀分布。公式为 $H(X) = -\sum_{X_i \in X} X_i \log X_i$。但计算 codebook entropy 需要 $O(2^d)$ 复杂度，$d$ 增大时内存成为瓶颈。</li>
+    <li><strong>Binary Spherical Quantization (BSQ)</strong> :: 把 embedding 投影到低维超球面后做二值量化，假设各 bit 独立，从而把 entropy 计算降到 $O(d)$。但独立性假设牺牲了 bit 之间的统计耦合。</li>
+    <li><strong>Generative Decoder</strong> :: 与 deterministic decoder 不同，生成式 decoder 建模 $p(I \mid U_Q)$ 条件分布，通过额外噪声变量 $z \sim \mathcal{N}(0,I)$ 允许从条件分布中采样，而非只输出条件期望。</li>
+    <li><strong>Group-wise Quantization</strong> :: 将 latent feature 在 channel 维度分组，每组独立量化。这种方式在保持组内联合建模能力的同时，降低了整体 entropy 计算的内存需求。</li>
+    <li><strong>rFID (recognition FID)</strong> :: 使用在 ImageNet 预训练的特征提取器计算的 FID，反映重建图像与原图在特征空间中的分布距离，比普通 FID 更适合评估 tokenizer 的重建质量。</li>
+  </ul>
+</div>
+
+<!-- 阅读前疑问 -->
+<div class="ch fade-in">
+  <div class="ch-title">阅读前疑问</div>
+
+  <ol>
+    <li>GQ 的分组策略具体如何选择？论文说 $g=4, d'=8$ 通常最优，但这个 choice 是基于实验还是理论？不同压缩比是否需要不同 $g$？</li>
+    <li>GD 的生成式 decoder 用 GAN loss 而非 diffusion decoder，single-step 采样确实更高效，但 GAN 训练的不稳定性是否会成为瓶颈？Stage 2 的 zero-initialization 是否真的能保证训练稳定？</li>
+    <li>WeTok 的 rFID 0.12 超过 FLUX-VAE 0.18，但这种优势是否在所有类型图像上成立？对人脸、纹理密集图像、医学图像是否同样有效？</li>
+    <li>768× 压缩比下 rFID 3.49，与 Cosmos 384× 的 rFID 4.57 相比确实更好，但两者的视觉质量在人眼感知上差异有多大？</li>
+    <li>WeTok 主要验证了图像重建，下游 AR 生成只在 ImageNet class-conditional 上测了 FID。对于 text-to-image 或 image editing 场景，WeTok 的离散 token 是否同样有效？</li>
+  </ol>
+</div>
+
+<!-- 面临问题及Insights -->
+<div class="ch fade-in">
+  <div class="ch-title">面临问题及 Insights</div>
+
+  <div class="section">
+    <h3 class="section-title">问题 1：Scalable Codebook</h3>
+
+    <p><strong>具体问题</strong>：要降低离散 tokenizer 的量化误差，需要扩大 codebook。但 LFQ 的 entropy loss 需要在 $\{-1,1\}^d$ 全空间上计算概率分布，内存随 $d$ 指数增长。LFQ 在 $d=24$ 起即 OOM，无法扩展到更大 codebook。</p>
+
+    <p>BSQ 用 bit-wise independence 近似降低内存，但独立性假设引入 approximation error，导致性能下降。</p>
+
+    <p><strong>Insight</strong>：分组本身就是一种近似。如果把 entropy 计算从完整 $\{-1,1\}^d$ 空间分解为 $g$ 个 $\{-1,1\}^{d'}$ 空间的组合，内存从指数降到线性（$g \times 2^{d'}$ vs $2^d$）。关键是：分组造成的 approximation error 是否比 BSQ 的 independence approximation 更小？</p>
+
+    <p>论文给出理论答案（Proposition 3.1）：在非退化的 group choice 下，GQ 的 approximation error 小于 BSQ。这来自于 entropy 函数的凹性和 refinement ordering 的单调性——越细的分组近似误差越大，BSQ 是最细（逐 bit），LFQ 是最粗（整体），GQ 处于中间。当 $g=d, d'=1$ 退化为逐 bit 分组时，GQ 等价于 BSQ。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">问题 2：Generative Modeling in High Compression</h3>
+
+    <p><strong>具体问题</strong>：高压缩下，单个离散 token $U_Q$ 可能对应多个 ground-truth 图像（例如不同的毛发纹理、叶片形态）。Deterministic decoder 被训练预测条件期望，输出的是"平均图像"，高频细节被平滑掉。</p>
+
+    <p><strong>Insight</strong>：把 decoder 从 deterministic mapping $G(U_Q)$ 改为条件生成模型 $G(U_Q, z)$，其中 $z \sim \mathcal{N}(0,I)$。这样 decoder 不再输出唯一答案，而是从 $p(I \mid U_Q)$ 条件分布中采样，$U_Q$ 作为条件约束全局内容，$z$ 帮助 decoder 在条件分布中采样具体高频细节。</p>
+
+    <p>这个思路与 consistency decoder、$\epsilon$-VAE 一脉相承，但 WeTok 是首个将其引入离散 tokenizer 的工作，且用 GAN-style single-step 采样替代 diffusion multi-step，在效率和质量间取得更好平衡。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">类比理解</h3>
+
+    <p>可以把 tokenizer 想象成古代驿站传递军情的符节系统：</p>
+    <ul>
+      <li>连续 tokenizer 像把整张地图打包传递，细节完整但体积庞大</li>
+      <li>传统离散 tokenizer 像用少量符节编码地图，压缩率高但重建时只能给出"平均位置"，细节丢失</li>
+      <li>WeTok 的 GQ 像把地图分成几个区域，每个区域用独立符节编码，兼顾压缩和局部精度</li>
+      <li>WeTok 的 GD 像在解码时引入"现场判断力"，符节给出大方向，解码者根据局部知识填充细节，但这个"现场判断力"是学习出来的 prior 而非随意发挥</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 模型和方法 -->
+<div class="ch fade-in">
+  <div class="ch-title">模型和方法</div>
+
+  <div class="section">
+    <h3 class="section-title">整体架构</h3>
+
+    <p>WeTok 的 pipeline 分为三个阶段：</p>
+    <ol>
+      <li><strong>Encoder</strong>：$U = E(I)$，将图像 $I \in \mathbb{R}^{H \times W \times 3}$ 压缩为 $U \in \mathbb{R}^{h \times w \times d}$</li>
+      <li><strong>Quantizer</strong>：Group-wise Lookup-Free Quantization，将 $U$ 量化为离散 token $Q$</li>
+      <li><strong>Decoder</strong>：Generative Decoder，从 $U_Q$（或 $U_Q + z$）重建图像 $\hat{I}$</li>
+    </ol>
+
+    <p>架构采用 Open-MAGVIT2 的 CNN architecture，encoder 和 decoder 参数量分别为 198M 和 261M（base channel 256, residual blocks 4）。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">GQ：Group-wise Lookup-Free Quantization</h3>
+
+    <h4>Channel 分组</h4>
+
+    <p>将 $U \in \mathbb{R}^{h \times w \times d}$ reshape 为 $U_G \in \mathbb{R}^{h \times w \times g \times d'}$，满足 $d = g \cdot d'$。第 $k$ 组使用独立的隐式二值 codebook $C_{\mathrm{GQ},k} = \{-1,1\}^{d'}$，在组内执行 lookup-free quantization（直接取 sign）。</p>
+
+    <h4>Token Entropy Loss 的分解</h4>
+
+    <p>利用 entropy 的 additivity，token entropy loss 从 $\{-1,1\}^d$ 空间转为 $g$ 个 $\{-1,1\}^{d'}$ 空间的线性组合：</p>
+
+    <p>$$L_{\text{Token Entropy}} = \frac{1}{hw}\sum_{i,j} H\left(q(c|U[i,j])\right) = \frac{1}{hw}\sum_{i,j}\sum_{k=1}^{g} H\left(q_G(c_k|U_G[i,j,k])\right)$$</p>
+
+    <p>内存复杂度从 $O(2^d)$ 降到 $O(g \cdot 2^{d'})$。当 $d'=8$ 时，即使 $d=40$（$g=5$），内存仍约 10.6GB，与 $d=8$ 时相当，而 LFQ 在 $d=24$ 即 OOM。</p>
+
+    <h4>Codebook Entropy Loss 的近似</h4>
+
+    <p>由于 codebook entropy loss 中的 $H(\sum \cdot)$ 操作无法直接因 entropy additivity 分解，论文对 grouped conditional probabilities 提出乘积分解近似：</p>
+
+    <p>$$\frac{1}{hw}\sum_{i,j} q(\mathbf{c}|U[i,j]) \approx \prod_{k=1}^{g} \frac{1}{hw}\sum_{i,j} q_G(c_k|U_G[i,j,k])$$</p>
+
+    <p>从而 codebook entropy loss 可转为各 group entropy 的加和形式（具体公式见原文 Eq. 7/8）。该近似误差由 Proposition 3.1 与 Appendix A 分析，结论为在非退化的 group choice 下 GQ 的 approximation error 小于 BSQ。</p>
+
+    <h4>GQ 的可调折中性</h4>
+
+    <ul>
+      <li>$g=1, d'=d$：等价于 LFQ，最小 approximation error，最大内存开销</li>
+      <li>$g=d, d'=1$：等价于 BSQ，最小内存，但 approximation error 最大</li>
+      <li>$g \in (1, d)$：中间态，可调 trade-off</li>
+    </ul>
+
+    <p>主文消融显示增大 $g$ 能显著提升重建性能且不触发 LFQ 的内存瓶颈；大规模 SOTA 配置中 $d'=8$，$g$ 随压缩率取 2/4/8。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">GD：Generative Decoder</h3>
+
+    <h4>训练目标转变</h4>
+
+    <p>传统 discrete tokenizer 的 decoder 输入只有 $U_Q$，输出 deterministic reconstruction，训练目标是最小化与 ground truth 的距离。</p>
+
+    <p>GD 的 decoder 输入为 $(z, U_Q)$，其中 $z \sim \mathcal{N}(0,I)$ 沿 channel 维度与 $U_Q$ concatenation，输出从条件分布 $p(I \mid U_Q)$ 中采样的图像。</p>
+
+    <h4>Two-stage Training</h4>
+
+    <ul>
+      <li><strong>Stage 1</strong>：用 reconstruction loss + perceptual loss + GQ entropy loss（token entropy + grouped codebook entropy，对应原文 Eq. 2、6、8）训练 tokenizer，不含 $z$</li>
+      <li><strong>Stage 2</strong>：将 decoder 的 conv-in layer 扩展 channel dimension 以接收 $z$，新增 channel 使用 zero-initialization，保证 Stage 2 开始时 decoder 行为与预训练状态完全一致</li>
+    </ul>
+
+    <h4>GAN Loss</h4>
+
+    <p>Stage 2 的 GAN loss 从 deterministic 改为 conditional：</p>
+
+    <p>$$L_{\text{GAN}} = \mathbb{E}_{z \sim \mathcal{N}(0,I)}\left[\log(1-D(G(z, U_Q)))\right]$$</p>
+
+    <p>$U_Q$ 作为 condition，$z$ 提供额外随机性，使 decoder 可以建模条件分布而非条件期望。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">符号表</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>符号</th><th>定义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>$I$</td><td>输入图像，$I \in \mathbb{R}^{H \times W \times 3}$</td></tr>
+          <tr><td>$E$</td><td>encoder</td></tr>
+          <tr><td>$G$</td><td>decoder / generator</td></tr>
+          <tr><td>$D$</td><td>discriminator</td></tr>
+          <tr><td>$U$</td><td>encoder latent，$U = E(I)$，$U \in \mathbb{R}^{h \times w \times d}$</td></tr>
+          <tr><td>$U_G$</td><td>reshape 后的 grouped latent，$U_G \in \mathbb{R}^{h \times w \times g \times d'}$</td></tr>
+          <tr><td>$d$</td><td>latent channel 维度</td></tr>
+          <tr><td>$g$</td><td>group number</td></tr>
+          <tr><td>$d'$</td><td>每组 channel 数，$d = g \cdot d'$</td></tr>
+          <tr><td>$C_{\mathrm{GQ},k}$</td><td>GQ 第 $k$ 组 codebook，$C_{\mathrm{GQ},k} = \{-1,1\}^{d'}$</td></tr>
+          <tr><td>$Q$</td><td>量化后的离散 codes</td></tr>
+          <tr><td>$U_Q$</td><td>$U + \text{sg}[Q - U]$，backward gradient 只关于 $U$</td></tr>
+          <tr><td>$\text{sg}[\cdot]$</td><td>stop-gradient operation</td></tr>
+          <tr><td>$z$</td><td>GD 噪声变量，$z \sim \mathcal{N}(0,I)$</td></tr>
+          <tr><td>$H(X)$</td><td>entropy，$H(X) = -\sum_{X_i \in X} X_i \log X_i$</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 训练 -->
+<div class="ch fade-in">
+  <div class="ch-title">训练</div>
+
+  <div class="section">
+    <h3 class="section-title">数据集</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>数据集</th><th>规模</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>ImageNet training set</td><td>1.2M</td><td>ablation 和 ImageNet SOTA 模型训练</td></tr>
+          <tr><td>General-domain dataset</td><td>400M</td><td>大规模预训练，覆盖多个压缩率</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>评估数据集：ImageNet 50k validation set、MS-COCO 2017 validation set、TokBench。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">超参数（ablation 默认设置）</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>参数</th><th>值</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>训练步数</td><td>250K</td></tr>
+          <tr><td>optimizer</td><td>Adam，$\beta_1,\beta_2=0.5,0.9$</td></tr>
+          <tr><td>weight decay</td><td>0</td></tr>
+          <tr><td>learning rate</td><td>$1e^{-4}$</td></tr>
+          <tr><td>LR schedule</td><td>constant（warm-up + cosine decay 被发现 suboptimal）</td></tr>
+          <tr><td>warmup steps</td><td>0</td></tr>
+          <tr><td>cos decay end ratio</td><td>1</td></tr>
+          <tr><td>per GPU batchsize</td><td>16</td></tr>
+          <tr><td>global batchsize</td><td>128</td></tr>
+          <tr><td>训练图像尺寸</td><td>$256 \times 256$，random crop</td></tr>
+          <tr><td>EMA</td><td>True</td></tr>
+          <tr><td>channel mult</td><td>$[1,1,2,2,4]$</td></tr>
+          <tr><td>base channel</td><td>128</td></tr>
+          <tr><td>residual blocks</td><td>4</td></tr>
+          <tr><td>generative decoder (ablation)</td><td>False</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">GQ/LFQ/BSQ 对照设置</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>参数</th><th>GQ</th><th>LFQ</th><th>BSQ</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>$g$</td><td>2</td><td>1</td><td>16</td></tr>
+          <tr><td>$d'$</td><td>8</td><td>16</td><td>1</td></tr>
+          <tr><td>downsample</td><td>16×16</td><td>16×16</td><td>16×16</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Large-scale ImageNet SOTA 设置</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>参数</th><th>16×</th><th>8×</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>training data</td><td>IN-1K training set</td><td>IN-1K training set</td></tr>
+          <tr><td>downsample</td><td>16×16</td><td>8×8</td></tr>
+          <tr><td>$g$</td><td>4</td><td>4</td></tr>
+          <tr><td>$d'$</td><td>8</td><td>8</td></tr>
+          <tr><td>channel num</td><td>256</td><td>256</td></tr>
+          <tr><td>residual blocks</td><td>4</td><td>4</td></tr>
+          <tr><td>total steps</td><td>400K</td><td>350K</td></tr>
+          <tr><td>per GPU batchsize</td><td>8</td><td>8</td></tr>
+          <tr><td>global batchsize</td><td>1024</td><td>1024</td></tr>
+          <tr><td>GPU number</td><td>128 H20</td><td>128 H20</td></tr>
+          <tr><td>generative decoder</td><td>False</td><td>False</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">计算成本</h3>
+
+    <ul>
+      <li>最佳架构 encoder 参数量：198M</li>
+      <li>最佳架构 decoder 参数量：261M</li>
+      <li>WeTok-AR-XL 参数量：1.5B</li>
+      <li>Large-scale 训练使用 128-176 H20 GPU</li>
+      <li>训练总时长：原文未明确给出</li>
+      <li>推理 latency/FLOPs：原文未明确给出</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 实验 -->
+<div class="ch fade-in">
+  <div class="ch-title">实验</div>
+
+  <div class="section">
+    <h3 class="section-title">主要评估指标</h3>
+
+    <p>rFID (recognition FID)、PSNR、SSIM、LPIPS、下游生成任务：FID、IS、Precision、Recall。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">ImageNet 50k zero-shot reconstruction</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>Token 类型</th><th>压缩比</th><th>rFID ↓</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>WeTok</td><td>Discrete</td><td>400%</td><td>0.12</td></tr>
+          <tr><td>FLUX-VAE</td><td>Continuous</td><td>-</td><td>0.18</td></tr>
+          <tr><td>SD-VAE 3.5</td><td>Continuous</td><td>-</td><td>0.19</td></tr>
+          <tr><td>Open-MAGVIT2-I-PT</td><td>Discrete</td><td>439</td><td>1.39</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>（注：Open-MAGVIT2 rFID 1.17 来自 Table 3 ImageNet in-distribution 训练设置；此处为零-shot 设置的数值。）</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">High-compression comparison</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>压缩比</th><th>ImageNet rFID ↓</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>WeTok</td><td>768×</td><td>3.49</td></tr>
+          <tr><td>Cosmos</td><td>384×</td><td>4.57</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>（注：原文 Introduction 第 30 行写 3.59，Abstract 与 Table 4 为 3.49；此处以 Table 4 为准。）</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Class-conditional image generation (256×256 ImageNet)</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>模型</th><th>参数量</th><th>FID ↓</th><th>IS ↑</th><th>Precision ↑</th><th>Recall ↑</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>WeTok-AR-XL</td><td>1.5B</td><td>2.31</td><td>276.55</td><td>0.84</td><td>0.55</td></tr>
+          <tr><td>Open-MAGVIT2-AR-XL</td><td>1.5B</td><td>2.33</td><td>271.77</td><td>0.84</td><td>0.54</td></tr>
+          <tr><td>LlamaGen-XL</td><td>775M</td><td>3.39</td><td>227.08</td><td>0.81</td><td>0.54</td></tr>
+          <tr><td>DiT-XL/2</td><td>675M</td><td>2.27</td><td>278.2</td><td>0.83</td><td>0.57</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 效果 -->
+<div class="ch fade-in">
+  <div class="ch-title">效果</div>
+
+  <div class="section">
+    <h3 class="section-title">核心效果</h3>
+
+    <ol>
+      <li>在 ImageNet 50k zero-shot 上，WeTok 以 400% 压缩比实现 rFID 0.12，优于 FLUX-VAE (0.18) 和 SD-VAE 3.5 (0.19)</li>
+      <li>在 768× 压缩比下 rFID 3.49，优于 Cosmos 在一半压缩率（384×）下的 4.57</li>
+      <li>以 WeTok 作为 tokenizer 的 LlamaGen 在 ImageNet 256×256 class-conditional 生成上 FID 2.31，优于使用 Open-MAGVIT2 tokenizer 的 LlamaGen (FID 2.33)</li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Memory ablation（$d'=8$）</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>$d=8$</th><th>$d=16$</th><th>$d=24$</th><th>$d=32$</th><th>$d=40$</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>LFQ</td><td>10.5GB</td><td>10.6GB</td><td>OOM</td><td>OOM</td><td>OOM</td></tr>
+          <tr><td>BSQ</td><td>10.5GB</td><td>10.5GB</td><td>10.6GB</td><td>10.6GB</td><td>10.6GB</td></tr>
+          <tr><td>GQ</td><td>10.5GB</td><td>10.6GB</td><td>10.6GB</td><td>10.6GB</td><td>10.6GB</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>LFQ 在 $d=24$ 起即 OOM，无法扩展；GQ 与 BSQ 内存相当，但性能更优。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Stage 2 (GD) ablation</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>配置</th><th>rFID ↓</th><th>LPIPS ↓</th><th>SSIM ↑</th><th>PSNR ↑</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Stage1 only</td><td>5.37</td><td>0.17</td><td>0.54</td><td>20.53</td></tr>
+          <tr><td>Stage1 + Stage2</td><td>3.90</td><td>0.16</td><td>0.55</td><td>20.72</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>去掉 GD，rFID 差 1.47，是所有模块中掉点最多的，说明 GD 对高压缩重建贡献最大。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">组件贡献总结</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>组件 / 选择</th><th>对照</th><th>主要影响</th><th>已知数值</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>GQ</td><td>LFQ / BSQ</td><td>在接近 BSQ 显存的情况下保留组内 joint modeling</td><td>LFQ 在 $d=24$ OOM；GQ 在 $d=40$ 仍约 10.6GB</td></tr>
+          <tr><td>GD</td><td>Stage1 only</td><td>高压缩下恢复纹理和细节</td><td>rFID 5.37 → 3.90</td></tr>
+          <tr><td>constant LR</td><td>warm-up + cosine decay</td><td>discrete tokenizer 训练中 constant LR 更稳定</td><td>原文 Figure 6 显示 constant schedule 优于 warm-up + cosine decay</td></tr>
+          <tr><td>general-domain data</td><td>ImageNet only</td><td>提升泛化与 PSNR/SSIM</td><td>原文：distribution gap 可能导致 in-distribution rFID/LPIPS 更差</td></tr>
+          <tr><td>model size</td><td>smaller encoder/decoder</td><td>base channel 256 + residual blocks 4 最优</td><td>encoder 198M，decoder 261M</td></tr>
+          <tr><td>group number</td><td>$g=1,2,4,16,32$</td><td>$g$ 太小接近 LFQ，$g$ 太大接近 BSQ</td><td>大规模配置中 $g=2/4/8$ 随压缩率变化</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">失败案例与负面发现</h3>
+
+    <ol>
+      <li><strong>LFQ 直接扩大 codebook 不可行</strong>：当 latent dimension 增大到 $d=24$，LFQ 的 entropy loss 显存开销已经 OOM</li>
+      <li><strong>BSQ 的 bit-wise independence 太强</strong>：BSQ 可以把显存降到近似常数，但近似误差比 GQ 更大</li>
+      <li><strong>warm-up + cosine decay 并非默认最优</strong>：论文发现对 discrete tokenizer，constant learning rate 优于 warm-up + cosine decay</li>
+      <li><strong>general-domain data 不是所有指标都更好</strong>：400M general-domain 训练提升泛化和 PSNR/SSIM，但在 ImageNet in-domain 的 rFID/LPIPS 上可能因 distribution gap 变差</li>
+      <li><strong>小规模 AR 下游模型收益有限</strong>：WeTok 作为 tokenizer 的优势需要足够大的 AR 模型释放，小参数 AR 模型上不一定优于 Open-MAGVIT2-based AR</li>
+      <li><strong>GD 可能牺牲严格忠实性</strong>：GD 通过采样补细节，高压缩视觉质量更好，但不保证像素级 faithful reconstruction</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 结论 -->
+<div class="ch fade-in">
+  <div class="ch-title">结论</div>
+
+  <p>WeTok 通过两项简洁设计解决了离散 tokenizer 的压缩-保真矛盾：</p>
+
+  <ol>
+    <li><strong>GQ</strong>：把 lookup-free quantization 分组，在保留组内联合建模能力的同时，将 entropy loss 的内存复杂度从 $O(2^d)$ 降到 $O(g \cdot 2^{d'})$，且在非退化情形下 approximation error 小于 BSQ</li>
+    <li><strong>GD</strong>：引入带噪声 prior 的生成式 decoder，把 decoder 从 deterministic reconstruction 改为条件生成模型，从条件分布中采样而非输出条件期望</li>
+  </ol>
+
+  <p>实验验证了这两项设计在高保真和高压缩两个场景下的有效性，并已开源代码和预训练模型。</p>
+
+  <p><strong>未来方向</strong>（论文明确提及）：</p>
+  <ul>
+    <li>视频 tokenizer：WeTok 目前主要验证图像，视频场景需要时序建模扩展</li>
+    <li>与下游生成模型更深度结合：当前 AR 生成只是初步验证，更大的 vocabulary 建模策略（如 asymmetric token factorization）值得探索</li>
+    <li>语义增强：UniWeTok 已开始解决 binary codebook tokenizer 语义抽取不足的问题</li>
+  </ul>
+</div>
+
+<!-- 收获 -->
+<div class="ch fade-in">
+  <div class="ch-title">收获</div>
+
+  <ol>
+    <li><strong>分组近似的工程价值</strong>：当遇到 $O(2^d)$ 复杂度的瓶颈时，检查是否可以按某种结构（channel/space/time）分组，把指数复杂度转为线性组合。GQ 的关键是：分组造成的 approximation error 比直接做 independence assumption 更小——这需要理论支撑，不能只靠直觉。</li>
+
+    <li><strong>Decoder 从 deterministic 到 generative 的转变值得重视</strong>：在高压缩场景中，如果 latent 不够承载所有细节，与其让 decoder 输出"平均"，不如让它学习在给定 latent 条件下的分布，并从中采样。这个思路在 consistency model、diffusion decoder 中都有体现，WeTok 将其迁移到离散 tokenizer 并用 GAN 实现 single-step 采样，效率上有优势。</li>
+
+    <li><strong>Two-stage training + zero-initialization 是个好技巧</strong>：当需要在已训练的模型上引入新模块时（如 GD 的 $z$ 输入），直接添加新 channel 并从零初始化会让模型在训练初期行为与预训练状态一致，避免新模块破坏已学到的能力。这个技巧在 VQGAN 的 codebook initialization、LLM 的 adapter 等场景中也常用。</li>
+
+    <li><strong>Constant LR 对离散 tokenizer 可能更合适</strong>：这与直觉相反（通常 warm-up + cosine 是 standard），但可能是因为 discrete token 的 optimization landscape 与 continuous VAE 不同。这个发现值得在训练其他离散 tokenizer 时尝试 constant LR。</li>
+
+    <li><strong>Tokenizer 是视觉生成的上游瓶颈</strong>：MAGVIT-v2、Open-MAGVIT2、WeTok、UniWeTok 都强调这个判断。对于实际系统设计，与其不断改进生成模型主干，不如先确保 tokenizer 的压缩-保真 Pareto frontier 是否已经足够好——上游瓶颈没解决，下游改进事倍功半。</li>
+  </ol>
+</div>
