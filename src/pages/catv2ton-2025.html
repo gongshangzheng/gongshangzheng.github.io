@@ -1,0 +1,284 @@
+---
+title: CatV2TON 深度解读：统一图像与视频虚拟换装的 Diffusion Transformer
+description: 通过时间维度拼接（Temporal Concatenation）和 Overlapping Clip Inference + AdaCN，用单个扩散 Transformer 同时处理图像与视频换装任务。
+date: 2026-05-20T14:00:00
+created_at: 2026-05-20T14:00:00
+updated_at: 2026-05-20T14:00:00
+tags: [virtual-try-on, diffusion-transformer, video-generation, image-to-video, CatV2TON, VTON]
+categories: ["论文解读"]
+page_style: |
+  .hero { height: 45vh; }
+  .arch-diagram { background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
+  .code-block { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  .metric-table { width: 100%; border-collapse: collapse; }
+  .metric-table th, .metric-table td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  .metric-table th { background: #f0f0f0; }
+  .flow-chart { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; padding: 16px 0; }
+  .flow-step { background: #e8f0fe; border: 1px solid #a0c0ff; border-radius: 6px; padding: 8px 16px; font-size: 14px; }
+  .flow-arrow { color: #666; font-size: 18px; }
+  img.centered { display: block; margin: 0 auto; max-width: 90%; }
+---
+
+<div class="section">
+  <h2>任务背景</h2>
+
+  <p>虚拟换装（Virtual Try-On, VTON）旨在将服装图像"穿"到目标人物身上，生成穿着指定服装的人物图像或视频。根据输入输出形式可分为两类：</p>
+
+  <ul>
+    <li><strong>图像换装</strong>（Image-based VTON）：输入服装图像 + 人物图像 → 换装后的人物图像</li>
+    <li><strong>视频换装</strong>（Video-based VTON）：输入服装图像 + 人物视频 → 换装后的人物视频，要求时序一致性</li>
+  </ul>
+
+  <p>传统方法往往需要两套分离的模型——图像换装一套，视频换装一套。CatV2TON 的核心贡献是：用单个扩散 Transformer 同时搞定两种任务，不需要任何额外的 garment encoder、reference net 或 warping 模块。</p>
+
+  <img src="https://arxiv.org/html/2501.11325v1/x1.png" alt="CatV2TON 效果示例" class="centered" style="max-width: 80%; margin: 24px auto; border-radius: 8px;" />
+
+  <p>上图展示了 CatV2TON 在图像换装和视频换装上的效果——服装在人物身上保持高度一致性，同时人物姿态和场景背景得到良好保留。</p>
+</div>
+
+<div class="section">
+  <h2>核心方法</h2>
+
+  <h3>1. 时间维度拼接（Temporal Concatenation）</h3>
+
+  <p>CatV2TON 的设计哲学是"拼接即一切"——不引入额外的 garment encoder，只将服装和人物的潜空间表示在通道维度上拼接后喂入 DiT。</p>
+
+  <p>对于视频换装，服装图像被复制 T 帧，与人物视频的每一帧在通道维度拼接。这样模型在一个 forward pass 中同时看见服装特征和人物姿态，实现"所见即所得"的条件注入。</p>
+
+  <div class="flow-chart">
+    <div class="flow-step">服装图像 × T帧</div>
+    <span class="flow-arrow">+</span>
+    <div class="flow-step">人物视频 T×H×W</div>
+    <span class="flow-arrow">+</span>
+    <div class="flow-step">DensePose T×H×W</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step">通道 concat</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step">HunyuanDiT</div>
+  </div>
+
+  <h3>2. Latent 空间条件注入</h3>
+
+  <p>Pipeline 的 <code>denoising</code> 方法中，多个 latent 按通道拼接后送入 DiT：</p>
+
+  <div class="code-block"><pre>masked_latents_cat  = concat([conditioned_latents, masked_latents], dim=2)
+mask_latents_cat   = concat([conditioning_mask_latents, mask_latents], dim=2)
+inpaint_latents    = concat([mask_latents_cat, masked_latents_cat], dim=1)
+# inpaint_latents shape: (b, 4c, f, h, w)</pre></div>
+
+  <ul>
+    <li><code>conditioned_latents</code>：目标人物图像（不含服装）的 VAE encoding</li>
+    <li><code>masked_latents</code>：服装区域被遮盖的人物 VAE encoding</li>
+    <li><code>pose_latents</code>：DensePose 姿态估计的 VAE encoding</li>
+  </ul>
+
+  <h3>3. 模型架构</h3>
+
+  <p>骨干网络是来自 EasyAnimateV4-XL-2-InP 的 <code>HunyuanTransformer3DModel</code>，各组件处理方式如下：</p>
+
+  <table class="metric-table">
+    <tr><th>组件</th><th>处理方式</th></tr>
+    <tr><td>VAE</td><td>AutoencoderKLMagvit，全部冻结</td></tr>
+    <tr><td>DiT Backbone</td><td>HunyuanTransformer3DModel，全部冻结</td></tr>
+    <tr><td>PoseNet</td><td>独立编码器，单独训练</td></tr>
+    <tr><td>可训练参数</td><td>attn1（自注意力）+ PoseNet，约占 backbone 20%</td></tr>
+  </table>
+
+  <p><code>init_transformer3d_model</code> 中明确禁用了以下模块（这些是 EasyAnimate 原有但 CatV2TON 不需要的功能）：</p>
+
+  <div class="code-block"><pre>for block in transformer3d.blocks:
+    block.attn_temporal = None   # 时间注意力
+    block.attn_norm = None        # CLIP guided attention
+    block.attn_clip = None        # CLIP attention
+    block.norm_clip = None        # CLIP norm
+    block.gate_clip = None        # CLIP gate
+    block.norm_clip_out = None    # CLIP norm out
+    block.norm2 = None            # FFN 前的第二个 norm
+    block.attn2 = None            # 第二个注意力（Cross attention）</pre></div>
+
+  <h3>4. JointAttnProcessor2_0：SD3 风格的注意力</h3>
+
+  <p>这是最值得关注的实现细节。<code>JointAttnProcessor2_0</code> 采用 SD3（Stable Diffusion 3）的 MM-DiT 思路，核心是 Q/K/V 三元组的 concat，而非传统 cross-attention：</p>
+
+  <div class="code-block"><pre># Q/K/V 均由两部分 concat 而成
+query = concat([to_q(hidden_states), add_q_proj(encoder_hidden_states)], dim=1)
+key   = concat([to_k(hidden_states), add_k_proj(encoder_hidden_states)], dim=1)
+value = concat([to_v(hidden_states), add_v_proj(encoder_hidden_states)], dim=1)
+hidden_states = F.scaled_dot_product_attention(query, key, value)
+# SDPA 一次完成自注意力 + 条件注入，再沿 seq 维度 split 回两部分
+hidden_states, encoder_hidden_states = split(..., dim=1)</pre></div>
+
+  <p>传统 cross-attention 的 Q 来自 hidden_states，K/V 来自 encoder_hidden_states；而 JointAttnProcessor 的 Q,K,V 均由两部分 concat，使得自注意力和条件注入在同一个 SDPA 操作中完成。这种设计的优势是条件注入更直接、无需独立的 cross-attention 路径。</p>
+
+  <h3>5. PoseNet：姿态编码器</h3>
+
+  <p>PoseNet 与 DiT backbone 共享相同的 PatchEmbed、TimeEmbedding 架构，但使用独立的 HunyuanDiTBlock 处理。forward 时，pose image（由 DensePose 灰度图经 <code>cv2.COLORMAP_VIRIDIS</code> 转为 RGB）经 VAE encode 后作为 PoseNet 输入，其输出 <code>pose_emb</code> 作为 DiT 的条件传入。</p>
+
+  <h3>6. Overlapping Clip Inference + AdaCN</h3>
+
+  <p>长视频推理时采用重叠片段策略：</p>
+
+  <ul>
+    <li>将长视频切分为长度为 <code>slice_frames</code>（24帧原始分辨率，6帧 latent）的片段</li>
+    <li>相邻片段重叠 <code>pre_frames</code>（8帧原始分辨率，2帧 latent）</li>
+    <li>当前片段的前 <code>pre_frames</code> 帧用上一片段的输出填充（sequential frame guidance）</li>
+    <li>在重叠区域使用 <strong>Adaptive Clip Normalization (AdaCN)</strong> 对齐相邻片段的分布</li>
+  </ul>
+
+  <p>AdaCN 的核心公式——通过匹配均值/方差来消除片段间的颜色不匹配和闪烁：</p>
+
+  <div class="code-block"><pre>def adacn_params(content_feat, style_feat, eps=1e-5):
+    content_mean, content_std = content_feat.mean/var(dim=(2,3,4))
+    style_mean, style_std     = style_feat.mean/var(dim=(2,3,4))
+    return content_mean, content_std, style_mean, style_std
+
+# 在重叠区域和后续区域应用归一化调整：
+result_normed = (content - content_mean) / content_std * style_std + style_mean
+# content_feat：当前片段重叠区输出；style_feat：上一片段对应位置输出</pre></div>
+
+  <h3>7. AutoMasker：服装无关掩码生成</h3>
+
+  <p><code>AutoMasker</code> 是整个预处理管线的核心，负责生成"服装无关掩码"（clothing-agnostic mask）。它整合了三路解析器：</p>
+
+  <table class="metric-table">
+    <tr><th>解析器</th><th>类别数</th><th>用途</th></tr>
+    <tr><td>DensePose</td><td>25</td><td>人体表面分割（躯干、手脚等）</td></tr>
+    <tr><td>SCHP-ATR</td><td>18</td><td>ATR 人体解析</td></tr>
+    <tr><td>SCHP-LIP</td><td>20</td><td>LIP 人体解析</td></tr>
+  </table>
+
+  <p>掩码合成逻辑分为三个优先级：</p>
+
+  <ul>
+    <li><strong>STRONG PROTECT</strong>：面部、手部、脚部 → 绝对不遮盖</li>
+    <li><strong>WEAK PROTECT</strong>：头发、配件、其他衣物 → 尽量保留</li>
+    <li><strong>MASK AREA</strong>：根据 <code>part</code> 参数决定替换哪类衣物</li>
+  </ul>
+
+  <p><code>smooth_video_mask</code> 对视频掩码进行 3D 平滑——2D 平均池化（空间）+ 1D 平均池化（时序）→ 重新二值化，消除逐帧处理引入的时序抖动。</p>
+
+  <h3>8. ViViD-S 数据集</h3>
+
+  <p>论文构建的高质量视频换装数据集，基于 ViViD 原始数据集做了两件事：</p>
+
+  <ul>
+    <li><strong>Back-facing 帧过滤</strong>：训练专用朝向识别模型，剔除人物背对照的帧（这类帧与正面服装图像不匹配，引入伪影并拖慢收敛）</li>
+    <li><strong>3D Mask Smoothing</strong>：应用空间+时序平均池化到 clothing-agnostic masks，然后重新二值化</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h2>训练策略</h2>
+
+  <ul>
+    <li>混合数据集：图像数据集（VITON-HD, DressCode）+ 视频数据集（ViViD-S, VVT）</li>
+    <li>图像训练：单帧（f=1）；视频训练：16帧片段</li>
+    <li>80% backbone 参数冻结 → 仅训练 attention blocks 和 PoseNet</li>
+    <li>优化器：AdamW，lr=1e-4</li>
+    <li>推理步数：图像 50 steps，视频 15 steps</li>
+    <li>CFG：图像 1.0（无 CFG），视频 2.5</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h2>评估指标</h2>
+
+  <h3>图像换装</h3>
+
+  <table class="metric-table">
+    <tr><th>指标</th><th>含义</th><th>方向</th></tr>
+    <tr><td>FID</td><td>Frechet Inception Distance，衡量生成分布与真实分布距离</td><td>↓</td></tr>
+    <tr><td>LPIPS</td><td>Perceptual similarity，Deep feature 层面感知相似度</td><td>↓</td></tr>
+    <tr><td>SSIM</td><td>Structural similarity，结构相似度</td><td>↑</td></tr>
+    <tr><td>L1</td><td>MAE，像素级绝对误差</td><td>↓</td></tr>
+  </table>
+
+  <h3>视频换装</h3>
+
+  <table class="metric-table">
+    <tr><th>指标</th><th>含义</th><th>方向</th></tr>
+    <tr><td>VFID</td><td>Video FID，视频级 FID</td><td>↓</td></tr>
+    <tr><td>SSIM</td><td>结构相似度</td><td>↑</td></tr>
+    <tr><td>LPIPS</td><td>感知相似度</td><td>↓</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>代码架构速查</h2>
+
+  <div class="code-block"><pre>CatV2TON/
+├── modules/
+│   ├── pipeline.py              # V2TONPipeline，核心推理类
+│   │   ├── init_transformer3d_model()  # 加载 + 裁剪 DiT
+│   │   ├── init_posenet_model()        # 加载 PoseNet
+│   │   ├── denoising()          # DDPM 去噪主循环
+│   │   ├── step()              # 单步去噪 + CFG
+│   │   ├── image_try_on()      # 图像换装入口
+│   │   ├── video_try_on()      # 视频换装入口（clip 拼接）
+│   │   ├── decode_latents()    # VAE decode + 输出平滑
+│   │   └── adacn_params()      # AdaCN 统计量计算
+│   ├── posenet.py              # PoseNet 姿态编码器
+│   ├── cloth_masker.py         # AutoMasker，掩码生成
+│   │   ├── smooth_video_mask()  # 3D 掩码时序平滑
+│   │   └── cloth_agnostic_mask() # 多层优先级掩码合成
+│   ├── densepose.py            # DensePose 包装器（Detectron2）
+│   ├── attention.py            # 各类 Transformer Block
+│   └── attention_processor.py  # 注意力处理器
+│       ├── JointAttnProcessor2_0    # SD3 风格 Q/K concat
+│       └── AttnAddedKVProcessor2_0  # CFG 支持
+├── data/
+│   ├── utils.py                # densepose_to_rgb, video utils
+│   └── video_dataset.py        # 视频数据加载
+├── eval_image_try_on.py        # VITON-HD / DressCode 推理
+├── eval_video_try_on.py        # ViViD-S / VVT 推理
+├── eval_image_metrics.py       # 图像指标计算
+└── eval_video_metrics.py      # 视频指标计算</pre></div>
+
+  <p><code>V2TONPipeline</code> 的核心调用路径：</p>
+
+  <div class="code-block"><pre># 图像换装
+image_try_on(source_image, source_mask, conditioned_image, pose_image)
+  → prepare_image()              # 图像 → tensor [-1,1]
+  → F.max_pool2d(source_mask)   # 掩码空间池化（核=11）
+  → _slice_vae()                # VAE encode
+  → denoising()                  # 50步 DDPM 去噪
+    → step() × N
+      → posenet(pose_latents)   # pose embedding
+      → transformer3d(... pose_emb=...)  # DiT forward（含 CFG）
+  → decode_latents()            # VAE decode
+  → output PIL Images
+
+# 视频换装
+video_try_on(source_video, mask_video, condition_image, pose_video)
+  → _slice_vae()                # VAE encode 全视频
+  → while 片段循环（slice=6帧 latent，pre=2帧 latent）:
+      → denoising()             # 单片段 15步去噪
+      → adacn_params()          # 重叠区域 AdaCN 统计
+      → 片段拼接（用 AdaCN 对齐重叠区）
+  → decode_latents()            # VAE decode + smooth_output
+  → output video tensor (b,t,h,w,c)</pre></div>
+</div>
+
+<div class="section">
+  <h2>技术定位与贡献总结</h2>
+
+  <table class="metric-table">
+    <tr><th>维度</th><th>CatV2TON 的做法</th><th>传统方案（如 OOTDiffusion）</th></tr>
+    <tr><td>图像/视频统一</td><td>时间维度拼接 + 混合训练</td><td>分别训练或视频模型降级处理图像</td></tr>
+    <tr><td>条件注入</td><td>latent 通道拼接</td><td>专用 garment encoder 或 warping</td></tr>
+    <tr><td>参数效率</td><td>80% 冻结，仅 attn1 + PoseNet</td><td>额外编码器全部参与训练</td></tr>
+    <tr><td>长视频一致性</td><td>Overlapping clip + AdaCN</td><td>无或简单拼接</td></tr>
+    <tr><td>预处理掩码</td><td>DensePose + SCHP 双解析 + 3D 平滑</td><td>单一解析器</td></tr>
+  </table>
+
+  <p>核心结论：对于 VTON 任务，简单的通道拼接 + 混合训练数据即可实现 SOTA，无需复杂的 garment warping 或额外的 garment encoder。这与 OOTDiffusion、IDM-VTON 等依赖双流网络的方法形成鲜明对比。</p>
+</div>
+
+<div class="section">
+  <h2>参考资料</h2>
+  <ul>
+    <li>论文：<a href="https://arxiv.org/abs/2501.11325v1">arXiv:2501.11325v1</a></li>
+    <li>代码：<a href="https://github.com/Zheng-Chong/CatV2TON">GitHub Repo</a></li>
+    <li>预训练权重：<a href="https://huggingface.co/zhengchong/CatV2TON">HuggingFace</a></li>
+  </ul>
+</div>
