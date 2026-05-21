@@ -3,7 +3,7 @@ title: "Robust Residual Finite Scalar Quantization for Neural Compression"
 description: "RFSQ 用可逆缩放与冻结 LayerNorm 修复多阶段 FSQ 的 residual magnitude decay，让后级量化器重新吃满固定标量网格。"
 date: 2026-05-20T20:01:26
 created_at: 2026-05-20T20:01:26
-updated_at: 2026-05-20T20:06:00
+updated_at: 2026-05-20T20:25:00
 tags: ["神经压缩", "FSQ", "Residual Quantization", "视觉Token", "音频编码"]
 categories: ["论文精读"]
 mathjax: true
@@ -24,7 +24,7 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
   <div class="ch-title">这是一篇量化器组件论文，不是一篇完整 codec 系统论文</div>
   <p><strong>Robust Residual Finite Scalar Quantization</strong>，简称 RFSQ，解决的是一个非常具体的问题：FSQ 本身训练简单、不会发生传统 VQ 的 codebook collapse，但一旦直接堆成多阶段 residual quantizer，后面几级 residual 的幅值会快速变小，导致大量固定标量 levels 闲置。</p>
   <p>作者的修复方式很克制：在 residual 进入后续 FSQ stage 前，加入全局可学习缩放，或使用训练集统计冻结的可逆 LayerNorm，把 residual 拉回 FSQ 的设计工作区间。关键点是这些 conditioning 参数都是模型常量，不随样本写入压缩码流。</p>
-  <div class="callout"><strong>为什么值得读</strong>：它把“多阶段 FSQ 为什么不好用”从模糊的性能问题压缩成一个可测量诊断：后级 residual 没有占满固定量化网格。这个视角对视觉 tokenizer、token-based compression、音频 codec 都有直接迁移价值。</div>
+  <div class="callout"><strong>为什么值得读</strong>：它把“多阶段 FSQ 为什么不好用”从模糊的性能问题压缩成一个可测量诊断：后级 residual 没有占满固定量化网格。同期 iFSQ（Tencent，2026-01）从单 stage bin utilization 角度改善 FSQ，两者异曲同工。</div>
 </div>
 
 <div class="ch fade-in">
@@ -40,6 +40,7 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
     <h3>一个底层类比</h3>
     <p>这像用满量程 ADC 测毫伏信号。电路工作正常，读数也在范围内，但大部分刻度永远用不到。RFSQ 的思想是先把小信号放大到合适量程，读数后再按可逆方式缩回来。</p>
   </div>
+  <p>这个 insight 和 iFSQ 的 activation collapse 是同一个底层问题的不同表现：FSQ 的固定等距量化网格隐含了对输入分布的假设，而实际分布常常不满足这个假设。</p>
 </div>
 
 <div class="ch fade-in">
@@ -57,7 +58,7 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
     <p>最直接的修复是每个 stage 学一个全局 scalar $\alpha_k$：</p>
     <p>$$q_k = \operatorname{FSQ}_k(\alpha_k \cdot r_{k-1})$$</p>
     <p>$$r_k = r_{k-1} - q_k / \alpha_k$$</p>
-    <p>$\alpha_k$ 可以理解为“该 stage residual 典型衰减比例的倒数”。它训练后固定，由 encoder 和 decoder 共享，不需要写入 bitstream。</p>
+    <p>$\alpha_k$ 训练后固定，由 encoder 和 decoder 共享，不需要写入 bitstream。它通过 straight-through estimator (STE) 与其他参数一起优化。</p>
   </div>
   <div class="section">
     <div class="section-title">LayerNorm conditioning</div>
@@ -67,13 +68,20 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
     <p>$$r_k=r_{k-1}-LN_k^{-1}(q_k), \quad LN_k^{-1}(q_k)=q_k\odot\sigma_k+\mu_k$$</p>
     <p>$\mu_k$ 和 $\sigma_k$ 来自训练数据，推理时冻结。它比 scale 更强，因为它同时校正整体幅度、均值偏移和维度方差不均。</p>
   </div>
+  <div class="section">
+    <div class="section-title">完整训练目标</div>
+    <p>音频实验：</p>
+    <p>$$L_{total} = L_1(x, \hat x) + 1.0 \cdot L_{MR\text{-}STFT} + 0.1 \cdot L_{spectral} + 1.0 \cdot L_{adv} + 2.0 \cdot L_{FM}$$</p>
+    <p>图像实验：</p>
+    <p>$$L_{total} = 1.0 \cdot \|x - \hat x\|_1 + 1.0 \cdot LPIPS(x,\hat x)$$</p>
+  </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>方案</th><th>进入第 k 级 FSQ 的输入</th><th>校正幅度</th><th>校正均值/方差</th><th>bitstream 开销</th></tr></thead>
+      <thead><tr><th>方案</th><th>进入第 k 级 FSQ 的输入</th><th>校正幅度</th><th>校正均值/方差</th><th>bitstream 开销</th><th>参数开销</th></tr></thead>
       <tbody>
-        <tr><td>None</td><td>$r_{k-1}$</td><td>否</td><td>否</td><td>无</td></tr>
-        <tr><td>Scale</td><td>$\alpha_k r_{k-1}$</td><td>是</td><td>否</td><td>无</td></tr>
-        <tr><td>LayerNorm</td><td>$(r_{k-1}-\mu_k)/\sigma_k$</td><td>是</td><td>是</td><td>无</td></tr>
+        <tr><td>None</td><td>$r_{k-1}$</td><td>否</td><td>否</td><td>无</td><td>无</td></tr>
+        <tr><td>Scale</td><td>$\alpha_k r_{k-1}$</td><td>是</td><td>否</td><td>无</td><td>1 scalar/stage</td></tr>
+        <tr><td>LayerNorm</td><td>$(r_{k-1}-\mu_k)/\sigma_k$</td><td>是</td><td>是</td><td>无</td><td>2 × d-dim vectors/stage</td></tr>
       </tbody>
     </table>
   </div>
@@ -83,7 +91,6 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
   <div class="ch-label">实验一</div>
   <div class="ch-title">1.8 kbps 音频压缩：RFSQ 的主战场</div>
   <p>音频实验使用 Emilia clean subset。音频被下采样到 24 kHz，320× 压缩后得到 75 Hz 的 128 维特征。码率为 24 bits/frame，即 1.8 kbps。backbone 是 EnCodec/SEANet 风格 encoder-decoder，四个卷积 block 的下采样 strides 为 [2,4,5,8]，模型约 25M 参数，训练 200k steps，batch size 32，使用 8 GPU nodes。</p>
-  <p>训练目标包括 time-domain L1 loss、多分辨率 STFT loss（$\lambda=1.0$）、spectral loss（$\lambda=0.1$）、adversarial loss（$\lambda=1.0$）和 feature matching loss（$\lambda=2.0$）。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Method</th><th>DNSMOS</th><th>MOS</th></tr></thead>
@@ -99,7 +106,7 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
       </tbody>
     </table>
   </div>
-  <p>读表时要克制：RFSQ-4S-NU-LN 的 DNSMOS 3.646 高于 RVQ-4×64 的 3.518，提升约 3.6%；但 MOS 上 RVQ 是 3.81，RFSQ 是 3.80，基本持平。真正有说服力的是 conditioning 消融：None 只有 3.187，Scale 到 3.421，LayerNorm 到 3.646。</p>
+  <p>读表时要克制：RFSQ-4S-NU-LN 的 DNSMOS 3.646 高于 RVQ-4×64 的 3.518，提升约 3.6%；但 MOS 上 RVQ 是 3.81，RFSQ 是 3.80，基本持平。真正有说服力的是 conditioning 消融：None 只有 3.187，Scale 到 3.421，LayerNorm 到 3.646。去掉 conditioning，DNSMOS 掉 14.4%，这是论文最有说服力的数字。</p>
   <div class="photo">
     <img src="assets/media/images/rfsq-2025/image_000000_c904fc97667e9fc80fa64fe791e5201fa3b76a1955e494f51db66a193aa01f59.png" alt="DNSMOS score distributions for RFSQ variants" loading="lazy">
     <div class="cap">图 1：DNSMOS 分布。RFSQ-LN 变体整体优于 unconditioned 与 scale-only 变体。</div>
@@ -109,8 +116,7 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
 <div class="ch fade-in">
   <div class="ch-label">实验二</div>
   <div class="ch-title">ImageNet 重建：证明跨模态，但还不是强图像压缩对比</div>
-  <p>图像实验使用 ImageNet 128×128。模型是一个简单对称 CNN autoencoder：encoder 含两层 stride-2、4×4 kernel convolution，decoder 使用对应 transposed convolution，产生 32×32 feature maps。训练损失为：</p>
-  <p>$$L = \lambda_1 \|x-\hat{x}\|_1 + \lambda_p LPIPS(x,\hat{x}), \quad \lambda_1=\lambda_p=1.0$$</p>
+  <p>图像实验使用 ImageNet 128×128，简单对称 CNN autoencoder：encoder 含两层 stride-2、4×4 kernel convolution，decoder 使用对应 transposed convolution，产生 32×32 feature maps。</p>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Method</th><th>Bits</th><th>L1 ↓</th><th>LPIPS ↓</th><th>PSNR ↑</th></tr></thead>
@@ -125,18 +131,44 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
     </table>
   </div>
   <p>40-bit 条件下，RFSQ-4×1024-LN 相比 unconditioned 的 L1 从 0.113 降到 0.102，LPIPS 从 0.121 降到 0.100，PSNR 从 22.2 提升到 22.9 dB。LPIPS 的相对改善更大，说明后级 residual capacity 对纹理和感知细节尤其重要。</p>
+  <p>值得注意的是，22-bit 条件下 Scale 的 PSNR (21.5) 略高于 LayerNorm (21.3)，但 LayerNorm 的 LPIPS (0.148) 优于 Scale (0.152)。这说明在极低码率下，更 aggressive 的分布标准化不一定在所有指标上都最优。</p>
   <div class="photo">
     <img src="assets/media/images/rfsq-2025/image_000001_49cc6501ca8d551c1d1bb1bbd2fe30bcbcbb6e3d4a24f25c8b322891e6ef11a7.png" alt="ImageNet visual reconstruction comparison" loading="lazy">
-    <div class="cap">图 2：ImageNet 定性比较。论文显示 40-bit LN 模型比 22-bit 与 unconditioned 变体更能保留细节。</div>
+    <div class="cap">图 2：ImageNet 定性比较。40-bit LN 模型比 22-bit 与 unconditioned 变体更能保留细节。</div>
   </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">竞品定位</div>
+  <div class="ch-title">RFSQ 在量化器改进图谱中的位置</div>
+  <p>RFSQ 并不是唯一在改进量化器的工作。理解它的定位需要看两条竞争路线：</p>
+  <div class="section">
+    <div class="section-title">路线 A：改进 VQ/RVQ 本身</div>
+    <p>ERVQ（2024-10）通过 intra-inter codebook optimization 解决 RVQ 的 codebook collapse，在多种音频 codec 上实现 100% codebook utilization。这条路线保留了 VQ 的 learned codebook 灵活性，但增加了训练复杂度。</p>
+  </div>
+  <div class="section">
+    <div class="section-title">路线 B：用 fixed/codebook-free quantizer 替代 VQ</div>
+    <p>RFSQ 和 iFSQ 都属于这条路线。iFSQ（Tencent，2026-01）从单 stage 的 bin utilization 角度修复 FSQ 的 activation collapse，只需 1 行代码。RFSQ 从多 stage 的 residual decay 角度修复。两者的关系是正交互补的：iFSQ 让每级 FSQ 的 bin 利用更好，RFSQ 让后级 residual 的分布回到 FSQ 的工作点。</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>年份</th><th>路线</th><th>核心修复</th><th>与 RFSQ 关系</th></tr></thead>
+      <tbody>
+        <tr><td>ERVQ</td><td>2024-10</td><td>改进 RVQ</td><td>intra-inter codebook optimization</td><td>替代路线</td></tr>
+        <tr><td>iFSQ</td><td>2026-01</td><td>替代 VQ</td><td>distribution-mapping 修复单 stage bin 利用</td><td>正交互补</td></tr>
+        <tr><td>DAC</td><td>2023</td><td>改进 RVQGAN</td><td>multi-band STFT discriminator + snake activations</td><td>强 baseline，RFSQ 未对比</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout"><strong>一个有趣的开放问题</strong>：是改 quantizer 类型（VQ→FSQ+conditioning）更有效，还是改 codebook 管理（ERVQ 路线）更有效？这决定了神经压缩中 quantizer 设计的主攻方向。</div>
 </div>
 
 <div class="ch fade-in">
   <div class="ch-label">评价</div>
   <div class="ch-title">强处是诊断清楚，弱处是系统证据还不够宽</div>
-  <p>这篇论文最有价值的地方，不是宣称“建立新标准”，而是给出了一个可复用的诊断框架：对 fixed quantizer 来说，重建误差之外还必须检查每 stage 的 residual norm、mean、variance 和 level utilization。</p>
-  <p>局限也很明确。第一，篇幅只有 5 页，理论主要是直觉和经验观察，没有严格 rate-distortion 推导。第二，主观音频实验只有 15 listeners，作者也承认缺少更大规模 MUSHRA。第三，RVQ baseline 没有纳入 DAC 级别的最新 discriminator 和训练改进。第四，图像实验只是 ImageNet 128×128 简单重建，没有与现代 learned image compression 或强视觉 tokenizer 系统全面对比。</p>
-  <div class="callout"><strong>我的判断</strong>：RFSQ 更像一个值得加入工具箱的 quantizer module，而不是可以单独代表完整 codec 方案的系统。它适合被放进 visual tokenizer、token-based compression 或 neural audio codec 中做局部 ablation。</div>
+  <p>这篇论文最有价值的地方，不是宣称"建立新标准"，而是给出了一个可复用的诊断框架：对 fixed quantizer 来说，重建误差之外还必须检查每 stage 的 residual norm、mean、variance 和 level utilization。</p>
+  <p>局限也很明确。第一，篇幅只有 5 页，理论主要是直觉和经验观察，没有严格 rate-distortion 推导。第二，主观音频实验只有 15 listeners，作者也承认缺少更大规模 MUSHRA。第三，RVQ baseline 没有纳入 DAC 级别的最新 discriminator 和训练改进。第四，图像实验只是 ImageNet 128×128 简单重建，没有与现代 learned image compression 或强视觉 tokenizer 系统全面对比。第五，未与同期 iFSQ 对比，两者的正交互补关系有待实验验证。</p>
+  <div class="callout"><strong>我的判断</strong>：RFSQ 更像一个值得加入工具箱的 quantizer module，而不是可以单独代表完整 codec 方案的系统。它适合被放进 visual tokenizer、token-based compression 或 neural audio codec 中做局部 ablation。更有意义的定位是：RFSQ 和 iFSQ 共同揭示了 FSQ 的一个深层属性——固定等距量化网格对输入分布的隐含假设——并从不同角度给出了修复方案。</div>
 </div>
 
 <div class="ch fade-in">
@@ -145,9 +177,11 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
   <ul>
     <li><strong>记录每个 residual stage 的利用率</strong>：不要只看 reconstruction loss。画出 residual norm、mean、variance、level histogram。</li>
     <li><strong>先试无 side information 的 global conditioning</strong>：stage-wise scale 和 frozen affine normalization 是很干净的 baseline。</li>
-    <li><strong>把 bit allocation 和 residual energy 曲线绑在一起</strong>：RFSQ 的 (8,6,5,5) 暗示前级应承担更高能量成分，后级负责细节 residual。</li>
+    <li><strong>把 bit allocation 和 residual energy 曲线绑在一起</strong>：RFSQ 的 (8,6,5,5) 暗示前级应承担更高能量成分，后级负责细节 residual。这与经典变换编码的 water-filling 理论一致。</li>
     <li><strong>对图像压缩保持边界感</strong>：RFSQ 没有解决 entropy modeling、rate control、variable-rate、perceptual adversarial training 等系统问题。</li>
     <li><strong>关注分布漂移</strong>：LayerNorm 使用冻结训练统计，部署域变化时需要验证统计稳定性。</li>
+    <li><strong>实验 iFSQ + RFSQ 的组合</strong>：iFSQ 保证单 stage bin utilization，RFSQ 保证多 stage residual conditioning。两者是否正交互补？</li>
+    <li><strong>对比 RFSQ vs ERVQ</strong>：这可以回答"改 quantizer 类型"还是"改 codebook 管理"更有效的根本问题。</li>
   </ul>
 </div>
 
@@ -157,5 +191,8 @@ hero_tagline: "一个小而锋利的量化器组件：诊断 residual magnitude 
     <li><a href="http://arxiv.org/abs/2508.15860" target="_blank">Robust Residual Finite Scalar Quantization for Neural Compression, arXiv:2508.15860</a></li>
     <li><a href="https://arxiv.org/abs/2309.15505" target="_blank">Finite Scalar Quantization: VQ-VAE Made Simple, arXiv:2309.15505</a></li>
     <li><a href="https://arxiv.org/abs/2210.13438" target="_blank">High Fidelity Neural Audio Compression, EnCodec, arXiv:2210.13438</a></li>
+    <li><a href="https://arxiv.org/abs/2601.17124" target="_blank">iFSQ: Improving FSQ for Image Generation with 1 Line of Code, arXiv:2601.17124</a></li>
+    <li><a href="https://arxiv.org/abs/2410.12359" target="_blank">ERVQ: Enhanced Residual Vector Quantization, arXiv:2410.12359</a></li>
+    <li><a href="https://arxiv.org/abs/2306.06546" target="_blank">DAC: High-Fidelity Audio Compression with Improved RVQGAN, arXiv:2306.06546</a></li>
   </ul>
 </div>
