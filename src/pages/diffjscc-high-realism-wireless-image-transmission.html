@@ -1,0 +1,234 @@
+---
+title: "DiffJSCC：扩散模型辅助的高真实感无线图像传输"
+description: "论文精读：Diffusion-Aided Joint Source Channel Coding for High Realism Wireless Image Transmission。解析 DiffJSCC 如何用 Stable Diffusion、ControlNet、多模态条件和 JSCC 初始重建提升低码率低 SNR 下的图像传输真实感。"
+created_at: 2026-05-21T11:04:37
+updated_at: 2026-05-21T11:04:37
+tags: ["JSCC", "语义通信", "扩散模型", "图像传输", "论文精读"]
+categories: ["论文精读"]
+mathjax: true
+hero_title: "DiffJSCC"
+hero_sub: "Diffusion-Aided JSCC · arXiv 2024/2025"
+hero_tagline: "把无线图像传输的接收端改造成一个条件扩散生成器"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2</span><span class="label">Stage</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">Conditions</span></div>
+  <div class="stat"><span class="num">14×</span><span class="label">Fewer Symbols</span></div>
+  <div class="stat"><span class="num b">56.7%</span><span class="label l">FID Gain</span></div>
+</div>
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">Paper · 论文信息</div>
+  <div class="ch-title">这篇论文解决什么问题？</div>
+  <p><strong>Diffusion-Aided Joint Source Channel Coding For High Realism Wireless Image Transmission</strong>（Yang, Liu, Wang, Kim）提出了 DiffJSCC：一个把 <strong>Deep JSCC 初始重建</strong> 和 <strong>Stable Diffusion 条件生成</strong> 结合起来的无线图像传输框架。</p>
+  <p>传统 DeepJSCC 能避免 JPEG/BPG + LDPC 等分离式系统在低 SNR 下的 cliff effect，但它通常用 MSE、SSIM、MS-SSIM 优化，低码率下容易输出模糊图像。DiffJSCC 的出发点是 perception-distortion trade-off：<strong>像素保真和感知真实度不是同一个目标</strong>。</p>
+  <div class="callout"><strong>一句话</strong>：DiffJSCC 把无线图像传输的接收端从“像素回归器”升级成“受信道条件控制的生成式先验解码器”。</div>
+  <p>论文链接：<a href="https://arxiv.org/abs/2404.17736" target="_blank" rel="noopener">arXiv:2404.17736</a>；代码：<a href="https://github.com/mingyuyng/DiffJSCC" target="_blank" rel="noopener">mingyuyng/DiffJSCC</a>。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Background · 相关工作</div>
+  <div class="ch-title">从 DeepJSCC 到生成式 JSCC</div>
+  <p>传统无线图像传输一般是两段式：先用 JPEG/BPG 压缩，再用 LDPC/Polar 等信道编码纠错。它的问题是压缩码流对 bit error 极其敏感，一旦信道编码无法完全纠错，图像质量会断崖式下降。</p>
+  <p><strong>DeepJSCC</strong> 用神经网络自编码器直接把图像映射到复数信道符号，把压缩和抗噪声合并成一个端到端学习问题。后续工作扩展出反馈、OFDM、MIMO、Swin Transformer、adaptive rate control 等方向。</p>
+  <p>但这些方法大多仍以 MSE/PSNR/MS-SSIM 为主目标。低码率下，MSE 最安全的输出常常是“平均化”的模糊图。GAN-JSCC 试图用 PatchGAN 改善纹理，但 GAN 在信道条件变化下训练不稳。Yilmaz et al. 的 zero-shot diffusion JSCC 用 DDNM 后处理 JSCC 初始重建，但条件单一，当初始重建严重失真时约束不足。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>生成先验</th><th>条件来源</th><th>优点</th><th>问题</th></tr></thead>
+      <tbody>
+        <tr><td>DeepJSCC</td><td>无</td><td>接收符号</td><td>抗噪声，无 cliff effect</td><td>低码率下模糊</td></tr>
+        <tr><td>DeepJSCC-adv</td><td>GAN</td><td>图像特征</td><td>纹理更锐</td><td>训练不稳，FID 改善有限</td></tr>
+        <tr><td>Yilmaz et al.</td><td>DDNM diffusion</td><td>初始重建</td><td>zero-shot 简洁</td><td>条件单一</td></tr>
+        <tr><td>DiffJSCC</td><td>Stable Diffusion</td><td>空间 + 文本 + CSI</td><td>真实感强，下游语义更好</td><td>推理重，可能 hallucinate</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Method · 总体架构</div>
+  <div class="ch-title">两阶段：先粗重建，再条件生成</div>
+  <p>DiffJSCC 的 pipeline 很清晰：</p>
+  <ol>
+    <li>发送端用 JSCC encoder 把图像编码为复数信道符号。</li>
+    <li>符号经过 AWGN 或 Rayleigh fading 信道。</li>
+    <li>接收端用 JSCC decoder 得到初始重建图像 \(\hat{x}\)。</li>
+    <li>从 \(\hat{x}\) 提取空间特征 \(f_v\) 和文本特征 \(f_t\)。</li>
+    <li>把 \(f_v,f_t,h,\gamma\) 组成条件集合，控制 Stable Diffusion 去噪生成最终图像。</li>
+  </ol>
+  <p>关键点：扩散模型不是直接处理接收符号，也不是从加噪原图恢复。推理时它从纯高斯 latent 噪声开始采样，JSCC 初始重建只是作为 ControlNet 的 spatial hint 和 optional guidance target。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Stage 1 · JSCC</div>
+  <div class="ch-title">Initial Deep JSCC Reconstruction</div>
+  <p>输入图像为 \(x\in\mathbb{R}^{C\times H\times W}\)，JSCC encoder \(E_c\) 生成 \(K\) 个复数信道符号。传输率定义为：</p>
+  \[
+  \rho = \frac{K}{C\times H\times W}.
+  \]
+  <p>发送符号需要满足平均功率约束：</p>
+  \[
+  y = \sqrt{K\bar{P}}\frac{\tilde{y}}{\sqrt{\tilde{y}'\tilde{y}}}.
+  \]
+  <p>信道模型为：</p>
+  \[
+  \hat{y}=hy+n,\quad n\sim\mathcal{CN}(0,\sigma^2I_K).
+  \]
+  <p>其中 AWGN 下 \(h=1\)，Rayleigh fading 下 \(h\) 是复数随机增益。SNR 为：</p>
+  \[
+  \gamma=\frac{\bar{P}\mathbb{E}[|h|^2]}{\sigma^2}.
+  \]
+  <p>接收端先均衡：</p>
+  \[
+  \tilde{y}=\frac{h^*}{|h|^2}\hat{y}.
+  \]
+  <p>然后解码：</p>
+  \[
+  y=E_c(x,h,\gamma),\quad \hat{x}=D_c(\hat{y},h,\gamma).
+  \]
+  <p>第一阶段仍用 MSE 训练：</p>
+  \[
+  \mathcal{L}_{JSCC}=\mathbb{E}_{x,h,n}\left[\lVert x-\hat{x}\rVert_2^2\right].
+  \]
+  <div class="callout"><strong>作用</strong>：这一阶段不追求最终真实感，而是给扩散模型提供一个内容大致对齐、空间结构可靠的初始锚点。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Stage 2 · Conditions</div>
+  <div class="ch-title">多模态条件：\(f_v, f_t, h, \gamma\)</div>
+  <p>DiffJSCC 不只把初始图像作为条件，而是构造一个多模态条件集合：</p>
+  \[
+  \bar{c}=\{f_v,f_t,h,\gamma\}.
+  \]
+  <p><strong>空间条件</strong>来自 Stable Diffusion 的 VAE encoder：</p>
+  \[
+  f_v = E_{ldm}(\hat{x}),\quad f_v\in\mathbb{R}^{4\times H/8\times W/8}.
+  \]
+  <p>它提供布局、低频结构和物体位置，是 fidelity anchor。</p>
+  <p><strong>文本条件</strong>由 BLIP2 对初始重建生成 caption，再经 CLIP text encoder 编码：</p>
+  \[
+  f_t=E_{clip}(E_{blip}(\hat{x})),\quad f_t\in\mathbb{R}^{77\times768}.
+  \]
+  <p>即使 \(\hat{x}\) 模糊，caption 往往还能抓住 lighthouse、house、parrot 等关键词，帮助扩散模型恢复物体级语义。</p>
+  <p><strong>信道条件</strong>包括 SNR \(\gamma\) 和 channel gain \(h\)。它们告诉 denoiser 当前初始重建有多可信。低 SNR 时，模型应更多依赖生成先验和文本语义；高 SNR 时，可以更相信 \(\hat{x}\) 的细节。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Diffusion · 条件扩散</div>
+  <div class="ch-title">ControlNet 如何接管 Stable Diffusion</div>
+  <p>标准 latent diffusion 的前向加噪为：</p>
+  \[
+  z_t=\sqrt{\bar{\alpha}_t}z_0+\sqrt{1-\bar{\alpha}_t}\epsilon.
+  \]
+  <p>标准 LDM 噪声预测损失是：</p>
+  \[
+  \mathcal{L}_{ldm}=\mathbb{E}_{z_0,c,t,\epsilon}\left\lVert\epsilon-\epsilon_\theta(\sqrt{\bar{\alpha}_t}z_0+\sqrt{1-\bar{\alpha}_t}\epsilon,c,t)\right\rVert_2^2.
+  \]
+  <p>DiffJSCC 把条件 \(c\) 换成多模态信道条件 \(\bar{c}\)：</p>
+  \[
+  \mathcal{L}_{diff}=\mathbb{E}_{z_0,\bar{c},t,\epsilon}\left\lVert\epsilon-\epsilon_\theta(\sqrt{\bar{\alpha}_t}z_0+\sqrt{1-\bar{\alpha}_t}\epsilon,\bar{c},t)\right\rVert_2^2.
+  \]
+  <p>实现上，论文冻结 Stable Diffusion 2.1-base 的主 UNet，训练一个 ControlNet 风格的控制模块。控制模块把当前 noisy latent \(z_t\) 和空间特征 \(f_v\) 拼接，把 SNR embedding 加到 diffusion time embedding 中，并把文本特征 \(f_t\) 作为 cross-attention 条件。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Guidance · 保真约束</div>
+  <div class="ch-title">Intermediate Guidance：在真实感和保真度之间调 λ</div>
+  <p>扩散模型可能生成“看起来真实但不是原图”的内容。为降低内容漂移，论文加入可选 intermediate guidance。先根据当前 \(z_t\) 估计 clean latent：</p>
+  \[
+  \tilde{z}_0=\frac{z_t-\sqrt{1-\bar{\alpha}_t}\epsilon_\theta(z_t,\bar{c},t)}{\sqrt{\bar{\alpha}_t}}.
+  \]
+  <p>再把它向空间条件 \(f_v\) 拉近：</p>
+  \[
+  \hat{z}_0=\tilde{z}_0-\frac{\lambda}{C_lH_lW_l}(\tilde{z}_0-f_v).
+  \]
+  <p>当 \(\lambda=0\) 时，模型自由生成，感知质量通常最好；当 \(\lambda\) 增大时，输出更贴近 JSCC 初始重建，PSNR/MS-SSIM 通常上升，但 LPIPS/FID 可能变差。CelebAHQ 实验显示，在存在 domain gap 时，适当增大 \(\lambda\) 可以抑制 artifact。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Code · 代码映射</div>
+  <div class="ch-title">仓库结构与推理数据流</div>
+  <p>代码已下载到本地：<code>~/Org/perturbed-transmission/repos/DiffJSCC</code>。核心文件如下：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文件</th><th>对应模块</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><code>model/deepjscc_cnn.py</code></td><td>JSCC encoder/decoder</td><td>CNN 版 JSCC，含复数信道、功率归一化、AWGN/Rayleigh</td></tr>
+        <tr><td><code>model/deepjscc_swin.py</code></td><td>SwinJSCC</td><td>Swin 版初始重建模型</td></tr>
+        <tr><td><code>model/cldm.py</code></td><td>ControlLDM / ControlNet</td><td>核心条件扩散实现</td></tr>
+        <tr><td><code>model/cond_fn.py</code></td><td>Intermediate guidance</td><td>MSEGuidance，采样时拉近初始重建</td></tr>
+        <tr><td><code>model/spaced_sampler.py</code></td><td>采样器</td><td>把 1000-step diffusion 压缩到指定 steps</td></tr>
+        <tr><td><code>inference_cldm.py</code></td><td>推理入口</td><td>串联 JSCC → BLIP2 → diffusion → metric</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>推理流程：输入图像先 resize 到 512 并 pad 到 64 的倍数；<code>preprocess_model</code> 固定 SNR 后执行 encode → channel simulation → decode 得到 <code>img_init</code>；BLIP2 从 <code>img_init</code> 生成 caption；CLIP 得到文本条件；<code>SpacedSampler</code> 从纯高斯 latent 开始采样；最后用 wavelet/adain 做颜色校正，再 crop/resize 回原图尺寸。</p>
+  <div class="callout"><strong>运行坑点</strong>：依赖较旧，要求 PyTorch 1.13.1 + CUDA 11.6；BLIP2-opt-2.7b 内存压力大；代码中部分 metric 仍有 <code>.cuda()</code> 调用，CPU/MPS 复现需要改。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Training · 训练设置</div>
+  <div class="ch-title">数据集、SNR 与训练超参数</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>用途</th><th>数据集</th><th>规模</th><th>尺寸</th></tr></thead>
+      <tbody>
+        <tr><td>通用图像训练</td><td>OpenImages</td><td>约 300,000 张</td><td>随机 crop 256×256</td></tr>
+        <tr><td>通用图像测试</td><td>Kodak</td><td>24 张</td><td>768×512</td></tr>
+        <tr><td>语义分割测试</td><td>ADE20K val</td><td>2000 张</td><td>原文未统一说明</td></tr>
+        <tr><td>人脸训练</td><td>CelebAHQ</td><td>27,000 张</td><td>512×512</td></tr>
+        <tr><td>人脸测试</td><td>CelebAHQ</td><td>3,000 张</td><td>512×512</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>JSCC 第一阶段使用 Adam，初始学习率 \(10^{-3}\)，余弦退火到 \(10^{-5}\)，训练 100,000 iterations；通用图像 batch size 32，人脸 batch size 16。Control module 基于 Stable Diffusion 2.1-base，学习率 \(10^{-4}\)，训练 25,000 iterations。论文称 control module batch size 16，但仓库 <code>CLDM_OpenImage_train.yaml</code> 中为 8，复现时需要核对。</p>
+  <p>通用图像 SNR 在 [0,14] dB 中采样；人脸场景论文描述为 [-5,5] dB。推理通常使用 50-step spaced DDPM 作为效率和质量的折中。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Experiments · 实验结果</div>
+  <div class="ch-title">低码率下的感知质量优势</div>
+  <p>论文使用 PSNR、MS-SSIM 衡量失真，用 LPIPS、FID 衡量感知质量，用 mIoU 衡量语义分割下游任务。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>场景</th><th>结果</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>Kodak, AWGN 1dB, ρ=1/384</td><td>DiffJSCC FID=117.9；BPG+Capacity FID=165.4 且 ρ=0.0377</td><td>14× 更少符号，FID 仍好 28.7%</td></tr>
+        <tr><td>Kodak, ρ=0.0026</td><td>FID 相比 DeepJSCC 提升 64.3%，相比 BPG+Capacity 提升 70.7%</td><td>极低码率下生成先验优势明显</td></tr>
+        <tr><td>AWGN, ρ=1/384</td><td>LPIPS 提升 41.4%，FID 提升 56.7%</td><td>相比标准 DeepJSCC</td></tr>
+        <tr><td>AWGN, ρ=1/96</td><td>LPIPS 提升 43%，FID 提升 53.2%</td><td>高一点码率仍有效</td></tr>
+        <tr><td>ADE20K, ρ=1/384</td><td>FID 降低 69.2%，mIoU 提升 52.5%</td><td>不只是好看，下游语义也更好</td></tr>
+        <tr><td>CelebAHQ, λ=50, ρ=1/768</td><td>LPIPS 相比 InverseJSCC 提升 15.9%</td><td>人脸极低码率有效</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>值得注意的是，DiffJSCC 不一定提升 PSNR/MS-SSIM。它的目标是更好的 perceptual quality 和 semantic utility，而非逐像素复原。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Ablation · 消融</div>
+  <div class="ch-title">文本和 SNR 条件真的有用吗？</div>
+  <p>消融实验显示，仅用空间特征 \(f_v\) 效果有限。加入 SNR 信息后，平均 FID 改善约 2%，低 SNR 时更明显。再加入文本 prompt \(f_t\) 后，FID 额外改善 4.3%。如果 caption 来自无失真原图，提升更大，说明文本条件有较高上限。</p>
+  <p>采样步数方面，25 → 50 steps 提升明显，50 → 100 steps 收益下降。SNR=13dB 时，25 → 50 steps 带来 LPIPS 0.02、FID 6.5 的改善；50 → 100 steps 只带来 LPIPS 0.004、FID 2.5 的改善。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Implication · 电缆缺陷图像</div>
+  <div class="ch-title">迁移到工业缺陷传输时要小心什么？</div>
+  <p>DiffJSCC 对电缆缺陷图像传输很有启发：工业现场常有低码率、强干扰、边缘设备能耗受限等问题，而 DiffJSCC 把复杂计算放在接收端，发送端几乎不增加负担。</p>
+  <p>但不能直接照搬。自然图像中“好看”的纹理补全，在电缆缺陷场景中可能是危险的。裂纹、腐蚀、放电痕迹往往是细小异常，Stable Diffusion 的自然图像先验可能把它们当噪声修掉，或者生成并不存在的伪缺陷。</p>
+  <div class="callout"><strong>研究启发</strong>：保留 DiffJSCC 的两阶段结构，但把条件和损失改成 defect-aware。比如加入缺陷 mask、边缘图、高频纹理特征、检测/分割 backbone feature loss，并用 mIoU、边缘 F1、异常检测 AUC 等任务指标替代单纯 FID/LPIPS。</div>
+  <p>对于电缆缺陷传输，核心目标不是“生成最自然的电缆图像”，而是“在强干扰信道下保留任务关键异常”。这正是 DiffJSCC 后续可拓展的研究空白。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Conclusion · 结论</div>
+  <div class="ch-title">从通信恢复到生成式后验推断</div>
+  <p>DiffJSCC 的真正意义在于：它把无线图像传输的接收端定义为一个 posterior generative decoder。信道传来的不再是必须逐像素还原的压缩码流，而是约束大规模视觉先验的条件。接收端根据粗重建、文本语义和信道状态，从自然图像先验中采样一个语义一致、视觉真实的图像。</p>
+  <p>这代表了 Deep JSCC、语义通信、生成式压缩和扩散模型的一次汇合。它非常适合低码率、低 SNR、语义任务优先的场景；但在医学、工业缺陷、遥感异常等要求事实细节保真的任务中，需要额外的任务约束来防止 hallucination。</p>
+</div>
+
+</div>
