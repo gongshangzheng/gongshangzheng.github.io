@@ -37,13 +37,13 @@ module.exports = { tests, name: 'mymodule' };
 
 | File | Tests |
 |------|-------|
-| generator | 53 |
+| generator | 56 |
 | parser | 28 |
 | replace.test.js | 0 |
 | toc | 27 |
 
 ## Coverage
 
-**Total:** 108 tests across 4 modules.
+**Total:** 111 tests across 4 modules.
 
 See `docs/coverage.md` for per-module breakdown.

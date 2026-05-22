@@ -25,11 +25,12 @@ const tests = {
     assert.equal(data.author, 'John Doe');
   },
 
-  'parseFrontmatter: YAML with array-like values (not parsed)': () => {
-    const raw = `---\ntags: [AI, History]\ncategories: [AI]\n---\n\nBody.`;
+  'parseFrontmatter: YAML with array-like values and subcategory': () => {
+    const raw = `---\ntags: [AI, History]\ncategories: [AI]\nsubcategory: Visual Tokenizer\n---\n\nBody.`;
     const { data } = parseFrontmatter(raw);
     assert.equal(data.tags, '[AI, History]');
     assert.equal(data.categories, '[AI]');
+    assert.equal(data.subcategory, 'Visual Tokenizer');
   },
 
   'parseFrontmatter: YAML with page_style block': () => {

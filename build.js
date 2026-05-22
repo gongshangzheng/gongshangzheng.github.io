@@ -79,6 +79,7 @@ function collectPosts() {
       description: fm.description || '',
       tags: parseListField(fm.tags),
       categories: parseListField(fm.categories),
+      subcategory: String(fm.subcategory || '').trim(),
       created_at: fm.created_at || '',
       url: `./${slug}.html`,
     });

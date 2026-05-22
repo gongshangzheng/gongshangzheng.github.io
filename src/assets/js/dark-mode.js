@@ -519,7 +519,7 @@ if (window.Prism) Prism.highlightAll();
     }
     var keywords = q.split(/\s+/);
     var matched = index.filter(function(post) {
-      var text = (post.title + ' ' + post.description + ' ' + post.tags.join(' ') + ' ' + post.categories.join(' ')).toLowerCase();
+      var text = (post.title + ' ' + post.description + ' ' + post.tags.join(' ') + ' ' + post.categories.join(' ') + ' ' + (post.subcategory || '')).toLowerCase();
       return keywords.every(function(kw) { return text.indexOf(kw) >= 0; });
     });
     renderResults(matched);

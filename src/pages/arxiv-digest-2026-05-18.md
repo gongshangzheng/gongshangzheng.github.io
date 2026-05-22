@@ -4,11 +4,13 @@ description: "2026-05-18 自动追踪 arXiv 论文结果：今日无匹配论文
 created_at: 2026-05-18T10:00:00
 updated_at: 2026-05-18T10:00:00
 tags: ["arXiv", "论文", "AI", "视觉编码器"]
-categories: ["每日论文"]
+categories: [AI]
 hero_title: "每日 arXiv 论文简报"
 hero_sub: "2026-05-18 · 0 篇论文"
 hero_tagline: "自动追踪 · LLM 总览 · 研究雷达"
+subcategory: ArXiv Digest
 ---
+
 
 <div class="admonition note">
   <div class="admonition-title">

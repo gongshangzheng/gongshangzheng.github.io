@@ -6,7 +6,7 @@
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
-const { transformLatex, buildArticles } = require('../lib/generator');
+const { transformLatex, buildArticles, taxonomySlug, categoryUrl, subcategoryUrl } = require('../lib/generator');
 const { walkDir } = require('../lib/utils');
 
 // Mock fs/marked deps for unit testing
@@ -367,6 +367,22 @@ window.MathJax = {
   'parseListField: already array returns as-is': () => {
     const arr = ['a', 'b'];
     assert.strictEqual(parseListField(arr), arr);
+  },
+
+  // ===== taxonomy helpers =====
+
+  'taxonomySlug: handles spaces and unsafe chars': () => {
+    assert.equal(taxonomySlug('Visual Tokenizer'), 'Visual-Tokenizer');
+    assert.equal(taxonomySlug('AI/ML'), 'AI-ML');
+    assert.equal(taxonomySlug('Diffusion?Models%2026'), 'Diffusion-Models-2026');
+  },
+
+  'categoryUrl: uses taxonomy slug': () => {
+    assert.equal(categoryUrl('Visual AI'), './categories/Visual-AI.html');
+  },
+
+  'subcategoryUrl: nests subcategory under category': () => {
+    assert.equal(subcategoryUrl('AI', 'Visual Tokenizer'), './categories/AI/Visual-Tokenizer.html');
   },
 
   // ===== extractFirstDiv: attribute edge cases =====

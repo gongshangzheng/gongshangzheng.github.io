@@ -4,11 +4,13 @@ description: "基于 TiTok 及其 263 篇引用文献的系统性调研，梳理
 created_at: 2026-05-17T10:00:00
 updated_at: 2026-05-17T10:00:00
 tags: ["arXiv", "视觉编码器", "1D Tokenizer", "TiTok", "研究综述"]
-categories: ["研究综述"]
+categories: [AI]
 hero_title: "TiTok 与 1D Visual Tokenizer"
 hero_sub: "研究现状与演进方向"
 hero_tagline: "从 32 tokens 到 3B 参数：1D 视觉编码器的三条主线"
+subcategory: Visual Tokenizer
 ---
+
 
 ## TiTok：1D Visual Tokenizer 的奠基工作
 
