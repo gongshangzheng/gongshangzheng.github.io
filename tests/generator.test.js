@@ -658,6 +658,19 @@ window.MathJax = {
     assert(result.indexOf('<p>Before text</p>') < result.indexOf('<div class="table-wrap">'), 'before comes first');
     assert(result.indexOf('</div>') < result.indexOf('<p>After text</p>'), 'after comes after table');
   },
+
+  // ===== PDF.js injection =====
+
+  'buildPdfJsScript: uses UMD (not ESM) CDN URLs': () => {
+    const { buildPdfJsScript } = require('../lib/generator');
+    const script = buildPdfJsScript();
+    assert(!script.includes('.mjs'), 'should NOT use .mjs ESM URLs, got: ' + script);
+    assert(script.includes('pdfjs-dist@3.11.174/build/pdf.min.js'), 'main JS URL should be pdf.min.js (UMD)');
+    assert(script.includes('pdfjs-dist@3.11.174/build/pdf.worker.min.js'), 'worker URL should be pdf.worker.min.js (UMD)');
+    assert(script.includes('loadScript('), 'should contain loadScript helper');
+    assert(script.includes('ensurePdfJs('), 'should contain ensurePdfJs');
+    assert(script.includes('renderOne('), 'should contain renderOne');
+  },
 };
 
 module.exports = { tests, name: 'generator' };
