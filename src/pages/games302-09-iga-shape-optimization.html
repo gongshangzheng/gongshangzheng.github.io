@@ -1,13 +1,13 @@
 ---
 title: "基于等几何分析的形状优化"
-description: "GAMES302 第 9 讲课程笔记：形状优化的四类目标函数，柔度/位移/应力/体积约束，IGA 设计-分析统一表示的优势。"
+description: "GAMES302 第 9 讲课程笔记：从 PDE 弱形式、NURBS 控制点参数化到 IGA 形状优化的灵敏度分析、目标函数与典型算例。"
 created_at: 2026-05-20T14:00:00
-updated_at: 2026-05-20T14:00:00
+updated_at: 2026-05-22T13:50:00
 tags: ["等几何分析", "形状优化", "拓扑优化", "SIMP", "课程笔记"]
 categories: [课程]
 hero_title: "基于等几何分析的形状优化"
 hero_sub: "GAMES302 · 课程笔记"
-hero_tagline: "GAMES302 第 9 讲课程笔记：形状优化的四类目标函数，柔度/位移/应力/体积约束，IGA 设计-分析统一表示的优..."
+hero_tagline: "用同一套 NURBS 几何同时做 CAD 表达、IGA 求解与梯度优化。"
 date: 2026-05-20T14:00:00
 mathjax: true
 subcategory: IGA
@@ -15,113 +15,515 @@ subcategory: IGA
 
 <p># GAMES302 第 9 讲：基于等几何分析的形状优化</p>
 
-<blockquote><p>本讲主讲人：徐岗（杭州电子科技大学）。主题：形状优化的数学模型、四类目标函数，以及 IGA 框架下的形状优化特点。</p></blockquote>
+<blockquote><p>本讲主讲人：徐岗（杭州电子科技大学）。主题从结构优化的一般模型出发，解释为什么等几何分析（Isogeometric Analysis, IGA）天然适合形状优化，并重点展开目标函数、MMA 优化、控制点灵敏度、线弹性/三维/超弹性场景与典型算例。</p></blockquote>
 
-<p>---</p>
+<div class="ch fade-in"><div class="ch-title">一、本讲问题：把“几何形状”变成可优化变量</div>
 
-<div class="ch fade-in"><div class="ch-title">一、形状优化概述</div>
+<p><strong>形状优化</strong>（shape optimization）研究的是：在边界条件、载荷、材料参数和制造约束给定时，如何改变结构边界或外形，使结构性能指标达到最优。它和尺寸优化、拓扑优化同属结构优化，但三者改变对象不同：</p>
 
-<p><strong>形状优化</strong>（Shape Optimization）是一种通过调整物体几何外形来提高产品结构性能的方法。在等几何分析框架中，它通常以控制点坐标为设计变量，以物理性能指标（柔度、位移、应力、体积等）为目标函数或约束函数，构建数学优化模型，寻找最佳几何结构。</p>
+<ul>
+  <li><strong>尺寸优化</strong>：通常改变厚度、半径、截面尺寸等少量标量参数。</li>
+  <li><strong>形状优化</strong>：改变边界曲线、曲面、控制点位置或权重，拓扑连通关系一般保持不变。</li>
+  <li><strong>拓扑优化</strong>：允许材料分布、孔洞数量、连通关系发生改变，设计自由度更高，L10 会进入这一主题。</li>
+</ul>
+
+<p>GAMES302 L09 的核心是：在 IGA 中，CAD 几何已经由 NURBS/B-spline 控制点、权重和节点向量描述；IGA 又直接用这些样条基函数离散 PDE。因此，形状变量可以直接取为控制点坐标或权重，优化后仍然得到一份 CAD 友好的样条模型。</p>
 
 <div class="photo">
   <img src="assets/media/images/games302-09-iga-shape-optimization/L09-p3.jpg" alt="形状优化问题" loading="lazy">
-  <div class="cap">形状优化的数学表述</div>
+  <div class="cap">形状优化的数学表述：目标函数、约束与状态方程共同构成 PDE 约束优化问题。</div>
 </div>
 
+<p>结构优化设计以力学原理和数学规划算法为基础。它通过最优化方法改变工程结构的尺寸、形状和拓扑构型，在给定设计空间和约束条件下实现最优性能设计。课程 PPT 强调，优化结果通常还需要后处理，例如局部光顺、局部补强、制造约束检查；但优化本身能给出人类设计师不容易直接想到的创新初稿，已经广泛用于航空航天、汽车、机械、土木和船舶工程。</p>
+
+<p>一次完整形状优化通常包含三个环节：</p>
+
+<ol>
+  <li><strong>设计模型</strong>：用样条曲线、曲面、实体或网格描述几何外形，并规定哪些几何自由度可以移动。</li>
+  <li><strong>分析模型</strong>：对当前形状求解物理响应，例如线弹性位移场、应力场、模态频率或超弹性变形。</li>
+  <li><strong>优化算法</strong>：根据目标函数和约束的灵敏度决定设计变量更新方向，迭代直到收敛。</li>
+</ol>
+
+<p>传统 FEA 形状优化常见流程是 CAD 建模 → 网格生成 → 有限元求解 → 灵敏度分析 → 更新 CAD/网格。每次几何更新后可能都要重新网格化，且 CAD 几何与分析网格之间存在误差。IGA 的出发点正好对准这个痛点：用 CAD 中的 NURBS、T-splines 或相关样条基函数直接作为分析基函数。经典 IGA 论文 Cottrell、Hughes、Bazilevs 等指出，NURBS 可以精确表达许多 CAD 常见几何，并且同一基函数可用于几何映射和场变量近似，这也是本讲形状优化的底层逻辑。</p>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">二、前置知识回顾：从 L06-L08 到 L09</div>
+
+<p>这一讲默认已经理解 L06-L08 中 IGA 求解 PDE 的基本链条。形状优化并不是新开一个孤立问题，而是在“PDE 求解器”外面套一层“设计变量迭代”。因此先把前置知识压缩成四条主线。</p>
+
+<h3>1. PDE 求解：状态方程决定结构响应</h3>
+
+<p>以线弹性为例，未知量是位移场 $u$。连续问题由三类方程构成：</p>
+
+<ul>
+  <li><strong>平衡方程</strong>：内部应力与外力平衡，例如 $-\nabla \cdot \sigma = f$。</li>
+  <li><strong>几何方程</strong>：应变由位移梯度给出，例如小变形下 $\varepsilon(u)=\frac12(\nabla u+\nabla u^T)$。</li>
+  <li><strong>本构方程</strong>：应力与应变由材料矩阵关联，例如 $\sigma=D\varepsilon$。</li>
+</ul>
+
+<p>边界条件分为 Dirichlet 约束和 Neumann 载荷：前者规定某些边界上的位移，后者规定外力或表面力。离散后常写为</p>
+
+<p style="text-align:center">\[
+K(s)u(s)=F(s),
+\]</p>
+
+<p>其中 $s$ 是设计变量，$K$ 是刚度矩阵，$F$ 是载荷向量，$u$ 是位移自由度。形状变化会改变物理域 $\Omega(s)$、雅可比矩阵、积分权重、边界法向，有时还会改变载荷方向或载荷作用面积，所以 $K$ 和 $F$ 都可能依赖设计变量。</p>
+
+<h3>2. 弱形式：优化时真正微分的是积分表达</h3>
+
+<p>IGA 和 FEM 一样不会直接求强形式，而是把 PDE 转成弱形式。例如线弹性问题可写为：求 $u \in V$，使得对任意测试函数 $v \in V_0$，有</p>
+
+<p style="text-align:center">\[
+a(u,v;\Omega)=\ell(v;\Omega),
+\]</p>
+
+<p>其中</p>
+
+<p style="text-align:center">\[
+a(u,v;\Omega)=\int_\Omega \varepsilon(v)^T D\varepsilon(u)\,d\Omega, \qquad \ell(v;\Omega)=\int_\Omega f\cdot v\,d\Omega+\int_{\Gamma_t} t\cdot v\,d\Gamma.
+\]</p>
+
+<p>这一步很关键：形状优化里的灵敏度，本质上就是对这些随几何变化的积分做链式法则。物理域改变时，积分区域、雅可比行列式 $|J|$、形函数对物理坐标的导数、边界积分测度都会变化。</p>
+
+<h3>3. 控制点：几何映射也是设计变量映射</h3>
+
+<p>NURBS 曲线、曲面或实体通过控制点 $P_A$、权重 $w_A$ 和基函数 $R_A(\xi)$ 给出物理坐标：</p>
+
+<p style="text-align:center">\[
+x(\xi)=\sum_A R_A(\xi)P_A.
+\]</p>
+
+<p>如果选择某个控制点坐标 $P_{A,x}$ 作为设计变量，那么物理点对该变量的导数很直接：</p>
+
+<p style="text-align:center">\[
+\frac{\partial x(\xi)}{\partial P_{A,x}}=R_A(\xi)e_x.
+\]</p>
+
+<p>这就是 IGA 形状优化的优势来源：移动一个控制点不会只移动一个网格节点，而是通过局部支撑的样条基函数平滑影响一片几何区域。NURBS 权重也可以作为设计变量，尤其对圆弧、圆孔、二次曲线这类有理几何很重要，但权重优化更容易带来尺度和非线性问题，实践中经常先固定权重，只优化控制点坐标。</p>
+
+<h3>4. 灵敏度分析：优化算法需要梯度，而不只是函数值</h3>
+
+<p>梯度型优化算法，例如移动渐近线法（MMA）、序列二次规划（SQP）或内点法，需要目标函数和约束函数对设计变量的导数。若只有目标函数值，就只能使用有限差分或启发式搜索，效率会很低。L09 因此把“结构灵敏度分析”作为核心：给定 $J(s,u(s))$，要求</p>
+
+<p style="text-align:center">\[
+\frac{dJ}{ds_i}=\frac{\partial J}{\partial s_i}+\frac{\partial J}{\partial u}\frac{\partial u}{\partial s_i}.
+\]</p>
+
+<p>难点在于 $\partial u/\partial s_i$。它不是直接给定的，而要由状态方程 $K(s)u(s)=F(s)$ 的微分推出。这正是后面直接微分法和伴随法的入口。</p>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">三、为什么 IGA 适合形状优化</div>
+
+<p>把 IGA 用于形状优化，不只是“换一种有限元基函数”。它改变了设计模型与分析模型之间的关系。</p>
 
 <div class="photo">
   <img src="assets/media/images/games302-09-iga-shape-optimization/L09-p5.jpg" alt="NURBS 控制点优化" loading="lazy">
-  <div class="cap">基于 NURBS 控制点的形状参数化</div>
+  <div class="cap">基于 NURBS 控制点的形状参数化：控制点的移动会通过样条基函数平滑地传播到几何边界。</div>
 </div>
 
+<h3>1. 几何精确性：优化过程中尽量不丢 CAD 几何</h3>
 
-<p>形状优化已经广泛应用于航空航天、汽车、机械、土木及船舶工程等领域——其核心价值在于它能<strong>自动生成人类设计师难以想到的创新方案</strong>，而不只是改进现有设计。</p>
+<p>CAD 中圆、圆弧、圆柱、圆锥曲面等常用几何可以由 NURBS 精确表达。传统网格化会把曲边近似成分片直线或分片多项式曲面，几何误差会进入分析结果；而 IGA 直接在样条几何上积分和求解，更适合需要边界高精度的形状优化，例如带孔板、叶片、扳手开口、流固边界等。</p>
 
-<p>形状优化通常分为三个环节：</p>
+<h3>2. 设计变量少而语义明确</h3>
 
-<ol><li><strong>设计模型</strong>：用样条或网格描述几何外形及其变化方式</li></ol>
-<ol><li><strong>分析模型</strong>：用 IGA 或 FEA 数值方法计算结构响应</li></ol>
-<ol><li><strong>优化算法</strong>：控制优化方向，不断迭代收敛到极值</li></ol>
+<p>若用有限元网格节点作为形状变量，变量数量可能很大，而且移动节点容易造成网格畸变。IGA 中粗控制网格可以表达整体形状趋势，少量控制点即可改变边界曲率、厚度和过渡区域。课程中悬臂梁、1/4 带孔平板、开口扳手等例子都采用控制点坐标或权重作为设计变量。</p>
 
-<p>在 IGA 框架下，设计模型和分析模型<strong>共享同一个 NURBS 表示</strong>，这意味着几何更新后不需要经过格式转换，分析结果可以直接用于下一次优化迭代。</p>
+<h3>3. 设计模型和分析模型可以分离但可传递</h3>
 
-<div class="photo">
-  <img src="assets/media/images/games302-09-iga-shape-optimization/L09-p7.jpg" alt="优化算例" loading="lazy">
-  <div class="cap">悬臂梁形状优化迭代过程</div>
-</div>
+<p>PPT 后半部分提到：形状优化时可以让<strong>设计模型使用粗网格</strong>控制形状变化，让<strong>分析模型使用细网格</strong>计算更准确的位移和灵敏度。NURBS 节点插入给出了粗细模型之间的双射关系，因此分析模型上的灵敏度可以传回粗控制点，粗控制点更新后又能映射到细模型。这避免了“设计变量过多”和“分析精度不足”之间的冲突。</p>
 
+<h3>4. 参数域保持稳定</h3>
 
-<p>---</p>
+<p>IGA 形状优化中，设计变量改变物理域 $\Omega$，但参数域 $\hat\Omega$ 通常保持不变。几何映射 $x(\xi;s)$ 变化，积分仍在标准参数单元上进行：</p>
 
-</div>
-<div class="ch fade-in"><div class="ch-title">二、形状优化的数学模型</div>
+<p style="text-align:center">\[
+\int_{\Omega(s)} g(x)\,d\Omega=\int_{\hat\Omega} g(x(\xi;s))|J(\xi;s)|\,d\xi.
+\]</p>
 
-<p>形状优化的标准数学模型可以写为：</p>
-
-$$<p>\min \quad J(\Omega, u) \quad \text{subject to} \quad G(\Omega, u) \leq 0, \quad \mathcal{F}(\Omega, u) = 0</p>$$
-
-<p>其中 $\Omega$ 是几何区域（由控制点参数化），$u$ 是物理场（位移等），$J$ 是目标函数，$G$ 是不等式约束，$\mathcal{F}$ 是平衡方程（强形式或弱形式）。</p>
-
-<p>---</p>
+<p>因此求导可以集中在 $x(\xi;s)$、$J(\xi;s)$、$B(\xi;s)$ 等量上，而不必每次重建网格拓扑。这也是课程里说“几何域会因设计变量变化而变化，但参数域不会受到影响，从而使单元保持良好质量”的意思。</p>
 
 </div>
-<div class="ch fade-in"><div class="ch-title">三、四类目标函数</div>
 
-<h3>柔度（Compliance）</h3>
+<div class="ch fade-in"><div class="ch-title">四、形状优化的数学模型</div>
 
-<p>柔度即结构应变能，定义为 $J = \int_\Omega f \cdot u \, d\Omega$，值越大表示结构稳定性越差。柔度最小化是最常见的形状优化目标，通常以体积或面积作为不等式约束：</p>
+<p>一般形状优化可写成 PDE 约束优化问题：</p>
 
-$$<p>\min \quad C(u) = \int_\Omega f \cdot u \, d\Omega \quad \text{s.t.} \quad V(\Omega) \leq V^*</p>$$
+<p style="text-align:center">\[
+\begin{aligned}
+\min_{s}\quad & J(\Omega(s),u(s),s) \\
+\text{s.t.}\quad & K(s)u(s)=F(s), \\
+& g_j(\Omega(s),u(s),s)\le 0,\quad j=1,\dots,m,\\
+& s_i^{\min}\le s_i\le s_i^{\max}.
+\end{aligned}
+\]</p>
 
-<h3>节点位移</h3>
+<p>这里 $s$ 可以是外边界控制点坐标、控制点权重、FFD 控制点、厚度变量或某些 CAD 参数。$J$ 是目标函数，$g_j$ 是约束函数，$K u=F$ 是离散后的状态方程。</p>
 
-<p>以某一物理点的位移最小化为目标：</p>
+<p>课程 PPT 中总结了四类最常见目标函数：柔度、节点位移/关键点位移、最大应力、体积或面积。其中体积和最大应力也常作为不等式约束，而不是目标。比如工程上常见写法是：在体积不超过初始体积 35% 的条件下，使加载点位移最小；或在最大应力不超过许用值的条件下，使体积最小。</p>
 
-$$<p>\min \quad \mathbf{I}^T \mathbf{u}</p>$$
-
-<p>其中 $\mathbf{I}$ 是一个 0-1 向量，标记目标位移对应的节点。位移约束常用于控制关键部位的变形量。</p>
-
-<h3>最大应力</h3>
-
-<p>柔度优化虽然能降低整体平均应力，但无法保证局部应力不超过材料极限。因此用最大应力最小化作为目标：</p>
-
-$$<p>\min \quad \|\sigma\|_\infty \quad \Rightarrow \quad \min \quad \left( \sum_i |\sigma_i|^p \right)^{1/p} \quad (p \to \infty)</p>$$
-
-<p>由于 $\max$ 函数不可导，实际中用 <strong>p-norm 近似</strong>：当 $p$ 取较大值时，$\|\sigma\|_p$ 趋近于最大应力。</p>
-
-<h3>体积</h3>
-
-<p>体积既是约束（通常作为不等式约束限制材料用量），也可以作为独立目标（如最小化耗材）。</p>
-
-<p>---</p>
+<p>优化算法方面，本讲重点介绍 MMA（Moving Asymptotes Method）。MMA 的想法是把复杂非线性优化问题在每次迭代中近似成一组更容易求解的凸子问题，并通过上下移动的渐近线控制每个设计变量的更新范围。它适合大规模结构优化，因为它只需要函数值和一阶梯度，能处理很多不等式约束。</p>
 
 </div>
-<div class="ch fade-in"><div class="ch-title">四、IGA 形状优化的优势</div>
 
-<p>相比传统 FEA 形状优化，IGA 有两个结构性优势：</p>
+<div class="ch fade-in"><div class="ch-title">五、四类目标函数：柔度、重量/体积、应力、频率/模态</div>
 
-<ol><li><strong>设计变量与分析变量统一</strong>：几何控制点可以直接作为优化变量，不需要经过"CAD → 网格生成 → FEA"的转换链条。</li></ol>
-<ol><li><strong>几何精度保持</strong>：优化过程中的几何更新是 NURBS 参数的直接改变，不存在网格离散带来的几何误差。</li></ol>
+<h3>1. 柔度/刚度目标：最常用的结构性能指标</h3>
 
-<p>这两个优势使得 IGA 形状优化在实际工业应用中具有很强的竞争力。</p>
+<p><strong>柔度</strong>（compliance）可理解为外力做功或结构在载荷下的“软弱程度”。离散线弹性中，若 $K u=F$，柔度常写为</p>
 
-<p>---</p>
+<p style="text-align:center">\[
+C=F^T u=u^T K u.
+\]</p>
+
+<p>柔度越小，在同样外力下位移越小，结构越“硬”。因此柔度最小化常被称为刚度最大化。典型问题是：</p>
+
+<p style="text-align:center">\[
+\min_s C(s)=F(s)^T u(s)\quad
+\text{s.t.}\quad K(s)u(s)=F(s),\quad V(s)\le V^*.
+\]</p>
+
+<p>如果外力不随形状变化，柔度导数有一个很简洁的形式。由 $C=F^Tu$ 和 $Ku=F$ 可得，在自伴随线弹性问题中，柔度对设计变量的总导数常可写成</p>
+
+<p style="text-align:center">\[
+\frac{dC}{ds_i}=2\frac{\partial F^T}{\partial s_i}u-u^T\frac{\partial K}{\partial s_i}u,
+\]</p>
+
+<p>当 $F$ 与 $s_i$ 无关时进一步化为 $-u^T K_{,i}u$。这就是为什么柔度优化常被用作教学中的第一类例子：物理意义清晰，伴随变量也容易处理。</p>
+
+<h3>2. 重量/体积目标：成本、质量与制造约束</h3>
+
+<p>体积或面积既可以作为约束，也可以作为目标。二维问题中面积为</p>
+
+<p style="text-align:center">\[
+A(s)=\int_{\Omega(s)}1\,d\Omega=\int_{\hat\Omega}|J(\xi;s)|\,d\xi.
+\]</p>
+
+<p>三维问题中体积为</p>
+
+<p style="text-align:center">\[
+V(s)=\int_{\Omega(s)}1\,d\Omega=\int_{\hat\Omega}|J(\xi;s)|\,d\xi.
+\]</p>
+
+<p>如果材料密度 $\rho$ 为常数，重量就是 $W=\rho gV$，质量就是 $M=\rho V$。工程上常见两种模型：</p>
+
+<ul>
+  <li><strong>性能优先</strong>：最小柔度或最小位移，约束 $V\le V^*$，控制材料用量。</li>
+  <li><strong>轻量化优先</strong>：最小体积或重量，约束最大应力、最大位移或最低固有频率。</li>
+</ul>
+
+<p>体积灵敏度来自雅可比行列式的导数。若 $J$ 是几何映射的雅可比矩阵，则</p>
+
+<p style="text-align:center">\[
+\frac{\partial |J|}{\partial s_i}=|J|\operatorname{tr}(J^{-1}J_{,i}),
+\]</p>
+
+<p>所以 IGA 中只要能写出 $x_{,i}$，就能进一步得到 $J_{,i}$ 和体积导数。</p>
+
+<h3>3. 应力约束：避免局部破坏</h3>
+
+<p>柔度最小化降低的是整体变形能，但不保证每个局部点的应力都安全。带孔板、圆角、开口扳手、叶片根部等位置很容易出现应力集中。应力优化一般有两种写法：</p>
+
+<p style="text-align:center">\[
+\min_s \sigma_{\max}(s) \quad \text{或} \quad \sigma_{\max}(s)\le \sigma_{\text{allow}}.
+\]</p>
+
+<p>直接使用最大值函数会遇到不可导问题，因为最大应力点可能在迭代中跳变。课程 PPT 给出常用的 p-norm 近似：</p>
+
+<p style="text-align:center">\[
+\|\sigma\|_p=\left(\sum_{q=1}^{n_{pts}} |\sigma_q|^p\right)^{1/p},\qquad p\to\infty.
+\]</p>
+
+<p>当 $p$ 足够大时，最大应力点的贡献会远大于其他点。PPT 中提到实践测试里 $p$ 取 40 以上基本可满足需要。实际工程还常用 KS 函数（Kreisselmeier-Steinhauser function）平滑最大值，因为它数值稳定性更好。</p>
+
+<h3>4. 频率/模态目标：让结构避开共振</h3>
+
+<p>课程页原始短笔记没有展开模态目标，但完整形状优化中这类目标很重要。结构自由振动满足广义特征值问题：</p>
+
+<p style="text-align:center">\[
+K(s)\phi_k(s)=\lambda_k(s)M(s)\phi_k(s),\qquad \omega_k=\sqrt{\lambda_k}.
+\]</p>
+
+<p>其中 $M$ 是质量矩阵，$\phi_k$ 是第 $k$ 阶模态。常见目标包括：</p>
+
+<ul>
+  <li>最大化第一阶固有频率 $\omega_1$，避免低频共振。</li>
+  <li>约束某些频率不落入工作频带。</li>
+  <li>控制模态间隔，避免频率交叉导致振型不稳定。</li>
+</ul>
+
+<p>若特征值为单重且模态按 $\phi_k^TM\phi_k=1$ 归一化，则特征值灵敏度可写成</p>
+
+<p style="text-align:center">\[
+\frac{d\lambda_k}{ds_i}=\phi_k^T\left(K_{,i}-\lambda_k M_{,i}\right)\phi_k.
+\]</p>
+
+<p>形状变化会同时改变刚度矩阵和质量矩阵，因此频率优化比柔度优化更敏感，也更容易遇到模态交换问题。复习时可把它和 L09 的柔度/体积/应力放在同一框架下：所有目标都需要 $K_{,i}$、$F_{,i}$、$M_{,i}$ 或几何积分导数。</p>
 
 </div>
-<div class="ch fade-in"><div class="ch-title">五、学习要点</div>
 
-<ol><li><strong>四类目标函数要区分场景</strong>：柔度适合刚度优化，最大应力适合强度约束，位移适合变形控制，体积是资源约束。</li></ol>
-<ol><li><strong>IGA 的设计-分析统一表示让形状优化更直接</strong>：优化变量就是几何控制点，不需要额外的网格更新步骤。</li></ol>
-<ol><li><strong>p-norm 方法是将不可导 max 函数可导化的标准技巧</strong>，在应力约束类优化中常用。</li></ol>
-<ol><li><strong>形状优化的三个环节（设计模型 → 分析模型 → 优化算法）缺一不可</strong>，需要整体考虑。</li></ol>
+<div class="ch fade-in"><div class="ch-title">六、灵敏度分析：从控制点导数到伴随法</div>
 
-<p>---</p>
+<p>结构灵敏度分析求的是目标函数或约束函数对设计变量的导数。PPT 强调，它在结构优化、可靠性评估、参数识别中都是先决条件，优化效率很大程度取决于灵敏度计算的效率和精度。</p>
 
 <div class="photo">
   <img src="assets/media/images/games302-09-iga-shape-optimization/L09-p4.jpg" alt="灵敏度分析" loading="lazy">
-  <div class="cap">形状灵敏度推导</div>
+  <div class="cap">形状灵敏度推导：核心是对 $K(s)u(s)=F(s)$ 和目标函数同时求导。</div>
 </div>
 
+<h3>1. 总导数分解</h3>
 
-<p><strong>参考来源</strong>：GAMES302《等几何分析》Lecture 09：基于等几何分析的形状优化，徐岗，杭州电子科技大学。</p>
+<p>设目标函数为 $f(s,u(s))$，则对第 $i$ 个设计变量有</p>
+
+<p style="text-align:center">\[
+\frac{df}{ds_i}=\frac{\partial f}{\partial s_i}+\frac{\partial f}{\partial u}\frac{\partial u}{\partial s_i}.
+\]</p>
+
+<p>很多结构目标函数没有显式依赖 $s_i$，但通过几何积分、载荷边界、面积体积仍可能隐式依赖形状。PPT 中说“$f$ 对 $x_i$ 微分的值通常为 0”指的是某些目标函数形式下显式项可以消失，但在完整推导里不要机械忽略几何项。</p>
+
+<h3>2. 直接微分法</h3>
+
+<p>对平衡方程 $Ku=F$ 求导：</p>
+
+<p style="text-align:center">\[
+K_{,i}u+Ku_{,i}=F_{,i}.
+\]</p>
+
+<p>于是</p>
+
+<p style="text-align:center">\[
+u_{,i}=K^{-1}(F_{,i}-K_{,i}u).
+\]</p>
+
+<p>代回目标函数导数：</p>
+
+<p style="text-align:center">\[
+\frac{df}{ds_i}=f_{,i}+f_u K^{-1}(F_{,i}-K_{,i}u).
+\]</p>
+
+<p>这就是直接微分法。它的优点是概念直观；缺点是如果设计变量很多，每个 $s_i$ 都要解一次类似 $K u_{,i}=F_{,i}-K_{,i}u$ 的线性系统，成本非常高。IGA 形状优化中控制点可能有几十到几千个自由度，直接法往往不划算。</p>
+
+<h3>3. 伴随法</h3>
+
+<p>伴随法把 $K^{-1}$ 从每个设计变量的计算中挪出来。定义伴随变量 $\lambda$ 满足</p>
+
+<p style="text-align:center">\[
+K^T\lambda=f_u^T.
+\]</p>
+
+<p>则</p>
+
+<p style="text-align:center">\[
+f_u K^{-1}(F_{,i}-K_{,i}u)=\lambda^T(F_{,i}-K_{,i}u).
+\]</p>
+
+<p>最终</p>
+
+<p style="text-align:center">\[
+\frac{df}{ds_i}=f_{,i}+\lambda^T F_{,i}-\lambda^T K_{,i}u.
+\]</p>
+
+<p>关键优势是：对一个目标函数，只需解一次伴随方程，就能计算所有设计变量的梯度。NGSolve 的 PDE-constrained shape optimization 教程也以类似方式构建状态方程、伴随方程和形状导数；它强调线性问题中伴随算子的左端常是状态算子的转置。这个观点和 L09 的矩阵推导是一致的。</p>
+
+<h3>4. IGA 中 $K_{,i}$ 与 $F_{,i}$ 从哪里来</h3>
+
+<p>线弹性单元刚度矩阵可写成</p>
+
+<p style="text-align:center">\[
+K_e=\int_{\hat\Omega_e} B(\xi;s)^T D B(\xi;s)|J(\xi;s)|\,d\xi.
+\]</p>
+
+<p>对设计变量求导：</p>
+
+<p style="text-align:center">\[
+K_{e,i}=\int_{\hat\Omega_e}\left(B_{,i}^TDB+B^TDB_{,i}\right)|J|+B^TDB|J|_{,i}\,d\xi.
+\]</p>
+
+<p>载荷向量若为体力或边界力，也有类似形式：</p>
+
+<p style="text-align:center">\[
+F_e=\int_{\hat\Omega_e}N^T f|J|\,d\xi+\int_{\hat\Gamma_e}N^T t|J_\Gamma|\,d\eta.
+\]</p>
+
+<p>因此 $F_{,i}$ 取决于形状变化是否改变体力方向、边界力方向、边界长度/面积以及法向。课程后面提到“设计相关载荷”时，这一项尤其不能忽略。</p>
+
+<h3>5. 从控制点到几何导数</h3>
+
+<p>IGA 中 $B$ 是基函数对物理坐标的导数组合，而物理导数来自参数导数与雅可比矩阵的链式关系。设 $\hat G$ 存储基函数对参数坐标的导数，$G$ 存储基函数对物理坐标的导数，则通常有</p>
+
+<p style="text-align:center">\[
+G=J^{-1}\hat G,\qquad J=\hat G X.
+\]</p>
+
+<p>其中 $X$ 是控制点坐标矩阵。对设计变量求导：</p>
+
+<p style="text-align:center">\[
+G_{,i}=-(J^{-1}J_{,i})J^{-1}\hat G,
+\]</p>
+
+<p>因为 $\hat G$ 只依赖参数域和基函数，不依赖物理控制点。$B_{,i}$ 再由 $G_{,i}$ 线性组合得到。雅可比行列式导数为</p>
+
+<p style="text-align:center">\[
+|J|_{,i}=|J|\operatorname{tr}(J^{-1}J_{,i}).
+\]</p>
+
+<p>最后，若设计变量正是第 $A$ 个控制点在第 $d$ 个方向的坐标，则</p>
+
+<p style="text-align:center">\[
+X_{,i}=E_{A,d},\qquad x_{,i}(\xi)=R_A(\xi)e_d.
+\]</p>
+
+<p>这条链路把抽象的形状灵敏度落到了控制点坐标上：控制点移动 → 物理坐标变化 → 雅可比变化 → $B$ 与 $|J|$ 变化 → $K$、$F$、目标函数变化。</p>
+
+<h3>6. 有限差分、半解析法与复变函数法的位置</h3>
+
+<p>PPT 列出了结构灵敏度的多种方法：解析法、有限差分法、半解析法、复变函数法、伴随变量法。它们的取舍如下：</p>
+
+<ul>
+  <li><strong>解析法</strong>：精度高，适合推导清楚的线弹性和标准单元，但开发成本高。</li>
+  <li><strong>有限差分法</strong>：实现简单，对黑箱求解器友好，但步长选择困难，变量多时成本高。</li>
+  <li><strong>半解析法</strong>：部分导数用解析表达，复杂项用差分折中。</li>
+  <li><strong>复变函数法</strong>：在函数解析性满足条件时可得到很高精度的一阶导，但工程实现有门槛。</li>
+  <li><strong>伴随变量法</strong>：目标/约束数量少、设计变量多时非常高效，是大规模形状优化的主力。</li>
+</ul>
+
+<p>超弹性材料中刚度矩阵与位移相关，材料非线性更强。PPT 说明此时上述线弹性位移导数过程不能直接照搬，课程示例采用中心差分近似位移导数，再代入不同目标函数的导数表达。</p>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">七、标准例题与课程算例</div>
+
+<div class="example-box">
+  <h3>例题 1：悬臂梁柔度最小化的灵敏度方向</h3>
+  <p><strong>题目：</strong>二维悬臂梁左端固支，右端受竖向集中力。设计变量为上、下边界若干 NURBS 控制点的 $y$ 坐标。目标是在体积约束 $V\le V^*$ 下最小化柔度 $C=F^Tu$。说明一次梯度迭代中需要计算哪些量。</p>
+  <p><strong>解题框架：</strong></p>
+  <ol>
+    <li>用当前控制点生成几何映射 $x(\xi;s)$，装配 $K(s)$ 与 $F(s)$。</li>
+    <li>求解状态方程 $K(s)u(s)=F(s)$，得到位移场。</li>
+    <li>计算柔度 $C=F^Tu$ 与体积 $V=\int_{\hat\Omega}|J|d\xi$。</li>
+    <li>对每个控制点变量 $s_i=P_{A,y}$，计算 $x_{,i}=R_Ae_y$，再得到 $J_{,i}$、$B_{,i}$、$K_{,i}$ 和 $V_{,i}$。</li>
+    <li>若外力不随形状改变，柔度灵敏度可用 $C_{,i}=-u^TK_{,i}u$；若载荷边界也变化，则加入 $2F_{,i}^Tu$。</li>
+    <li>把 $C_{,i}$ 和 $V_{,i}$ 交给 MMA，MMA 根据移动渐近线和约束给出下一步控制点更新。</li>
+  </ol>
+  <p><strong>要点：</strong>悬臂梁例子看起来只是“边界往上或往下移动”，实际每个控制点移动都会改变一片区域的刚度贡献。柔度梯度为负的方向表示增加该变量会降低柔度，MMA 会在体积约束和上下界内选择可行更新。</p>
+</div>
+
+<div class="example-box">
+  <h3>例题 2：控制点移动如何影响边界形状</h3>
+  <p><strong>题目：</strong>NURBS 曲线 $x(\xi)=\sum_A R_A(\xi)P_A$ 描述结构上边界。若只移动第 $B$ 个控制点 $P_B$ 的 $y$ 坐标 $\Delta s$，边界上参数点 $\xi$ 的位移是多少？为什么这比移动有限元边界节点更平滑？</p>
+  <p><strong>解：</strong>新的边界为</p>
+  <p style="text-align:center">\[
+x^{new}(\xi)=\sum_{A\ne B}R_A(\xi)P_A+R_B(\xi)(P_B+\Delta s\,e_y).
+\]</p>
+  <p>所以物理点变化为</p>
+  <p style="text-align:center">\[
+\Delta x(\xi)=R_B(\xi)\Delta s\,e_y.
+\]</p>
+  <p>NURBS/B-spline 基函数具有局部支撑且通常具备较高连续性，因此影响范围局部、过渡平滑。有限元节点直接移动容易造成相邻单元拉伸、翻转或边界折线不光滑；控制点移动则通过基函数自动形成平滑形变。这也是 IGA 形状优化适合 CAD 边界设计的根本原因。</p>
+</div>
+
+<h3>课程中的典型数值例子</h3>
+
+<p>PPT 展示了多个算例：</p>
+
+<ul>
+  <li><strong>1/4 带孔平板</strong>：在材料体积约束下使柔度最小。初始模型为少量控制点的双二次 NURBS 曲面，设计变量包括若干控制点的 $x/y$ 坐标和权重。这个例子常用来展示孔边应力集中与圆弧几何保持。</li>
+  <li><strong>悬臂梁</strong>：设计目标是在体积约束下使荷载点竖向位移最小。PPT 中给出高度范围、控制网格和收敛准则，适合理解控制点移动与边界形变。</li>
+  <li><strong>开口扳手</strong>：在给定材料体积下，使两种加载情况下的加载点垂直位移最小。开口尺寸固定，手柄区域由双二次控制网络表示，体积限制为初始体积的 35%。这是多工况目标的代表。</li>
+  <li><strong>三维单片/多片模型</strong>：包括三维悬臂梁、多片 1/4 带孔板、多片开口扳手，展示 IGA 多片几何上的优化能力。</li>
+  <li><strong>涡轮叶身结构</strong>：以柔度最小化为目标，展示复杂 CAD 曲面和工程边界条件下的形状优化。</li>
+  <li><strong>超弹性圆角板、体积梁、开口扳手</strong>：说明非线性材料中灵敏度计算更复杂，可能需要差分近似。</li>
+</ul>
+
+<div class="photo">
+  <img src="assets/media/images/games302-09-iga-shape-optimization/L09-p7.jpg" alt="优化算例" loading="lazy">
+  <div class="cap">悬臂梁形状优化迭代过程：形状更新、IGA 求解、灵敏度计算和线搜索反复交替。</div>
+</div>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">八、等几何形状优化算法框架</div>
+
+<p>结合 PPT 中的算法框架，可以把 IGA 形状优化写成如下流程：</p>
+
+<ol>
+  <li>读入样条几何模型，包括基函数信息、节点向量、控制点和权重。</li>
+  <li>确定初始设计模型与分析模型，设置可动控制点、固定边界、对称边界和设计变量上下界。</li>
+  <li>进行 IGA 求解，得到当前位移解 $U^{(k)}$。</li>
+  <li>计算目标函数、约束函数和形状梯度；必要时求解伴随方程或形状位移方程。</li>
+  <li>设置初始下降步长或交给 MMA/SQP 产生候选设计变量 $s^{(k+1)}$。</li>
+  <li>更新控制点坐标，例如 $X^{(k+1)}=X^{(k)}+t^{(k)}V^{(k)}$。</li>
+  <li>重新进行 IGA 求解，计算新目标函数值。</li>
+  <li>若目标下降且约束满足，接受更新；否则缩小步长或调整移动渐近线。</li>
+  <li>检查收敛条件，例如 $|J^{(k+1)}-J^{(k)}|/|J^{(k)}|<\varepsilon$ 或设计变量变化足够小。</li>
+</ol>
+
+<p>这里有两个容易忽视的工程细节：</p>
+
+<ul>
+  <li><strong>固定几何特征</strong>：开口扳手例子中螺栓形状和尺寸固定，不应被优化变量破坏。实际问题中孔径、接口、装配边界、载荷作用点经常需要固定。</li>
+  <li><strong>可制造性与网格质量</strong>：控制点虽然给出平滑边界，但仍可能导致局部自交、厚度过小、曲率过大。优化约束应加入最小厚度、曲率、对称性、加工方向等条件。</li>
+</ul>
+
+<p>MMA 的作用可以理解为“梯度信息的稳定使用器”。直接沿负梯度下降可能违反约束或震荡；MMA 用上下渐近线限制变量变化，并为每次迭代构造近似子问题。课程中给出的 $\alpha_i$、$\beta_i$、上下渐近线更新规则，就是为了让变量在连续几次同向变化时放宽步长，在方向反复变化时收紧步长。</p>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">九、后续衔接：L10 拓扑优化</div>
+
+<p>L09 的形状优化和 L10 的拓扑优化共享同一个优化框架：状态方程、目标函数、约束函数、灵敏度分析、梯度型更新。但它们的设计变量和几何自由度不同。</p>
+
+<ul>
+  <li><strong>形状优化</strong>：边界移动，拓扑不变。适合已有 CAD 初稿的外形精修，例如圆角、孔边、叶片轮廓、扳手手柄。</li>
+  <li><strong>拓扑优化</strong>：材料密度或相场变量在设计域内变化，可生成新孔洞和新连通关系。适合概念设计阶段，例如找传力路径和材料布局。</li>
+</ul>
+
+<p>L10 中常见的 SIMP 方法会把每个单元或积分点的材料密度 $\rho$ 作为设计变量，刚度写成 $E(\rho)=\rho^pE_0$。这和 L09 的控制点变量非常不同：L09 优化的是几何映射 $x(\xi;s)$，L10 优化的是材料分布 $\rho(x)$。但柔度目标、体积约束和伴随灵敏度形式会再次出现，因此 L09 是理解 L10 的必要铺垫。</p>
+
+<p>一个实际工程流程常常是：先用拓扑优化得到大致传力路径，再用 CAD 重建光滑边界，最后用 IGA 形状优化精修边界和局部应力。这也是为什么本讲强调 CAD 控制点和分析模型统一表示，因为它正好位于“概念拓扑”与“可制造 CAD 几何”之间。</p>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">十、复习速查表</div>
+
+<table>
+  <thead>
+    <tr><th>概念</th><th>公式/关键词</th><th>考试与复习要点</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>状态方程</td><td>$K(s)u(s)=F(s)$</td><td>形状变量通过 $K$、$F$ 和几何积分影响位移。</td></tr>
+    <tr><td>弱形式</td><td>$a(u,v)=\ell(v)$</td><td>形状导数本质上是对积分域、雅可比、物理导数求导。</td></tr>
+    <tr><td>NURBS 几何</td><td>$x(\xi)=\sum_A R_A(\xi)P_A$</td><td>控制点坐标和权重可作为设计变量。</td></tr>
+    <tr><td>控制点灵敏度</td><td>$x_{,i}=R_Ae_d$</td><td>第 $A$ 个控制点第 $d$ 维移动对物理点的影响由基函数决定。</td></tr>
+    <tr><td>柔度</td><td>$C=F^Tu=u^TKu$</td><td>最小柔度等价于最大刚度，常配体积约束。</td></tr>
+    <tr><td>体积/面积</td><td>$V=\int_{\hat\Omega}|J|d\xi$</td><td>导数依赖 $|J|_{,i}=|J|\operatorname{tr}(J^{-1}J_{,i})$。</td></tr>
+    <tr><td>应力目标</td><td>$\|\sigma\|_p=(\sum |\sigma_q|^p)^{1/p}$</td><td>用 p-norm 或 KS 函数平滑最大应力。</td></tr>
+    <tr><td>模态目标</td><td>$K\phi=\lambda M\phi$</td><td>频率优化需考虑 $K_{,i}$ 与 $M_{,i}$，注意模态交换。</td></tr>
+    <tr><td>直接微分法</td><td>$Ku_{,i}=F_{,i}-K_{,i}u$</td><td>每个设计变量一次线性求解，变量多时成本高。</td></tr>
+    <tr><td>伴随法</td><td>$K^T\lambda=f_u^T$</td><td>一个目标函数通常只需一次伴随求解，适合多设计变量。</td></tr>
+    <tr><td>MMA</td><td>Moving Asymptotes</td><td>用移动渐近线构造近似子问题，稳定处理约束优化。</td></tr>
+    <tr><td>L10 衔接</td><td>SIMP / 拓扑优化</td><td>形状优化改边界，拓扑优化改材料分布和连通关系。</td></tr>
+  </tbody>
+</table>
+
+</div>
+
+<div class="ch fade-in"><div class="ch-title">十一、参考来源</div>
+
+<h3>本地 PPT / 源笔记</h3>
+<ul>
+  <li>GAMES302《等几何分析》Lecture 09：基于等几何分析的形状优化，徐岗，杭州电子科技大学。本次更新已读取本地 PDF：<code>/Users/zhengxinyu/MyDoc/高级图像学/GAMES302-slides/GAMES302-09.pdf</code>。</li>
+  <li>本地课程源笔记：<code>/Users/zhengxinyu/MyDoc/高级图像学/课程笔记/games302-09-iga-shape-optimization.md</code>。原笔记提供了形状优化概述、四类目标函数和 IGA 优势的基础文本。</li>
+</ul>
+
+<h3>网页参考</h3>
+<ul>
+  <li>Cottrell, J. A., Hughes, T. J. R., Bazilevs, Y. 等关于 Isogeometric Analysis 的经典资料与论文条目：强调 CAD、有限元、NURBS、精确几何和网格细化的统一，是 IGA 适合形状优化的理论背景。</li>
+  <li>Wall, W. A., Frenzel, M. A., Cyron, C. <em>Isogeometric structural shape optimization</em> / NURBS based isogeometric shape optimization 相关论文条目：讨论 NURBS 控制点位置与权重的解析灵敏度，支撑“控制点作为设计变量”的推导。</li>
+  <li>NGSolve Documentation, “PDE-Constrained Shape Optimization (fully automated)”：给出状态方程、伴随方程和形状导数的教程式实现，作为伴随法和 PDE 约束优化框架的网页参考。</li>
+  <li>ASME Digital Collection, “Isogeometric Shape Optimization for Design Dependent Loads”：强调 NURBS 设计模型可以用较少控制点表达复杂几何，并讨论设计相关载荷下 IGA 形状优化需要处理的载荷灵敏度。</li>
+</ul>
+
 </div>

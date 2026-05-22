@@ -94,18 +94,40 @@ section('googleslides shortcode', () => {
 
 section('pdf page shortcode', () => {
   const out = processShortcodes('{{< pdf "courses/lecture.pdf" page=12 title="示意图" >}}');
-  assert(out.includes('doc-ref pdf-ref'), 'pdf ref card missing, got: ' + out);
+  assert(out.includes('doc-page doc-page-iframe'), 'pdf iframe figure missing, got: ' + out);
   assert(out.includes('src="./media/courses/lecture.pdf#page=12"'), 'pdf page src wrong, got: ' + out);
-  assert(out.includes('>示意图<'), 'pdf title missing, got: ' + out);
+  assert(out.includes('<strong>示意图</strong>'), 'pdf title missing, got: ' + out);
   assert(out.includes('p.12'), 'pdf page label missing, got: ' + out);
 });
 
 section('ppt page shortcode', () => {
   const out = processShortcodes('{{< ppt "courses/lecture.pptx" page=8 title="参数化" >}}');
-  assert(out.includes('doc-ref ppt-ref'), 'ppt ref card missing, got: ' + out);
+  assert(out.includes('doc-ref docref'), 'ppt ref card missing, got: ' + out);
+  assert(out.includes('doc-ref-type">PPT'), 'ppt type missing, got: ' + out);
   assert(out.includes('href="./media/courses/lecture.pptx"'), 'ppt href wrong, got: ' + out);
   assert(out.includes('slide 8'), 'ppt page label missing, got: ' + out);
-  assert(out.includes('>参数化<'), 'ppt title missing, got: ' + out);
+  assert(out.includes('<strong>参数化</strong>'), 'ppt title missing, got: ' + out);
+});
+
+
+section('docref shortcode', () => {
+  const out = processShortcodes('{{< docref "courses/lecture.pdf" page=12 title="示意图" >}}');
+  assert(out.includes('doc-ref docref'), 'docref card missing, got: ' + out);
+  assert(out.includes('href="./media/courses/lecture.pdf#page=12"'), 'docref href wrong, got: ' + out);
+  assert(out.includes('p.12'), 'docref page missing, got: ' + out);
+});
+
+section('docpage canvas shortcode', () => {
+  const out = processShortcodes('{{< docpage "courses/lecture.pdf" page=12 title="示意图" >}}');
+  assert(out.includes('doc-page-canvas'), 'docpage canvas missing, got: ' + out);
+  assert(out.includes('data-docpage-pdf="./media/courses/lecture.pdf"'), 'docpage pdf data missing, got: ' + out);
+  assert(out.includes('data-docpage-page="12"'), 'docpage page data missing, got: ' + out);
+});
+
+section('docpages range shortcode', () => {
+  const out = processShortcodes('{{< docpages "courses/lecture.pdf" pages="2,4-5" title="讲义" >}}');
+  assert(out.includes('doc-pages'), 'docpages wrapper missing, got: ' + out);
+  assert((out.match(/doc-page-canvas/g) || []).length === 3, 'docpages count wrong, got: ' + out);
 });
 
 // ============================================================
