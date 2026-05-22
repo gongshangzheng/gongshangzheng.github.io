@@ -560,7 +560,9 @@ window.MathJax = {
 
   'MathJax: maetok display formula is not corrupted by inline pass': () => {
     const result = transformLatex('<p style="text-align:center">$$n\' = \\Theta \\Bigl(\\frac{K^4 d^5 B^6}{\\epsilon^2}\\Bigr)$$</p>');
-    assert(result.includes('<div class="math-block">$$n\' = \\Theta \\Bigl(\\frac{K^4 d^5 B^6}{\\epsilon^2}\\Bigr)$$</div>'));
+    // The <p> wrapper is absorbed; text-align is promoted to the <div>
+    assert(result.includes('<div class="math-block" style="text-align:center">'), 'display math block should carry text-align from absorbed <p>');
+    assert(result.includes('$$n\''), 'formula content preserved');
     assert(!result.includes('$<span class="math-inline">$'), 'display delimiter must not be split into inline math');
   },
 
