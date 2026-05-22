@@ -255,6 +255,18 @@ section('internal link with anchor', () => {
   assert(out.includes('>跳到绳文章节</a>'), 'display wrong, got: ' + out);
 });
 
+section('inline middle dot is not converted to bullet', () => {
+  const input = '<li><a href="https://www.bilibili.com/video/BV19UiyYyETP" target="_blank">Bilibili · Z 变换补充视频 BV19UiyYyETP</a></li>';
+  const out = processBody(input, defaultOpts);
+  assert(out.includes('Bilibili · Z 变换补充视频'), 'inline middle dot should remain literal, got: ' + out);
+  assert(!out.includes('<li>Z 变换补充视频'), 'inline middle dot should not create nested bullet, got: ' + out);
+});
+
+section('middle dot bullet only at block start', () => {
+  const out = processBody('<p>· 第一条</p>', defaultOpts);
+  assert(out.includes('<li>第一条</li>'), 'block-start middle dot should become bullet, got: ' + out);
+});
+
 section('xref resolves through postMap when title differs from slug', () => {
   const out = processBody('参见 [[@连续扩散语言模型路线综述：对视觉编码器研究的系统性启发 | 连续扩散语言模型路线综述]]', {
     ...defaultOpts,
