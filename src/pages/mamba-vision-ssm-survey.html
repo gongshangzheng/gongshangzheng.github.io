@@ -1,0 +1,283 @@
+---
+title: "Mamba 与视觉 State Space Models：从语言到视觉的长序列建模革命"
+description: "选择性状态空间模型如何重塑视觉 backbone——Vim、VMamba、VideoMamba 的技术路线与未来方向"
+date: 2026-05-23T17:43:32
+created_at: 2026-05-23T17:43:32
+updated_at: 2026-05-23T17:43:32
+categories: ["论文精读"]
+subcategory: "综述"
+tags: ["Mamba", "State Space Model", "视觉 backbone", "Vision Mamba", "VMamba", "VideoMamba"]
+notify: true
+mathjax: true
+hero_title: "Mamba 与视觉 State Space Models"
+hero_sub: "选择性状态空间模型如何重塑视觉 backbone"
+hero_tagline: "从语言序列到 2D 图像与 3D 视频的建模革命"
+---
+
+<!-- ============================================================
+  核心问题引入
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">研究动机</div>
+  <div class="ch-title">为什么 Mamba 能进入视觉？</div>
+
+  <p>Transformer 的 self-attention 在视觉任务上取得了巨大成功，但它的计算复杂度是 O(L²)——序列长度每增加一倍，计算量翻四倍。对于一张 224×224 的图像，ViT 需要处理 196 个 patch；但当图像分辨率升到 1248×1248，patch 数会爆炸到数千个，attention 的二次成本成为瓶颈。</p>
+
+  <p>与此同时，视觉任务本身也有两个对立挑战：一方面需要 <strong>局部纹理和空间结构</strong>（这本是 CNN 的强项），另一方面需要 <strong>长程依赖和全局上下文</strong>（attention 的优势）。如何同时解决这两个问题？</p>
+
+  <p><strong>Mamba 的回答是：用选择性状态压缩替代显式全对交互。</strong></p>
+
+  <div class="stats">
+    <div class="stat"><span class="num">5×</span><span class="label">Mamba 推理吞吐 vs Transformer</span></div>
+    <div class="stat"><span class="num">86.8%</span><span class="label">高分辨率显存节省（Vim vs DeiT）</span></div>
+    <div class="stat"><span class="num">6×</span><span class="label">VideoMamba 速度 vs TimeSformer（64 帧）</span></div>
+    <div class="stat"><span class="num">40×</span><span class="label">VideoMamba 显存节省（64 帧长视频）</span></div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第一章：从 SSM 到 Mamba
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">从 SSM 到 Mamba：为什么线性序列模型重新变得重要</div>
+
+  <h3>1.1 LTI SSM 的根本局限</h3>
+
+  <p>标准 SSM（S4）是<strong>线性时不变系统</strong>——参数（Δ, A, B, C）在所有时间步固定。这使得 SSM 可以等价于全局卷积，实现高效并行训练。但代价是：<mark>无法根据输入内容动态调整状态更新</mark>。</p>
+
+  <p>这导致 LTI SSM 在"选择性"任务上完全失效。论文中的 Selective Copying 任务要求模型记住变长位置的 token——卷积核的权重与输入内容无关，无论如何都无法选择"该记住什么"。</p>
+
+  <h3>1.2 选择性机制的核心设计</h3>
+
+  <p>Mamba 的核心突破是让 SSM 参数变成<strong>输入依赖</strong>：</p>
+
+  <blockquote>
+    <p>Δ_t = softplus(Linear₁(x_t))      # 时间步长，broadcast 到 D 维</p>
+    <p>B_t = Linear_N(x_t)               # 输入矩阵，输入依赖</p>
+    <p>C_t = Linear_N(x_t)                # 输出矩阵，输入依赖</p>
+    <p>A 保持固定（diagonal structure）</p>
+    <p><em>— Mamba: Linear-Time Sequence Modeling with Selective State Spaces, Gu & Dao, 2023</em></p>
+  </blockquote>
+
+  <p>选择性带来的代价：失去了卷积等价性，无法再用 FFT 高效卷积。Mamba 的解法是 <strong>hardware-aware parallel scan</strong>——只在高速 SRAM 中 materialize 状态，避免 HBM 的 IO 开销。这使得训练速度比之前方法快 3×（A100 GPU）。</p>
+
+  <h3>1.3 Mamba-2 与 SSD 的理论统一</h3>
+
+  <p><em>Transformers are SSMs</em> 这篇论文把 Mamba 和 Transformer 放在了同一框架下。核心发现：</p>
+
+  <div class="info-box">
+    <h3>结构化半可分矩阵（Structured Semiseparable Matrices）</h3>
+    <p>SSM 的递归产生的矩阵恰好是下三角半可分矩阵——这类矩阵同时具有：</p>
+    <ul>
+      <li>SSM 递归形式的<strong>线性计算路径</strong>（O(L) 内存，O(L) 时间）</li>
+      <li>Attention 矩阵分解的<strong>二次计算路径</strong>（O(L²) 内存，O(L²) 时间）</li>
+    </ul>
+    <p>这意味着 SSM 和 attention 是<mark>同一类矩阵的不同计算视角</mark>。</p>
+  </div>
+
+  <p>Mamba-2 的关键架构变化：引入 Grouped Value Attention (GVA) head 结构（类比 multi-head attention），参数投影移到 block 开头并行执行，支持 Tensor Parallelism。速度比 Mamba-1 快 2-8×，支持 8× 更大的 state size。</p>
+</div>
+
+<!-- ============================================================
+  第二章：视觉 Mamba 的两条技术路线
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">视觉 Mamba 的两条技术路线</div>
+
+  <h3>2.1 方向性问题：语言有因果，图像没有</h3>
+
+  <p>Mamba 的选择性 SSM 本质上是一维因果扫描机制。将其适配到 2D 图像时，研究者必须解决：<mark>图像没有天然因果方向，但需要全局感受野来压缩视觉信息</mark>。围绕这个问题，发展出了两条技术路线。</p>
+
+  <h3>2.2 Vision Mamba（Vim）：双向扫描路线</h3>
+
+  <p><strong>Vim</strong>（ICML 2024）的核心设计：</p>
+  <ul>
+    <li>图像 → patch 序列（类似 ViT），加入位置编码</li>
+    <li>Vim Block：双向 SSM（forward + backward 各自独立计算）</li>
+    <li>输出用 z gating 融合两个方向</li>
+  </ul>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/vim_pipeline_v1.9.png" alt="Vim 架构图" loading="lazy">
+    <div class="cap">Vim 架构：将图像展平为 patch 序列，通过双向 Mamba block 处理，得到分类或密集预测结果。</div>
+  </div>
+
+  <p>为什么双向就够了？因为单向 causal scan 只看到当前 token 之前的信息，图像需要同时看到所有位置的关系。双向 SSM 让每个 patch 能从两个方向收集全局信息。</p>
+
+  <p>关键性能：1248×1248 图像（6084 tokens）比 DeiT 快 <mark>2.8×</mark>，节省 <mark>86.8% GPU 显存</mark>。</p>
+
+  <h3>2.3 VMamba：交叉扫描路线（SS2D）</h3>
+
+  <p><strong>VMamba</strong>（NeurIPS 2024）提出了更激进的方案：SS2D（2D 选择性扫描）。</p>
+
+  <p>SS2D 的三步：</p>
+  <ol>
+    <li><strong>Cross-Scan</strong>：沿四条扫描路径展开图像 patch 为序列——左→右、右→左、上→下、下→上</li>
+    <li><strong>Selective Scan</strong>：每个序列独立经过 S6 block</li>
+    <li><strong>Cross-Merge</strong>：四个方向的输出合并为 2D 特征图</li>
+  </ol>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/ss2d.png" alt="SS2D 交叉扫描图" loading="lazy">
+    <div class="cap">SS2D：四个互补的扫描方向确保每个 pixel 可以从水平和垂直方向同时获取上下文，信息丢失被其他方向补偿。</div>
+  </div>
+
+  <p>四个方向确保每个 patch 能从水平和垂直方向同时获取上下文——这是对"图像没有因果方向"最直接的结构回应。</p>
+
+  <h3>2.4 两种路线的系统性对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>Vim（双向）</th><th>VMamba（交叉四向）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>扫描方向数</td><td>2</td><td>4</td></tr>
+        <tr><td>信息覆盖</td><td>每个 patch 从 2 个方向</td><td>每个 patch 从 4 个方向</td></tr>
+        <tr><td>位置编码</td><td>有（位置嵌入）</td><td>无显式位置编码</td></tr>
+        <tr><td>架构风格</td><td>纯 ViT 风格均匀堆叠</td><td>层次化金字塔（4 stage）</td></tr>
+        <tr><td>ImageNet Top-1</td><td>Vim-S 80.5%</td><td>VMamba-B 83.9%</td></tr>
+        <tr><td>COCO mAP</td><td>—</td><td>VMamba-B 49.2%</td></tr>
+        <tr><td>Throughput (A100)</td><td>—</td><td>1686 img/s (T) / 646 img/s (B)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>关键结论：VMamba 的层次化设计在<mark>密集预测任务（检测/分割）</mark>上优势更明显；Vim 的双向设计在<mark>分类任务</mark>上更简洁高效。</p>
+</div>
+
+<!-- ============================================================
+  第三章：视频 Mamba
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">视频 Mamba：时空选择性扫描</div>
+
+  <h3>3.1 视频的核心挑战</h3>
+
+  <p>视频理解面临两个对立挑战：<mark>局部冗余</mark>（短视频 clip 内的时空冗余）和 <mark>全局依赖</mark>（长视频上下文之间的复杂依赖）。3D CNN 擅长局部但处理全局依赖弱；Video Transformer 擅长全局但计算成本高。Mamba 的线性复杂度在视频上是最自然的落点。</p>
+
+  <h3>3.2 VideoMamba 的设计选择</h3>
+
+  <p><strong>VideoMamba</strong>（ECCV 2024）严格遵循 ViT isotropic 架构，关键选择：</p>
+  <ul>
+    <li>3D 卷积投影（1×16×16）→ 时空 patch 序列</li>
+    <li>Spatial-First 扫描：按位置组织 patch，再叠帧</li>
+    <li>加入 spatial + temporal position embedding（SSM 对位置敏感）</li>
+    <li>self-distillation：防止 VMamba 在视频上出现的过拟合问题</li>
+  </ul>
+
+  <p>为什么 Spatial-First 最优？它保留了 2D 空间邻域的局部性先验。Temporal-First 把同一位置的帧打散，破坏了空间结构。</p>
+
+  <h3>3.3 关键性能数据</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>指标</th><th>VideoMamba</th><th>TimeSformer</th><th>优势</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>64 帧推理速度</td><td>baseline</td><td>6× slower</td><td>6× faster</td></tr>
+        <tr><td>GPU 显存（64 帧）</td><td>baseline</td><td>40× more</td><td>40× less</td></tr>
+        <tr><td>Kinetics-400 Top-1</td><td>SOTA</td><td>-2.6%</td><td>+2.6%</td></tr>
+        <tr><td>Something-Something V2</td><td>SOTA</td><td>-5.9%</td><td>+5.9%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这验证了 Mamba 的线性复杂度在长视频上的真正优势——不是理论上的，而是实际系统级的速度和显存收益。</p>
+</div>
+
+<!-- ============================================================
+  第四章：任务迁移与真实收益
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">任务迁移与真实收益：Mamba 在视觉中赢在哪里？</div>
+
+  <h3>4.1 高分辨率图像（最优场景）</h3>
+
+  <p>Mamba 的线性复杂度在<mark>高分辨率图像</mark>上优势最明显。token 数越大，attention 越贵，SSM 的优势越显著。</p>
+
+  <h3>4.2 密集预测任务（检测/分割）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>任务</th><th>性能</th><th>对比 Swin</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>VMamba-T</td><td>COCO 检测</td><td>47.3% mAP</td><td>+4.6%</td></tr>
+        <tr><td>VMamba-S</td><td>COCO 检测</td><td>48.7% mAP</td><td>+3.9%</td></tr>
+        <tr><td>VMamba-B</td><td>ADE20K 分割</td><td>51.0% mIoU</td><td>+2.9%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>4.3 医学与遥感</h3>
+
+  <p>医学图像分割（U-Mamba / VM-UNet / Mamba-UNet）和遥感图像处理（Pan-Mamba / ChangeMamba）的核心思路相同：<mark>U-Net 提供局部解码与 skip connection，Mamba 提供长程建模</mark>。3D 医学数据和遥感图像放大了长程依赖的价值。</p>
+
+  <h3>4.4 什么时候不该选 Mamba</h3>
+
+  <ul>
+    <li><strong>小分辨率分类</strong>：attention 成本不一定是瓶颈，CNN 足够</li>
+    <li><strong>强局部纹理任务</strong>：纯 SSM 缺少卷积的归纳偏置，需要混合架构</li>
+    <li><strong>医学小数据</strong>：数据集小，recipe 与 U-Net 结构影响更大</li>
+  </ul>
+
+  <div class="callout">
+    <strong>结论</strong>：Mamba 不是替代 Transformer 的银弹，而是提供了<mark>attention 之外的另一种有效 backbone 路线</mark>——在长序列、高分辨率、需要全局上下文的场景下，尤其值得考虑。
+  </div>
+</div>
+
+<!-- ============================================================
+  总结与开放问题
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">核心论文索引与未来方向</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>论文</th><th>arXiv</th><th>会议</th><th>核心贡献</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Mamba</td><td>2312.00752</td><td>—</td><td>选择性 SSM，Mamba block，硬件感知扫描</td></tr>
+        <tr><td>Transformers are SSMs / SSD</td><td>2405.21060</td><td>—</td><td>半可分矩阵统一，SSD 算法，Mamba-2</td></tr>
+        <tr><td>Vision Mamba（Vim）</td><td>2401.09417</td><td>ICML 2024</td><td>双向 SSM，位置编码，纯 SSM 视觉 backbone</td></tr>
+        <tr><td>VMamba</td><td>2401.10166</td><td>NeurIPS 2024</td><td>SS2D，交叉扫描，四向融合，层次化架构</td></tr>
+        <tr><td>VideoMamba</td><td>2403.06977</td><td>ECCV 2024</td><td>时空扫描，Spatial-First，自蒸馏</td></tr>
+        <tr><td>A Survey of Mamba</td><td>2408.01129</td><td>ACM</td><td>全领域综述</td></tr>
+        <tr><td>Vision Mamba Survey</td><td>2405.04404</td><td>—</td><td>视觉 Mamba 分类 taxonomy</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>未来最有潜力突破的方向</h3>
+  <ol>
+    <li><strong>混合架构</strong>：Mamba + attention / CNN / MoE，取长补短</li>
+    <li><strong>更强的时间建模</strong>：专门针对视频时间维度的 SSM 设计</li>
+    <li><strong>多模态融合</strong>：Mamba 作为统一序列 backbone 连接视觉和语言</li>
+    <li><strong>机制解释</strong>：为什么选择性 SSM 在视觉上有效——当前解释性分析仍然缺乏</li>
+  </ol>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2312.00752" target="_blank">Mamba: Linear-Time Sequence Modeling with Selective State Spaces (Gu & Dao, 2023)</a></li>
+    <li><a href="https://arxiv.org/abs/2405.21060" target="_blank">Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality (Dao & Gu, 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2401.09417" target="_blank">Vision Mamba: Efficient Visual Representation Learning with Bidirectional State Space Model (Zhu et al., ICML 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2401.10166" target="_blank">VMamba: Visual State Space Model (Liu et al., NeurIPS 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2403.06977" target="_blank">VideoMamba: State Space Model for Efficient Video Understanding (Li et al., ECCV 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2408.01129" target="_blank">A Survey of Mamba (Qu et al., 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2405.04404" target="_blank">Vision Mamba: A Comprehensive Survey and Taxonomy (Liu et al., 2024)</a></li>
+  </ul>
+</div>
