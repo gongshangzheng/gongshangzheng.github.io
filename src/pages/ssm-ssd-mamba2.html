@@ -1,0 +1,247 @@
+---
+title: "Transformers are SSMs: Structured State Space Duality"
+description: "Dao 与 Gu 揭示 SSM 与 Transformer 的深层统一——半可分矩阵理论让 Mamba-2 在保持线性复杂度的同时支持 Tensor Parallelism"
+date: 2026-05-23T17:56:13
+created_at: 2026-05-23T17:56:13
+updated_at: 2026-05-23T17:56:13
+categories: ["论文精读"]
+subcategory: "语言模型"
+tags: ["Mamba-2", "SSD", "SSM", "半可分矩阵", "Tensor Parallelism", "结构化状态空间对偶"]
+notify: true
+mathjax: true
+hero_title: "Transformers are SSMs"
+hero_sub: "NeurIPS 2024 · 语言模型"
+hero_tagline: "SSM 与 Attention 的统一框架：半可分矩阵理论"
+---
+
+<!-- ============================================================
+  核心发现：SSM 和 Attention 是同一类矩阵的不同计算路径
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">核心发现</div>
+  <div class="ch-title">为什么 SSM 和 Transformer 是一回事？</div>
+
+  <p><em>Transformers are SSMs</em> 这篇论文的核心贡献，是揭示了一个看似矛盾的数学事实：</p>
+
+  <div class="info-box">
+    <h3>结构化半可分矩阵（Structured Semiseparable Matrices）</h3>
+    <p>SSM 的递归产生的矩阵——$K = (C, CA, CA^2, ..., CA^{L-1})$——恰好是<mark>下三角半可分矩阵</mark>。这类矩阵同时具有两种计算路径：</p>
+    <ul>
+      <li><strong>SSM 递归路径</strong>：$y = ssm(x)$，O(L) 内存，O(L) 计算</li>
+      <li><strong>Attention 分解路径</strong>：$y = Sx$，O(L²) 内存，O(L²) 计算</li>
+    </ul>
+    <p>两种路径计算的是完全相同的矩阵乘法，只是利用了不同的数学性质。</p>
+  </div>
+
+  <p>这意味着 SSM 和 attention 是<mark>同一类矩阵的不同计算视角</mark>——SSM 利用半可分结构的高效递归计算，attention 则利用矩阵分解的标准二次路径。Mamba-1 的硬件感知并行扫描，本质上是在 SRAM 中计算 SSM 路径，避免 HBM 的 IO 开销。</p>
+
+  <div class="stats">
+    <div class="stat"><span class="num">2-8×</span><span class="label">Mamba-2 训练速度 vs Mamba-1</span></div>
+    <div class="stat"><span class="num">8×</span><span class="label">支持更大的 state size</span></div>
+    <div class="stat"><span class="num">O(L)</span><span class="label">两种路径共享同一复杂度上界</span></div>
+    <div class="stat"><span class="num">Tensor</span><span class="label">Mamba-2 支持 Parallelism</span></div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第一章：半可分矩阵理论
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第一部分</div>
+  <div class="ch-title">Structured State Space Duality（SSD）理论</div>
+
+  <h3>1.1 从 SSM 矩阵到半可分矩阵</h3>
+
+  <p>给定 LTI SSM：$h_{t+1} = Ah_t + Bx_t$，$y_t = Ch_t$，展开后得到输出序列：</p>
+
+  <blockquote>
+    <p>$y = (C, CA, CA^2, ..., CA^{L-1})x$</p>
+  </blockquote>
+
+  <p>这是一个 $L \times L$ 的下三角矩阵乘法。每个列块（对应每个时间步的输入如何影响所有后续输出）由 $CA^k$ 给出，其中 A 是 N×N 对角矩阵（N 是 state dimension）。</p>
+
+  <p>关键性质：对于对角 A，这个矩阵恰好是<mark>下三角半可分矩阵</mark>——每个子矩阵的秩不超过 N。这使得：</p>
+  <ul>
+    <li>可以用 SSM 递归路径高效计算（O(L)）</li>
+    <li>可以用 attention 矩阵分解路径精确计算（O(L²)）</li>
+  </ul>
+
+  <h3>1.2 SSD 算法</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/ssd_algorithm.png" alt="SSD 算法示意图" loading="lazy">
+    <div class="cap">SSD 算法的核心：在 SSM 路径和 Attention 路径之间切换，利用半可分矩阵的结构化性质。</div>
+  </div>
+
+  <p>SSD 算法利用这一对偶性，在不同场景下选择最高效的计算路径：</p>
+  <ul>
+    <li><strong>短序列</strong>：attention 路径（并行计算优势）</li>
+    <li><strong>长序列</strong>：SSM 路径（线性递归优势）</li>
+    <li><strong>混合架构</strong>：Mamba-2 的 GVA head 支持两者混合</li>
+  </ul>
+
+  <h3>1.3 与标准 SSM 的关键区别</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>Mamba-1 SSM</th><th>SSD / Mamba-2</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>理论基础</td><td>硬件感知并行扫描</td><td>半可分矩阵对偶性</td></tr>
+        <tr><td>并行度</td><td>序列并行（有限）</td><td>Tensor Parallelism</td></tr>
+        <tr><td>State size</td><td>固定小（N=16）</td><td>可达 8×（N=128）</td></tr>
+        <tr><td>训练速度</td><td>3× vs S4</td><td>2-8× vs Mamba-1</td></tr>
+        <tr><td>推理</td><td>O(L) 递归，常数 cache</td><td>同左</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  第二章：Mamba-2 架构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第二部分</div>
+  <div class="ch-title">Mamba-2 架构：从 SSM 到 GVA</div>
+
+  <h3>2.1 Grouped Value Attention（GVA）Head</h3>
+
+  <p>Mamba-2 最重要的架构变化是引入<strong>Grouped Value Attention (GVA) head</strong>——类比 Transformer 的 multi-head attention：</p>
+
+  <blockquote>
+    <p>Transformer：Q, K, V 三个投影，各自 head 数 × head dimension = d_model</p>
+    <p>Mamba-2 GVA：输入 x → Δ, B, C 三个投影，其中 B, C 输出矩阵（维度 N），然后 group 为 g 组</p>
+  </blockquote>
+
+  <p>GVA 的关键设计：把 state dimension N 分成 g 组，每组独立计算后拼接。这使得：</p>
+  <ul>
+    <li>并行度更高（组间可以并行）</li>
+    <li>Tensor Parallelism 成为可能（每组独立，可跨 GPU 分片）</li>
+    <li>表达能力更强（更多独立的状态向量）</li>
+  </ul>
+
+  <h3>2.2 参数投影的位置变化</h3>
+
+  <p>Mamba-1：SSM 参数（Δ, B, C）在 block 内部按时间步顺序计算（串行瓶颈）。</p>
+  <p>Mamba-2：所有投影移到 block 开头并行执行，大幅提升训练效率。</p>
+
+  <h3>2.3 与 Transformer 的完整对应关系</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Transformer 组件</th><th>Mamba-2 对应组件</th><th>关键区别</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Q, K, V 投影</td><td>Δ, B, C 投影</td><td>B, C 是输入依赖的（选择性）</td></tr>
+        <tr><td>Attention score</td><td>SSM 递归</td><td>O(L) vs O(L²)，状态压缩</td></tr>
+        <tr><td>Multi-head attention</td><td>GVA head</td><td>每组独立 state，group 拼接</td></tr>
+        <tr><td>FFN</td><td>主分支 Linear+SiLU</td><td>结构相近</td></tr>
+        <tr><td>Flash Attention</td><td>硬件感知并行扫描</td><td>都利用硬件特性优化 IO</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>2.4 架构图</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/architecture.png" alt="Mamba-2 架构图" loading="lazy">
+    <div class="cap">Mamba-2 Block 架构图。输入 x 经过 Δ, B, C 投影后，分组为 g 个 GVA head，计算后输出。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第三章：Tensor Parallelism 支持
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第三部分</div>
+  <div class="ch-title">Tensor Parallelism：打破单卡限制</div>
+
+  <h3>3.1 为什么 Mamba-1 不支持 Tensor Parallelism</h3>
+
+  <p>Mamba-1 的递归形式天然是序列并行的，但无法跨 GPU 分片计算——因为 SSM 参数（Δ, B, C）是时间步依赖的，必须按顺序计算。跨 GPU 分片需要同步中间状态，开销抵消了并行的收益。</p>
+
+  <h3>3.2 Mamba-2 如何支持 Tensor Parallelism</h3>
+
+  <p>GVA head 的关键性质：每组的输出可以独立计算。这意味着可以把<mark>不同的 GVA head 组分配到不同的 GPU 上</mark>，每组独立计算后 All-Gather 聚合。</p>
+
+  <p>类比 Megatron 的设计理念：Transformer 的多头机制使得跨 GPU 分片成为可能；Mamba-2 的 GVA head 提供了相同的并行基础。</p>
+
+  <h3>3.3 实际收益</h3>
+
+  <p>Mamba-2 在大模型（2.7B+ 参数）场景下支持多 GPU 并行训练，使得模型规模可以继续扩展，而不受单卡显存限制。</p>
+</div>
+
+<!-- ============================================================
+  第四章：实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第四部分</div>
+  <div class="ch-title">实验验证：SSD 理论的实际收益</div>
+
+  <h3>4.1 速度与显存基准</h3>
+
+  <p>Mamba-2 在不同序列长度下的训练速度对比 Mamba-1：</p>
+  <ul>
+    <li>短序列（≤ 512）：Mamba-2 接近 Mamba-1</li>
+    <li>中等序列（512-2048）：Mamba-2 快 2-4×</li>
+    <li>长序列（≥ 4096）：Mamba-2 快 4-8×</li>
+  </ul>
+
+  <h3>4.2 State Size 的影响</h3>
+
+  <p>更大的 state dimension N 带来了更强的表达能力——模型可以在状态向量中存储更多信息：</p>
+  <ul>
+    <li>N=16（Mamba-1 等效）：标准 SSM 规模</li>
+    <li>N=64：2-4× 表达能力提升</li>
+    <li>N=128：支持 8× 更大的 state size，Mamba-2 独有</li>
+  </ul>
+
+  <h3>4.3 语言建模基准</h3>
+
+  <p>Mamba-2（2.7B 参数）在标准语言建模 benchmark 上与 Transformer 持平，推理速度 5× 于 Transformer。</p>
+
+  <h3>4.4 激活值分析</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/activation_map.png" alt="激活值分析" loading="lazy">
+    <div class="cap">Mamba-2 的激活值分析：选择机制使得模型对不同输入内容产生差异化响应。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  总结
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">Mamba-2 / SSD 的核心贡献</div>
+
+  <div class="info-box">
+    <h3>SSD 的理论意义</h3>
+    <p><em>Transformers are SSMs</em> 不只是一篇工程论文，更是一篇理论论文。它揭示了：</p>
+    <ol>
+      <li>SSM 和 attention 是同一类数学对象的不同计算视角</li>
+      <li>半可分矩阵结构是两者统一的理论基础</li>
+      <li>这种统一性为混合架构设计开辟了新路径</li>
+    </ol>
+  </div>
+
+  <div class="callout">
+    <strong>判断</strong>：Mamba-2 的真正意义不在于"比 Mamba-1 快"，而在于证明了 SSM 的理论深度足以支撑大规模的工程实践。<mark>SSD 理论让 Mamba 从"一个有趣的替代方案"变成了"可以和 Transformer 分庭抗礼的正式架构"</mark>。
+  </div>
+
+  <h3>对视觉 Mamba 的影响</h3>
+
+  <p>视觉 Mamba 的后续发展（Vim、VMamba 等）都受益于 Mamba-2 的理论框架。SSD 对偶性让视觉任务可以在 SSM 路径和 attention 路径之间灵活切换，针对不同任务类型选择最优计算路径。</p>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2405.21060" target="_blank">Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality (Dao & Gu, 2024)</a></li>
+  </ul>
+</div>

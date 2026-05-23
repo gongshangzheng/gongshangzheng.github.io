@@ -1,0 +1,245 @@
+---
+title: "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"
+description: "Gu 等人提出选择性状态空间模型（Selective SSM / S6），首次让 SSM 进入语言建模主战场——O(L) 推理、常数 KV cache、内容选择能力三合一"
+date: 2026-05-23T17:55:43
+created_at: 2026-05-23T17:55:43
+updated_at: 2026-05-23T17:55:43
+categories: ["论文精读"]
+subcategory: "语言模型"
+tags: ["Mamba", "State Space Model", "SSM", "选择性机制", "序列建模", "Linear Attention"]
+notify: true
+mathjax: true
+hero_title: "Mamba"
+hero_sub: "NeurIPS 2023 · 语言模型"
+hero_tagline: "选择性状态空间模型：让 SSM 第一次进入语言建模主战场"
+---
+
+<!-- ============================================================
+  核心问题：Transformer 的根本矛盾
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">问题动机</div>
+  <div class="ch-title">Transformer 的长序列困境</div>
+
+  <p>Transformer 的 self-attention 核心优势是<mark>全局感受野</mark>和<mark>内容选择性</mark>——每个 token 可以直接关注任意其他 token。但在长序列上，这两个优势变成了瓶颈：</p>
+
+  <ul>
+    <li>O(L²) 注意力计算 → 序列长度翻倍，计算量翻四倍</li>
+    <li>O(L) KV cache → 长上下文推理时显存爆炸</li>
+    <li>内容选择通过可学习的 Query-Key-Value 投影实现，需要足够的参数量支撑</li>
+  </ul>
+
+  <p>问题的根源在于：attention 是"全对交互"机制。每个时间步必须与所有历史 token 计算注意力分数，这对语言的长程依赖建模是有效的，但对<strong>计算资源</strong>是奢侈的。</p>
+
+  <div class="stats">
+    <div class="stat"><span class="num">O(L²)</span><span class="label">Attention 计算复杂度</span></div>
+    <div class="stat"><span class="num">O(L)</span><span class="label">Mamba 计算复杂度</span></div>
+    <div class="stat"><span class="num">3×</span><span class="label">A100 训练速度提升（vs S4）</span></div>
+    <div class="stat"><span class="num">常数</span><span class="label">Mamba 推理 KV cache</span></div>
+  </div>
+
+  <p>State Space Models（SSM）是应对这一问题的经典方案——它们通过<strong>状态压缩</strong>将 O(L²) 的交互转化为 O(L) 的递归。但此前 LTI（线性时不变）SSM 在"选择性"任务上完全失效。</p>
+</div>
+
+<!-- ============================================================
+  第一章：LTI SSM 的根本局限
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第一部分</div>
+  <div class="ch-title">LTI SSM：高效但不会"选择"</div>
+
+  <p>标准 SSM（S4）是<strong>线性时不变系统</strong>。数学形式上，给定输入 $x_t$，状态 $h_t$ 和输出 $y_t$：</p>
+
+  <blockquote>
+    <p>$h_t = \bar{A}h_{t-1} + \bar{B}x_t$</p>
+    <p>$y_t = \bar{C}h_t$</p>
+    <p><em>— 其中 $\bar{A}, \bar{B}, \bar{C}$ 是时间步固定的矩阵</em></p>
+  </blockquote>
+
+  <p>时不变性的关键优势：SSM 可以等价于<mark>全局卷积</mark>——整个序列可以一次性用 FFT 并行计算。这使得训练非常高效。</p>
+
+  <p>但致命弱点：<strong>参数与输入无关</strong>。无论输入是什么，卷积核的权重都是固定的。这意味着模型无法根据内容动态决定"该记住什么、该忘记什么"。</p>
+
+  <div class="info-box">
+    <h3>选择性任务失败案例：Selective Copying</h3>
+    <p>任务：输入一串 token，输出在特定标记位置之后复制对应的 token。LTI SSM 的卷积核无法学会"在标记处记住什么"——因为标记的位置是输入决定的，而卷积核的权重是固定的。</p>
+    <p>这不是调参问题，是结构性的：LTI 系统不具备根据内容调整行为的能力。</p>
+  </div>
+
+  <p>在语言建模等真实任务上，LTI SSM（S4）已经输给了 Transformer。核心原因：语言需要内容选择能力。</p>
+</div>
+
+<!-- ============================================================
+  第二章：选择性机制
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第二部分</div>
+  <div class="ch-title">Mamba 的核心突破：选择性状态空间模型</div>
+
+  <h3>2.1 选择性机制的形式化</h3>
+
+  <p>Mamba 的解决思路极为直接：<strong>让 SSM 参数变成输入依赖的</strong>。</p>
+
+  <blockquote>
+    <p>$\Delta_t = \text{softplus}(\text{Linear}_1(x_t))$</p>
+    <p>$B_t = \text{Linear}_N(x_t)$         # 输入矩阵，输入依赖</p>
+    <p>$C_t = \text{Linear}_N(x_t)$          # 输出矩阵，输入依赖</p>
+    <p>$A$ 保持固定（diagonal structure）</p>
+    <p><em>— 核心洞察：输入 $x_t$ 决定当前时间步的参数配置</em></p>
+  </blockquote>
+
+  <p>直观理解：每个时间步的 SSM 参数都是该时间步输入的函数。这等价于给模型装上了"选择性滤波器"——能根据内容动态调整状态更新的策略。</p>
+
+  <h3>2.2 直观解释：SSM 作为记忆压缩</h3>
+
+  <p>可以把 SSM 递归看作一种<mark>记忆压缩机制</mark>：</p>
+  <ul>
+    <li>Attention：显式存储所有历史 token 的表示，O(L) 空间</li>
+    <li>SSM：压缩到 N 维状态向量 $h_t$，O(N) 空间（N 是 state dimension，通常远小于 L）</li>
+  </ul>
+
+  <p>内容选择能力来自哪里？来自让压缩函数（Δ, B, C）变成输入依赖的。如果压缩函数是固定的，模型无法区分重要信息和平凡信息；如果是输入依赖的，模型学会了"什么时候该更新状态、什么时候该保持状态"。</p>
+
+  <h3>2.3 选择性的代价：失去卷积等价性</h3>
+
+  <p>选择机制带来的代价：<strong>Mamba 不再等价于全局卷积</strong>。这意味着无法用 FFT 高效训练，必须回到递归计算——而递归是 O(L)串行的，理论训练效率反而不如并行方法。</p>
+
+  <p>Mamba 的解法：<mark>hardware-aware parallel scan</mark>。</p>
+
+  <div class="info-box">
+    <h3>Hardware-aware Parallel Scan</h3>
+    <p>核心思想：不在 HBM（显存）中 materialize 完整状态，而是只在使用时在高速 SRAM 中计算。</p>
+    <p>并行扫描把 O(L) 的串行递归转化为可并行的扫描模式，但只在 SRAM 中执行——既获得递归的 O(L) 内存，又避免串行计算的耗时。IO 开销最小化。</p>
+    <p>结果：A100 GPU 上训练速度比 S4 快 3×。</p>
+  </div>
+</div>
+
+<!-- ============================================================
+  第三章：Mamba Block 架构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第三部分</div>
+  <div class="ch-title">Mamba Block：整体架构设计</div>
+
+  <p>Mamba Block 的设计遵循现代 Transformer 的惯例（类比 RMSNorm + 残差），同时融入了 SSM 的选择性机制：</p>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/mamba3.png" alt="Mamba Block 架构图" loading="lazy">
+    <div class="cap">Mamba Block 架构图。输入经过选择性 SSM（右上分支）结合主分支（Linear + SiLU），输出通过残差连接聚合。</div>
+  </div>
+
+  <h3>3.1 三个关键设计</h3>
+
+  <ul>
+    <li><strong>选择性 SSM 分支</strong>：核心创新所在，SSM 参数由输入决定</li>
+    <li><strong>门控机制</strong>：主分支的 Linear + SiLU 提供非线性门控，控制 SSM 输出与主分支信息的融合比例</li>
+    <li><strong>残差连接</strong>：标准现代网络设计，稳定训练</li>
+  </ul>
+
+  <h3>3.2 SSM 参数初始化</h3>
+
+  <p>矩阵 A 的初始化：</p>
+  <blockquote>
+    <p>$A = \text{diag}(a_1, a_2, ..., a_N) + \text{sub-diagonal}(b_1, ..., b_{N-1})$</p>
+    <p>其中 $a_i = \lambda_i \cdot \sigma(\text{init})$</p>
+  </blockquote>
+  <p>对角线元素初始化为负实数，保证特征值在复平面左半平面 → 连续时间系统稳定。sub-diagonal 用于增加 hidden state 之间的信息流动。</p>
+
+  <h3>3.3 与标准 SSM 的对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>标准 SSM（S4）</th><th>Mamba（选择性 SSM）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>参数</td><td>固定（时间步不变）</td><td>输入依赖</td></tr>
+        <tr><td>训练方式</td><td>FFT 卷积（高效并行）</td><td>硬件感知并行扫描</td></tr>
+        <tr><td>选择性任务</td><td>失效</td><td>有效</td></tr>
+        <tr><td>推理复杂度</td><td>O(L)（递归）</td><td>O(L)（递归，常数 cache）</td></tr>
+        <tr><td>语言建模</td><td>差</td><td>接近 Transformer</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  第四章：实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第四部分</div>
+  <div class="ch-title">实验验证：选择性 SSM 的有效性</div>
+
+  <h3>4.1 选择性复制任务的验证</h3>
+
+  <p>Selective Copying 任务（需要内容选择）和 Induction Head 任务（需要追踪序列中的关联）是检验选择性机制的标准任务。Mamba 在这两个任务上都接近最优，而 LTI SSM（S4）完全失败。</p>
+
+  <h3>4.2 语言建模 benchmark</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>模型</th><th>困惑度（PPL）</th><th>吞吐量</th><th>备注</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Mamba（1.3B）</td><td>竞争水准</td><td>5× vs Transformer</td><td>线性复杂度带来推理优势</td></tr>
+        <tr><td>S4（S4D）</td><td>差</td><td>—</td><td>LTI，无法做内容选择</td></tr>
+        <tr><td>Transformer（1.3B）</td><td>基准</td><td>基准</td><td>O(L²) 推理成本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>4.3 硬件效率</h3>
+
+  <p>关键数据：Mamba-1.3B 在 A100 GPU 上的实际推理速度是 Transformer 的 <mark>5 倍</mark>，显存占用大幅降低。原因在于常数 KV cache 和 O(L) 的递归性质。</p>
+
+  <h3>4.4 Effective Receptive Field（ERF）分析</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/mamba-vision/erf.png" alt="ERF 分析图" loading="lazy">
+    <div class="cap">不同模型的 ERF 分析。Mamba 在全局和局部信息捕获上均优于其他 SSM 方法，接近 Transformer 的全局覆盖能力。</div>
+  </div>
+
+  <p>ERF 分析显示：Mamba 的状态压缩并没有损失全局感受野，反而比之前的 SSM 方法更接近 Transformer 的全局覆盖能力。这是选择机制带来的间接收益——模型学会了什么信息值得压缩到状态里。</p>
+</div>
+
+<!-- ============================================================
+  总结
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">Mamba 的核心贡献与意义</div>
+
+  <div class="info-box">
+    <h3>Mamba 的三合一</h3>
+    <p>Mamba 第一次同时实现了：</p>
+    <ol>
+      <li><strong>O(L) 推理</strong>：递归形式，常数 KV cache</li>
+      <li><strong>内容选择能力</strong>：选择性 SSM 根据输入动态调整</li>
+      <li><strong>硬件感知实现</strong>：并行扫描避免串行计算瓶颈</li>
+    </ol>
+    <p>这三者此前在 SSM 框架下是互相矛盾的——Mamba 通过选择机制和系统设计将其统一起来。</p>
+  </div>
+
+  <h3>对后续研究的影响</h3>
+
+  <ul>
+    <li>Mamba-2 / SSD：揭示了 SSM 和 attention 的统一框架，半可分矩阵理论</li>
+    <li>视觉 Mamba：Vim、VMamba 将选择性 SSM 引入 2D/3D 视觉任务</li>
+    <li>Jamba / Striide：混合 Transformer + SSM 的工程探索</li>
+  </ul>
+
+  <div class="callout">
+    <strong>判断</strong>：Mamba 不是 Transformer 的替代品，而是<mark>长序列场景下的有效替代 backbone</mark>。在需要处理长上下文、关注效率而非极致精度的场景下，选择性 SSM 的线性复杂度是实质性优势。
+  </div>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2312.00752" target="_blank">Mamba: Linear-Time Sequence Modeling with Selective State Spaces (Gu & Dao, 2023)</a></li>
+  </ul>
+</div>
