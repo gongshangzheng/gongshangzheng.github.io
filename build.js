@@ -125,7 +125,7 @@ function build() {
   // Collect posts
   const allPosts = collectPosts();
   console.log(`✓ collected ${allPosts.length} posts`);
-
+  console.log('MAMBA in allPosts:', allPosts.filter(p => p.tags && p.tags.includes('Mamba')).map(p => p.slug));
   // Build pages
   buildArticles(PATHS, allPosts, buildContext, RECENT_COUNT);
   buildPostsPage(PATHS, allPosts, buildContext);
