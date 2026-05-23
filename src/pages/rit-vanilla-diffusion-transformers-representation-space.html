@@ -1,0 +1,803 @@
+---
+title: "RiT: 表示空间中的 Vanilla Diffusion Transformer"
+description: "RiT 在冻结 DINOv2 表示空间中使用 vanilla DiT 与 x-prediction，实现无需额外预测头的高质量生成，并提出有效秩、协方差条件数、超额峰度等 latent space 几何诊断框架。"
+created_at: 2026-05-24T00:09:30
+updated_at: 2026-05-24T00:09:30
+tags: [diffusion, visual-tokenizer, representation-space, DINOv2, flow-matching]
+categories: [AI]
+subcategory: Visual Tokenizer
+mathjax: true
+hero_title: "RiT"
+hero_sub: "Representation Image Transformer"
+hero_tagline: "冻结 DINOv2 表示空间 + x-prediction，让 vanilla DiT 直接达到 SOTA"
+---
+
+<div class="wrap">
+<div class="ch fade-in">
+<div class="ch-title">简介</div>
+
+<p>**一句话**：RiT 系统地从几何角度比较了 pixel / SD-VAE / DINOv2
+三个空间的流形性质（固有维度、有效秩、峰度、插值误差），发现 DINOv2
+的边际统计特性（各向同性、近高斯）让 vanilla DiT + x-prediction
+就可以实现 SOTA 生成——完全不需要 RAE 的 DDT wide head 或 RJF
+的黎曼流匹配。</p>
+<p>**为什么值得读**：</p>
+<ul>
+<li>对于视觉编码器研究者：提供了一套评估「表示空间生成友好性」的分析框架（4-axis
+manifold comparison）</li>
+<li>对于扩散模型研究者：证明 x-prediction 在合适表示空间中可以取代
+v-prediction + 架构改造</li>
+<li>对于实践者：最少改动（只需改预测目标 + 噪声调度）就能把 DiT 从 FID
+2.27 带到 1.14</li>
+<li>根本性启示：一个好的 encoder
+本身就决定了生成的上限，工程改造只能弥补 encoder 的缺陷</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>Encoder</th>
+<th>Params</th>
+<th>FID (no CFG)</th>
+<th>FID (CFG)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DiT-XL</td>
+<td>SD-VAE</td>
+<td>675M</td>
+<td>9.62</td>
+<td>2.27</td>
+</tr>
+<tr>
+<td>RAE-XL DH</td>
+<td>DINOv2-B</td>
+<td>839M</td>
+<td>1.51</td>
+<td>1.16</td>
+</tr>
+<tr>
+<td>RiT-XL</td>
+<td>DINOv2-S</td>
+<td>676M</td>
+<td>1.45</td>
+<td>1.14</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">参考链接</div>
+
+<ul>
+<li>arXiv: <a
+href="https://arxiv.org/abs/2605.21981">https://arxiv.org/abs/2605.21981</a></li>
+<li>PDF: <a
+href="https://arxiv.org/pdf/2605.21981">https://arxiv.org/pdf/2605.21981</a></li>
+<li>HTML: <a
+href="https://arxiv.org/html/2605.21981v1">https://arxiv.org/html/2605.21981v1</a></li>
+<li>代码: <a
+href="https://github.com/lezhang7/RiT">https://github.com/lezhang7/RiT</a></li>
+<li>作者主页:
+<ul>
+<li>Le Zhang: <a
+href="https://lezhang7.github.io/">https://lezhang7.github.io/</a></li>
+<li>Aishwarya Agrawal: <a
+href="https://www.iro.umontreal.ca/~agrawal/">https://www.iro.umontreal.ca/~agrawal/</a></li>
+</ul></li>
+<li>HuggingFace Papers: <a
+href="https://huggingface.co/papers/2605.21981">https://huggingface.co/papers/2605.21981</a></li>
+</ul>
+<p><strong><strong>相关资源</strong></strong></p>
+<ul>
+<li>RAE (核心前置): arxiv.org/abs/2510.11690 / <a
+href="https://rae-dit.github.io/">https://rae-dit.github.io/</a></li>
+<li>RJF (同期竞品): arxiv.org/abs/2602.10099 / <a
+href="https://github.com/amandpkr/RJF">https://github.com/amandpkr/RJF</a></li>
+<li>JiT (灵感来源): arxiv.org/abs/2511.13720 / github.com/LTH14/JiT</li>
+<li>REPA (互补方法): arxiv.org/abs/2410.06940 /
+github.com/sihyun-yu/REPA</li>
+<li>LightningDiT: arxiv.org/abs/2501.01423 /
+github.com/hustvl/LightningDiT</li>
+</ul>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">相关工作</div>
+
+<p><strong><strong>方法分类与发展脉络</strong></strong></p>
+<p>论文将 DINOv2
+特征空间做扩散的方法分为三类（按「如何处理径向歧义」分类）：</p>
+<ol>
+<li><strong><strong>架构方案</strong></strong> (RAE/DiT-DH): 用宽预测头
+(DDT head) 增加模型容量，让网络自己去处理径向歧义</li>
+<li><strong><strong>路径方案</strong></strong> (RJF, Kumar &amp; Patel
+2026): 识别出几何干涉 (Geometric Interference)
+是根因，把欧几里得运输改为黎曼流匹配——让路径沿着流形测地线而非穿越球壳内部</li>
+<li><strong><strong>目标方案</strong></strong> (RiT, 本文): 将预测目标从
+v 改为 z₀
+(x-prediction)，回归目标天然在流形上，所以径向歧义在输出端被解决了</li>
+</ol>
+<p><strong><strong>发展脉络</strong></strong></p>
+<ul>
+<li>2023: DiT 在 SD-VAE latent space 上用 v-prediction 取得突破</li>
+<li>2024: DINOv2 发布；人们开始尝试将其嵌入生成 pipeline</li>
+<li>2025:
+<ul>
+<li>JiT: 证明 x-prediction 在像素空间有效，且无需 VAE</li>
+<li>RAE: 将 DINOv2 编码器嵌为 diffusion tokenizer，但发现需要 DDT wide
+head</li>
+<li>REPA: 用表示对齐加速 DiT 训练（互补方向）</li>
+<li>LightningDiT: 架构现代化（SwiGLU, QK-norm, RoPE…）</li>
+</ul></li>
+<li>2026:
+<ul>
+<li>RJF: 诊断出几何干涉，提出黎曼方案</li>
+<li>RiT (本文): 证明 架构方案 + 路径方案 都不需要——x-prediction
+就够了</li>
+</ul></li>
+</ul>
+<p><strong><strong>核心前置工作详情</strong></strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>年份</th>
+<th>核心思路</th>
+<th>FID (no CFG)</th>
+<th>与 RiT 关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DiT</td>
+<td>2023</td>
+<td>SD-VAE latent + v-prediction</td>
+<td>~2.27 (CFG)</td>
+<td>架构 baseline</td>
+</tr>
+<tr>
+<td>RAE (DiT-DH-XL)</td>
+<td>2025</td>
+<td>DINOv2 feat + DDT wide head + v-pred</td>
+<td>1.51</td>
+<td>核心前置 / 改进对象</td>
+</tr>
+<tr>
+<td>RJF</td>
+<td>2026</td>
+<td>DINOv2 feat + 黎曼流匹配 + Jacobi 正则</td>
+<td>3.37 (DiT-B)</td>
+<td>同期竞品</td>
+</tr>
+<tr>
+<td>JiT</td>
+<td>2025</td>
+<td>像素空间 x-prediction</td>
+<td>N/A</td>
+<td>直接灵感来源</td>
+</tr>
+<tr>
+<td>REPA</td>
+<td>2025</td>
+<td>特征对齐加速 DiT 训练</td>
+<td>5.78 (no CFG)</td>
+<td>互补可结合</td>
+</tr>
+<tr>
+<td>LightningDiT</td>
+<td>2025</td>
+<td>VA-VAE + 训练优化 21.8× 加速</td>
+<td>2.11</td>
+<td>架构参考</td>
+</tr>
+</tbody>
+</table>
+<p>**为什么现有方法不够好**：RAE 需要 19% 更多参数（839M vs 676M），RJF
+需要黎曼几何的理论推导和 Jacobi 正则化。RiT
+的论证是：如果底层表示空间足够好，这些额外复杂性就不再必要。</p>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">前置知识</div>
+
+<dl>
+<dt><strong>Flow Matching</strong></dt>
+<dd>
+学习从噪声分布到数据分布的连续可逆速度场的生成范式，等价于连续归一化流的概率路径匹配。与扩散模型等价但参数化更灵活。
+</dd>
+<dt><strong>x-prediction</strong></dt>
+<dd>
+在流匹配/扩散中，网络输出直接预测 clean data point z₀ 而非噪声 ε 或速度
+v。速度通过 v=(z₀-z_t)/(1-t) 隐式计算。
+</dd>
+<dt><strong>v-prediction</strong></dt>
+<dd>
+网络输出直接预测速度场 v，是流匹配的标准参数化方式。
+</dd>
+<dt><strong>有效秩 (Effective Rank)</strong></dt>
+<dd>
+衡量协方差矩阵的方差分布均匀程度。erank=1 表示全集中在单一方向，=D
+表示完美各向同性。
+</dd>
+<dt><strong>TwoNN 估计器</strong></dt>
+<dd>
+基于二近邻距离比的固有维度 MLE 估计方法 (Facco et al.,
+2017)。对高维数据鲁棒。
+</dd>
+<dt><strong>超额峰度 (Excess Kurtosis)</strong></dt>
+<dd>
+κ = μ₄/σ⁴ - 3。κ=0 是高斯分布，正值为厚尾，负值为薄尾。
+</dd>
+<dt><strong>Geometric Interference</strong></dt>
+<dd>
+Kumar &amp; Patel (2026) 诊断的现象：DINOv2 特征空间的 Euclidean
+流匹配路径会穿越流形内部的低密度区域（因为 LayerNorm
+使特征集中在球壳上），导致 v-prediction 学习困难。
+</dd>
+<dt><strong>DDT Head</strong></dt>
+<dd>
+RAE 中使用的宽预测头 (Deep, Direct Token
+head)，通过扩大最后一层的宽度来增加模型容量，处理高维特征空间的径向歧义。
+</dd>
+<dt><strong>LayerNorm 球壳</strong></dt>
+<dd>
+DINOv2 的 per-token LayerNorm 固定
+||z||²=d，使特征集中在一个近似各向同性的球壳表面。这对生成有利（有效秩高）也有弊（线性路径穿越球壳内部）。
+</dd>
+</dl>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">阅读前疑问</div>
+
+<ol>
+<li>为什么相同的固有维度 (d̂≈33)
+会产生截然不同的生成效果？几何上的「嵌入方式」到底意味着什么？</li>
+<li>x-prediction 和 v-prediction 的区别只是重参数化——为什么在 DINOv2
+空间区别这么大，但在像素空间就不够？</li>
+<li>如果编码器越小越好（DINOv2-Small &gt;
+DINOv2-Base），那是否存在一个「最优特征维度」的 scaling law？</li>
+<li>这三种方案（架构 / 路径 /
+目标）是正交的可叠加设计，还是互相替代的？如果叠在一起会更好吗？</li>
+<li>这组几何分析能否反过来指导 tokenizer
+设计——我们能否训练一个显式优化有效秩和边际高斯性的编码器？</li>
+</ol>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">面临问题及Insights</div>
+
+<p><strong><strong>论文要解决的具体问题</strong></strong></p>
+<p>给定一个预训练表示空间（DINOv2），其数据流形的固有维度（≈33）和像素空间几乎一样，但在此空间做
+flow matching 时，standard DiT 使用 v-prediction 会失败（发散或 FID
+很差），需要针对性架构改造。为什么？有没有更简单的方案？</p>
+<p><strong><strong>Insight:
+问题的根源不在架构容量，在几何性质</strong></strong></p>
+<p>之前的直觉是「DINOv2 特征空间维度太高（384D 或 768D），标准 head
+容量不够 → 需要宽 head」。但本文通过 4-axis
+几何分析证明：根因不是容量，是几何。</p>
+<p>具体来说：</p>
+<ul>
+<li>像素空间的流形是「歪的」：方差集中在少数方向（有效秩=45），大部分方向几乎无信号。从
+N(0,I)
+到数据的运输路径不对称——有些方向要走很远，有些几乎不动。x-prediction
+在像素空间有效，是因为回归目标在歪流形上也比 v-prediction 好。但 DiT
+baseline 依然很弱（FID &gt; 9）。</li>
+<li>DINOv2
+的流形是「正圆的」：方差均匀分布在所有方向（有效秩=327），每个坐标的边际分布近乎高斯（κ≈0.083）。这意味着从
+N(0,I)
+到数据的每条运输路径长度大致相等且很短。但这带来一个新问题——LayerNorm
+固定 ||z||=√d 使特征在球壳上，线性路径 z_t = t·z₀+(1-t)·ε
+要穿过球壳内部（低密度区域）。所以 v-prediction 的径向分量巨大。</li>
+<li>x-prediction 解决了这个问题：它让网络输出
+ẑ₀（在流形/球壳上），而不是
+v̂（在环境空间）。损失的对比仍然在速度空间计算，但回归目标始终在流形上，所以网络只需要学习「从噪声到流形表面的投影」——这个东西在
+DINOv2 空间中很简单。</li>
+</ul>
+<p><strong><strong>用类比理解</strong></strong></p>
+<p>想象你要把散落在房间内的积木（噪声）捡起来放到一个球形的盘子里（数据流形）。</p>
+<ul>
+<li>v-prediction
+告诉你：「从你现在的位置，以某个速度和方向走向盘子」。但如果你的位置在盘子内部，这个方向向量可能非常大（径向歧义）。</li>
+<li>x-prediction
+告诉你：「直接告诉我盘子的表面在哪里」。一旦你知道了表面位置，速度自然就推导出来了。</li>
+</ul>
+<p>在像素空间中，这个「盘子」是歪斜的椭圆形，所以即使知道表面位置，也很难准确回归。但
+DINOv2 的「盘子」是正圆的，所以回归很简单。</p>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">模型和方法</div>
+
+<p><strong><strong>完整 Pipeline</strong></strong></p>
+<ol>
+<li>**编码**：输入图像 x → RAE 的 frozen DINOv2-Small encoder → DINOv2
+feature z₀ (384×16×16)</li>
+<li>**训练噪声注入**：采样 t ~ truncated logit-normal(μ=0, σ=1) + time
+shift s≈4.9 → ε ~ N(0, I) → z_t = t·z₀ + (1-t)·ε</li>
+<li>**模型主体**：RiT-XL (28 层 DiT block: SwiGLU FFN, QK-normed
+attention, VisionRoPE, adaLN) 接收 z_t (16×16 patch grid) + t + class
+label y + 独立的 [CLS] noise token</li>
+<li>**预测**：输出 ẑ₀ (clean patches) + clŝ₀ (clean CLS token)</li>
+<li>**损失**：L = MSE(v̂_patch, v_patch) + 0.2·MSE(v̂_cls, v_cls)</li>
+<li>**解码**：生成完成后，z₀ → RAE ViT decoder → 重建像素 x̂</li>
+</ol>
+<p><strong><strong>数学公式</strong></strong></p>
+<p>Flow matching 速度场 (真实值): <span class="math display">$$ v_t =
+\frac{z_0 - z_t}{1-t} $$</span></p>
+<p>线性插值路径: <span
+class="math display"><em>z</em><sub><em>t</em></sub> = <em>t</em> ⋅ <em>z</em><sub>0</sub> + (1 − <em>t</em>) ⋅ <em>ϵ</em>,  <em>ϵ</em> ∼ 𝒩(0, <em>I</em>)</span></p>
+<p>x-prediction 重参数化: <span class="math display">$$
+\hat{v}_\theta(z_t, t) = \frac{\hat{z}_\theta(z_t, t) - z_t}{1-t}
+$$</span> 网络直接预测 <span
+class="math inline"><em>ẑ</em><sub><em>θ</em></sub> ≈ <em>z</em><sub>0</sub></span>，速度从公式推导。核心理由：<span
+class="math inline"><em>ẑ</em><sub><em>θ</em></sub></span>
+天然在流形上。</p>
+<p>损失函数: <span
+class="math display">ℒ = MSE(<em>v̂</em><sub>patch</sub>, <em>v</em><sub>patch</sub>) + 0.2 ⋅ MSE(<em>v̂</em><sub>cls</sub>, <em>v</em><sub>cls</sub>)</span>
+其中 v 的每个分量做 clamp_min(1-t, ε_t=0.05) 防止除以零。</p>
+<p>维度感知噪声调度（时间移位）: <span class="math display">$$ u_i =
+i/K, \quad t_i = 1 - \frac{u_i \cdot s}{1 + (s-1) u_i}, \quad s =
+\sqrt{16 \times 16 \times d / 4096} \approx 4.9 $$</span> This
+在低步数时让更多采样步骤集中在高噪声区域（t≈0），因为那里的速度场变化最快。</p>
+<p><strong><strong>模型架构细节</strong></strong></p>
+<p>每个 DiT block:</p>
+<ol>
+<li>adaLN modulation: timestep embedding + class embedding → 求和后经
+SiLU-Linear 投影为每层 scale/shift</li>
+<li>Multi-head self-attention with QK-normalization (RMSNorm on Q, K
+before attention) + VisionRoPE ([CLS]/register tokens 不参与)</li>
+<li>SwiGLU FFN: FFN(x) = (SiLU(xW₁) ⊙ xW₃)W₂</li>
+</ol>
+<p>32 个 learnable in-context tokens（RiT-L 在 layer 8 注入），从 class
+embedding + learnable positional embeddings 初始化，在所有后续层参与
+self-attention。</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Layers</th>
+<th>Hidden dim</th>
+<th>Heads</th>
+<th>FFN dim</th>
+<th>Params</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RiT-L</td>
+<td>24</td>
+<td>1024</td>
+<td>16</td>
+<td>4096</td>
+<td>458M</td>
+</tr>
+<tr>
+<td>RiT-XL</td>
+<td>28</td>
+<td>1152</td>
+<td>16</td>
+<td>4608</td>
+<td>676M</td>
+</tr>
+</tbody>
+</table>
+<p><strong><strong>与已有方法技术对比</strong></strong></p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>RiT</th>
+<th>RAE (DiT-DH)</th>
+<th>RJF</th>
+<th>DiT</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>核心表示</td>
+<td>DINOv2 feature</td>
+<td>DINOv2 feature</td>
+<td>DINOv2 feature</td>
+<td>SD-VAE latent</td>
+</tr>
+<tr>
+<td>训练目标</td>
+<td>x-prediction</td>
+<td>v-prediction</td>
+<td>v-prediction (Riemannian)</td>
+<td>v-prediction</td>
+</tr>
+<tr>
+<td>预测头</td>
+<td>标准 linear</td>
+<td>DDT wide head</td>
+<td>标准 linear</td>
+<td>标准 linear</td>
+</tr>
+<tr>
+<td>运输路径</td>
+<td>欧几里得</td>
+<td>欧几里得</td>
+<td>黎曼测地线</td>
+<td>欧几里得</td>
+</tr>
+<tr>
+<td>额外组件</td>
+<td>time shift + joint CLS</td>
+<td>ViT decoder + RAE</td>
+<td>Jacobi 正则化</td>
+<td>无</td>
+</tr>
+<tr>
+<td>参数 (XL)</td>
+<td>676M</td>
+<td>839M</td>
+<td>131M (B)</td>
+<td>675M</td>
+</tr>
+<tr>
+<td>FID (no CFG)</td>
+<td>1.45</td>
+<td>1.51</td>
+<td>3.37 (B)</td>
+<td>9.62</td>
+</tr>
+<tr>
+<td>FID (CFG)</td>
+<td>1.14</td>
+<td>1.16</td>
+<td>N/A</td>
+<td>2.27</td>
+</tr>
+</tbody>
+</table>
+<p><strong><strong>实现技巧</strong></strong></p>
+<ul>
+<li>Epsilon clamp ε_t=0.05 同时在训练和采样中使用，防止 (1-t) 接近 0
+时的数值问题</li>
+<li>EMA 双轨跟踪 0.9999/0.9996——推测用于早期/后期不同稳定性需求</li>
+<li>独立的 [CLS] 预测 head：[CLS] token 和 patch tokens 共享 backbone
+但独立投影</li>
+<li>仅中间 50% 层开启 dropout（但主配置设为 0.0）——设计保留了灵活性</li>
+</ul>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">训练</div>
+
+<p>**数据集**：ImageNet 256×256（标准 ImageFolder 结构）</p>
+<p>**超参数表**：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>参数</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>优化器</td>
+<td>Type</td>
+<td>AdamW</td>
+</tr>
+<tr>
+<td></td>
+<td>β₁/β₂</td>
+<td>0.9 / 0.999</td>
+</tr>
+<tr>
+<td>学习率</td>
+<td>Base LR</td>
+<td>5e-5 (scaled by batch/256)</td>
+</tr>
+<tr>
+<td></td>
+<td>Schedule</td>
+<td>Constant (after warmup)</td>
+</tr>
+<tr>
+<td></td>
+<td>Warmup</td>
+<td>5 epochs</td>
+</tr>
+<tr>
+<td>正则化</td>
+<td>Weight decay</td>
+<td>0.0</td>
+</tr>
+<tr>
+<td></td>
+<td>Gradient clipping</td>
+<td>1.0 max ℓ₂ norm</td>
+</tr>
+<tr>
+<td></td>
+<td>Label dropout</td>
+<td>0.1</td>
+</tr>
+<tr>
+<td></td>
+<td>Dropout</td>
+<td>0.0 (main config)</td>
+</tr>
+<tr>
+<td>训练</td>
+<td>Epochs</td>
+<td>800</td>
+</tr>
+<tr>
+<td></td>
+<td>Batch size</td>
+<td>1536 (8×192 per GPU)</td>
+</tr>
+<tr>
+<td></td>
+<td>EMA decay</td>
+<td>0.9999 / 0.9996</td>
+</tr>
+<tr>
+<td>噪声调度</td>
+<td>Type</td>
+<td>Truncated logit-normal (μ=0, σ=1)</td>
+</tr>
+<tr>
+<td></td>
+<td>Time shift s</td>
+<td>√(256×d/4096) where H×W=256, d=384 → s≈4.9</td>
+</tr>
+</tbody>
+</table>
+<p>**计算成本**：</p>
+<ul>
+<li>硬件：8× NVIDIA H200</li>
+<li>吞吐：~12 分钟/epoch → 总 ~160 小时 (≈6.7 天)</li>
+<li>RiT-XL 参数量：676M</li>
+<li>推理成本极低：5-25 Heun steps</li>
+</ul>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">实验</div>
+
+<p><strong><strong>主实验 (ImageNet 256×256)</strong></strong></p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Encoder</th>
+<th>Params</th>
+<th>FID (no CFG)</th>
+<th>FID (CFG)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DiT-XL</td>
+<td>SD-VAE</td>
+<td>675M</td>
+<td>9.62</td>
+<td>2.27</td>
+</tr>
+<tr>
+<td>SiT-XL</td>
+<td>SD-VAE</td>
+<td>675M</td>
+<td>8.61</td>
+<td>2.06</td>
+</tr>
+<tr>
+<td>REPA-XL</td>
+<td>SD-VAE</td>
+<td>675M</td>
+<td>5.78</td>
+<td>1.29</td>
+</tr>
+<tr>
+<td>DDT-XL</td>
+<td>SD-VAE</td>
+<td>675M</td>
+<td>6.27</td>
+<td>1.26</td>
+</tr>
+<tr>
+<td>REG-XL</td>
+<td>SD-VAE</td>
+<td>675M</td>
+<td>1.80</td>
+<td>1.36</td>
+</tr>
+<tr>
+<td>RAE-XL</td>
+<td>DINOv2-S</td>
+<td>676M</td>
+<td>1.87</td>
+<td>1.41</td>
+</tr>
+<tr>
+<td>RAE-XL DH</td>
+<td>DINOv2-B</td>
+<td>839M</td>
+<td>1.51</td>
+<td>1.16</td>
+</tr>
+<tr>
+<td>FAE-XL</td>
+<td>FAE-DINOv2-G</td>
+<td>675M</td>
+<td>1.48</td>
+<td>1.29</td>
+</tr>
+<tr>
+<td><strong><strong>RiT-XL</strong></strong></td>
+<td><strong><strong>DINOv2-S</strong></strong></td>
+<td><strong><strong>676M</strong></strong></td>
+<td><strong><strong>1.45</strong></strong></td>
+<td><strong><strong>1.14</strong></strong></td>
+</tr>
+</tbody>
+</table>
+<p>**消融实验关键发现**：</p>
+<ol>
+<li>**x-prediction vs v-prediction on DINOv2 space**：v-prediction
+baseline 比 x-prediction 差约 2 FID（原文未精确给出数值）</li>
+<li>**编码器大小**：DINOv2-Small (d=384) FID 1.44 &gt; DINOv2-Base
+(d=768) FID 1.56 → 低维特征更容易建模</li>
+<li>**维度感知噪声调度**：Time-shift / EDM / Power-2 在 ≤10 步时远优于
+Uniform</li>
+<li>**Few-step 生成能力**（本文亮点）：</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Heun Steps</th>
+<th>FID (CFG)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>~20</td>
+</tr>
+<tr>
+<td>5</td>
+<td>2.0</td>
+</tr>
+<tr>
+<td>10</td>
+<td>1.25</td>
+</tr>
+<tr>
+<td>25</td>
+<td>1.14</td>
+</tr>
+<tr>
+<td>125</td>
+<td>~1.14</td>
+</tr>
+</tbody>
+</table>
+<p>无需蒸馏或一致性训练，ODE 本身就容易求解。</p>
+<ol>
+<li>**耦合 vs 独立噪声**：耦合噪声略好，但两者差距不大</li>
+<li>**训练收敛**：RiT 在 ~600 epochs (FID 1.54) 开始收敛，继续改善到 800
+epochs (FID 1.45)</li>
+</ol>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">代码分析</div>
+
+<p><strong><strong>0. 仓库定位与阅读状态</strong></strong></p>
+<ul>
+<li>仓库链接：https://github.com/lezhang7/RiT</li>
+<li>代码与论文关系：官方实现，完整包含训练、评估、采样代码</li>
+<li>commit：latest（主分支）</li>
+<li>是否已执行 github-repo-read：否（本次仅从 README 获取概述信息）</li>
+<li>代码完整性：完整（训练脚本、评估脚本、模型定义、checkpoint
+下载）</li>
+</ul>
+<p><strong><strong>1. 代码组织总览</strong></strong></p>
+<p>从 README 看，顶层包括：</p>
+<ul>
+<li>`scripts/` — train.sh, eval.sh, download_assets.sh</li>
+<li>`stats/` — normalization stats</li>
+<li>`fid_stats/` — Inception FID reference stats</li>
+<li>`requirements.txt` — 依赖清单</li>
+</ul>
+<p>模型主体直接继承自 JiT 和 RAE 代码库。RAE 的 frozen DINOv2 encoder +
+ViT decoder 从 HuggingFace 拉取。</p>
+<p><strong><strong>2-8 =&gt; 代码仓库存在但本次未展开
+github-repo-read，相关实现细节待核实。</strong></strong></p>
+<p>总体判断：仓库运维良好，train.sh 和 eval.sh
+提供完整的一次性运行入口，支持 OUTPUT_DIR/IMAGENET_PATH
+等环境变量覆盖路径。</p>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">效果</div>
+
+<p>**定量总结**：</p>
+<ul>
+<li>RiT-XL 以 676M 参数在 ImageNet 256×256 上达到 FID 1.45 (no CFG) /
+1.14 (CFG)</li>
+<li>比 RAE (DiT-DH-XL) 少 19% 参数（676M vs 839M），FID 更好</li>
+<li>5 步达到 FID 2.0，10 步达到 FID 1.25——无需蒸馏</li>
+<li>编码器越小越好：DINOv2-S (384D) 优于 DINOv2-B (768D)</li>
+</ul>
+<p>**失败案例与局限性**：</p>
+<ul>
+<li>DINOv2-Base
+编码器效果更差，原因未完全解释（仅说高维特征更难建模）</li>
+<li>v-prediction 在 DINOv2 空间到底差多少？原文只说 "~2 FID
+worse"，未精确给出</li>
+<li>只在 ImageNet 256×256 上验证，未扩展至更大分辨率或文本条件</li>
+<li>依赖 RAE 的编码器-解码器 pipeline，迁移至其他编码器需要重新验证</li>
+<li>为什么 weight decay=0.0？原文未解释（但常见于其他扩散模型）</li>
+</ul>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">结论</div>
+
+<p>**论文自己的结论**：DINOv2
+特征空间的统计特性（近各向同性、边际近高斯、插值在流形上）使
+x-prediction flow matching 回归良态，这消除了对专门预测头（如
+DDT）或黎曼运输（如 RJF）的需求。vanilla DiT + x-prediction 就够了。</p>
+<p>**局限性**（来自原文 + 补充分析）：</p>
+<ol>
+<li>仅在 ImageNet 256×256 验证，未测试分辨率缩放或文本条件</li>
+<li>对 DINOv2-Base 效果下降的原因分析不够深入</li>
+<li>x-prediction vs v-prediction 的消融数据不够完整（只说 ~2 FID
+worse）</li>
+<li>依赖于 RAE 提供的冻结编码器-解码器，不是端到端方案</li>
+</ol>
+<p>**未来方向**：</p>
+<ul>
+<li>探索 x-prediction 在其他表示空间（SigLIP, CLIP, MAE,
+i-JEPA）的普适性</li>
+<li>将几何分析框架用于指导 tokenizer / 编码器设计</li>
+<li>RiT + REPA 的联合训练（表示对齐 +
+正确预测目标，可能进一步加速）</li>
+<li>扩展到文本条件生成和更大分辨率</li>
+</ul>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-title">收获</div>
+
+<p>**对我们的视觉编码器研究的具体启发**：</p>
+<ol>
+<li><p>**4-axis geometry analysis 可以直接复用**：评估一个 visual
+tokenizer 时，不仅要看重建指标（PSNR/FID/LPIPS），还应该检查这四项：</p>
+<ul>
+<li>有效秩（方差分布均匀性）</li>
+<li>边际峰度（每坐标的高斯性）</li>
+<li>协方差条件数（数值稳定性）</li>
+<li>线性插值重建误差（流形连续性）</li>
+</ul>
+<p>这些指标可以预测 tokenizer 的「生成友好性」。</p></li>
+<li><p>**SSL 预训练目标影响编码器的隐式几何**：DINOv2 的 iBot /
+self-distillation 目标天然产生各向同性 +
+边际高斯分布，这是生成友好的。SD-VAE 的重建损失（L1 + LPIPS +
+adversarial）产生中间结果。这说明「生成 tokenizer」和「表示
+tokenizer」的优化目标会导致不同的隐式几何——这可能是统一表示和生成的关键设计空间。</p></li>
+<li><p>**x-prediction
+是最小入侵式生成方案**：不改变架构，只改变预测目标。这降低了编码器设计者的负担——他们只需要关注编码器本身的质量，不需要为生成侧的特殊需求定制架构。</p></li>
+<li><p>**scaling law 新视角**：编码器不是越大越好（DINOv2-Small &gt;
+DINOv2-Base），可能存在一个「最优特征维度 vs 生成性能」的 trade-off
+curve。这值得系统研究。</p></li>
+</ol>
+<p>**可做的后续实验**：</p>
+<ul>
+<li>对 SigLIP / CLIP / MAE / i-JEPA 特征做同样的 4-axis 几何分析</li>
+<li>尝试在 FAE feature 或自定义 tokenizer 上直接跑 x-prediction</li>
+<li>设计 tokenizer
+训练目标时加入几何正则化（如最大化有效秩、最小化边际峰度）</li>
+</ul>
+</div>
+</div>
