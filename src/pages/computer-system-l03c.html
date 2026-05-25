@@ -1,205 +1,142 @@
 ---
 title: "GPGPU 架构与大规模并行编程 · L03c"
-description: "GPU SIMT 模型、CUDA 编程、线程网格、内存层级与优化。课程笔记。"
+description: "GPU SIMT 模型、CUDA 编程、线程网格、内存层级与优化。西安交通大学课程笔记。"
+created_at: 2026-05-25T12:00:00
+updated_at: 2026-05-25T12:00:00
 tags: ["GPU", "CUDA", "课程笔记", "SIMT", "并行编程"]
 categories: ["课程"]
 subcategory: "计算机系统"
-mathjax: false
+mathjax: true
 hero_title: "GPGPU 架构与大规模并行编程"
 hero_sub: "嵌入式智能系统与新型计算架构 · L03c"
-hero_tagline: "GPU 有几千个"核心"，为什么写 CUDA 代码比写 C 代码复杂得多？"
+hero_tagline: "GPU 有几千个核心，为什么写 CUDA 代码比写 C 代码复杂得多？"
 ---
 
 <div class="wrap">
 
-<div class="ch">1. 从并行编程模型说起</div>
+<div class="ch fade-in">
+  <div class="ch-label">CH01 · 为什么 GPU 适合并行计算</div>
+  <div class="ch-title">从图形渲染到通用计算</div>
+  <p>GPU 最初为图形渲染设计——为屏幕上每个像素独立计算颜色。这个任务的天然并行性决定了 GPU 的架构方向：<strong>海量简单核心</strong>，而非少量复杂核心。</p>
+  <p>2006 年 NVIDIA 推出 CUDA，标志着 GPU 从专用图形处理器走向<strong>通用并行计算（GPGPU）</strong>。今天的 AI 训练、科学模拟、密码学等领域，GPU 已成为标配。</p>
 
-<p>假设我们有一段最基础的标量顺序代码，对一个数组做逐元素乘法：</p>
+  <div class="callout">
+    <strong>CPU vs GPU 的设计哲学对比</strong>
+    <p><strong>CPU</strong>：少量强大核心（4-64 核），复杂控制逻辑（分支预测、乱序执行、推测执行），大容量缓存（减少内存访问延迟）。设计目标：<strong>最小化单线程延迟</strong>。</p>
+    <p><strong>GPU</strong>：海量简单核心（数千个 CUDA Core），极简控制逻辑（无乱序执行、无分支预测），小缓存（靠高吞吐隐藏延迟）。设计目标：<strong>最大化整体吞吐率</strong>。</p>
+  </div>
 
-<pre><code>for (i = 0; i < N; i++)
-    A[i] = B[i] * C[i];</code></pre>
+  <p>形象地说：CPU 是<strong>跑车</strong>——少量、昂贵、每辆都很快；GPU 是<strong>货运列车</strong>——大量、便宜、总运量巨大。你要运一个人，用跑车；你要运一万吨货，用火车。</p>
+</div>
 
-<p>这段循环天然具有<strong>数据级并行（DLP）</strong>：每次迭代之间相互独立，没有数据依赖。要 exploit 这种并行性，历史上出现过三种典型编程模型。</p>
+<div class="ch fade-in">
+  <div class="ch-label">CH02 · SIMT 执行模型</div>
+  <div class="ch-title">Single Instruction, Multiple Threads</div>
+  <p>GPU 的并行执行模型叫做 <strong>SIMT（Single Instruction, Multiple Threads）</strong>，可以看作 SIMD 的「线程化」版本。在 SIMD 中，一条指令同时操作多个数据元素；在 SIMT 中，一条指令同时被多个<strong>线程</strong>执行，每个线程操作自己的数据。</p>
+  <p>SIMT 的关键概念：</p>
+  <ul>
+    <li><strong>Thread（线程）</strong>：最小的执行单元，每个线程有自己的寄存器状态和程序计数器</li>
+    <li><strong>Warp（束）</strong>：32 个线程组成一个 Warp，同一 Warp 内的线程<strong>锁步执行</strong>同一条指令</li>
+    <li><strong>Block（块）</strong>：多个 Warp 组成一个 Block，Block 内的线程可以通过共享内存和同步原语协作</li>
+    <li><strong>Grid（网格）</strong>：多个 Block 组成一个 Grid，对应一次内核启动的所有线程</li>
+  </ul>
 
-<p><strong>SISD（单指令单数据）</strong>：完全顺序执行。现代 CPU 会通过流水线、超标量发射、乱序执行等方式在硬件层面动态展开循环，把不同迭代塞进指令窗口同时执行。但这本质上仍是对顺序代码的加速，程序员无需关心并行。</p>
+  <div class="callout">
+    <strong>Warp 调度与延迟隐藏</strong>
+    <p>GPU 没有复杂的乱序执行，而是靠<strong>多线程交错执行</strong>隐藏延迟。当一个 Warp 正在等待内存数据（几百个周期），Warp 调度器立即切换到另一个就绪的 Warp 执行。只要有足够的 Warp 待命，执行单元就永远不会空闲。</p>
+    <p>一个 SM（Streaming Multiprocessor）可以同时驻留数百个 Warp，通过快速切换实现「用吞吐换延迟」。</p>
+  </div>
+</div>
 
-<p><strong>SIMD（单指令多数据）</strong>：程序员或编译器显式生成向量指令，一次性对多个数据元素执行相同操作。例如向量加载 <code>VLD</code>、向量乘加 <code>VADD</code>。这种模型非常适合向量处理器和带有 AVX/SSE 单元的 CPU。</p>
-
-<p><strong>SPMD / MIMD（单程序多数据）</strong>：把每一次迭代都变成独立的线程，所有线程执行同一段程序，但操作不同的数据。这是 GPU 编程的核心思想。从程序员视角看是 SPMD，从硬件架构视角看则是 <strong>SIMT（Single Instruction Multiple Thread）</strong>。</p>
-
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=3 >}}
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=5 >}}
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=6 >}}
-
-<p>进入 21 世纪，机器视觉、语音识别、深度学习等应用的爆发，使得大规模数值计算成为常态。这些计算往往天然具备数据并行特征，SIMD 类架构（包括向量 SIMD、子字 SIMD 和 SIMT/GPU）成为最高效的执行载体。</p>
-
-<div class="ch">2. GPU 与 CPU：两种截然不同的设计哲学</div>
-
-<p>理解 GPU 架构的第一步，是认识到它和 CPU 根本不是为同一目标设计的。</p>
-
-<p><strong>CPU：面向延迟（Latency-Oriented）</strong></p>
-
-<ul>
-<li>高主频（~3.0 GHz），追求单线程最低响应时间。</li>
-<li>大容量缓存（L1 ~KB 级，L2/L3 ~MB 级），用缓存命中把长延迟内存访问转化为短延迟访问。</li>
-<li>复杂的控制逻辑：分支预测、乱序执行（OOO）、数据转发、超标量发射。</li>
-<li>强大的 ALU，降低单条指令的执行延迟。</li>
-</ul>
-
-<p><strong>GPU：面向吞吐量（Throughput-Oriented）</strong></p>
-
-<ul>
-<li>中等主频（~1 GHz），不追求单线程快，而追求单位时间内完成的工作总量。</li>
-<li>极小的缓存（Scratchpad / Shared Memory），目的不是降低延迟，而是提升内存带宽利用率。</li>
-<li>极简的控制逻辑：<strong>无分支预测、无数据转发</strong>，省去大量晶体管。</li>
-<li>海量 ALU，数量可达数千个，每个 ALU 流水线极深，长延迟但高吞吐。</li>
-<li>不隐藏延迟，而是用<strong>超量线程（massive multithreading）</strong>来容忍延迟：当一个 warp 因访存而阻塞时，硬件立刻切换去执行另一个就绪 warp。</li>
-</ul>
-
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=12 >}}
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=13 >}}
-
-<p>结果是：CPU 在串行代码上可能比 GPU 快 10 倍，而 GPU 在高度并行的代码上可能比 CPU 快 10 倍甚至更多。这就引出了<strong>异构计算</strong>的范式——CPU 负责串行部分和调度，GPU 负责并行计算密集型部分。</p>
-
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=14 >}}
-
-<div class="ch">3. CUDA 编程模型：Grid → Block → Thread</div>
-
-<p>NVIDIA 在 2006 年推出 GeForce 8800 时统一了 GPU 的所有并行形式为 <strong>CUDA Thread</strong>，并提供了一套类 C 语言（CUDA C）来编程。其编程模型围绕三个核心抽象展开：</p>
-
-<ol>
-<li><strong>线程组层次结构（Hierarchy of Thread Groups）</strong></li>
-<li><strong>共享内存（Shared Memories）</strong></li>
-<li><strong>屏障同步（Barrier Synchronization）</strong></li>
-</ol>
-
-<p>CUDA 的执行组织呈现三级层次：</p>
-
-<ul>
-<li><strong>Kernel（核函数）</strong>：在 GPU 上并行执行的函数，由所有线程共同运行。</li>
-<li><strong>Grid（网格）</strong>：一次内核调用的所有线程的总体集合。</li>
-<li><strong>Block（线程块）</strong>：Grid 被划分为多个 Block，Block 内线程可以协作。</li>
-<li><strong>Thread（线程）</strong>：最基本的执行单元，每个线程有独立的寄存器状态和线程 ID。</li>
-</ul>
-
-<p>调用 Kernel 时使用特有的执行配置语法：</p>
-
-<pre><code>__global__ void vecAdd(float* A, float* B, float* C, int n) {
+<div class="ch fade-in">
+  <div class="ch-label">CH03 · CUDA 编程模型</div>
+  <div class="ch-title">Grid → Block → Thread 三级结构</div>
+  <p>CUDA 编程的核心是<strong>内核函数（Kernel）</strong>——在 GPU 上并行执行的函数。调用内核时，程序员指定 Grid 和 Block 的维度：</p>
+  <pre><code>// 定义内核：每个线程执行一次 add()
+__global__ void add(float *a, float *b, float *c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) C[i] = A[i] + B[i];
+    if (i < n) c[i] = a[i] + b[i];
 }
 
-// 主机代码
-int threadsPerBlock = 256;
-int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
-vecAdd<<<blocksPerGrid, threadsPerBlock>>>(d_A, d_B, d_C, N);</code></pre>
+// 启动内核：256 个线程/Block，足够多的 Block 覆盖 n 个元素
+int blockSize = 256;
+int numBlocks = (n + blockSize - 1) / blockSize;
+add<<<numBlocks, blockSize>>>(a, b, c, n);</code></pre>
 
-<p>这里 <code><<<blocksPerGrid, threadsPerBlock>>></code> 就是指定 Grid 和 Block 的组织方式。每个线程通过内置变量 <code>blockIdx</code>、<code>threadIdx</code>、<code>blockDim</code>、<code>gridDim</code> 计算自己在全局数据中的位置，从而把同一段代码映射到不同数据上。</p>
+  <p>三级索引的计算：$\text{global\_idx} = \text{blockIdx} \times \text{blockDim} + \text{threadIdx}$。每个线程根据全局索引处理不同的数据元素。</p>
 
-<p>这种组织方式的优势在于<strong>可扩展性</strong>：算法写好之后，无论 GPU 上有多少个 SM（Streaming Multiprocessor），硬件都可以自动把 Block 分发到空闲的 SM 上执行，无需重写代码。</p>
+  <p>CUDA 的内置变量：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变量</th><th>含义</th><th>范围</th></tr></thead>
+      <tbody>
+        <tr><td><code>threadIdx.x/y/z</code></td><td>线程在 Block 内的索引</td><td>0 ~ blockDim-1</td></tr>
+        <tr><td><code>blockIdx.x/y/z</code></td><td>Block 在 Grid 内的索引</td><td>0 ~ gridDim-1</td></tr>
+        <tr><td><code>blockDim.x/y/z</code></td><td>Block 的维度大小</td><td>由启动参数指定</td></tr>
+        <tr><td><code>gridDim.x/y/z</code></td><td>Grid 的维度大小</td><td>由启动参数指定</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
-<div class="ch">4. GPU 内存层级与访存优化</div>
+<div class="ch fade-in">
+  <div class="ch-label">CH04 · GPU 内存层级</div>
+  <div class="ch-title">从寄存器到全局内存的完整谱系</div>
+  <p>GPU 的内存层级比 CPU 更复杂，但也提供了更多优化空间：</p>
 
-<p>GPU 的内存系统是分层的，每一级在容量、延迟和可见性上都不相同。写 CUDA 代码时，绝大部分性能调优工作都在围绕"数据放在哪、怎么搬、怎么访"展开。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>内存类型</th><th>作用域</th><th>生命周期</th><th>延迟</th><th>容量</th></tr></thead>
+      <tbody>
+        <tr><td>Register</td><td>单线程</td><td>内核执行期</td><td>~1 周期</td><td>~256 KB/SM</td></tr>
+        <tr><td>Shared Memory</td><td>Block 内共享</td><td>内核执行期</td><td>~20 周期</td><td>~164 KB/SM</td></tr>
+        <tr><td>L1 Cache</td><td>SM 内共享</td><td>自动管理</td><td>~30 周期</td><td>与 Shared 共享</td></tr>
+        <tr><td>L2 Cache</td><td>全 GPU 共享</td><td>自动管理</td><td>~200 周期</td><td>数 MB</td></tr>
+        <tr><td>Global Memory</td><td>全 GPU 共享</td><td>显存分配期</td><td>~400 周期</td><td>数 GB ~ 数十 GB</td></tr>
+        <tr><td>Constant Memory</td><td>全 GPU 只读</td><td>显存分配期</td><td>缓存命中 ~1 周期</td><td>64 KB</td></tr>
+      </tbody>
+    </table>
+  </div>
 
-<table>
-<thead>
-<tr><th>内存类型</th><th>位置</th><th>延迟</th><th>可见范围</th><th>生命周期</th></tr>
-</thead>
-<tbody>
-<tr><td>Register</td><td>片上</td><td>~1 cycle</td><td>单个 Thread</td><td>Thread</td></tr>
-<tr><td>Local Memory</td><td>片外（Device Memory）</td><td>高</td><td>单个 Thread</td><td>Thread</td></tr>
-<tr><td>Shared Memory</td><td>片上（Scratchpad）</td><td>~20-30 cycles</td><td>Block 内所有 Thread</td><td>Block</td></tr>
-<tr><td>Global Memory</td><td>片外（DRAM）</td><td>~400-800 cycles</td><td>所有 Thread + Host</td><td>应用级</td></tr>
-<tr><td>Constant / Texture</td><td>片外（只读缓存）</td><td>中</td><td>所有 Thread</td><td>应用级</td></tr>
-</tbody>
-</table>
+  <div class="callout">
+    <strong>内存合并访问（Coalesced Access）</strong>
+    <p>这是 CUDA 优化的第一法则。一个 Warp 的 32 个线程同时访问全局内存时，如果访问地址是连续的（如数组的第 i, i+1, i+2... 个元素），硬件可以将这些访问<strong>合并为一次事务</strong>，带宽利用率最大化。</p>
+    <p>如果 32 个线程访问的地址分散（如随机访问），则需要 32 次独立内存事务，性能暴跌。</p>
+  </div>
 
-<p><strong>Global Memory</strong>：容量最大（几 GB 到几十 GB），但延迟最高。一个 warp（32 个线程）同时访问 Global Memory 时，硬件会尝试把相邻线程的访存请求<strong>合并（Coalesce）</strong>成一次或几次缓存行宽度的物理事务。如果线程访问的地址连续且对齐，就能达到接近峰值带宽；如果访问模式随机（Strided / Scattered），则会产生大量独立事务，带宽骤降。</p>
+  <p><strong>共享内存（Shared Memory）</strong>是 CUDA 优化的关键武器。它位于芯片上，延迟接近寄存器，可以被 Block 内所有线程读写。典型用法是先把数据从 Global Memory 加载到 Shared Memory，然后在 Shared Memory 上反复计算，最后写回 Global Memory——类似 CPU 的缓存分块（Tiling）。</p>
+</div>
 
-<p><strong>Shared Memory</strong>：位于 SM 片上，可被 Block 内线程共享，延迟远低于 Global Memory。它的本质是一块<strong>Scratchpad Memory</strong>（软件管理的暂存器），而非硬件自动管理的 Cache。程序员需要显式地把数据从 Global Memory 加载到 Shared Memory，算完再写回。使用 Shared Memory 的两个主要目的是：</p>
-
-<ol>
-<li><strong>复用数据</strong>：一个数据元素被 Block 内多个线程使用时，只需从 Global Memory 读一次。</li>
-<li><strong>避免非合并访存</strong>：通过 Shared Memory 做数据重排（tiling），把不规则的全局访存转化为规则的片上访问。</li>
-</ol>
-
-<p><strong>Register</strong>：每个线程私有的片上存储，数量极多但有限（通常每个 SM 有 64K-256K 个 32-bit 寄存器）。如果寄存器溢出，编译器会把变量 spill 到 Local Memory，性能会严重下降。</p>
-
-<div class="ch">5. Warp 调度与分支发散</div>
-
-<p>GPU 的实际调度单位不是单个 Thread，而是 <strong>Warp（NVIDIA 术语，AMD 称 Wavefront，大小通常为 32 或 64 个线程）</strong>。一个 Warp 内的所有线程共享同一个程序计数器（PC），以 lock-step 方式执行同一条指令，这就是 SIMT 的核心。</p>
-
-<p>Warp 调度器每个周期从就绪的 warp 中挑选一个发射指令。由于 GPU 上通常同时存在数十个 warp，当某个 warp 因为等待内存数据而阻塞时，调度器可以零开销切换到另一个就绪 warp，用<strong>线程级并行（TLP）</strong>隐藏内存延迟。这种机制被称为<strong>延迟隐藏（Latency Hiding）</strong>。</p>
-
-<p>但 SIMT 有一个致命的弱点：<strong>分支发散（Branch Divergence）</strong>。当 Warp 内的线程遇到条件分支（如 <code>if-else</code>）且不同线程走不同路径时，硬件无法让一部分线程执行 <code>if</code> 分支而另一部分空闲。相反，硬件会<strong>串行化</strong>执行两条路径：先执行所有走 <code>if</code> 路径的线程（走 <code>else</code> 的线程被掩码掉），再执行所有走 <code>else</code> 路径的线程。这导致 warp 的有效利用率下降，性能减半甚至更低。</p>
-
-<p>避免分支发散的常见策略：</p>
-
-<ul>
-<li>让分支条件以 Warp 为单位对齐（例如按 warp 大小对齐数据索引）。</li>
-<li>使用 <strong>warp shuffle 指令</strong>（<code>__shfl_sync</code>）在 warp 内直接交换数据，避免 Shared Memory 往返。</li>
-<li>用 predicates 或位掩码手动控制线程活跃性。</li>
-</ul>
-
-<div class="ch">6. CPU-GPU 异构编程范式</div>
-
-<p>现代 GPU 并非独立运行，而是作为 CPU 的协处理器存在。典型的异构系统架构中，CPU（Host）和 GPU（Device）拥有各自独立的内存空间，通过 PCIe 总线或片上互联（如 NVLink、Infinity Fabric）通信。</p>
-
-{{< docpage "pdf/computer-system/L03c-GPGPU-Arch.pdf" page=11 >}}
-
-<p>一个完整的 CUDA 程序执行流程如下：</p>
-
-<ol>
-<li><strong>分配设备内存</strong>：在 GPU 显存中分配空间（<code>cudaMalloc</code>）。</li>
-<li><strong>数据传输</strong>：把输入数据从主机内存复制到设备内存（<code>cudaMemcpy</code> Host→Device）。</li>
-<li><strong>启动 Kernel</strong>：配置 Grid/Block 参数，在 GPU 上执行并行计算。</li>
-<li><strong>结果回传</strong>：把计算结果从设备内存复制回主机内存（<code>cudaMemcpy</code> Device→Host）。</li>
-<li><strong>释放资源</strong>：释放设备内存（<code>cudaFree</code>）。</li>
-</ol>
-
-<p>PCIe 的带宽（~32 GB/s for PCIe 4.0 x16）远低于 GPU 显存带宽（~1-2 TB/s），因此<strong>数据传输开销往往是性能瓶颈</strong>。优化策略包括：</p>
-
-<ul>
-<li><strong>Zero-Copy / Unified Memory</strong>：让 CPU 和 GPU 共享同一虚拟地址空间，由硬件自动处理页迁移。</li>
-<li><strong>数据驻留 GPU</strong>：把多轮计算串成流水线，中间结果不搬回主机。</li>
-<li><strong>异步传输与计算重叠</strong>：使用 CUDA Stream 让数据传输和 Kernel 执行并行。</li>
-</ul>
-
-<div class="ch">7. 案例：矩阵乘法的 CUDA 实现思路</div>
-
-<p>矩阵乘法 <code>C = A × B</code> 是理解 GPU 并行编程的经典案例。一个朴素的实现让每个线程计算 C 中的一个元素：</p>
-
-<pre><code>__global__ void matMul(float* A, float* B, float* C, int N) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    float sum = 0.0f;
-    for (int k = 0; k < N; k++)
-        sum += A[row * N + k] * B[k * N + col];
-    C[row * N + col] = sum;
+<div class="ch fade-in">
+  <div class="ch-label">CH05 · 分支发散与线程分歧</div>
+  <div class="ch-title">Warp 内的 if-else 陷阱</div>
+  <p>SIMT 的一个关键约束：<strong>同一 Warp 内的所有线程必须执行同一条指令</strong>。如果 Warp 内部分线程走 if 分支，部分走 else 分支，GPU 不能跳过任何线程——它只能<strong>串行执行两个分支</strong>，禁用不走该分支的线程。</p>
+  <pre><code>__global__ void bad_branch(float *data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (data[i] > 0)       // 分支发散！
+        data[i] = sqrt(data[i]);
+    else
+        data[i] = data[i] * data[i];
 }</code></pre>
+  <p>如果 Warp 内 16 个线程 data[i]>0，16 个线程 data[i]≤0，那么这个 Warp 需要执行两条路径，有效性能减半。</p>
 
-<p>这个实现的问题在于：计算 C 中同一行的不同线程，会重复读取 A 的同一行数据；计算 C 中同一列的不同线程，会重复读取 B 的同一列数据。而且 A 按行访问是连续的（合并访存），但 B 按列访问的步长是 N（非合并访存），带宽利用率极低。</p>
+  <div class="callout">
+    <strong>缓解策略</strong>
+    <p>1. <strong>线程级排序</strong>：先排序数据让相似值聚集，减少 Warp 内分歧</p>
+    <p>2. <strong>分支粒度对齐</strong>：确保分支条件在 Warp 级别一致（如按 Warp 分配任务而非按线程）</p>
+    <p>3. <strong> predication</strong>：编译器可能用条件执行指令替代分支，避免显式发散</p>
+  </div>
+</div>
 
-<p><strong>Tiled（分块）优化</strong>是标准解法：</p>
-
-<ol>
-<li>把 A 和 B 都划分为大小为 <code>TILE_SIZE × TILE_SIZE</code> 的小块。</li>
-<li>一个 Block 负责计算 C 中的一个 tile。</li>
-<li>Block 内所有线程先把当前步对应的 A-tile 和 B-tile 从 Global Memory <strong>协作加载到 Shared Memory</strong>。</li>
-<li>在 Shared Memory 上做局部点积计算。</li>
-<li>沿 K 维度滑动，重复加载和计算，最后把累加结果写回 Global Memory。</li>
-</ol>
-
-<p>通过 Tiling，原本对 Global Memory 的 <code>O(N³)</code> 次非合并访问，被转化为 <code>O(N³ / TILE_SIZE)</code> 次合并访问加上大量高速 Shared Memory 复用。实际中配合 register 展开和 warp 级优化，可以获得接近峰值算力的性能。</p>
-
-<div class="ch">课后思考</div>
-
-<ol>
-<li>SIMD 和 SIMT 的本质区别是什么？为什么说 SIMT 让 GPU 比传统向量处理器更灵活，却又带来了分支发散的问题？</li>
-<li>GPU 没有硬件管理的 Cache，而是把 Shared Memory 作为 Scratchpad 交给程序员手动控制。这种设计在灵活性上有何优势，又对程序员提出了哪些额外要求？</li>
-<li>在矩阵乘法的 Tiled 实现中，如果 <code>TILE_SIZE</code> 取得过大或过小，分别会对性能产生什么影响？这背后涉及哪些硬件资源限制（Shared Memory 容量、Register 数量、每个 SM 的 Block 数）？</li>
-<li>现代 AI 芯片（如 Google TPU、华为昇腾）大量采用脉动阵列（Systolic Array）而非 SIMT。对比 SIMT，脉动阵列在数据流动和并行粒度上有何根本不同？</li>
-</ol>
+<div class="ch fade-in">
+  <div class="ch-label">CH06 · 课后思考</div>
+  <div class="ch-title">思考与延伸</div>
+  <ol>
+    <li>CUDA 的线程模型与 CPU 多线程（pthread/OpenMP）有什么本质区别？为什么 GPU 线程切换是「零开销」而 CPU 线程切换代价高昂？</li>
+    <li>矩阵乘法是 GPU 的经典 benchmark。分析 naive CUDA 实现 vs 使用 Shared Memory Tiling 的性能差距，瓶颈在哪里？</li>
+    <li>NVIDIA 的 Tensor Core 在 Volta/Turing/Ampere 架构中引入，它与传统 CUDA Core 有什么区别？为什么对 AI 训练至关重要？</li>
+    <li>GPU 的内存带宽（如 H100 的 3 TB/s）远高于 CPU，但延迟也高得多。在什么类型的问题中，高带宽可以弥补高延迟？什么问题不适合 GPU？</li>
+  </ol>
+</div>
 
 </div>

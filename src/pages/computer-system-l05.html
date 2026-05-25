@@ -1,8 +1,8 @@
 ---
 title: "脉动阵列架构 · L05"
-description: "脉动阵列原理、数据流模式、矩阵乘法映射、TPU 案例分析。课程笔记。"
-created_at: 2026-05-25T14:02:56
-updated_at: 2026-05-25T14:02:56
+description: "脉动阵列原理、数据流模式、矩阵乘法映射、TPU 案例分析。西安交通大学课程笔记。"
+created_at: 2026-05-25T12:00:00
+updated_at: 2026-05-25T12:00:00
 tags: ["脉动阵列", "TPU", "课程笔记", "数据流", "AI加速器"]
 categories: ["课程"]
 subcategory: "计算机系统"
@@ -12,235 +12,103 @@ hero_sub: "嵌入式智能系统与新型计算架构 · L05"
 hero_tagline: "为什么 TPU 用脉动阵列做矩阵乘法，而不是直接用 GPU？"
 ---
 
-<div class="stats">
-  <div class="stat"><span class="num">6</span><span class="label">核心概念</span></div>
-  <div class="stat"><span class="num b">3</span><span class="label g">数据流模式</span></div>
-  <div class="stat"><span class="num">1</span><span class="label">TPU 案例</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label">课后思考</span></div>
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">CH01 · 脉动阵列的起源</div>
+  <div class="ch-title">数据流驱动的专用计算</div>
+  <p>1979 年，H.T. Kung 在 CMU 提出了 <strong>脉动阵列（Systolic Array）</strong>的概念。名字来源于心脏的「收缩」——血液被心脏的节律性收缩泵入血管，在流动过程中完成氧气交换。类似地，脉动阵列中的数据像血液一样在处理器阵列中流动，每个处理单元（PE）在数据经过时执行一次简单操作，结果继续向前传递。</p>
+  <p>与冯·诺依曼架构「数据不动、程序驱动」不同，脉动阵列是 <strong>「数据流动、计算随行」</strong> 的范式。每个 PE 只与相邻的 PE 通信，没有复杂的寻址和内存访问——数据从一端流入，结果从另一端流出。</p>
+
+  <div class="callout">
+    <strong>核心特征</strong>
+    <p>• <strong>规则阵列</strong>：PE 排列成规则的一维/二维网格，结构简单可扩展</p>
+    <p>• <strong>本地通信</strong>：每个 PE 只与直接相邻的 PE 通信，无全局互连</p>
+    <p>• <strong>流水线执行</strong>：数据在阵列中逐拍流动，自然形成流水线</p>
+    <p>• <strong>简单控制</strong>：每个 PE 执行固定操作，无需复杂调度逻辑</p>
+  </div>
 </div>
 
-<div class="wrap">
-  <div class="ch fade-in">
-    <div class="ch-label">Part 0 · 学习目标</div>
-    <div class="ch-title">本节在课程中的位置</div>
-    <p>上一讲 L04 讨论了 RISC-V 流水线与指令级并行，揭示了通用处理器通过时间复用提升吞吐率的思路。本节 L05 将视角从「时间域」切换到「空间域」：不再让单一处理器在时间上流水执行不同指令，而是用大量简单处理单元在空间上并行工作，数据像血液在心脏中节律性泵送一样流过阵列——这就是脉动阵列（Systolic Array）的核心思想。</p>
-    <p>后续 L06 将讨论数据流架构与内存墙问题，脉动阵列正是解决内存墙的一种关键空间架构。</p>
-    <div class="info-box">
-      <h3>前置知识回顾</h3>
-      <ul>
-        <li><strong>流水线</strong>：指令在时间上重叠执行，提升 IPC。忘了补：<a href="./computer-system-l04.html">L04 流水线笔记</a>。</li>
-        <li><strong>矩阵乘法</strong>：$C = A \times B$，$C_{ij} = \sum_k A_{ik} \cdot B_{kj}$。线性代数基础。</li>
-        <li><strong>数据复用</strong>：同一数据被多次使用的次数，决定算法对内存带宽的需求。</li>
-      </ul>
-    </div>
+<div class="ch fade-in">
+  <div class="ch-label">CH02 · 矩阵乘法的脉动映射</div>
+  <div class="ch-title">如何在 PE 阵列上计算 C = A × B</div>
+  <p>矩阵乘法是 AI 计算的核心操作。对于 $C_{ij} = \sum_k A_{ik} \times B_{kj}$，脉动阵列提供了一种极其高效的映射方式。</p>
+  <p><strong>Weight-Stationary（权重固定）</strong>：把权重矩阵 B 的元素预加载到 PE 阵列中，每个 PE 保存一个 $B_{kj}$。输入激活 A 从左侧流入，部分和 C 从下方流出。每个 PE 在每一拍执行一次乘加：$C_{local} += A_{in} \times B_{local}$，然后把 $A_{in}$ 传给右边，$C_{local}$ 传给下方。</p>
+  <p><strong>Output-Stationary（输出固定）</strong>：把输出矩阵 C 的元素固定在 PE 中累加。权重 B 从上流入，激活 A 从左流入，结果 C 驻留在 PE 中不动。</p>
+  <p><strong>Row-Stationary（行固定）</strong>：每行 PE 负责计算输出矩阵的一行。这是 TPU 采用的数据流模式，在权重复用和激活复用之间取得平衡。</p>
+
+  <div class="callout">
+    <strong>形象类比</strong>
+    <p>想象一个工厂流水线：工人（PE）排成矩阵，每个工人面前有一个零件（权重）。原材料（激活）从传送带左侧进入，每个工人拿原材料和自己的零件组装一下，把半成品传给右边，自己继续等下一个原材料。最终产品在右下角收集。没有仓管员来回搬货——数据自然流动。</p>
   </div>
 
-  <div class="ch fade-in">
-    <div class="ch-label">Part 1 · 背景问题</div>
-    <div class="ch-title">从冯·诺依曼瓶颈到空间计算</div>
-    <p>考虑一段简单的冯·诺依曼程序：</p>
-    <pre><code>v = a + b;
-w = b * 2;
-x = v - w;
-y = v + w;
-z = x * y;</code></pre>
-    <p>在传统 CPU 上，这些指令按顺序执行，每一步都需要访问寄存器或内存。当计算规模扩大到矩阵乘法这种包含数百万次乘加运算的场景时，==指令顺序的控制开销==和==存储器访问的延迟==成为两大瓶颈。课件指出一个关键对比：</p>
-    <p style="text-align:center"><strong>单处理器 + 内存</strong>：100 ns 完成一次运算 → <strong>5 MOPS</strong></p>
-    <p style="text-align:center"><strong>脉动阵列（3 个 PE 流水）</strong>：100 ns 完成三次运算 → <strong>15 MOPS</strong></p>
-    <p>脉动阵列的核心洞察是：<strong>用空间上的 PE 阵列替代时间上的指令流水，用数据流驱动计算，将内存访问压缩到阵列边界，内部只进行 PE 之间的近邻通信</strong>。这种设计同时具备以下六个特性：</p>
-    <ul>
-      <li><strong>同步性（Synchrony）</strong>：全局时钟驱动，所有 PE 同时动作</li>
-      <li><strong>空间局域性（Spatial Locality）</strong>：数据只在相邻 PE 间传递</li>
-      <li><strong>模块性（Modularity）</strong>：PE 结构统一，易于扩展</li>
-      <li><strong>时间局域性（Temporal Locality）</strong>：数据复用率高，减少访存</li>
-      <li><strong>规则性（Regularity）</strong>：阵列拓扑规则，控制逻辑极简</li>
-      <li><strong>可流水线性（Pipelinability）</strong>：数据流动天然构成流水线</li>
-      <li><strong>并行性（Parallel Computing）</strong>：多个 PE 同时计算</li>
-    </ul>
-    {{< docpage "pdf/computer-system/L05-Systolic-Array.pdf" page=4 title="脉动阵列基本特性" >}}
+  <p>一个 $N \times N$ 的脉动阵列可以在 $2N$ 个周期内完成 $N \times N$ 矩阵乘法（忽略数据加载时间），而传统 CPU 需要 $O(N^3)$ 次运算且受限于内存带宽。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH03 · 数据流模式对比</div>
+  <div class="ch-title">Weight-Stationary vs Output-Stationary vs Row-Stationary</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据流</th><th>权重移动</th><th>激活移动</th><th>部分和移动</th><th>最佳场景</th></tr></thead>
+      <tbody>
+        <tr><td>Weight-Stationary</td><td>不动</td><td>横向流动</td><td>纵向流动</td><td>权重小、激活大的推理</td></tr>
+        <tr><td>Output-Stationary</td><td>纵向流动</td><td>横向流动</td><td>不动</td><td>输出复用高的训练</td></tr>
+        <tr><td>Row-Stationary</td><td>部分复用</td><td>部分复用</td><td>部分流动</td><td>通用平衡，TPU 选择</td></tr>
+      </tbody>
+    </table>
   </div>
 
-  <div class="ch fade-in">
-    <div class="ch-label">Part 2 · 概念定义</div>
-    <div class="ch-title">脉动阵列：数据流驱动的 PE 阵列</div>
-    <p>脉动阵列（Systolic Array）由 H.T. Kung 于 1982 年正式提出。其命名源自生理学中的「心脏收缩（systole）」——血液被节律性地泵送通过血管系统，而非一次性全部抽取。类比到计算架构：</p>
-    <ul>
-      <li><strong>心脏</strong> → 外部内存/主控制器，提供数据「脉搏」</li>
-      <li><strong>血管</strong> → PE 之间的定向数据通路</li>
-      <li><strong>血液</strong> → 被传递的数据流（输入、权重、部分和）</li>
-      <li><strong>器官</strong> → 处理单元（PE, Processing Element），执行乘加运算</li>
-    </ul>
-    <p>每个 PE 通常只执行一种简单操作，最常见的是 <strong>乘加（Multiply-Accumulate, MAC）</strong>：</p>
-    <p style="text-align:center">$y_{out} = y_{in} + a \cdot x_{in}$</p>
-    <p>其中 $a$ 是存储在 PE 内部的系数（权重），$x_{in}$ 是从上游 PE 流入的数据，$y_{in}$ 是从左侧流入的部分和，$y_{out}$ 则是向右传递的更新后部分和。</p>
-    <div class="callout"><strong>核心特征</strong>：脉动阵列与流水线系统的区别在于——流水线只有结果单向流动；而脉动阵列可以是二维的，输入和结果可以沿不同方向、以不同速度流动，数据通路更加丰富。</div>
+  <p>选择哪种数据流，取决于工作负载的特征：
+  • <strong>推理（Inference）</strong>：权重固定，激活逐层流动 → Weight-Stationary 最优
+  • <strong>训练（Training）</strong>：权重和激活都在更新，需要双向数据流 → Output-Stationary 或更复杂的混合流
+  • <strong>卷积层</strong>：滤波器权重复用高，激活滑动窗口 → Row-Stationary 的变体</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH04 · Google TPU 案例</div>
+  <div class="ch-title">脉动阵列的商业化巅峰</div>
+  <p>2016 年 Google 发布 TPU v1，专门用于数据中心推理加速。其心脏是一个 65536 个 MAC（乘加单元）的 256×256 脉动阵列，采用 Row-Stationary 数据流。</p>
+  <p>TPU v1 的架构特点：</p>
+  <ul>
+    <li><strong>超大片上内存</strong>：24 MB 权重内存 + 累加器内存，避免 DRAM 访问</li>
+    <li><strong>确定性执行</strong>：没有缓存、没有分支预测、没有乱序执行——纯数据流，延迟完全可预测</li>
+    <li><strong>低精度计算</strong>：8-bit 整数乘加，能效远高于浮点</li>
+    <li><strong>PCIe 接口</strong>：作为协处理器挂在 CPU 旁边，CPU 负责调度，TPU 负责计算</li>
+  </ul>
+
+  <div class="callout">
+    <strong>为什么不用 GPU？</strong>
+    <p>GPU 的灵活性和通用性是其优势，但也是其功耗劣势。矩阵乘法在 GPU 上需要：显存加载 → L2 缓存 → SM 共享内存 → 寄存器 → Tensor Core → 写回。每一步都有控制和数据移动的能耗。</p>
+    <p>TPU 的脉动阵列把控制逻辑压缩到几乎为零，数据流动完全由硬件布线决定，没有指令解码、没有调度、没有缓存查找。在特定 workload（矩阵乘法为主）上，能效比 GPU 高 30-80 倍。</p>
   </div>
 
-  <div class="ch fade-in">
-    <div class="ch-label">Part 3 · 矩阵乘法映射</div>
-    <div class="ch-title">如何在脉动阵列上映射 GEMM</div>
-    <p>通用矩阵乘法（GEMM, General Matrix Multiply）$C = A \times B$ 是深度学习中最核心的算子。以 $3 \times 3$ 矩阵为例：</p>
-    <p style="text-align:center">$C_{ij} = \sum_{k=1}^{3} A_{ik} \cdot B_{kj}$</p>
-    <p>在脉动阵列上映射 GEMM 的关键思想是<strong>数据倾斜（skewing）</strong>：让矩阵 $A$ 的行和矩阵 $B$ 的列以不同的时间偏移流入阵列，使得在 PE $(i,j)$ 处，$A_{ik}$ 和 $B_{kj}$ 恰好在第 $k$ 个时钟周期相遇，完成一次乘加。</p>
-    <p>下图展示了 $3 \times 3$ 脉动阵列执行矩阵乘法的典型数据流。矩阵 $A$ 的元素从左向右流动，矩阵 $B$ 的元素从上向下流动，部分和 $C$ 在 PE 内部累加后沿对角线或同一方向传递：</p>
-    {{< mermaid >}}
-graph LR
-    subgraph "脉动阵列 GEMM 数据流"
-        direction TB
-        A1["A₁₁→A₁₂→A₁₃"] --> PE11["PE₁₁<br/>c+=a×b"]
-        A2["A₂₁→A₂₂→A₂₃"] --> PE21["PE₂₁<br/>c+=a×b"]
-        A3["A₃₁→A₃₂→A₃₃"] --> PE31["PE₃₁<br/>c+=a×b"]
-        B1["B₁₁<br/>↓<br/>B₂₁<br/>↓<br/>B₃₁"] --> PE11
-        B2["B₁₂<br/>↓<br/>B₂₂<br/>↓<br/>B₃₂"] --> PE12["PE₁₂<br/>c+=a×b"]
-        B3["B₁₃<br/>↓<br/>B₂₃<br/>↓<br/>B₃₃"] --> PE13["PE₁₃<br/>c+=a×b"]
-        PE11 --> PE12 --> PE13
-        PE21 --> PE22["PE₂₂<br/>c+=a×b"] --> PE23["PE₂₃<br/>c+=a×b"]
-        PE31 --> PE32["PE₃₂<br/>c+=a×b"] --> PE33["PE₃₃<br/>c+=a×b"]
-    end
-    {{< /mermaid >}}
-    <p>对于 $N \times N$ 的方阵乘法，脉动阵列需要 $3N - 2$ 个时钟周期完成全部计算，但此后每个周期都能输出一个结果元素，==吞吐率接近每周期 $N$ 个 MAC==。这比通用 CPU 的 $O(N^3)$ 时间复杂度高吞吐实现要高得多。</p>
-    {{< docpage "pdf/computer-system/L05-Systolic-Array.pdf" page=5 title="矩阵乘法映射示意" >}}
-  </div>
+  <p>TPU 的演进：v1（2016，推理专用）→ v2（2017，加入 bfloat16 训练）→ v3（2018，更大阵列）→ v4（2021，3D Torus 互连）→ v5（2023）。每一代都在阵列规模和互连带宽上扩张，核心设计哲学未变。</p>
+</div>
 
-  <div class="ch fade-in">
-    <div class="ch-label">Part 4 · 数据流模式</div>
-    <div class="ch-title">Weight-Stationary / Output-Stationary / Row-Stationary</div>
-    <p>根据「哪种数据在 PE 中保持不动」，脉动阵列有三种经典数据流模式。选择不同的数据流，本质上是在==权重复用、输入复用、部分和累加局部性==之间做权衡。</p>
+<div class="ch fade-in">
+  <div class="ch-label">CH05 · 脉动阵列的局限</div>
+  <div class="ch-title">专用性的代价</div>
+  <p>脉动阵列不是银弹。它的优势来自于 <strong>专用性</strong>，而专用性的代价是 <strong>灵活性丧失</strong>：</p>
+  <ul>
+    <li><strong>只擅长规则计算</strong>：矩阵乘法、卷积、FIR 滤波器等数据流规则的操作。对于不规则内存访问、复杂控制流、稀疏计算，脉动阵列表现很差。</li>
+    <li><strong>阵列尺寸固定</strong>：实际矩阵尺寸不一定匹配阵列尺寸，需要用「填充」或「分块」适配，带来额外开销。</li>
+    <li><strong>编程困难</strong>：数据流映射需要算法与硬件结构深度匹配，编译器自动化程度远不如 GPU。</li>
+    <li><strong>数据加载瓶颈</strong>：虽然片上计算高效，但权重和激活的加载仍受限于片外带宽。</li>
+  </ul>
+  <p>因此，现代 AI 加速器通常采用 <strong>混合架构</strong>：脉动阵列负责 GEMM（通用矩阵乘法）核心，可编程引擎处理不规则操作，DMA 负责数据搬运，形成「专用 + 灵活」的组合。</p>
+</div>
 
-    <h3>Weight-Stationary（WS，权重 stationary）</h3>
-    <p>权重 $w_i$ 预先加载到各 PE 中并保持不动，输入数据 $x_i$ 依次流入，部分和沿固定方向传递。这是 TPU v1 采用的数据流。</p>
-    <ul>
-      <li><strong>优点</strong>：权重读取次数最少（理想情况下每个权重只读一次），适合权重数量少于输入/输出的场景</li>
-      <li><strong>缺点</strong>：输入需要广播或流动到每个 PE，部分和需要沿长路径累加</li>
-    </ul>
+<div class="ch fade-in">
+  <div class="ch-label">CH06 · 课后思考</div>
+  <div class="ch-title">思考与延伸</div>
+  <ol>
+    <li>脉动阵列的「数据流动」与 GPU 的「线程网格」有什么本质区别？为什么脉动阵列的控制开销可以几乎为零？</li>
+    <li>Transformer 的大矩阵乘法（如 Attention 中的 Q×K^T）是否适合脉动阵列？有哪些具体挑战？</li>
+    <li>现代 AI 加速器（如 NVIDIA H100 的 Tensor Core、AMD MI300 的 XCD）是否在内部使用了类似脉动阵列的结构？搜索其微架构细节。</li>
+    <li>如果让你设计一个面向稀疏矩阵乘法的加速器，脉动阵列需要哪些改造？数据流模式会有何不同？</li>
+  </ol>
+</div>
 
-    <h3>Output-Stationary（OS，输出 stationary）</h3>
-    <p>部分和 $y_i$ 固定在 PE 中累加，输入 $x_i$ 和权重 $w_i$ 沿相反方向流入并在 PE 处相遇。</p>
-    <ul>
-      <li><strong>优点</strong>：部分和不需要在不同 PE 间传递，累加局部性最好</li>
-      <li><strong>缺点</strong>：输入和权重都需要流动，两种数据的移动能耗增加</li>
-    </ul>
-
-    <h3>Row-Stationary（RS，行 stationary）</h3>
-    <p>由陈翌健（Yu-Hsin Chen）等人在 Eyeriss 架构中提出，是 WS 和 OS 的折中。输入行和权重行被部分缓存，部分和在局部累加后输出。RS 针对卷积神经网络优化，在行方向上最大化数据复用。</p>
-
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>数据流</th><th>静止数据</th><th>流动数据</th><th>最佳适用</th><th>代表架构</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Weight-Stationary</td><td>权重 $W$</td><td>输入 $X$、部分和 $P$</td><td>权重较少、batch 大</td><td>Google TPU v1</td></tr>
-          <tr><td>Output-Stationary</td><td>部分和 $P$</td><td>输入 $X$、权重 $W$</td><td>输出通道少</td><td>早期 FPGA 加速器</td></tr>
-          <tr><td>Row-Stationary</td><td>行数据（混合）</td><td>部分缓存后流动</td><td>CNN 卷积层</td><td>Eyeriss</td></tr>
-        </tbody>
-      </table>
-    </div>
-    {{< docref "pdf/computer-system/L05-Systolic-Array.pdf" page=6 title="数据流模式对比" >}}
-  </div>
-
-  <div class="ch fade-in">
-    <div class="ch-label">Part 5 · 案例分析</div>
-    <div class="ch-title">Google TPU v1：脉动阵列的工程巅峰</div>
-    <p>Google 于 2016 年发布的 TPU v1 是脉动阵列架构在工业界最成功的应用。其核心是一个 <strong>$256 \times 256$ 的二维脉动阵列</strong>，包含 65,536 个乘加单元（ALU），运行频率 700 MHz。</p>
-    <p>TPU v1 的设计思路非常纯粹：</p>
-    <ol>
-      <li><strong>专注 GEMM</strong>：深度学习推理中，90% 以上的计算量来自矩阵乘法。TPU 不做通用计算，只做 GEMM 和必要的激活函数。</li>
-      <li><strong>Weight-Stationary</strong>：权重通过片外 DRAM 加载到 PE 的本地存储，输入激活值从左流入、从上流入，部分和在阵列内部累加。</li>
-      <li><strong>极大算术强度</strong>：$256 \times 256$ 矩阵乘法的算术强度约为 $2 \times 256 / 3 \approx 170$，意味着每读取 1 个数据可以做 170 次运算，完全覆盖内存带宽瓶颈。</li>
-    </ol>
-    <p>TPU v1 的峰值算力为：</p>
-    <p style="text-align:center">$65536 \text{ MACs} \times 700 \text{ MHz} \times 2 \approx 92 \text{ TOPS}$</p>
-    <p>在当年（2016），这一数字远超同代 GPU（NVIDIA K80 约为 8.7 TFLOPS）。更重要的是，TPU v1 的能效（每瓦特算力）比 K80 高出约 <strong>30 倍</strong>，这主要归功于脉动阵列对内存访问的极致压缩。</p>
-    <div class="callout"><strong>关键设计取舍</strong>：TPU v1 没有缓存层次结构（L1/L2 Cache），而是使用 24 MiB 的片上累加器存储和 4 MiB 的 32-bit 激活存储。控制逻辑极简——没有分支预测、没有乱序执行、没有多线程。这种「反通用」的设计正是脉动阵列高吞吐、高能效的来源。</div>
-    {{< mermaid >}}
-graph TB
-    subgraph "TPU v1 架构简图"
-        HOST["CPU Host<br/>通过 PCIe 发送指令"]
-        INSTR["指令缓冲区"]
-        MXU["MXU<br/>256×256 脉动阵列"]
-        ACC["24 MiB 累加器<br/>存储部分和"]
-        ACT["4 MiB 激活存储"]
-        DRAM["片外 DRAM<br/>权重 + 数据"]
-        HOST --> INSTR
-        INSTR --> MXU
-        DRAM -->|权重预加载| MXU
-        ACT -->|输入激活| MXU
-        MXU -->|部分和| ACC
-        ACC -->|最终结果| ACT
-    end
-    {{< /mermaid >}}
-    <p>TPU v1 的 Matrix Multiply Unit（MXU）以脉动方式工作：每个时钟周期，256 个 8-bit 输入沿水平方向流入，256 个 8-bit 权重在垂直方向预置，每个 PE 执行一次 8-bit 乘加，结果沿特定方向传递。整个阵列每个周期产出 256 个 16-bit 部分和。</p>
-  </div>
-
-  <div class="ch fade-in">
-    <div class="ch-label">Part 6 · 优缺点分析</div>
-    <div class="ch-title">脉动阵列的「专」与「窄」</div>
-    <p>脉动阵列不是银弹。它的优势来自对特定计算模式的极致特化，代价则是灵活性的大幅丧失。</p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>维度</th><th>优势</th><th>劣势</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>吞吐率</td><td>极高，PE 利用率接近 100%</td><td>只能处理规则数据流，不规则图计算无法映射</td></tr>
-          <tr><td>控制开销</td><td>极简，全局时钟同步，无需复杂调度</td><td>无法动态调整，一个 PE 阻塞则全阵列阻塞</td></tr>
-          <tr><td>能耗效率</td><td>数据复用极高，访存能耗低</td><td>数据预编排（data staging）开销大</td></tr>
-          <tr><td>可扩展性</td><td>PE 规则阵列，易于物理实现</td><td>阵列尺寸固定，小矩阵会浪费大量 PE</td></tr>
-          <tr><td>编程模型</td><td>编译器确定数据流即可</td><td>需要专门的编译器/调度器做数据映射</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p>一个常被忽略的问题是<strong>数据编排（Data Staging）</strong>：虽然脉动阵列内部的 PE 间通信能耗低，但将矩阵数据从主存加载到阵列边界、并按照正确的时序和倾斜角度送入阵列，需要复杂的 DMA 控制器和片上缓冲区。如果数据编排跟不上，脉动阵列就会「挨饿」——PE 空转等待数据。</p>
-  </div>
-
-  <div class="ch fade-in">
-    <div class="ch-label">Part 7 · 现代应用</div>
-    <div class="ch-title">从 TPU 到 AI 推理加速器的演进</div>
-    <p>脉动阵列的思想深刻影响了后续几乎所有的 AI 加速器设计：</p>
-    <ul>
-      <li><strong>Google TPU v2/v3/v4/v5</strong>：脉动阵列规模不断扩大（TPU v4 达到 $128 \times 128 \times 2$），引入 BF16、稀疏计算、三维环面互联（Torus Network）。</li>
-      <li><strong>NVIDIA Tensor Core</strong>：虽然 GPU 仍以 SIMT 为主，但 Tensor Core 本质上是一个小型的脉动阵列，专门加速 $4 \times 4$ 和 $8 \times 8$ 矩阵乘法。</li>
-      <li><strong>Intel Habana Gaudi</strong>：使用可重构脉动阵列，支持训练和推理双模式。</li>
-      <li><strong>边缘端 NPU</strong>：华为达芬奇架构、苹果 Neural Engine、高通 Hexagon NPU，核心计算单元均借鉴了脉动阵列的数据流思想，只是规模更小、支持低精度（INT4/INT8）。</li>
-    </ul>
-    <p>现代脉动阵列设计的一个趋势是<strong>可重构性</strong>：通过软件配置阵列的数据流方向、PE 连接方式和本地存储分配，使同一硬件可以在 WS/OS/RS 之间切换，适配卷积、Transformer Attention、矩阵乘法等多种算子。</p>
-    {{< docref "pdf/computer-system/L05-Systolic-Array.pdf" page=7 title="脉动阵列应用场景" >}}
-  </div>
-
-  <div class="ch fade-in">
-    <div class="ch-label">课后思考</div>
-    <div class="ch-title">五个值得深挖的问题</div>
-    <div class="info-box">
-      <ol>
-        <li><strong>维度匹配</strong>：当矩阵尺寸远大于脉动阵列物理尺寸时，如何分块（tiling）映射？分块后局部性如何保证？</li>
-        <li><strong>数据编排成本</strong>：TPU v1 每个周期需要多少带宽将权重和输入送入阵列？如果 batch size = 1，脉动阵列是否仍然高效？</li>
-        <li><strong>精度影响</strong>：TPU v1 使用 8-bit 整数乘加和 16-bit 累加。如果 Transformer 需要更高精度（FP16/BF16），脉动阵列的能效优势会如何变化？</li>
-        <li><strong>稀疏性</strong>：现代神经网络（如 Transformer）中存在大量稀疏权重或激活。稀疏性如何破坏脉动阵列的规则数据流？当前有哪些硬件方案应对？</li>
-        <li><strong>与 GPU 的对比</strong>：为什么 TPU 选择脉动阵列而不是 GPU 的 SIMT 架构？在什么场景下 GPU 反而更优？</li>
-      </ol>
-    </div>
-  </div>
-
-  <div class="info-box">
-    <h3>复习速查</h3>
-    <ul>
-      <li><strong>脉动阵列六特性</strong>：同步性、空间局域性、模块性、时间局域性、规则性、可流水线性、并行性</li>
-      <li><strong>三种数据流</strong>：WS（权重不动）、OS（部分和不动）、RS（行混合）</li>
-      <li><strong>TPU v1 核心参数</strong>：$256 \times 256$ 阵列、65,536 MAC、700 MHz、~92 TOPS、WS 数据流</li>
-      <li><strong>关键权衡</strong>：专精 GEMM ↔ 丧失通用性；高吞吐 ↔ 数据编排复杂；低控制开销 ↔ 无法动态调度</li>
-    </ul>
-  </div>
-
-  <div class="sources">
-    <h3>参考来源</h3>
-    <ul>
-      <li>课件：{{< docref "pdf/computer-system/L05-Systolic-Array.pdf" page=1 title="L05 Systolic Array" >}}</li>
-      <li>H.T. Kung, <em>Why Systolic Architectures?</em>, IEEE Computer, 1982</li>
-      <li>Norman P. Jouppi et al., <em>In-Datacenter Performance Analysis of a Tensor Processing Unit</em>, ISCA 2017</li>
-      <li>Yu-Hsin Chen et al., <em>Eyeriss: A Spatial Architecture for Energy-Efficient Dataflow for Convolutional Neural Networks</em>, ISCA 2016</li>
-      <li><a href="https://telesens.co/2018/07/30/systolic-architectures/" target="_blank">Understanding Matrix Multiplication on a Weight-Stationary Systolic Array</a></li>
-      <li><a href="https://cloud.google.com/blog/products/ai-machine-learning/an-in-depth-look-at-googles-first-tensor-processing-unit-tpu" target="_blank">Google Cloud Blog: An in-depth look at Google's first TPU</a></li>
-    </ul>
-  </div>
 </div>
