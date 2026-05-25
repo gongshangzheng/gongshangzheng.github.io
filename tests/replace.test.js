@@ -130,6 +130,22 @@ section('docpages range shortcode', () => {
   assert((out.match(/doc-page-canvas/g) || []).length === 3, 'docpages count wrong, got: ' + out);
 });
 
+section('functionplot shortcode emits data marker only', () => {
+  const out = processShortcodes('{{< functionplot title="sinc" x="-10,10" y="-0.5,1.2" fn="sin(pi*x)/(pi*x)" >}}');
+  assert(out.includes('data-functionplot'), 'functionplot marker missing, got: ' + out);
+  assert(out.includes('data-functionplot-config='), 'functionplot config missing, got: ' + out);
+  assert(out.includes('functionplot-target'), 'functionplot target missing, got: ' + out);
+  assert(!out.includes('functionplot-runtime.js'), 'shortcode must not inject JS assets directly');
+});
+
+section('jsxgraph shortcode emits data marker only', () => {
+  const out = processShortcodes('{{< jsxgraph title="demo" height=300 >}}const board = JXG.JSXGraph.initBoard(el,{axis:true});{{< /jsxgraph >}}');
+  assert(out.includes('data-jsxgraph'), 'jsxgraph marker missing, got: ' + out);
+  assert(out.includes('data-jsxgraph-config='), 'jsxgraph config missing, got: ' + out);
+  assert(out.includes('jsxgraph-target'), 'jsxgraph target missing, got: ' + out);
+  assert(!out.includes('jsxgraph-runtime.js'), 'shortcode must not inject JS assets directly');
+});
+
 // ============================================================
 // processBody
 // ============================================================
