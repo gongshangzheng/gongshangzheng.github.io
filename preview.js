@@ -23,6 +23,13 @@ const MIME = {
   '.mp3': 'audio/mpeg',
   '.mp4': 'video/mp4',
   '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.webp': 'image/webp',
+  '.webm': 'video/webm',
+  '.xml': 'application/xml',
 };
 
 function serve(res, filePath, status = 200) {
