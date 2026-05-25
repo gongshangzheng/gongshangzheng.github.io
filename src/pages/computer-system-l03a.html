@@ -1,0 +1,123 @@
+---
+title: "现代处理器：ILP 与优化 · L03a"
+description: "指令级并行、流水线、数据/控制/结构冒险、乱序执行、编译器优化。西安交通大学课程笔记。"
+created_at: 2026-05-25T12:00:00
+updated_at: 2026-05-25T12:00:00
+tags: ["ILP", "处理器", "课程笔记", "超标量", "乱序执行"]
+categories: ["课程"]
+subcategory: "计算机系统"
+mathjax: true
+hero_title: "现代处理器：ILP 与优化"
+hero_sub: "嵌入式智能系统与新型计算架构 · L03a"
+hero_tagline: "一段串行代码，CPU 如何偷偷并行执行其中的独立指令？"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">CH01 · 处理器多样性</div>
+  <div class="ch-title">为什么需要这么多种处理器？</div>
+  <p>打开任何一个现代电子设备，你会看到 CPU、GPU、NPU、DSP、FPGA 等各种处理器并存。它们为什么不能被一种处理器统一替代？</p>
+  <p>根本原因在于：<strong>不同的程序有不同的并行模式</strong>。</p>
+  <p>CPU 面向的是「顺序代码」——少量线程、复杂控制流、频繁分支。GPU 面向的是「尴尬并行」——海量独立计算、规则数据访问。ASIC 面向的是固定算法——把电路硬化以获得极致能效。FPGA 则介于通用与专用之间，用可重构逻辑适配特定工作负载。</p>
+
+  <div class="callout">
+    <strong>核心洞察</strong>
+    <p>加速程序的本质是找到独立工作并并行执行。关键问题只有两个：并行在哪里？谁来发现并行？不同处理器给出了截然不同的答案。</p>
+  </div>
+
+  <p>CPU 的选择是<strong>隐式、细粒度</strong>的指令级并行（ILP）：由硬件动态调度指令，开发者写串行代码即可。GPU 的选择是<strong>显式、粗粒度</strong>的线程/数据级并行（TLP/DLP）：由软件显式表达并行，硬件保持简单。</p>
+  <p>这种设计哲学的分野，直接体现在芯片面积分配上。Pentium 4（2002）的芯片照片上，真正执行指令的面积只占了很小一部分——大部分面积被缓存和调度逻辑占据。而 AMD Fiji GPU（2015）的芯片上，执行单元密密麻麻铺满整个芯片，控制逻辑被压缩到最小。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH02 · 流水线基础</div>
+  <div class="ch-title">经典五级流水线与三种冒险</div>
+  <p>流水线是现代处理器的基石。一条指令的执行被拆分为五个阶段：</p>
+  <ol>
+    <li><strong>IF</strong>（取指）：从指令缓存中读取下一条指令</li>
+    <li><strong>ID</strong>（译码）：解析指令，读取寄存器</li>
+    <li><strong>EX</strong>（执行）：ALU 运算或地址计算</li>
+    <li><strong>MEM</strong>（访存）：读取或写入数据缓存</li>
+    <li><strong>WB</strong>（写回）：将结果写回寄存器堆</li>
+  </ol>
+  <p>理想情况下，每周期完成一条指令，CPI（每指令周期数）= 1。但现实中，流水线会遭遇<strong>冒险（Hazard）</strong>。</p>
+
+  <div class="callout">
+    <strong>三种流水线冒险</strong>
+    <p><strong>数据冒险（Data Hazard）</strong>：后续指令需要用到前面指令尚未写回的结果。例如 <code>ADD R1, R2, R3</code> 之后紧跟 <code>MUL R4, R1, R5</code>，MUL 需要等待 ADD 写回。</p>
+    <p><strong>控制冒险（Control Hazard）</strong>：分支指令（if/while/for）改变程序计数器，后续指令是否执行在分支结果出来前无法确定。</p>
+    <p><strong>结构冒险（Structure Hazard）</strong>：多条指令同时需要同一个硬件资源，例如只有一个 ALU 但两条指令都想用。</p>
+  </div>
+
+  <p>解决数据冒险的经典方法是<strong>旁路/前递（Bypass/Forwarding）</strong>：EX 阶段的结果不等到 WB 阶段，直接通过旁路网络传给需要它的后续指令。这样可以把气泡（bubble）从 3 个周期压缩到 1 个周期。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH03 · 乱序执行</div>
+  <div class="ch-title">突破数据依赖的 Tomasulo 思想</div>
+  <p>旁路解决了简单数据冒险，但当指令之间存在复杂依赖链时，流水线仍然会频繁停顿。<strong>乱序执行（Out-of-Order Execution, OoO）</strong>的核心思想是：只要不改变程序的语义，指令可以按任意顺序执行。</p>
+  <p>Tomasulo 算法是现代 OoO 处理器的理论框架，其核心机制包括：</p>
+
+  <p><strong>寄存器重命名（Register Renaming）</strong>：用物理寄存器堆替代架构寄存器堆，消除<strong>名字依赖</strong>（WAW 和 WAR）。例如两条指令都写 R1，重命名后映射到不同的物理寄存器，就可以并行执行。</p>
+
+  <p><strong>保留站（Reservation Station）</strong>：指令发射后进入保留站等待操作数就绪。每个功能单元（ALU、Load/Store 等）有自己的保留站。当操作数通过旁路网络到达时，保留站中的指令就可以被调度执行。</p>
+
+  <p><strong>重排序缓冲（ROB, Re-Order Buffer）</strong>：乱序执行的指令按程序顺序在 ROB 中排队，结果先写入 ROB 而不直接提交到寄存器堆。只有当指令成为 ROB 头部且所有之前指令都已正确执行时，才按序提交（Commit），保证精确异常。</p>
+
+  <div class="callout">
+    <strong>形象类比</strong>
+    <p>想象一个餐厅厨房：厨师（执行单元）不按客人下单顺序做菜，而是看哪道菜的食材先备齐就先做哪道。但上菜时（Commit）必须按下单顺序。保留站就是「等料区」，ROB 就是「出菜顺序单」。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH04 · 分支预测</div>
+  <div class="ch-title">猜测未来，赌对了就赚</div>
+  <p>控制冒险是流水线最大的敌人。分支指令在 ID 阶段才能确定是否跳转，但此时后续指令已经进入流水线。如果猜错了，需要冲刷（Flush）流水线，损失多个周期。</p>
+  <p><strong>静态分支预测</strong>最简单：总是预测不跳转，或总是预测跳转。准确率约 50-70%，聊胜于无。</p>
+  <p><strong>动态分支预测</strong>是高性能处理器的标配：</p>
+  <ul>
+    <li><strong>1-bit 饱和计数器</strong>：记录分支上次的走向，下次预测相同。缺点是两次连续猜错后才会翻转。</li>
+    <li><strong>2-bit 饱和计数器</strong>：用四个状态（强不跳/弱不跳/弱跳/强跳）增加惯性，需要两次连续相反结果才会改变预测，准确率可达 85-95%。</li>
+    <li><strong>两级自适应预测器（GShare）</strong>：用全局分支历史寄存器（GHR）与分支地址异或索引模式历史表（PHT），可以捕捉分支之间的相关性。</li>
+  </ul>
+  <p><strong>分支目标缓冲（BTB）</strong>缓存分支指令的目标地址，避免每次跳转都重新计算。现代处理器的 BTB 可以缓存数千条分支。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH05 · 编译器优化</div>
+  <div class="ch-title">在软件层面挖掘 ILP</div>
+  <p>硬件可以动态发现并行，但编译器在静态层面就有更多信息。GCC/Clang 的优化等级从 -O0（无优化）到 -O3（激进优化），每一步都在尝试挖掘更多 ILP。</p>
+
+  <p><strong>循环展开（Loop Unrolling）</strong>：把循环体复制多份，减少循环控制开销，同时暴露更多指令间的并行。例如：</p>
+  <pre><code>// 原始循环
+for (i = 0; i &lt; 100; i++)
+    sum += a[i];
+
+// 展开 4 倍
+for (i = 0; i &lt; 100; i += 4)
+    sum += a[i] + a[i+1] + a[i+2] + a[i+3];</code></pre>
+
+  <p><strong>软件流水线（Software Pipelining）</strong>：与硬件流水线类似，在软件层面重叠不同循环迭代的执行。适用于循环体较小、迭代数多的场景，常见于 DSP 编译器。</p>
+
+  <p><strong>指令调度（List Scheduling）</strong>：编译器根据数据依赖图，在满足依赖约束的前提下，尽可能早地调度指令，减少流水线气泡。</p>
+
+  <div class="callout">
+    <strong>Throughput Bound vs Latency Bound</strong>
+    <p>课件中的核心案例：一段代码的性能瓶颈可能是<strong>吞吐率限制</strong>（功能单元数量不足）或<strong>延迟限制</strong>（关键路径上的依赖链太长）。识别瓶颈类型是优化的第一步——吞吐率问题加宽并行度，延迟问题打破依赖链。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH06 · 课后思考</div>
+  <div class="ch-title">思考与延伸</div>
+  <ol>
+    <li>为什么现代 CPU 的乱序执行窗口（ROB 大小）通常在 100-300 条指令之间？窗口越大越好吗？</li>
+    <li>分支预测准确率 95% 听起来很高，但在一个 20 级流水线的处理器上，一次误判的代价是多少？如何量化分支预测对性能的影响？</li>
+    <li>编译器优化 -O3 有时反而比 -O2 慢，甚至产生错误结果。为什么？什么情况下应该避免激进优化？</li>
+    <li>Apple 的 M 系列芯片采用了巨大的乱序执行窗口和宽发射设计，但功耗控制得很好。它是如何在性能与能效之间取得平衡的？</li>
+  </ol>
+</div>
+
+</div>

@@ -1,0 +1,254 @@
+---
+title: "存储层级与编程 · L04"
+description: "存储层级、局部性原理、缓存映射、缓存友好编程。课程笔记。"
+date: 2026-05-25T14:00:00
+created_at: 2026-05-25T14:00:00
+updated_at: 2026-05-25T14:00:00
+tags: ["存储层级", "缓存", "课程笔记", "局部性", "性能优化"]
+categories: ["课程"]
+subcategory: "计算机系统"
+mathjax: true
+hero_title: "存储层级与编程"
+hero_sub: "嵌入式智能系统与新型计算架构 · L04"
+hero_tagline: "为什么遍历二维数组时，行优先比列优先快 10 倍？"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">核心概念</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">代码示例</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">缓存映射</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label">课后思考</span></div>
+</div>
+
+<div class="wrap">
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 0 · 本节定位</div>
+    <div class="ch-title">从指令到数据：性能瓶颈在内存</div>
+    <p>前一讲（L03）讨论了指令集架构与汇编编程，关注的是「CPU 如何执行指令」。本讲将视角转向「CPU 从哪里取数据」，这也是现代计算机系统中决定程序性能的最关键因素之一。</p>
+    <p>处理器执行速度远快于主存访问速度，二者之间存在数量级的差距。若每次运算都要等待 DRAM 返回数据，CPU 将陷入漫长的停滞（Memory Stall）。存储层级（Memory Hierarchy）的设计，正是为了用局部性原理弥合这一鸿沟。理解它，是写出高性能代码的第一步。</p>
+
+    <div class="info-box">
+      <h3>前置知识回顾</h3>
+      <ul>
+        <li><strong>CPU 流水线与指令周期</strong>：了解处理器如何在每个时钟周期推进指令执行。忘记请回顾 L02。</li>
+        <li><strong>寄存器与寻址</strong>：RISC-V 的寄存器文件结构、Load/Store 指令。忘记请回顾 L03。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 1 · 存储层级</div>
+    <div class="ch-title">金字塔：速度、容量与成本的三角权衡</div>
+    <p>现代计算机没有「一种」存储器，而是一个由多级存储构成的层级结构。越靠近 CPU，速度越快、容量越小、单位成本越高；越远离 CPU，速度越慢、容量越大、单位成本越低。</p>
+
+    <p>典型层级自顶向下为：</p>
+    <ul>
+      <li><strong>寄存器（Register）</strong>：位于 CPU 内部，纳秒级访问，容量约 32~512 个。</li>
+      <li><strong>L1 Cache</strong>：SRAM 实现，通常分指令缓存与数据缓存，延迟 1~4 个时钟周期。</li>
+      <li><strong>L2 Cache</strong>：SRAM 实现，容量 256KB~1MB，延迟 10~20 个时钟周期。</li>
+      <li><strong>L3 Cache</strong>：多核共享，容量数 MB 到数十 MB。</li>
+      <li><strong>DRAM（主存）</strong>：电容存储，需周期性刷新，访问延迟 100~300 个时钟周期。</li>
+      <li><strong>SSD / 磁盘</strong>：非易失性存储，毫秒级访问，容量大、成本低。</li>
+    </ul>
+
+    <p>存储层级的核心思想是：把处理器近期最可能用到的数据，放在最快、最小的存储器中。这样，程序员获得的体验是「拥有 cheapest technology 的容量，同时享受 fastest technology 的速度」。</p>
+
+    {{< docpage "pdf/computer-system/L04-Memory-Hierarchy.pdf" page=6 title="存储层级金字塔" >}}
+
+    <p>从硬件实现角度看：</p>
+    <ul>
+      <li><strong>SRAM（Static RAM）</strong>：用晶体管存储数据，持续供电即可保持，无需刷新，速度快、功耗高、面积大，适合做缓存。</li>
+      <li><strong>DRAM（Dynamic RAM）</strong>：用电容存储数据，电容会漏电，需定期刷新，速度慢、成本低、密度高，适合做主存。</li>
+      <li><strong>磁盘</strong>：机械旋转 + 磁头寻道，访问时间由寻道时间、旋转延迟和传输时间三部分组成，$T_{access} = T_{seek} + T_{rotation} + T_{transfer}$。</li>
+    </ul>
+
+    {{< docpage "pdf/computer-system/L04-Memory-Hierarchy.pdf" page=9 title="DRAM 存储单元结构" >}}
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 2 · 局部性原理</div>
+    <div class="ch-title">时间局部性与空间局部性</div>
+    <p>存储层级之所以有效，是因为程序访问内存的行为并非随机，而是呈现出强烈的规律性。这种规律性被称为<strong>局部性原理（Principle of Locality）</strong>，分为两种：</p>
+
+    <ul>
+      <li><strong>时间局部性（Temporal Locality）</strong>：如果一个数据项被访问，那么它在不久的将来很可能再次被访问。例如循环中的计数器变量、函数中的局部变量。</li>
+      <li><strong>空间局部性（Spatial Locality）</strong>：如果一个数据项被访问，那么与它相邻的数据项在不久的将来也很可能被访问。例如顺序遍历数组、顺序执行指令。</li>
+    </ul>
+
+    {{< docpage "pdf/computer-system/L04-Memory-Hierarchy.pdf" page=15 title="局部性原理" >}}
+
+    <p>缓存正是利用这两种局部性工作的：当处理器访问某个地址时，缓存会把该地址所在的<strong>一整块（Cache Block/Line）</strong>数据都取进来。这样，后续的相邻访问会命中缓存（空间局部性），而短期内重复访问同一位置也会命中缓存（时间局部性）。</p>
+
+    <div class="callout"><strong>直观理解</strong>：时间局部性就像你刚看完的书放在手边，随时拿起来再看；空间局部性就像你读完一页后，下一页很可能也要读，所以把整章一起取过来。</div>
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 3 · 缓存映射</div>
+    <div class="ch-title">直接映射、组相联与全相联</div>
+    <p>当处理器发出内存地址请求时，缓存需要快速判断「该数据是否在缓存中」。这要求主存块到缓存块之间存在确定的映射规则。主流的映射策略有三种：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>映射方式</th><th>规则</th><th>优点</th><th>缺点</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>直接映射（Direct Mapped）</strong></td>
+            <td>每个主存块只能映射到唯一的缓存块</td>
+            <td>查找极快，无需替换策略</td>
+            <td>易发生冲突，缓存利用率低</td>
+          </tr>
+          <tr>
+            <td><strong>全相联（Fully Associative）</strong></td>
+            <td>主存块可放入任意缓存块</td>
+            <td>冲突最少，利用率高</td>
+            <td>查找慢，需要并行比较所有标签</td>
+          </tr>
+          <tr>
+            <td><strong>组相联（Set Associative）</strong></td>
+            <td>主存块映射到某一组，组内可放任意位置</td>
+            <td>折中方案，工程最常用</td>
+            <td>复杂度介于前两者之间</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>以组相联为例，一个 $N$-way 组相联缓存把缓存分成若干组（Set），每组包含 $N$ 个块（Way）。地址被划分为三部分：标签（Tag）、组索引（Set Index）和块内偏移（Block Offset）。组索引决定进入哪一组，组内 $N$ 个块并行比较标签，判断是否命中。</p>
+
+    <p>现代 CPU 的 L1 Cache 通常采用 4-way 或 8-way 组相联，L2/L3 则采用更高路数，在查找速度与冲突避免之间取得平衡。</p>
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 4 · 替换策略</div>
+    <div class="ch-title">当缓存满了，替换哪一块？</div>
+    <p>在组相联和全相联缓存中，当一组已满而又需要载入新块时，必须选择一个「受害者」换出。常见替换策略有：</p>
+
+    <ul>
+      <li><strong>LRU（Least Recently Used）</strong>：替换最久未被访问的块。最贴合局部性原理，但硬件实现需要记录访问时间戳，路数高时开销大。</li>
+      <li><strong>FIFO（First In First Out）</strong>：替换最早进入缓存的块。实现简单（只需一个轮询指针），但可能把频繁使用的块换出。</li>
+      <li><strong>随机替换（Random）</strong>：随机选择一个块替换。 surprisingly，在高路组相联中性能与 LRU 接近，且硬件实现最简单。</li>
+    </ul>
+
+    <p>实际处理器中，LRU 的精确实现往往被近似化（Pseudo-LRU），以节省硬件资源。</p>
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 5 · 缓存友好编程</div>
+    <div class="ch-title">让代码与硬件同频共振</div>
+    <p>理解缓存的工作原理后，程序员可以主动调整代码结构，使其更符合局部性原理，从而显著提升性能。</p>
+
+    <h3>5.1 行优先 vs 列优先遍历</h3>
+    <p>C 语言采用行优先（Row-Major）存储二维数组，即同一行的元素在内存中连续存放。若按行遍历，访问模式是连续的，充分利用空间局部性，每次缓存行载入后可命中多个元素；若按列遍历，访问模式是跳跃的，每个元素都可能触发一次新的缓存行载入。</p>
+
+    <pre><code class="language-c">// 缓存友好：行优先遍历
+for (int i = 0; i &lt; N; i++) {
+    for (int j = 0; j &lt; N; j++) {
+        sum += A[i][j];  // 连续访问
+    }
+}
+
+// 缓存不友好：列优先遍历
+for (int j = 0; j &lt; N; j++) {
+    for (int i = 0; i &lt; N; i++) {
+        sum += A[i][j];  // 跳跃访问，步长为 N*sizeof(int)
+    }
+}</code></pre>
+
+    <p>当数组很大时，列优先遍历的缓存失效率远高于行优先，性能差距可达数倍甚至十倍以上。这就是为什么本讲开篇问题的答案：行优先比列优先快，根本原因在于对空间局部性的利用。</p>
+
+    <h3>5.2 矩阵乘法的分块优化（Tiling）</h3>
+    <p>标准的三重循环矩阵乘法中，对矩阵 B 的访问是列优先的（不连续），缓存效率低下。通过<strong>分块（Tiling/Blocking）</strong>，可以把大矩阵拆成能 fit in L1/L2 Cache 的小块，使得内层循环中对小块的访问全部命中缓存。</p>
+
+    <pre><code class="language-c">// 分块矩阵乘法（Tiled Matrix Multiplication）
+#define BLOCK 64
+
+for (int ii = 0; ii &lt; N; ii += BLOCK) {
+    for (int jj = 0; jj &lt; N; jj += BLOCK) {
+        for (int kk = 0; kk &lt; N; kk += BLOCK) {
+            // 对 BLOCK x BLOCK 的子块做乘法
+            for (int i = ii; i &lt; ii + BLOCK &amp;&amp; i &lt; N; i++) {
+                for (int j = jj; j &lt; jj + BLOCK &amp;&amp; j &lt; N; j++) {
+                    for (int k = kk; k &lt; kk + BLOCK &amp;&amp; k &lt; N; k++) {
+                        C[i][j] += A[i][k] * B[k][j];
+                    }
+                }
+            }
+        }
+    }
+}</code></pre>
+
+    <p>分块后，A、B、C 的子块被「钉」在缓存中反复复用，大幅减少了对主存的访问次数。在现代 CPU 上，分块优化通常能让矩阵乘法性能提升数倍。BLOCK 大小的选择取决于具体 CPU 的 L1 Cache 容量和缓存行大小（通常为 64 字节）。</p>
+
+    <h3>5.3 伪共享（False Sharing）</h3>
+    <p>在多核处理器中，每个核心拥有独立的 L1 Cache，但多个核心共享 L3 Cache 和主存。缓存一致性协议（如 MESI）以<strong>缓存行（Cache Line，通常 64 字节）</strong>为单位维护一致性。</p>
+
+    <p>如果两个线程分别修改位于同一缓存行上的不同变量，即使它们逻辑上互不相干，也会导致该缓存行在两个核心之间频繁来回传递（Invalidate → Reload），产生大量不必要的总线流量。这种现象称为<strong>伪共享（False Sharing）</strong>。</p>
+
+    <pre><code class="language-c">struct padded_counter {
+    long count;
+    char padding[64 - sizeof(long)];  // 填充至 64 字节
+};
+
+struct padded_counter counters[4];  // 每个线程一个，保证在不同缓存行</code></pre>
+
+    <p>解决伪共享的经典方法是对齐并填充数据结构，使每个线程独享的数据落在不同的缓存行上。在高并发计数器、任务队列等场景中，消除伪共享往往能带来数倍的性能提升。</p>
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 6 · 存储墙问题</div>
+    <div class="ch-title">处理器越快，内存越跟不上</div>
+    <p>过去数十年，CPU 性能遵循摩尔定律指数增长，而 DRAM 访问延迟的改进却十分缓慢。二者之间的速度鸿沟越来越大，形成了所谓的<strong>存储墙（Memory Wall）</strong>。</p>
+
+    {{< docpage "pdf/computer-system/L04-Memory-Hierarchy.pdf" page=12 title="CPU-内存性能鸿沟" >}}
+
+    <p>图中可见，CPU 周期时间（以及有效周期时间，考虑多核并行后）持续下降，而 DRAM 访问时间在 1990 年代后基本停滞在 100ns 量级。这意味着如今一次主存访问可能需要等待数百个 CPU 周期。</p>
+
+    <p>存储墙的应对策略是多维度的：</p>
+    <ul>
+      <li><strong>硬件层面</strong>：增加缓存级数与容量、预取（Prefetching）、多通道内存、高带宽内存（HBM）。</li>
+      <li><strong>软件层面</strong>：缓存友好编程、分块、循环重排、数据对齐。</li>
+      <li><strong>架构层面</strong>：近存计算（Processing-in-Memory）、存内计算（Compute-in-Memory），把计算单元搬到数据旁边，而非把数据搬到计算单元旁边。</li>
+    </ul>
+
+    <p>在嵌入式智能系统与新型计算架构课程中，L06 及后续章节将深入探讨近存计算、存算一体等前沿方向，它们正是为了从根本上打破存储墙而提出的架构创新。</p>
+  </div>
+
+  <div class="ch fade-in">
+    <div class="ch-label">Part 7 · 课后思考</div>
+    <div class="ch-title">从理解到应用</div>
+    <ol>
+      <li>若 CPU 的 L1 Cache 为 32KB、8-way 组相联、缓存行 64 字节，请问它有多少个组（Set）？每个组有多少个块（Way）？地址如何划分？</li>
+      <li>在链表遍历与数组遍历中，哪一种数据结构的缓存局部性更好？为什么链表遍缓存失效率通常较高？</li>
+      <li>分块矩阵乘法中的最优 BLOCK 大小取决于哪些因素？如果 BLOCK 太大或太小，分别会出现什么问题？</li>
+      <li>伪共享只会在多线程写入时发生吗？如果一个线程读、另一个线程写同一缓存行的不同变量，是否也会触发伪共享的开销？</li>
+      <li>除了课程中提到的 SRAM/DRAM/磁盘，现代系统中还有「存储级内存（SCM，如 Intel Optane）」这一层级。你认为它应该放在 DRAM 之上还是之下？它的出现对存储层级设计有什么影响？</li>
+    </ol>
+  </div>
+
+  <div class="info-box">
+    <h3>复习速查</h3>
+    <ul>
+      <li><strong>存储层级</strong>：Register → L1 → L2 → L3 → DRAM → SSD → HDD，速度递减、容量递增、成本递减。</li>
+      <li><strong>局部性</strong>：时间局部性（近期复用）+ 空间局部性（相邻复用）。</li>
+      <li><strong>映射策略</strong>：直接映射（固定位置）、全相联（任意位置）、组相联（折中，工程常用）。</li>
+      <li><strong>替换策略</strong>：LRU、FIFO、随机。</li>
+      <li><strong>缓存友好编程</strong>：行优先遍历、分块（Tiling）、消除伪共享、数据对齐。</li>
+      <li><strong>存储墙</strong>：CPU 增速远超 DRAM，导致内存成为性能瓶颈。</li>
+    </ul>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li>{{< docref "pdf/computer-system/L04-Memory-Hierarchy.pdf" page=1 title="L04 课件：Memory Hierarchy and Programming" >}}</li>
+      <li>[[wiki.en Memory hierarchy | Memory Hierarchy — Wikipedia]]</li>
+      <li>[[wiki.en CPU cache | CPU Cache — Wikipedia]]</li>
+      <li>[[wiki.en Cache replacement policies | Cache Replacement Policies — Wikipedia]]</li>
+      <li>[[wiki.en False sharing | False Sharing — Wikipedia]]</li>
+    </ul>
+  </div>
+
+</div>
