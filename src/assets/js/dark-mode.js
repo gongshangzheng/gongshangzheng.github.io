@@ -387,17 +387,25 @@
   var desktopNav = document.getElementById('toc-nav');
   if (!desktopNav) { btn.style.display = 'none'; return; }
 
-  // Clone links with level from data-level attribute
+  // Preserve desktop TOC inline markup, including MathJax-rendered inline formulas
   var items = desktopNav.querySelectorAll('li');
-  var html = '<ul>';
+  var list = document.createElement('ul');
   items.forEach(function(li) {
-    var a = li.querySelector('a');
+    var a = li.querySelector(':scope > a');
     if (!a) return;
     var level = a.getAttribute('data-level') || '2';
-    html += '<li class="toc-h' + level + '"><a href="' + a.getAttribute('href') + '">' + a.textContent + '</a></li>';
+    var item = document.createElement('li');
+    item.className = 'toc-h' + level;
+
+    var link = document.createElement('a');
+    link.setAttribute('href', a.getAttribute('href'));
+    link.innerHTML = a.innerHTML;
+
+    item.appendChild(link);
+    list.appendChild(item);
   });
-  html += '</ul>';
-  mobileNav.innerHTML = html;
+  mobileNav.innerHTML = '';
+  mobileNav.appendChild(list);
 
   function openDrawer() {
     drawer.classList.add('is-open');
