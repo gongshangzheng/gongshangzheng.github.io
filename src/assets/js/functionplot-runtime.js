@@ -35,12 +35,13 @@
     catch (err) { return {}; }
   }
 
-  function addImpulseOverlay(target, plot, impulses) {
+  function drawImpulseOverlay(target, plot, impulses) {
     if (!impulses || !impulses.length || !window.d3) return;
     var svg = window.d3.select(target).select('svg');
     if (svg.empty() || !plot || !plot.meta || !plot.meta.xScale || !plot.meta.yScale) return;
     var xScale = plot.meta.xScale;
     var yScale = plot.meta.yScale;
+    svg.selectAll('g.functionplot-impulses').remove();
     var layer = svg.append('g').attr('class', 'functionplot-impulses');
     impulses.forEach(function(item){
       var x = Number(item.x || 0);
@@ -48,10 +49,22 @@
       var x1 = xScale(x);
       var y0 = yScale(0);
       var y1 = yScale(h);
+      if (!isFinite(x1) || !isFinite(y0) || !isFinite(y1)) return;
       layer.append('line').attr('x1', x1).attr('x2', x1).attr('y1', y0).attr('y2', y1).attr('class', 'functionplot-impulse-line');
       layer.append('path').attr('d', 'M ' + (x1 - 5) + ' ' + (y1 + 8) + ' L ' + x1 + ' ' + y1 + ' L ' + (x1 + 5) + ' ' + (y1 + 8)).attr('class', 'functionplot-impulse-head');
       if (item.label) layer.append('text').attr('x', x1 + 8).attr('y', y1 - 8).attr('class', 'functionplot-impulse-label').text(item.label);
     });
+  }
+
+  function attachImpulseOverlay(target, plot, impulses) {
+    if (!impulses || !impulses.length) return;
+    var redraw = function(){ drawImpulseOverlay(target, plot, impulses); };
+    redraw();
+    if (plot && typeof plot.on === 'function') {
+      plot.on('after:draw', redraw);
+      plot.on('zoom', function(){ window.requestAnimationFrame(redraw); });
+      plot.on('all:zoom', function(){ window.requestAnimationFrame(redraw); });
+    }
   }
 
   function renderOne(el, functionPlot) {
@@ -69,7 +82,7 @@
     try {
       target.innerHTML = '';
       var plot = functionPlot(cfg);
-      addImpulseOverlay(target, plot, impulses);
+      attachImpulseOverlay(target, plot, impulses);
       el.classList.add('is-rendered');
     } catch (err) {
       el.classList.add('has-error');
