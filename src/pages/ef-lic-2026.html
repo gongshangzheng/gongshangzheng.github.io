@@ -1,0 +1,252 @@
+---
+title: "EF-LIC: Efficient Learned Image Compression without Entropy Coding"
+description: "清华团队提出无熵编码学习式图像压缩框架，从信息论层面证明固定长度编码可达熵编码同级性能，实现 67.86% BD-rate 降低与 10 倍级加速。"
+created_at: 2026-05-25T19:01:25
+updated_at: 2026-05-25T19:01:25
+tags: [EF-LIC, Vector-Quantization, Entropy-Coding, Learned-Compression, ICML-2026]
+categories: ["AI"]
+subcategory: "Image Compression"
+mathjax: true
+notify: true
+hero_title: "EF-LIC"
+hero_sub: "ICML 2026 · 学习式图像压缩"
+hero_tagline: "无熵编码也能达到熵编码同级性能：信息论视角的范式转变"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num b">67.86%</span><span class="label g">Kodak BD-rate ↓</span></div>
+  <div class="stat"><span class="num">13.72</span><span class="label">解码延迟 (ms)</span></div>
+  <div class="stat"><span class="num b">~14×</span><span class="label g">4K 解码加速</span></div>
+  <div class="stat"><span class="num">35.74</span><span class="label">参数量 (M)</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">核心问题</div>
+  <div class="ch-title">为什么要去掉熵编码？</div>
+
+  <p>典型学习式图像压缩 (LIC) 的核心流水线为：分析变换 → 量化 → ==熵编码== → 合成变换。其中熵编码（如 rANS）将量化后的非均匀分布 latent 转换为紧凑比特流，但其串行控制流难以并行化，通常必须在 CPU 上执行，成为端到端延迟的主要瓶颈。rANS 单图可超 100ms，超过其他模块总和。</p>
+
+  <p>去除或简化熵编码的先驱方法要么性能仅达 JPEG 级别（COIN, 2021），要么推理成本极高（OSCAR, 2025）。核心矛盾在于：==熵编码 = 压缩效率 vs 无熵编码 = 低延迟==，二者似乎不可兼得。</p>
+
+  <div class="callout"><strong>核心问题</strong>：如何在完全去除熵编码的前提下，实现与典型 LIC 相当的压缩性能，同时大幅降低编解码延迟？</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">核心创新</div>
+  <div class="ch-title">EF-LIC 的两把钥匙</div>
+
+  <p>EF-LIC (Entropy-Coding Free Learned Image Compression) 通过两把钥匙打破上述矛盾：</p>
+
+  <ol>
+    <li><strong>无约束向量量化 (Unconstrained VQ)</strong>：从信息论上证明，当 VQ 逼近最小重建失真时，其索引分布自然趋近最大熵边界（均匀分布），从而消除统计冗余。这是"让分布本身接近均匀"的范式转变，替代了"用熵编码压缩非均匀分布"。</li>
+    <li><strong>表示域去相关 (Representation-Domain Decorrelation)</strong>：通过上下文条件仿射变换直接重参数化 latents，消除组间相关性冗余。不同于传统 LIC 在概率域预测条件分布，EF-LIC 直接在表示域做变换。</li>
+  </ol>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/ef-lic-2026/framework.png" alt="EF-LIC 架构" loading="lazy">
+    <div class="cap">EF-LIC 整体架构：Encoder → Hyperprior → RD (表示域去相关) → Unconstrained VQ → 直接存储索引 → Decoder</div>
+  </div>
+
+  <p>论文进一步给出三个定理，构成完整的理论框架：(1) 最优 VQ 索引熵 $H(J^*) = R$；(2) RD 方案严格优于独立量化 IQ；(3) RD 方案可以以任意小的码率开销逼近带熵编码 LIC 的 R-D 性能。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">理论框架</div>
+  <div class="ch-title">三个定理的完整推导</div>
+
+  <p><strong>Theorem 3.1 (最大熵概率整形)</strong>：对于码本大小 $K$、目标码率 $R = \log K$ 的无约束 VQ，任何最优失真量化器 $Q^*$ 满足 $H(J^*) = R = \log K$。</p>
+
+  <p>证明采用反证法：若 $H(J^*) < R$，取 $R' \in (H(J^*), R)$，则 $Q^*$ 也是 $D_X(R')$ 的可行解，故 $D_X(R') \leq D_X(R)$；但 $R' < R$ 时 R-D 函数严格递减，$D_X(R') > D_X(R)$，矛盾。直觉上，最优量化器会充分利用所有码率预算，任何非均匀性都意味着码率浪费。</p>
+
+  <p><strong>Theorem 3.3 (RD 严格优于 IQ)</strong>：若存在组 $i$ 使 $I(\hat{Y}_i; S) > 0$，则 $D_X^{RD}(R) < D_X^{IQ}(R)$。</p>
+
+  <p>IQ（独立量化）是 RD 的特例（恒等映射），当侧信息有意义时，利用数据处理不等式和条件 R-D 函数的严格性可证严格改善。</p>
+
+  <p><strong>Theorem 3.5 (RD 逼近 CM 上界)</strong>：对任意 $\varepsilon \in (0,1)$，存在固定长度码率 $R' = R/(1-\varepsilon)$ 的 RD 方案，使 $\Delta_{\bar{H}} \leq \varepsilon$ 且 $D_X^{RD}(R') \leq D_X^{CM}(R)$。</p>
+
+  <p>构造性证明：通过条件概率积分变换 (CPIT) 从 $Y_i | (Z_i, S_i)$ 中提取均匀随机变量 $U_i \sim \text{Unif}[0,1]$，将 $(S_i, B_i)$ 单射编码为固定长度索引 $J_{RD}^i$，精确恢复 CM 的重建。核心洞察：概率域条件概率建模和表示域重参数化在理论上可达相同压缩效果。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/ef-lic-2026/entropy.png" alt="熵差距分析" loading="lazy">
+    <div class="cap">熵差距分析：EF-LIC 的归一化熵差距仅 3.42%，与理论预测一致</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">方法详解</div>
+  <div class="ch-title">从输入到输出的完整链路</div>
+
+  <p>输入图像 $x \in \mathbb{R}^{3 \times H \times W}$ 经过以下处理：</p>
+
+  <ol>
+    <li><strong>分析变换</strong> $g_a$（基于 DCVC-RT 的 DC Block）：$y = g_a(x)$，空间下采样 $f_y = 16$，通道 $C_y = 256$。</li>
+    <li><strong>超先验分支</strong>：$z = h_a(y)$，下采样 $f_z = 64$，$\hat{z} = Q_z(z)$（RVQ 量化），$\phi = h_s(\hat{z})$。</li>
+    <li><strong>表示域去相关 (RD)</strong>：将 $y$ 分为 $N=4$ 组 $(y_1, y_2, y_3, y_4)$（quadtree-based）。对第 $i$ 组：
+      <ul>
+        <li>参考上下文：$\psi_i = \text{concat}(\hat{y}_{<i}, \phi)$</li>
+        <li>上下文提取器：$f_{RD}^i(\psi_i) \to (\mu_i, \sigma_i)$</li>
+        <li>仿射编码：$y'_i = (y_i - \mu_i) \odot \sigma_i^{-1}$</li>
+        <li>VQ 量化：$\hat{y}'_i = Q_{RD}^i(y'_i)$</li>
+        <li>仿射解码：$\hat{y}_i = \hat{y}'_i \odot \sigma_i + \mu_i$</li>
+      </ul>
+    </li>
+    <li><strong>残差向量量化 (RVQ)</strong>：每个量化器使用 $m \in \{1,2,3,4,5\}$ 个 codebook，码本尺寸 $[K_1, K_2, K_3, K_4, K_z] = [1024, 512, 256, 128, 1024]$。非对称设计基于核心发现：后组 latent 信息量递减。</li>
+    <li><strong>合成变换</strong> $g_s$：$\hat{x} = g_s(\hat{y})$</li>
+  </ol>
+
+  <p>Bitstream 格式极为简洁：Header(H, W, q) + flatten($Q_z$) + flatten($Q_1$) + ... + flatten($Q_4$)。固定长度，无串行依赖，打包耗时 &lt; 1ms。</p>
+
+  <div class="callout"><strong>关键区别</strong>：传统 LIC 的上下文模型输出 $p(y_i|\text{context})$（概率估计），EF-LIC 输出 $(\mu_i, \sigma_i)$（直接变换）。这跳过了"概率估计 → 熵编码"的两步流程。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验结果</div>
+  <div class="ch-title">主实验：性能与延迟的双重突破</div>
+
+  <p>在 Kodak 数据集上以 LPIPS 为指标的 BD-rate（锚点 MS-ILLM）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>BD-rate</th><th>编码 (ms)</th><th>解码 (ms)</th><th>FLOPs (G)</th><th>Params (M)</th></tr></thead>
+      <tbody>
+        <tr><td>VTM-23.10</td><td>+313.84%</td><td>&gt;10s</td><td>150.30</td><td>-</td><td>-</td></tr>
+        <tr><td>HiFiC</td><td>+45.82%</td><td>526.51</td><td>1408.60</td><td>599.51</td><td>181.60</td></tr>
+        <tr><td>MS-ILLM</td><td>0.00%</td><td>165.38</td><td>147.79</td><td>599.52</td><td>181.40</td></tr>
+        <tr><td>OSCAR</td><td>-37.31%</td><td>53.04</td><td>167.56</td><td>6485.61</td><td>1009.30</td></tr>
+        <tr><td>RDEIC</td><td>-52.08%</td><td>157.25</td><td>426.68</td><td>7767.46</td><td>1380.27</td></tr>
+        <tr><td><strong>EF-LIC-s</strong></td><td><strong>-55.38%</strong></td><td><strong>9.94</strong></td><td><strong>6.26</strong></td><td><strong>179.19</strong></td><td><strong>11.51</strong></td></tr>
+        <tr><td><strong>EF-LIC</strong></td><td><strong>-67.86%</strong></td><td><strong>17.62</strong></td><td><strong>13.72</strong></td><td><strong>279.61</strong></td><td><strong>35.74</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/ef-lic-2026/bd1.jpg" alt="Kodak BD-rate 曲线" loading="lazy">
+    <div class="cap">Kodak 数据集 BD-rate 曲线（LPIPS）：EF-LIC 在所有码率点均优于 MS-ILLM</div>
+  </div>
+
+  <p>EF-LIC 是唯一在 Kodak、Tecnick、DIV2K、CLIC2020 四个数据集上均优于 MS-ILLM 的方法。</p>
+
+  <p><strong>分辨率扩展</strong>：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分辨率</th><th>EF-LIC 解码</th><th>MS-ILLM 解码</th><th>加速比</th><th>显存</th></tr></thead>
+      <tbody>
+        <tr><td>512×768</td><td>13.72 ms</td><td>147.79 ms</td><td>~10.8×</td><td>0.25 GB</td></tr>
+        <tr><td>1080×1920</td><td>35.62 ms</td><td>379.01 ms</td><td>~10.6×</td><td>0.65 GB</td></tr>
+        <tr><td>1440×2560</td><td>55.50 ms</td><td>601.18 ms</td><td>~10.8×</td><td>1.04 GB</td></tr>
+        <tr><td>2160×3840</td><td>116.28 ms</td><td>1613.82 ms</td><td>~13.9×</td><td>2.10 GB</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">消融分析</div>
+  <div class="ch-title">每个组件贡献了什么？</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>BD-rate (vs VQ)</th><th>编码 (ms)</th><th>解码 (ms)</th></tr></thead>
+      <tbody>
+        <tr><td>VQ (无去相关)</td><td>0.00%</td><td>5.51</td><td>7.06</td></tr>
+        <tr><td>VQ+EC</td><td>-14.73%</td><td>362.07</td><td>300.83</td></tr>
+        <tr><td>UQ+EC (典型 LIC)</td><td>-20.73%</td><td>63.12</td><td>71.72</td></tr>
+        <tr><td>EF-LIC</td><td>-22.20%</td><td>17.62</td><td>13.72</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>关键发现：</p>
+  <ul>
+    <li>加入 Hyperprior：-9.37%</li>
+    <li>加入 Autoregressive transform（均等码本）：-16.72%</li>
+    <li>非对称码本 [10,9,8,7,10]：-28.60%（最佳）</li>
+    <li>VQ+EC 失败：VQ 硬量化阻断梯度，context model 优化不充分；且 EC 时间极长（507.89ms）</li>
+  </ul>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/ef-lic-2026/ablation.png" alt="消融实验" loading="lazy">
+    <div class="cap">消融实验：EF-LIC 与变体的 BD-rate 与延迟对比</div>
+  </div>
+
+  <p><strong>运行时分解</strong>：EF-LIC 的 VQ 时间 (9.16ms) 虽比 UQ (0.01ms) 长，但完全消除了 EC 时间。Autoregressive 模块仅 4.38ms，比 EC 低 1~2 个数量级。</p>
+
+  <p><strong>与生成式编解码器对比</strong>：EF-LIC 在参数量（35.74M vs OneDC 1406M）和 FLOPs（279G vs 7142G）上少一个数量级以上，同时 BD-rate 更优（-3.33% vs 0.00%）。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实现细节</div>
+  <div class="ch-title">训练配置与工程技巧</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>值</th></tr></thead>
+      <tbody>
+        <tr><td>优化器</td><td>Adam ($\beta_1=0.5, \beta_2=0.9$)</td></tr>
+        <tr><td>初始学习率</td><td>$10^{-4}$ → $10^{-5}$ (1.5M steps)</td></tr>
+        <tr><td>Batch size</td><td>16</td></tr>
+        <tr><td>总迭代</td><td>2M (主实验); 1M (消融)</td></tr>
+        <tr><td>数据集</td><td>ImageNet（每 epoch 采样 1%）</td></tr>
+        <tr><td>训练硬件</td><td>1× NVIDIA A100 (~10.5 GB 显存)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>损失函数</strong>：$\mathcal{L} = \sum_{m \in \mathcal{M}} [\lambda_{per} \cdot \mathcal{L}_{per}^m + \lambda_{adv} \cdot \mathcal{L}_{adv}^m + \lambda_{cb} \cdot \mathcal{L}_{cb}^m]$，其中 $\mathcal{L}_{per}$ 为 LPIPS，$\mathcal{L}_{adv}$ 为 adaptive PatchGAN，$\mathcal{L}_{cb}$ 为 commitment + codebook update。<strong>关键区别：无显式码率项 $R$</strong>。</p>
+
+  <p><strong>工程技巧</strong>：</p>
+  <ul>
+    <li>码本通过梯度下降直接优化（非 EMA），是实现最大熵的关键前提</li>
+    <li>仿射变换确保编解码对称性和高效 GPU 并行</li>
+    <li>非对称码本：后组 latent 信息量递减，最佳配置 [1024, 512, 256, 128, 1024]</li>
+    <li>零串行依赖打包：索引按预定义顺序拼接，编解码均 &lt; 1ms</li>
+    <li>全流程 GPU 友好，可导出 ONNX/TorchScript，已部署到嵌入式设备和智能手机</li>
+    <li>消除 GPU-CPU 混合执行的数值同步问题（传统 LIC 的 CDF 精度失配可导致解码失败）</li>
+  </ul>
+
+  <p><strong>代码开源</strong>：<a href="https://github.com/SevenCTHU/EF-LIC" target="_blank">GitHub: SevenCTHU/EF-LIC</a></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">局限与展望</div>
+  <div class="ch-title">作者承认的不足与未来方向</div>
+
+  <ol>
+    <li><strong>码本尺寸手工设计</strong>：未实现自动搜索或学习</li>
+    <li><strong>RVQ 运行时间仍不可忽略</strong>：高分辨率时占编码时间主要比例</li>
+    <li><strong>PSNR 性能较弱</strong>：主要面向感知质量（LPIPS/DISTS）优化</li>
+    <li><strong>4 组 quadtree 分组仍有顺序依赖</strong>：并行度受限</li>
+    <li><strong>仅针对静态图像</strong>：未扩展至视频时域预测</li>
+  </ol>
+
+  <p><strong>Negative Results</strong>：VQ+EC（对 VQ 索引做熵编码）的 BD-rate 仅 -14.73%，远不如 EF-LIC 的 -22.20%。原因是 VQ 硬量化阻断梯度，且对离散索引构建 CDF 的编码时间极长（507.89ms）。论文还发现 rANS 实际引入约 3.28% 额外 BD-rate 损失，几乎抵消了理论上的 3.42% 熵编码优势。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">研究启发</div>
+  <div class="ch-title">从 EF-LIC 可以带走什么？</div>
+
+  <ol>
+    <li><strong>信息论视角的范式转变</strong>：与其优化熵编码的速度，不如从根本上消除对熵编码的需求。这一思路可推广到其他需要离散表示的生成任务。</li>
+    <li><strong>表示域 vs 概率域</strong>：直接对表示做变换可能比预测条件概率更简洁高效。这种"跳过概率估计"的思路在实时系统中尤其有价值。</li>
+    <li><strong>非对称资源分配</strong>：后组 latent 信息量递减的观察启发了非对称码本设计，这种"按需分配"的思想可推广到多层级特征压缩。</li>
+    <li><strong>工程部署优势</strong>：去除熵编码不仅加速，还消除了 GPU-CPU 混合执行的复杂性，使模型可导出为单一计算图，大幅简化边缘部署。</li>
+    <li><strong>理论与实践的精确对应</strong>：3.42% 熵差距与 rANS 实际引入的 ~3.28% 冗余几乎抵消，说明理论预测与实际工程损失高度吻合。</li>
+  </ol>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2605.23323" target="_blank">arXiv:2605.23323 — Efficient Learned Image Compression without Entropy Coding</a></li>
+    <li><a href="https://github.com/SevenCTHU/EF-LIC" target="_blank">GitHub: SevenCTHU/EF-LIC (官方实现)</a></li>
+    <li><a href="https://arxiv.org/abs/1802.01436" target="_blank">Ballé et al., 2018 — Variational Image Compression with a Scale Hyperprior</a></li>
+    <li><a href="https://arxiv.org/abs/1809.02736" target="_blank">Minnen et al., 2018 — Joint Autoregressive and Hierarchical Priors</a></li>
+    <li><a href="https://arxiv.org/abs/1711.00937" target="_blank">van den Oord et al., 2017 — Neural Discrete Representation Learning (VQ-VAE)</a></li>
+    <li><a href="https://arxiv.org/abs/2301.11189" target="_blank">Muckley et al., 2023 — MS-ILLM</a></li>
+    <li><a href="https://arxiv.org/abs/2306.06546" target="_blank">Kumar et al., 2023 — High-Fidelity Audio Compression with Improved RVQGAN</a></li>
+    <li><a href="https://arxiv.org/abs/2603.02897" target="_blank">Cao et al., 2026 — ProGIC (前作)</a></li>
+  </ul>
+</div>

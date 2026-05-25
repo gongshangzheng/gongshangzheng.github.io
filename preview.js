@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 /**
- * Local preview server for HtmlBlogs
- * Strips the /HtmlBlogs/ base path so local viewing matches production URLs
+ * Local preview server for gongshangzheng.github.io
+ * Serves files from public/ directly (base_url = /)
  */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
 const PUBLIC = path.join('/Users/zhengxinyu/gongshangzheng.github.io', 'public');
-const BASE = '/HtmlBlogs'; // kept for backwards compat (strip old prefix if present)
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -43,10 +42,7 @@ function serve(res, filePath, status = 200) {
 }
 
 const server = http.createServer((req, res) => {
-  let p = req.url;
-
-  // Strip /HtmlBlogs prefix if present (backwards compat)
-  if (p.startsWith('/HtmlBlogs')) p = p.slice(10);
+  let p = decodeURIComponent(req.url);
   if (!p.startsWith('/')) p = '/' + p;
 
   // / -> index.html
@@ -61,22 +57,44 @@ const server = http.createServer((req, res) => {
   }
 
   fs.stat(fp, (err, stats) => {
-    if (err || !stats.isFile()) {
-      // Try index.html for clean URLs
-      const idx = path.join(PUBLIC, p.replace(/\/$/, '') + '.html');
-      fs.stat(idx, (e2, s2) => {
-        if (!e2 && s2.isFile()) serve(res, idx);
-        else { res.writeHead(404, {'Content-Type':'text/plain'}); res.end('Not Found: ' + p); }
+    if (err) {
+      // File not found: try .html suffix, then directory/index.html
+      const html = path.join(PUBLIC, p.replace(/\/$/, '') + '.html');
+      fs.stat(html, (e2, s2) => {
+        if (!e2 && s2.isFile()) return serve(res, html);
+        const idx = path.join(PUBLIC, p, 'index.html');
+        fs.stat(idx, (e3, s3) => {
+          if (!e3 && s3.isFile()) return serve(res, idx);
+          res.writeHead(404, {'Content-Type':'text/plain'}); res.end('Not Found: ' + p);
+        });
       });
       return;
     }
-    serve(res, fp);
+    if (stats.isFile()) return serve(res, fp);
+    // Directory: try index.html inside it
+    const idx = path.join(fp, 'index.html');
+    fs.stat(idx, (e2, s2) => {
+      if (!e2 && s2.isFile()) return serve(res, idx);
+      // No index.html: try同名 .html (e.g. /categories/AI → categories/AI.html)
+      const html = path.join(PUBLIC, p.replace(/\/$/, '') + '.html');
+      fs.stat(html, (e3, s3) => {
+        if (!e3 && s3.isFile()) return serve(res, html);
+        res.writeHead(404, {'Content-Type':'text/plain'}); res.end('Not Found: ' + p);
+      });
+    });
   });
 });
 
 const PORT = 4000;
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use.`);
+    console.error(`   Run: kill $(lsof -t -i :${PORT})`);
+    process.exit(1);
+  }
+  throw e;
+});
 server.listen(PORT, () => {
-  console.log(`🏠 HtmlBlogs local preview → http://localhost:${PORT}/HtmlBlogs/`);
-  console.log('   (base path /HtmlBlogs/ is stripped internally, no rebuild needed)');
+  console.log(`🏠 Local preview → http://localhost:${PORT}/`);
   console.log('   Ctrl+C to stop');
 });
