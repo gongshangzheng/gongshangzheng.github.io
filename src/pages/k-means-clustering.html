@@ -1,204 +1,505 @@
 ---
-title: "k-means-clustering"
-description: ""
-date: 2026-05-26T16:31:40
+title: "K-Means 聚类：从直觉到收敛的完整图景"
+description: "从聚类问题出发，系统讲解 K-Means 算法的原理、收敛性证明、K-Means++ 初始化、评估指标（肘部法则、轮廓系数）、Mini-Batch 变体以及与 EM 算法的联系。"
 created_at: 2026-05-26T16:31:40
 updated_at: 2026-05-26T16:31:40
-tags: []
-categories: []
+tags: ["K-Means", "聚类", "无监督学习", "EM算法", "机器学习"]
+categories: [课程]
+subcategory: ML
+mathjax: true
+hero_title: "K-Means 聚类"
+hero_sub: "无监督学习 · 迭代优化 · 球形假设"
+hero_tagline: "用均值与距离，把混沌的数据划分为有序的簇"
 ---
-<!-- ============================================================
-  本模板展示所有构建系统支持的语法。
-  详细规范参见 ~/.hanako/skills/html-blog/references/
-  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
-  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
-  ============================================================ -->
 
-<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
 <div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">交替步骤</span></div>
+  <div class="stat"><span class="num">O(nk)</span><span class="label">每轮迭代</span></div>
+  <div class="stat"><span class="num b">K</span><span class="label g">簇数超参</span></div>
+  <div class="stat"><span class="num">∞</span><span class="label">初始敏感</span></div>
 </div>
 
-<!-- ============================================================
-  章节容器
-  ============================================================ -->
-
-<!-- 章节叙事（.ch）— .ch-title 自动加入 TOC -->
 <div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <div class="ch-label">动机</div>
+  <div class="ch-title">无标注数据的困境与聚类的直觉</div>
 
-  <p>正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。</p>
+  <p>监督学习有标签——每一份数据都告诉你"答案是什么"。但现实中，绝大多数数据是没有标注的：用户的浏览记录、传感器的时序信号、社交网络中的行为日志。面对一堆没有标签的点，我们能做什么？</p>
 
-  <!-- ==高亮== → <mark> -->
-  <p>这是一段包含 ==高亮文字== 的正文。</p>
+  <p><strong>聚类（Clustering）</strong>的回答是：==物以类聚==。如果某些数据点在特征空间中彼此靠近，它们很可能属于同一类。我们不需要标签，只需要一个"距离"的概念。</p>
 
-  <!-- Markdown 加粗/斜体也支持（HTML 源文件中） -->
-  <!-- **加粗** → <strong> / *斜体* → <em> -->
+  <p>K-Means 是最经典、最直觉的聚类算法。它的核心思想只有一句话：<strong>把数据分成 K 组，让每组内的点尽可能靠近它们的中心</strong>。</p>
 
-  <!-- 图片 — 放在所讲解段落之后，不要堆在文件末尾 -->
-  <div class="photo">
-    <img src="assets/media/images/sengoku-japan/nobunaga.jpg" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
-  </div>
+  <div class="callout"><strong>核心抽象</strong>：给定 $n$ 个数据点 $\{x_1, x_2, \ldots, x_n\}$，找到 $K$ 个中心 $\{\mu_1, \mu_2, \ldots, \mu_K\}$ 和一种分配方案，使得每个点到其所属簇中心的距离之和最小。</p></div>
+</div>
 
-  <!-- 提示框 -->
-  <div class="callout"><strong>提示</strong>：提示框内容。</div>
+<div class="ch fade-in">
+  <div class="ch-label">算法</div>
+  <div class="ch-title">K-Means 的两步迭代</div>
 
-  <!-- 信息框（蓝底） -->
-  <div class="info-box">
-    <h3>信息框标题</h3>
-    <p>信息框内容。标题不加入 TOC。</p>
-  </div>
+  <p>K-Means 的优雅之处在于，它把一个 NP-hard 的联合优化问题，拆成了两个极其简单的交替步骤：</p>
 
-  <!-- 引用块 -->
-  <blockquote>
-    <p>引用内容。</p>
-    <p><em>— 来源</em></p>
-  </blockquote>
-
-  <!-- 表格 -->
   <div class="table-wrap">
     <table>
-      <thead><tr><th>表头1</th><th>表头2</th><th>表头3</th></tr></thead>
+      <thead><tr><th>步骤</th><th>名称</th><th>操作</th></tr></thead>
       <tbody>
-        <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+        <tr><td><strong>Step 1</strong></td><td>分配（Assignment）</td><td>将每个点分配到距离最近的中心所在的簇</td></tr>
+        <tr><td><strong>Step 2</strong></td><td>更新（Update）</td><td>将每个簇的中心更新为该簇所有点的均值</td></tr>
       </tbody>
     </table>
   </div>
 
-  <!-- 有序/无序列表 -->
-  <ol>
-    <li>第一项</li>
-    <li>第二项</li>
-  </ol>
-  <ul>
-    <li>列表项</li>
-  </ul>
+  <p>用流程图来直观展示整个迭代过程：</p>
 
-  <!-- 术语解释：Term :: Definition → <dl class="term-list"> -->
-  <ul>
-    <li><strong>术语一</strong> :: 这是定义说明</li>
-    <li><em>带强调的术语</em> :: 定义内容</li>
-  </ul>
+  {{< mermaid >}}
+  graph TD
+    A["随机初始化 K 个中心"] --> B["分配：每个点归入最近中心"]
+    B --> C["更新：每个中心取簇内均值"]
+    C --> D{"中心是否变化？"}
+    D -->|"是"| B
+    D -->|"否"| E["输出最终聚类结果"]
 
-  <!-- 代码块 -->
-  <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-  </code></pre>
-</div>
+    style A fill:#3498db,color:#fff
+    style B fill:#e74c3c,color:#fff
+    style C fill:#27ae60,color:#fff
+    style E fill:#f39c12,color:#fff
+  {{< /mermaid >}}
 
-<!-- ============================================================
-  数学公式 — 需要 frontmatter mathjax: true
-  ============================================================ -->
-<!--
-  行内：$...$ 或 \(...\) → <span class="math-inline">...</span>
-  独立：$$...$$ 或 \[...\] → <div class="math-block">$$...$$</div>
-  引用：$@key$ → <cite>@key</cite>
-  注意：< 替换为 \lt，避免 \left( 改用 \Bigl(
--->
+  <p>形式化地，设第 $t$ 轮迭代时，簇中心为 $\mu_1^{(t)}, \ldots, \mu_K^{(t)}$：</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
+  <p><strong>分配步骤</strong>：对每个数据点 $x_i$，找到最近的中心：</p>
 
-  <p>行内公式 $O(T\epsilon^2)$ 或 \(x\in\mathbb{R}^{d}\)，必须嵌入段落中。</p>
+  <p>$$c_i^{(t)} = \arg\min_{j \in \{1,\ldots,K\}} \|x_i - \mu_j^{(t)}\|^2$$</p>
 
-  <p style="text-align:center">
-  \[\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)\]
-  </p>
-</div>
+  <p><strong>更新步骤</strong>：重新计算每个簇的均值：</p>
 
-<!-- ============================================================
-  引用语法
-  ============================================================ -->
-<!--
-  $@key$ → <cite>@key</cite>（注意 @ 前缀）
-  key 含空格 → 引用；无空格 → 行内公式
--->
+  <p>$$\mu_j^{(t+1)} = \frac{1}{|C_j^{(t)}|} \sum_{i \in C_j^{(t)}} x_i$$</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
+  <p>其中 $C_j^{(t)} = \{i : c_i^{(t)} = j\}$ 是第 $j$ 个簇的数据点集合。</p>
 
-  <p>根据 $@Hinton et al., 2015$ 的开创性工作。$@KL Divergence$ 是核心指标。</p>
+  <pre><code class="language-python">import numpy as np
 
-  <div class="sources">
-    <h3>参考来源</h3>
-    <ul>
-      <li><a href="https://arxiv.org/abs/1503.02531" target="_blank">$@Hinton et al., 2015$ — Distilling the Knowledge in a Neural Network</a></li>
-    </ul>
+def kmeans(X, K, max_iters=100):
+    n, d = X.shape
+
+    # 随机初始化：从数据中随机选 K 个点作为初始中心
+    idx = np.random.choice(n, K, replace=False)
+    centroids = X[idx].copy()
+
+    for _ in range(max_iters):
+        # Step 1: 分配 — 每个点归入最近的中心
+        # distances[i][j] = ||x_i - mu_j||^2
+        distances = np.sum((X[:, None, :] - centroids[None, :, :]) ** 2, axis=2)
+        labels = np.argmin(distances, axis=1)
+
+        # Step 2: 更新 — 每个中心取簇内均值
+        new_centroids = np.zeros_like(centroids)
+        for j in range(K):
+            members = X[labels == j]
+            if len(members) > 0:
+                new_centroids[j] = members.mean(axis=0)
+            else:
+                new_centroids[j] = centroids[j]  # 空簇保留原中心
+
+        # 收敛判断
+        if np.allclose(centroids, new_centroids):
+            break
+        centroids = new_centroids
+
+    return labels, centroids</code></pre>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      空簇处理
+    </div>
+    <div class="admonition-content"><p>当某个簇在分配步骤后没有收到任何数据点时，就产生了<strong>空簇</strong>。常见处理策略：(1) 保留原中心；(2) 从最大簇中分裂一个点过来；(3) 随机重新选择一个中心。实际应用中空簇并不常见，但代码中必须处理。</p></div>
   </div>
 </div>
 
-<!-- ============================================================
-  Shortcode 语法 {{< ... >}}
-  ============================================================ -->
-
 <div class="ch fade-in">
-  <div class="ch-label">Shortcode</div>
-  <div class="ch-title">Shortcode 语法</div>
+  <div class="ch-label">收敛性</div>
+  <div class="ch-title">为什么 K-Means 一定会停？</div>
 
-  <p>{{< bg yellow >}}黄色高亮{{< /bg >}}</p>
-  <p>{{< bg red >}}红色高亮{{< /bg >}}</p>
-  <p>{{< bg blue >}}蓝色高亮{{< /bg >}}</p>
+  <p>K-Means 的收敛性可以从一个优雅的不等式链得出。定义<strong>失真函数（Distortion Function）</strong>：</p>
 
-  <p>{{< details summary="点击展开" openByDefault=true >}}</p>
-  <p>隐藏内容。</p>
-  <p>{{< /details >}}</p>
+  <p>$$J(C, \mu) = \sum_{i=1}^{n} \|x_i - \mu_{c_i}\|^2$$</p>
 
-  <p>{{< bilibili BV1xxooXX1Xx >}}</p>
-  <p>{{< youtube dQw4w9WgXcQ "说明" >}}</p>
-  <p>{{< video "assets/media/video/sample.mp4" >}}</p>
-  <p>{{< googleslides "https://docs.google.com/presentation/d/..." >}}</p>
+  <p>也就是所有数据点到其所属簇中心的距离平方和。K-Means 的目标就是最小化 $J$。</p>
+
+  <p>每一轮迭代中，两个步骤分别做了什么？</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>步骤</th><th>固定什么</th><th>优化什么</th><th>对 $J$ 的影响</th></tr></thead>
+      <tbody>
+        <tr><td>分配</td><td>中心 $\mu$</td><td>分配 $c_i$</td><td>$J$ 不增（每个点选最近中心）</td></tr>
+        <tr><td>更新</td><td>分配 $c_i$</td><td>中心 $\mu_j$</td><td>$J$ 不增（均值最小化平方和）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>更新步骤为什么能降低 $J$？</strong>这是一个经典的结论：对于固定的簇 $C_j$，使得 $\sum_{i \in C_j} \|x_i - \mu\|^2$ 最小的 $\mu$ 恰好就是==算术平均值==。可以通过对 $\mu$ 求导令其为零直接验证。</p>
+
+  <p>由于每步都不增，且 $J$ 有下界（$\geq 0$），所以 $J$ 必然收敛。又因为可能的分配方案只有有限种（$K^n$ 种），所以经过有限步后分配不再变化，算法终止。</p>
+
+  <div class="callout"><strong>关键区分</strong>：K-Means 保证收敛到==局部最优==，而非全局最优。失真函数 $J$ 是非凸的，不同的初始中心可能导致不同的结果。这是 K-Means 最大的局限之一。</div>
 </div>
 
-<!-- ============================================================
-  Wiki 链接 [[...]]
-  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">初始化</div>
+  <div class="ch-title">K-Means++：聪明的起跑线</div>
+
+  <p>既然 K-Means 对初始中心敏感，一个自然的想法是：能不能让初始中心"均匀铺开"，而不是随机扎堆？</p>
+
+  <p><strong>K-Means++</strong>（Arthur & Vassilvitskii, 2007）用一种贪心策略实现了这一点：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>步骤</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>从数据中随机选择第一个中心 $\mu_1$</td></tr>
+        <tr><td>2</td><td>对每个数据点 $x$，计算它到已选中心的最短距离 $D(x) = \min_j \|x - \mu_j\|^2$</td></tr>
+        <tr><td>3</td><td>以概率 $p(x) \propto D(x)^2$ 选择下一个中心（距离越远，概率越大）</td></tr>
+        <tr><td>4</td><td>重复步骤 2-3 直到选出 $K$ 个中心</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>直觉上，这就像==撒种子==——第一颗随机撒，后续的种子倾向于落在离已有种子最远的地方，确保初始中心"覆盖"整个数据分布。</p>
+
+  <pre><code class="language-python">def kmeans_plus_plus_init(X, K):
+    n, d = X.shape
+    centroids = np.zeros((K, d))
+
+    # 第一个中心随机选
+    centroids[0] = X[np.random.randint(n)]
+
+    for k in range(1, K):
+        # 计算每个点到已有中心的最短距离平方
+        dists = np.min(
+            np.sum((X[:, None, :] - centroids[:k][None, :, :]) ** 2, axis=2),
+            axis=1
+        )
+        # 按距离平方的概率分布采样
+        probs = dists / dists.sum()
+        centroids[k] = X[np.random.choice(n, p=probs)]
+
+    return centroids</code></pre>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      理论保证
+    </div>
+    <div class="admonition-content"><p>K-Means++ 有一个漂亮的理论结果：它找到的初始中心对应的失真值 $J$，期望不超过最优解的 $O(\log K)$ 倍。具体来说，$\mathbb{E}[J] \leq 8(\ln K + 2) \cdot J^*$，其中 $J^*$ 是全局最优失真值。虽然这不是常数因子近似，但在实践中 K-Means++ 的表现远优于随机初始化。</p></div>
+  </div>
+</div>
 
 <div class="ch fade-in">
-  <div class="ch-label">链接语法</div>
-  <div class="ch-title">Wiki 类链接</div>
+  <div class="ch-label">评估</div>
+  <div class="ch-title">怎么知道 K 选对了没有？</div>
 
+  <p>K-Means 有一个无法回避的超参数：簇数 $K$。如何选择合适的 $K$？</p>
+
+  <div class="section">
+    <h3 class="section-title">肘部法则（Elbow Method）</h3>
+
+    <p>最直觉的方法：对不同的 $K$ 值分别运行 K-Means，画出失真值 $J$ 随 $K$ 变化的曲线。</p>
+
+    <p>随着 $K$ 增大，$J$ 必然单调递减（极端情况 $K = n$ 时 $J = 0$）。但在某个点之后，$J$ 的下降速度会==明显变缓==，形成一个"肘部"。这个拐点对应的 $K$ 就是较好的选择。</p>
+
+    <div class="callout"><strong>肘部法则的局限</strong>：实践中曲线往往很平滑，"肘部"不明显。这时候需要结合领域知识或其他指标来辅助判断。</div>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">轮廓系数（Silhouette Coefficient）</h3>
+
+    <p>轮廓系数为每个数据点 $x_i$ 定义了一个质量分数，衡量它的"归属感"有多强：</p>
+
+    <p>$$s(i) = \frac{b(i) - a(i)}{\max(a(i), \, b(i))}$$</p>
+
+    <p>其中：</p>
+
+    <p>· $a(i)$：$x_i$ 到同簇其他点的平均距离（==内聚度==，越小越好）</p>
+    <p>· $b(i)$：$x_i$ 到最近其他簇的平均距离（==分离度==，越大越好）</p>
+
+    <p>轮廓系数的取值范围 $[-1, 1]$：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>范围</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>接近 1</td><td>点与同簇非常紧密，与其他簇很远——完美分配</td></tr>
+          <tr><td>接近 0</td><td>点处于两个簇的边界——模棱两可</td></tr>
+          <tr><td>接近 -1</td><td>点可能被分配到了错误的簇</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>对不同的 $K$ 计算所有点的平均轮廓系数，选择使均值最大的 $K$。</p>
+
+    <pre><code class="language-python">from sklearn.metrics import silhouette_score
+
+# 对不同的 K 计算轮廓系数
+silhouette_scores = []
+K_range = range(2, 11)  # K 至少为 2 才有意义
+
+for K in K_range:
+    labels, _ = kmeans(X, K)
+    score = silhouette_score(X, labels)
+    silhouette_scores.append(score)
+
+# 选择轮廓系数最高的 K
+best_K = K_range[np.argmax(silhouette_scores)]</code></pre>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">其他评估指标</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>指标</th><th>类型</th><th>适用场景</th></tr></thead>
+        <tbody>
+          <tr><td>Calinski-Harabasz Index</td><td>内部指标</td><td>簇间方差 / 簇内方差，越大越好</td></tr>
+          <tr><td>Davies-Bouldin Index</td><td>内部指标</td><td>簇内散度 / 簇间距离，越小越好</td></tr>
+          <tr><td>Gap Statistic</td><td>内部指标</td><td>对比均匀分布的期望 $J$，找差距最大的 $K$</td></tr>
+          <tr><td>Adjusted Rand Index</td><td>外部指标</td><td>有真实标签时才能用</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">局限</div>
+  <div class="ch-title">K-Means 的假设与失效场景</div>
+
+  <p>K-Means 的简洁背后隐藏了几个强假设，了解它们才能避免误用：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>假设</th><th>含义</th><th>失效场景</th></tr></thead>
+      <tbody>
+        <tr><td>球形簇</td><td>簇在欧氏空间中呈凸形</td><td>环形、月牙形、不规则形状</td></tr>
+        <tr><td>等大小</td><td>各簇大小大致相同</td><td>一个巨大簇 + 几个微小簇</td></tr>
+        <tr><td>等密度</td><td>各簇内部密度相近</td><td>高密簇和稀疏簇并存</td></tr>
+        <tr><td>固定 K</td><td>簇数需要预先指定</td><td>完全未知数据结构</td></tr>
+        <tr><td>欧氏距离</td><td>用 $L_2$ 距离衡量相似度</td><td>高维数据（维度灾难）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      高维灾难
+    </div>
+    <div class="admonition-content"><p>在高维空间中，所有点对之间的距离趋于相同（距离的相对差异消失），K-Means 基于距离的分配失去意义。常见的应对方案是先降维（PCA、t-SNE、UMAP），再在低维空间中聚类。</p></div>
+  </div>
+
+  <p>一个经典的失效案例：两个同心圆环。K-Means 无论如何也无法正确分离它们，因为它只能切出"饼状"的区域。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">变体</div>
+  <div class="ch-title">从经典到实用的进化</div>
+
+  <p>针对 K-Means 的各种局限，研究者提出了多种变体：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>改进点</th><th>核心思想</th></tr></thead>
+      <tbody>
+        <tr><td><strong>K-Means++</strong></td><td>初始化</td><td>概率采样，距离越远越容易被选中</td></tr>
+        <tr><td><strong>Mini-Batch K-Means</strong></td><td>大规模数据</td><td>每轮只用一小批数据更新中心，牺牲精度换速度</td></tr>
+        <tr><td><strong>K-Medoids (PAM)</strong></td><td>鲁棒性</td><td>中心必须是真实数据点（medoid），对异常值更鲁棒</td></tr>
+        <tr><td><strong>Kernel K-Means</strong></td><td>非线性</td><td>在核空间中聚类，可以分离非凸簇</td></tr>
+        <tr><td><strong>Fuzzy C-Means</strong></td><td>软分配</td><td>每个点以不同"隶属度"属于多个簇</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">Mini-Batch K-Means</h3>
+
+    <p>当数据量达到百万甚至亿级时，每轮遍历所有数据太慢。Mini-Batch K-Means 每次随机抽取一小批数据（如 100~1000 个点）来更新中心：</p>
+
+    <pre><code class="language-python">def mini_batch_kmeans(X, K, batch_size=100, max_iters=100):
+    n, d = X.shape
+    centroids = kmeans_plus_plus_init(X, K)
+    counts = np.zeros(K)  # 每个簇累计分配的点数
+
+    for _ in range(max_iters):
+        # 随机采样一个小批
+        batch_idx = np.random.choice(n, batch_size, replace=False)
+        batch = X[batch_idx]
+
+        # 分配：小批内每个点归入最近中心
+        dists = np.sum((batch[:, None, :] - centroids[None, :, :]) ** 2, axis=2)
+        labels = np.argmin(dists, axis=1)
+
+        # 增量更新中心
+        for i, label in enumerate(labels):
+            counts[label] += 1
+            eta = 1.0 / counts[label]  # 学习率递减
+            centroids[label] = (1 - eta) * centroids[label] + eta * batch[i]
+
+    return centroids</code></pre>
+
+    <p>Mini-Batch 的关键技巧是<strong>增量更新</strong>：每来一个点，中心按学习率 $\eta = 1/n_j$（$n_j$ 是该簇累计处理的点数）做一步梯度步。这使得算法只需 $O(b)$ 而非 $O(n)$ 的每轮开销，且在实践中效果损失很小。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">深层联系</div>
+  <div class="ch-title">K-Means 与 EM 算法：硬分配与软分配</div>
+
+  <p>K-Means 看起来和概率模型没什么关系，但它实际上是<strong>高斯混合模型（GMM）</strong>的一个特例，对应 EM 算法的一种极端退化。</p>
+
+  <p>在高斯混合模型中，假设数据由 $K$ 个高斯分布混合生成：</p>
+
+  <p>$$p(x) = \sum_{j=1}^{K} \pi_j \cdot \mathcal{N}(x \mid \mu_j, \Sigma_j)$$</p>
+
+  <p>EM 算法同样有两步：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th></th><th>K-Means</th><th>EM (GMM)</th></tr></thead>
+      <tbody>
+        <tr><td><strong>E 步</strong></td><td>硬分配：$c_i = \arg\min_j \|x_i - \mu_j\|^2$</td><td>软分配：$\gamma_{ij} = P(z_i = j \mid x_i)$（后验概率）</td></tr>
+        <tr><td><strong>M 步</strong></td><td>更新均值 $\mu_j$</td><td>更新 $\mu_j, \Sigma_j, \pi_j$（所有参数）</td></tr>
+        <tr><td><strong>协方差</strong></td><td>隐含 $\Sigma_j = \sigma^2 I$（各向同性，等方差）</td></tr>
+        <tr><td><strong>混合权重</strong></td><td>隐含 $\pi_j = 1/K$（等权重）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>当 GMM 的协方差矩阵趋于 $\sigma^2 I$ 且 $\sigma^2 \to 0$ 时，软分配退化为硬分配——每个点以概率 1 属于最近的簇。这就是 K-Means。</p>
+
+  <div class="callout"><strong>一图胜千言</strong>：K-Means 和 EM 的关系就像"非黑即白"和"灰度渐变"。K-Means 说"你属于簇 A"，EM 说"你有 70% 的概率属于簇 A，30% 属于簇 B"。后者更灵活，但代价是更高的计算复杂度和更多的参数。</div>
+
+  {{< mermaid >}}
+  graph TD
+    GMM["高斯混合模型<br/>(GMM)"] -->|"Σ→σ²I, σ→0"| KM["K-Means<br/>(硬分配)"]
+    GMM -->|"一般情况"| EM["EM 算法<br/>(软分配)"]
+    KM --> INIT["K-Means++<br/>(智能初始化)"]
+    KM --> MB["Mini-Batch<br/>(大规模)"]
+    KM --> MED["K-Medoids<br/>(鲁棒)"]
+    EM --> FB["Fuzzy C-Means<br/>(模糊聚类)"]
+    EM --> VAR["变分推断<br/>(变分 EM)"]
+
+    style GMM fill:#3498db,color:#fff
+    style KM fill:#e74c3c,color:#fff
+    style EM fill:#27ae60,color:#fff
+  {{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实战</div>
+  <div class="ch-title">复杂度分析与工程实践</div>
+
+  <div class="section">
+    <h3 class="section-title">时间复杂度</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>步骤</th><th>时间</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>每轮迭代</td><td>$O(nKd)$</td><td>$n$ 个点 × $K$ 个中心 × $d$ 维距离</td></tr>
+          <tr><td>总时间</td><td>$O(nKd \cdot T)$</td><td>$T$ 为迭代轮数，通常 $T \ll n$</td></tr>
+          <tr><td>K-Means++ 初始化</td><td>$O(nKd)$</td><td>逐个选中心，每轮算距离</td></tr>
+          <tr><td>Mini-Batch 每轮</td><td>$O(bKd)$</td><td>$b \ll n$，每轮极快</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>关键观察：K-Means 的复杂度与数据量 $n$ 成==线性关系==，这使得它在大规模数据上非常实用。相比之下，层次聚类的复杂度是 $O(n^2)$ 或 $O(n^3)$。</p>
+  </div>
+
+  <div class="section">
+    <h3 class="section-title">sklearn 实战模板</h3>
+
+    <pre><code class="language-python">from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
+import numpy as np
+
+# 1. 标准化（K-Means 对量纲敏感！）
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# 2. 用肘部法则 + 轮廓系数选 K
+for K in range(2, 11):
+    km = KMeans(n_clusters=K, init='k-means++', n_init=10, random_state=42)
+    labels = km.fit_predict(X_scaled)
+    print(f"K={K}: inertia={km.inertia_:.2f}, "
+          f"silhouette={silhouette_score(X_scaled, labels):.4f}")
+
+# 3. 用选定的 K 训练最终模型
+best_K = 4
+km = KMeans(n_clusters=best_K, init='k-means++', n_init=10)
+labels = km.fit_predict(X_scaled)
+centroids = scaler.inverse_transform(km.cluster_centers_)
+
+# 4. 大规模数据用 Mini-Batch
+from sklearn.cluster import MiniBatchKMeans
+mbkm = MiniBatchKMeans(n_clusters=best_K, batch_size=1000, n_init=3)
+labels = mbkm.fit_predict(X_scaled)</code></pre>
+
+    <div class="admonition tip">
+      <div class="admonition-title">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        工程实践要点
+      </div>
+      <div class="admonition-content">
+        <p>1. <strong>一定要标准化</strong>：K-Means 基于欧氏距离，特征量纲不同会导致结果偏向方差大的维度。</p>
+        <p>2. <strong><code>n_init</code> 设为 10+</strong>：sklearn 默认用 K-Means++ 运行 <code>n_init</code> 次，取最优结果。这是应对局部最优的实用策略。</p>
+        <p>3. <strong>高维先降维</strong>：超过 50 维时，先用 PCA 将维度降至 10~20 再聚类。</p>
+        <p>4. <strong>类别特征需编码</strong>：K-Means 只能处理数值特征，类别特征需要 one-hot 或 embedding。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">一图总览：K-Means 的完整知识图谱</div>
+
+  {{< mermaid >}}
+  graph LR
+    CORE["K-Means<br/>核心算法"] --> A["两步迭代<br/>分配 + 更新"]
+    CORE --> B["失真函数 J<br/>收敛到局部最优"]
+    CORE --> C["K-Means++<br/>O(log K) 近似"]
+
+    CORE --> EVAL["评估"]
+    EVAL --> E1["肘部法则"]
+    EVAL --> E2["轮廓系数"]
+    EVAL --> E3["CH / DB 指标"]
+
+    CORE --> VAR["变体"]
+    VAR --> V1["Mini-Batch<br/>O(b) 每轮"]
+    VAR --> V2["K-Medoids<br/>鲁棒"]
+    VAR --> V3["Kernel K-Means<br/>非线性"]
+
+    CORE --> CONN["深层联系"]
+    CONN --> G1["GMM / EM<br/>软分配推广"]
+    CONN --> G2["向量量化<br/>信号压缩"]
+
+    style CORE fill:#e74c3c,color:#fff
+    style EVAL fill:#27ae60,color:#fff
+    style VAR fill:#3498db,color:#fff
+    style CONN fill:#f39c12,color:#fff
+  {{< /mermaid >}}
+
+  <div class="callout"><strong>一句话总结</strong>：K-Means 是一个"简单到令人怀疑它是否有效"的算法——但在数据满足球形假设时，它仍然是最高效、最实用的聚类工具。理解它的假设和局限，比理解它的算法本身更重要。</div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
   <ul>
-    <li>[[wiki.en Albert Einstein | 爱因斯坦]]</li>
-    <li>[[wiki.zh 日本历史]]</li>
+    <li>Arthur, D. & Vassilvitskii, S. (2007). <em>K-Means++: The Advantages of Careful Seeding</em>. SODA 2007.</li>
+    <li>Bishop, C. M. <em>Pattern Recognition and Machine Learning</em>, Chapter 9: Mixture Models and EM</li>
+    <li>Sculley, D. (2010). <em>Web-Scale K-Means Clustering</em>. WWW 2010. (Mini-Batch K-Means)</li>
+    <li><a href="https://scikit-learn.org/stable/modules/clustering.html#k-means" target="_blank">scikit-learn: Clustering — K-Means</a></li>
   </ul>
-
-  <p>[[arxiv 2301.00001 abs | 论文]]</p>
-  <p>[[github pytorch/pytorch | PyTorch]]</p>
-  <p>[[google transformer architecture | 搜索 Transformer]]</p>
-
-  <!-- 内部跳转 -->
-  <p>[[posts.html | 返回文章列表]]</p>
-</div>
-
-<!-- ============================================================
-  Wiki 图片 ![[...]]
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">资源引用</div>
-  <div class="ch-title">Wiki 图片语法</div>
-
-  <!-- ![[filename | width # caption]] -->
-  <p>![[sengoku-japan/nobunaga.jpg | 400 # 织田信长]]</p>
-
-  <!-- 纯图片，无宽度无说明 -->
-  <p>![[japan-history/oda-nobunaga.jpg]]</p>
-</div>
-
-<!-- ============================================================
-  普通 Section（不加入 TOC）
-  ============================================================ -->
-
-<div class="section fade-in">
-  <div class="section-title">结语</div>
-  <p>使用 <code>.section</code> 创建普通段落，不出现在 TOC 中。</p>
 </div>
