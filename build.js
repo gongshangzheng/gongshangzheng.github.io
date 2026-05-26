@@ -89,6 +89,54 @@ function collectPosts() {
   return posts;
 }
 
+// Build CSS from modules
+function buildCss() {
+  const cssDir = path.join(PATHS.assets, 'css');
+  const manifestPath = path.join(cssDir, 'css-manifest.json');
+  const modulesDir = path.join(cssDir, 'modules');
+  const publicCssDir = path.join(PATHS.public, 'assets', 'css');
+
+  if (!fs.existsSync(manifestPath)) return; // No manifest = legacy mode
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+  // Merge "always" modules into hugo-theme.css
+  const header = '/* ========================================\n   HtmlBlogs Theme — Auto-generated from modules\n   Do not edit hugo-theme.css directly — edit modules/*.css instead\n   ======================================== */\n\n';
+
+  const merged = manifest.always.reduce((acc, mod) => {
+    const modPath = path.join(modulesDir, mod + '.css');
+    if (fs.existsSync(modPath)) {
+      return acc + fs.readFileSync(modPath, 'utf8') + '\n';
+    }
+    console.warn(`  ⚠ CSS module "${mod}" not found`);
+    return acc;
+  }, header);
+
+  // Write merged hugo-theme.css (replaces the static one copied by copyDir)
+  fs.writeFileSync(path.join(publicCssDir, 'hugo-theme.css'), merged);
+  console.log('✓ hugo-theme.css (built from ' + manifest.always.length + ' modules)');
+
+  // Copy optional modules as individual files for on-demand loading
+  const optDir = path.join(publicCssDir, 'modules');
+  if (!fs.existsSync(optDir)) fs.mkdirSync(optDir, { recursive: true });
+
+  // Remove all module files first (copyDir may have copied everything from modules/)
+  if (fs.existsSync(optDir)) {
+    fs.rmSync(optDir, { recursive: true });
+    fs.mkdirSync(optDir, { recursive: true });
+  }
+
+  for (const [name, desc] of Object.entries(manifest.optional)) {
+    const src = path.join(modulesDir, name + '.css');
+    if (fs.existsSync(src)) {
+      fs.writeFileSync(path.join(optDir, name + '.css'), fs.readFileSync(src, 'utf8'));
+    } else {
+      console.warn(`  ⚠ Optional CSS module "${name}" not found`);
+    }
+  }
+  console.log('✓ ' + Object.keys(manifest.optional).length + ' optional CSS modules');
+}
+
 // Main build
 function build() {
   console.log('🔨 Building HtmlBlogs...\n');
@@ -110,6 +158,9 @@ function build() {
   // Copy assets
   copyDir(PATHS.assets, path.join(PATHS.public, 'assets'));
   console.log('✓ assets/');
+
+  // Build CSS: merge "always" modules into hugo-theme.css, keep optional modules separate
+  buildCss();
 
   // Copy media files (PDF/PPT/audio/video/images under src/media/)
   const mediaDir = path.join(PATHS.src, 'media');
