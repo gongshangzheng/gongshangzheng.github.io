@@ -2,6 +2,8 @@
 title: "每日 arXiv 论文简报 · 2026-05-21"
 description: "自动追踪 diffusion、autoregressive、image compression、1D visual tokenizer 与 diffusion visual encoder 方向的 arXiv 每日论文。"
 date: 2026-05-21
+created_at: 2026-05-21T10:00:00
+updated_at: 2026-05-21T10:00:00
 tags: ["arXiv", "论文", "AI", "视觉编码器"]
 categories: [AI]
 hero_title: "每日 arXiv 论文简报"
