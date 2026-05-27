@@ -1,0 +1,324 @@
+---
+title: "模型训练，到底在做什么"
+description: "从目标函数、数据、训练量、显存到优化器与工程技巧，系统拆解大模型训练这一整条流水线。"
+date: 2026-05-27T16:53:48
+created_at: 2026-05-27T16:53:48
+updated_at: 2026-05-27T17:05:00
+tags: [大语言模型, 训练, Scaling Law, 显存, 优化器]
+categories: ["AI"]
+subcategory: "大语言模型"
+mathjax: true
+hero_title: "模型训练，到底在做什么"
+hero_sub: "目标函数 · 数据 · 训练量 · 显存 · 优化器"
+hero_tagline: "把训练这条流水线拆开以后，很多看似神秘的工程问题都会变成一笔一笔可计算的账"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">5</span><span class="label">核心章节</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">例题</span></div>
+  <div class="stat"><span class="num">6NT</span><span class="label">粗略训练 FLOPs</span></div>
+  <div class="stat"><span class="num b">1:20</span><span class="label l">Chinchilla 经验比</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 0</div>
+  <div class="ch-title">训练这件事，为什么总是被讲得又大又散</div>
+
+  <p>一说到模型训练，大家脑子里冒出来的词通常不是同一层面的东西。有人先想到 loss，有人先想到数据，有人先想到 7B、70B 这样的参数规模，也有人会立刻问需要几张卡、多少显存、训练多久。它们都属于训练，但并不在回答同一个问题。</p>
+
+  <p>这也是为什么“训练”这个主题很容易越讲越乱。因为它天然横跨了好几层：你要先说明模型究竟在优化什么，再说明数据是怎样被喂进去的，然后还要解释训练量、显存、优化器、batch、工程技巧这些变量为什么会彼此牵连。只要其中任何两层被混在一起，讨论就会迅速从原理滑向口号。</p>
+
+  <div class="info-box">
+    <h3>这篇文章的写法</h3>
+    <p>我会把“训练”拆成一条完整但尽量清晰的流水线来看：<strong>训练目标</strong>、<strong>训练数据</strong>、<strong>训练量</strong>、<strong>显存与资源</strong>、<strong>优化器与工程技巧</strong>。你给出的两道题，则会放在“训练量与显存”这一节里，作为具体的落点。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 1</div>
+  <div class="ch-title">训练的第一层：模型到底在优化什么</div>
+
+  <p>如果只保留一句最核心的话，那么大语言模型训练其实是在做一件非常朴素的事：给定前文，尽可能准确地预测下一个 token。对因果语言模型而言，这就是标准的 autoregressive next-token prediction。</p>
+
+  <p>形式上，模型试图学习一个条件概率分布：</p>
+
+  <p style="text-align:center">
+  \[
+  p(x_1,x_2,\ldots,x_T)=\prod_{t=1}^{T} p(x_t \mid x_1,x_2,\ldots,x_{t-1})
+  \]
+  </p>
+
+  <p>也就是说，它并不是在背整段话，而是在序列的每一个位置上，根据已经看到的上下文，对下一个 token 赋予尽量高的概率。训练过程中真正被最小化的，通常就是 cross-entropy loss。你可以把它理解成：真实 token 已经给定，模型需要为这个真实答案分配尽量大的概率，否则就会被 loss 惩罚。</p>
+
+  <p>这一点非常关键，因为它决定了训练的底层逻辑并不神秘。模型能力不是凭空出现的，而是在海量位置上反复做这种“条件概率校正”。参数更新的本质，就是把原本分散、不稳定、充满误差的概率分布，一步步压向更符合真实语料分布的方向。</p>
+
+  <div class="def-box">
+    <h3>训练目标的最简描述</h3>
+    <ul>
+      <li><strong>输入</strong> :: 一串 token 序列</li>
+      <li><strong>目标</strong> :: 预测每个位置的下一个 token</li>
+      <li><strong>损失函数</strong> :: 通常是 cross-entropy</li>
+      <li><strong>参数更新</strong> :: 让真实 token 的概率更高，让错误分布被压低</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 2</div>
+  <div class="ch-title">训练的第二层：数据并不是“文本很多”这么简单</div>
+
+  <p>模型并不直接看自然语言文本，而是先看被分词器切开的 token 序列。像 BPE 这样的分词方法，本质上是在字符与词之间寻找一个适合统计建模的中间粒度。它要可逆、能处理任意文本、还能尽量把高频子词稳定地复用出来。</p>
+
+  <p>所以训练数据的第一层，不是“有多少篇文章”，而是<strong>最后被切成了多少 token</strong>。而训练数据的第二层，则是这些 token 到底来自哪里。网页文本、书籍、代码、百科、论坛、问答，它们的混合比例会直接塑造模型的语感、知识分布与推理习惯。</p>
+
+  <p>这一步远不是把更多文本扔进去就结束了。数据质量至少包含三个重要问题：</p>
+
+  <ol>
+    <li><strong>清洗</strong>：去掉乱码、模板垃圾、低信息密度文本</li>
+    <li><strong>去重</strong>：避免重复内容把模型推向记忆而不是泛化</li>
+    <li><strong>配比</strong>：不同来源的 token 比例会改变模型学到的分布</li>
+  </ol>
+
+  <p>去重尤其值得单独强调。已有研究指出，大规模语料里往往包含大量近重复样本和长重复片段。如果不做去重，模型不仅更容易背诵训练语料，还会浪费本该用于学习新模式的 token 预算。换句话说，<strong>脏 token 和重复 token 并不等于有效训练量</strong>。</p>
+
+  <div class="callout"><strong>一个容易忽略的事实</strong>：数据量和有效信息量不是同义词。训练看起来吃了很多 token，不代表它真的看到了很多新的结构。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 3</div>
+  <div class="ch-title">训练的第三层：所谓“训练量”，到底在说哪一笔账</div>
+
+  <p>到了这里，训练这个主题才会进入最常被讨论、也最容易被误解的一层：训练量。因为“训练量”这个词本身就可能在指三件不同的事。</p>
+
+  <p>第一种是<strong>参数量</strong>。7B、13B、70B 这些数字，回答的是模型本身有多大。第二种是<strong>token 数</strong>。1T、2T、14.8T tokens 这些数字，回答的是模型到底看了多少离散训练单位。第三种则是<strong>训练 compute</strong>，也就是为了把这些 token 灌进模型，总共花掉了多少浮点运算。</p>
+
+  <p>如果只想做一阶量级估算，decoder-only Transformer 的训练 FLOPs 常被写成：</p>
+
+  <p style="text-align:center">
+  \[
+  \text{Training FLOPs} \approx 6NT
+  \]
+  </p>
+
+  <p>这里的 $N$ 是参数量，$T$ 是训练 token 数。这个式子最重要的意义，不是常数 6 本身，而是它告诉你：训练 compute 的主导项，本质上就是“参数量 × token 数”。模型做大和训练更久，会一起把成本推高。</p>
+
+  <p>而 Chinchilla 的贡献，则是把这件事再往前推进一步。它指出，很多大模型并不是“规模不够”，而是 <strong>undertrained</strong>：参数扩上去了，但 token 没有按比例增加。在固定 compute budget 下，更合理的做法往往不是一味堆参数，而是让参数量和训练 token 数近似同步扩张。一个被广泛引用的经验总结，就是 <strong>1 个参数大约对应 20 个 token</strong> 的量级关系。</p>
+
+  <div class="theorem-box">
+    <h3>训练量的三层口径</h3>
+    <ul>
+      <li><strong>模型规模</strong> :: 参数量 $N$</li>
+      <li><strong>数据规模</strong> :: token 数 $T$</li>
+      <li><strong>训练成本</strong> :: 粗略看 $6NT$ 对应的 compute</li>
+    </ul>
+  </div>
+
+  <p>到这里可以先下一个结论：讨论训练量时，如果只说“模型有多大”，但不说 token 数；或者只说“训练了多少 token”，但不说参数量，其实都只说了一半。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 4</div>
+  <div class="ch-title">训练的第四层：显存为什么总是第一个爆炸</div>
+
+  <p>训练一旦落到工程上，最先拦住你的通常不是理论，而是显存。因为训练时你保存的不只是参数，还包括梯度、优化器状态，以及为了反向传播而暂存的中间激活。</p>
+
+  <p>最容易产生错觉的地方在于，很多人一开始只会算参数本身。比如一个 7B 模型，FP16 每个参数 2 Byte，于是会得到：</p>
+
+  <p style="text-align:center">
+  \[
+  7B \times 2\text{ Byte} \approx 14\text{GB}
+  \]
+  </p>
+
+  <p>这一步没有错，但它只是在算一份参数副本。训练时还要额外承担：</p>
+
+  <ol>
+    <li>FP32 主权重</li>
+    <li>FP16 或 BF16 参数副本</li>
+    <li>梯度</li>
+    <li>Adam 一阶矩</li>
+    <li>Adam 二阶矩</li>
+    <li>激活值与临时缓冲</li>
+  </ol>
+
+  <p>前五项基本都与参数量线性相关，最后一项激活值则与 <strong>micro-batch、sequence length、hidden size</strong> 强相关。也就是说，训练显存同时受两类变量支配：一类是“每个参数要背多少状态”，另一类是“每一步前向反向要暂存多少中间结果”。</p>
+
+  <div class="info-box">
+    <h3>为什么 sequence length 很可怕</h3>
+    <p>上下文一拉长，注意力层的计算与内存都会迅速膨胀。像 FlashAttention 这类工作，本质上就是在针对这一瓶颈做 IO-aware 的重写：不是改变模型学什么，而是让同样的注意力计算少搬内存、少浪费显存。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 4.1</div>
+  <div class="ch-title">例题一：7B 模型为什么远不止 14GB</div>
+
+  <div class="example-box">
+    <h3>例题 1</h3>
+    <p><strong>题目：</strong>设模型参数量 $N = 7B$，训练数据量 $T = 1T$ token，采用 FP16 混合精度训练（Adam 优化器）。以下关于显存占用的估算，说法正确的是：</p>
+    <ol>
+      <li>A. 使用梯度检查点（Gradient Checkpointing）会增加显存占用</li>
+      <li>B. 训练时需保存 FP32 主权重、FP16 参数、FP16 梯度，以及 Adam 的一阶和二阶矩（FP32），总显存约 $7B \times (4 + 2 + 2 + 4 + 4)\text{ Byte} = 7B \times 16\text{ Byte} \approx 112\text{GB}$</li>
+      <li>C. 仅模型参数占用显存 $= 7B \times 2\text{ Byte} = 14GB$（FP16），训练总显存约等于 14GB</li>
+      <li>D. 训练显存仅取决于参数量，与 batch size 和序列长度无关</li>
+    </ol>
+    <p><strong>答案：</strong>B</p>
+  </div>
+
+  <p>这道题最想纠正的，就是“把一份参数副本误认为训练总显存”的直觉。14GB 只是一份 FP16 参数；而 Adam 训练时，你还要负担主权重、梯度以及两份优化器状态。题目给出的 112GB，是参数相关状态的粗略总账。</p>
+
+  <p>更重要的是，即便这个数估出来了，你也还没有把激活值完整算进去。所以训练一个 7B 模型时，真正的瓶颈常常不是“模型能不能放进去”，而是“你有没有足够空间完成一次 forward + backward”。</p>
+
+  <div class="callout"><strong>易错点</strong>：参数显存 ≠ 训练显存；checkpointing 也不会加显存，它是用重算去换更低的激活占用。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 4.2</div>
+  <div class="ch-title">例题二：global batch 不变，为什么显存还是会上升</div>
+
+  <div class="example-box">
+    <h3>例题 2</h3>
+    <p><strong>题目：</strong>训练脚本支持 gradient accumulation，你把 <code>micro_batch = 1 → 4</code>，并把 accumulation 相应减小，global batch 保持不变。通常最可能出现的变化是（ ）</p>
+    <ol>
+      <li>A. 一定吞吐下降</li>
+      <li>B. 参数量减少</li>
+      <li>C. 显存占用上升</li>
+      <li>D. 一定收敛更好</li>
+    </ol>
+    <p><strong>答案：</strong>C</p>
+  </div>
+
+  <p>这道题的关键在于区分 <strong>global batch</strong> 和 <strong>micro-batch</strong>。global batch 表示一次参数更新最终汇总了多少样本；micro-batch 表示单次真正落到卡上的那一小批样本有多大。</p>
+
+  <p>当 global batch 保持不变、但 micro-batch 从 1 变到 4 时，每次前向反向同时处理的样本数更多，于是要保留的激活值也更多。accumulation 减少，只是说明你少累积了几轮梯度；它并不能消除“单轮执行规模更大”这个事实。因此显存通常会上升。</p>
+
+  <div class="callout"><strong>一句话记忆</strong>：gradient accumulation 的意义，是用更多小步去模拟本来放不下的大 batch；反过来把 micro-batch 调大，本质上就是把显存压力重新拉高。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 5</div>
+  <div class="ch-title">训练的第五层：优化器与工程技巧，为什么会决定你能不能把想法跑起来</div>
+
+  <p>训练不是只要有 loss、有数据就能自然完成。真正让模型动起来的是优化器，而真正让大模型跑得动的是一整套工程技巧。它们并不改变训练目标，却强烈改变训练的稳定性、速度和资源边界。</p>
+
+  <p>先说优化器。SGD、Adam、AdamW 的区别，表面上是更新公式不同，实质上则是：你希望参数在噪声梯度中怎样移动、怎样保留历史信息、怎样施加正则化。Adam 之所以常用，是因为它用一阶矩和二阶矩去自适应调节更新步幅；AdamW 则进一步把 weight decay 从梯度更新中解耦，使正则化行为更干净。</p>
+
+  <p>再说工程技巧。mixed precision 让你在大部分计算中使用低精度，从而节省显存与带宽，但关键状态仍保留高精度。gradient checkpointing 通过重算减少激活内存。FlashAttention 改写了注意力计算的 IO 路径，减少长序列下的显存浪费。gradient accumulation 则是在显存有限时，用多次小步来近似更大的更新 batch。</p>
+
+  <p>这些技巧之所以重要，是因为它们共同说明了一件事：训练并不只是一个数学问题，也是一个资源调度问题。很多时候，我们不是不知道该用什么模型，而是知道这个模型如果直接跑，根本落不到现有硬件上。</p>
+
+  <div class="info-box">
+    <h3>大 batch 为什么不是无限有利</h3>
+    <p>batch 做大确实有利于并行吞吐，但并不是越大越好。已有研究用 gradient noise scale 来描述“最大有用 batch size”的尺度：超过某个范围以后，继续增大 batch 对时间效率可能有利，对数据效率却未必继续划算。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 6</div>
+  <div class="ch-title">把整条训练链放回一起看</div>
+
+  <p>现在回过头看，“训练”这个大主题其实是一条连续链条。以下是每个环节的核心变量、关键结论和代表性来源。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>环节</th>
+          <th>核心问题</th>
+          <th>关键变量 / 结论</th>
+          <th>代表性来源</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>训练目标</strong></td>
+          <td>模型在每一个 token 位置学什么</td>
+          <td>Next-token prediction · Cross-entropy loss</td>
+          <td>$@Brown et al., 2020$</td>
+        </tr>
+        <tr>
+          <td><strong>训练数据</strong></td>
+          <td>token 从哪里来、质量如何</td>
+          <td>BPE tokenizer · 去重（减少背诵）· 配比决定知识分布</td>
+          <td>$@Lee et al., 2022$ · tiktoken</td>
+        </tr>
+        <tr>
+          <td><strong>训练量</strong></td>
+          <td>投入了多少算力</td>
+          <td>参数量 $N$ · token 数 $T$ · $6NT$ · Chinchilla 1:20</td>
+          <td>$@Hoffmann et al., 2022$ · $@Kaplan et al., 2020$</td>
+        </tr>
+        <tr>
+          <td><strong>显存与资源</strong></td>
+          <td>能否在硬件上成立</td>
+          <td>参数副本 · 梯度 · Adam 状态 · 激活值 · sequence length</td>
+          <td>NVIDIA mixed precision docs · HF perf docs</td>
+        </tr>
+        <tr>
+          <td><strong>优化器与工程技巧</strong></td>
+          <td>能否稳定高效完成训练</td>
+          <td>AdamW（解耦 weight decay）· mixed precision · checkpointing · FlashAttention · accumulation</td>
+          <td>$@Loshchilov and Hutter, 2019$ · $@Dao et al., 2022$ · $@McCandlish et al., 2018$</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <ul>
+    <li><strong>训练目标</strong> 决定模型在每个 token 位置究竟要学什么</li>
+    <li><strong>训练数据</strong> 决定模型能从世界里看到什么、看到多少、看到得是否干净</li>
+    <li><strong>训练量</strong> 决定你在参数、token 和 compute 上到底投入了多少</li>
+    <li><strong>显存与资源</strong> 决定这件事能不能在现实硬件上成立</li>
+    <li><strong>优化器与工程技巧</strong> 决定你能否稳定、高效地把整个过程跑完</li>
+  </ul>
+
+  <p>很多围绕大模型训练的争论，之所以看起来各说各话，恰恰是因为它们落在这条链的不同位置。有人强调数据质量，有人强调 scaling law，有人强调显存瓶颈，有人强调优化器与 kernel 工程。其实他们不是在谈不同的世界，而是在谈同一条训练流水线的不同环节。</p>
+
+  <p>所以，如果以后再有人说“训练一个模型很难”，一个更具体的追问方式应该是：难在什么地方？是目标函数难定义，还是数据难构造？是 token 预算不够，还是显存放不下？是优化不稳定，还是工程吞吐太低？只有把问题放回这条链上，我们才知道真正该优化的是哪一段。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Review</div>
+  <div class="ch-title">复习速查</div>
+
+  <div class="review-box">
+    <h3>一页回忆</h3>
+    <ul>
+      <li><strong>训练目标</strong>：next-token prediction + cross-entropy。</li>
+      <li><strong>训练数据</strong>：token 化之后进入模型，质量取决于清洗、去重、配比。</li>
+      <li><strong>训练量</strong>：至少包含参数量、token 数、训练 compute 三层。</li>
+      <li><strong>Chinchilla</strong>：固定 compute 下，参数量和 token 数应同步扩张；常见经验比约 1:20。</li>
+      <li><strong>训练显存</strong>：参数副本、梯度、优化器状态、激活值共同组成。</li>
+      <li><strong>micro-batch</strong>：直接影响单次执行时的激活峰值。</li>
+      <li><strong>AdamW</strong>：把 weight decay 与自适应梯度更新解耦。</li>
+      <li><strong>工程技巧</strong>：mixed precision、checkpointing、FlashAttention、gradient accumulation 都是在重写资源边界。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Sources</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <ul>
+      <li><a href="https://arxiv.org/abs/2005.14165" target="_blank">$@Brown et al., 2020$ — <em>Language Models are Few-Shot Learners</em></a></li>
+      <li><a href="https://arxiv.org/abs/2001.08361" target="_blank">$@Kaplan et al., 2020$ — <em>Scaling Laws for Neural Language Models</em></a></li>
+      <li><a href="https://arxiv.org/abs/2203.15556" target="_blank">$@Hoffmann et al., 2022$ — <em>Training Compute-Optimal Large Language Models</em></a></li>
+      <li><a href="https://arxiv.org/abs/1711.05101" target="_blank">$@Loshchilov and Hutter, 2019$ — <em>Decoupled Weight Decay Regularization</em></a></li>
+      <li><a href="https://arxiv.org/abs/2107.06499" target="_blank">$@Lee et al., 2022$ — <em>Deduplicating Training Data Makes Language Models Better</em></a></li>
+      <li><a href="https://arxiv.org/abs/1812.06162" target="_blank">$@McCandlish et al., 2018$ — <em>An Empirical Model of Large-Batch Training</em></a></li>
+      <li><a href="https://arxiv.org/abs/2205.14135" target="_blank">$@Dao et al., 2022$ — <em>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness</em></a></li>
+      <li><a href="https://docs.nvidia.com/deeplearning/performance/mixed-precision-training/index.html" target="_blank">NVIDIA Docs — <em>Train With Mixed Precision</em></a></li>
+      <li><a href="https://huggingface.co/docs/transformers/v4.26.1/perf_train_gpu_one" target="_blank">Hugging Face Transformers Docs — <em>Efficient Training on a Single GPU</em></a></li>
+      <li><a href="https://huggingface.co/docs/accelerate/en/usage_guides/gradient_accumulation" target="_blank">Hugging Face Accelerate Docs — <em>Performing gradient accumulation with Accelerate</em></a></li>
+      <li><a href="https://pytorch.org/blog/activation-checkpointing-techniques/" target="_blank">PyTorch Blog — <em>Current and New Activation Checkpointing Techniques in PyTorch</em></a></li>
+      <li><a href="https://github.com/openai/tiktoken" target="_blank">OpenAI — <em>tiktoken</em></a></li>
+    </ul>
+  </div>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">结语</div>
+  <p>训练不是单个技巧，也不是单个数字。它更像一条从概率目标到硬件现实的长链：前面是分布建模，后面是资源约束，中间穿过数据、token、参数、优化器与各种工程折中。真正理解训练，不是背下几条经验结论，而是知道每一条结论落在这条链的哪一段上。</p>
+</div>

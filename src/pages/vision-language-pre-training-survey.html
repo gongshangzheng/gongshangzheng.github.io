@@ -1,0 +1,261 @@
+---
+title: "Vision-Language Pre-training：从对比学习到多模态大模型的演进"
+description: "系统梳理 CLIP → BLIP → Q-Former → LLaVA 这条 Vision-Language Pre-training 主线，覆盖对比学习范式、统一理解与生成、高效桥接、指令微调、细粒度对齐等关键方向，包含 7 篇核心论文的方法对比与定量分析。"
+date: 2026-05-27T23:15:10
+created_at: 2026-05-27T23:15:10
+updated_at: 2026-05-27T23:15:10
+tags: [VLP, CLIP, BLIP, BLIP-2, Q-Former, LLaVA, Flamingo, GLIP, SigLIP, 多模态, 视觉语言模型]
+categories: [ai-research]
+mathjax: true
+toc: true
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">核心论文</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label g">子方向</span></div>
+  <div class="stat"><span class="num">2021-2026</span><span class="label">时间跨度</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label l">连接器范式</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">引言</div>
+  <div class="ch-title">什么是 Vision-Language Pre-training？</div>
+
+  <p>Vision-Language Pre-training（VLP）是指通过大规模图文配对数据，预训练能够同时理解视觉和语言两种模态的基础模型。核心目标是学习跨模态的统一表征空间，使模型能够执行图文检索、VQA、图像描述、视觉推理等多种任务。</p>
+
+  <p>2021 年 CLIP 的出现标志着一个新的起点：用对比学习将图像和文本映射到同一语义空间。此后，BLIP 解决了"同时理解和生成"的问题，Q-Former 解决了"如何用冻结的大模型高效桥接"的问题，LLaVA 将指令微调引入了多模态领域。每一步都在解决上一步留下的结构性瓶颈。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">范式一</div>
+  <div class="ch-title">对比学习：CLIP → ALIGN → SigLIP</div>
+
+  <p>对比学习是 VLP 最基础的训练信号。核心思想：让匹配的图像-文本对在嵌入空间中更接近，不匹配的对更远离。</p>
+
+  <h3>CLIP (OpenAI, 2021)</h3>
+
+  <p>CLIP 使用双塔架构（ViT 图像编码器 + Transformer 文本编码器），在 4 亿网络爬取的图文对上做 softmax 对比损失训练。给定批次中的 N 个图文对：</p>
+
+  <p>图像到文本损失：</p>
+
+  <blockquote>
+    \(\mathcal{L}_{i2t} = -\frac{1}{N} \sum_{i=1}^N \log \frac{\exp(S_{ii}/\tau)}{\sum_{j=1}^N \exp(S_{ij}/\tau)}\)
+  </blockquote>
+
+  <p>CLIP 的核心贡献是证明了对比目标 + 海量噪声数据足以学到强大的视觉-语言表征，并具备出色的零样本迁移能力。但局限也很明显：只有编码能力，没有生成能力。</p>
+
+  <h3>SigLIP (Google DeepMind, 2023)</h3>
+
+  <p>SigLIP 用 sigmoid pairwise loss 替代 softmax-based InfoNCE 损失：</p>
+
+  <blockquote>
+    \(\mathcal{L} = -\frac{1}{n} \sum_{i=1}^{n} \log \frac{1}{1 + e^{z_{ij}(-t) + b}}\)
+  </blockquote>
+
+  <p>Sigmoid loss 不需要 batch 内全局归一化，内存开销与 batch size 线性。在 WebLI（10B 图文对）上训练，SigLIP 证明了简单的损失函数改变可以带来显著的效率提升，解耦了 batch size 与损失函数的耦合关系。</p>
+
+  <div class="callout"><strong>演进逻辑</strong>：CLIP 证明可行性 → ALIGN 证明数据规模补偿质量 → SigLIP 证明损失函数本身可以更高效。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">范式二</div>
+  <div class="ch-title">统一理解+生成：BLIP</div>
+
+  <p>CLIP 只能"编码"，BLIP 让一个模型同时擅长理解和生成。</p>
+
+  <h3>MED：三种模式共享参数</h3>
+
+  <p>BLIP 提出 Multimodal Mixture of Encoder-Decoder (MED)，一个模型可切换为三种功能：</p>
+
+  <ol>
+    <li><strong>Unimodal Encoder</strong>：标准编码器，用 ITC 损失对齐视觉-语言表征</li>
+    <li><strong>Image-Grounded Text Encoder</strong>：插入 cross-attention 层注入视觉信息，用 ITM 损失做图文匹配</li>
+    <li><strong>Image-Grounded Text Decoder</strong>：因果 self-attention 做自回归生成，用 LM 损失</li>
+  </ol>
+
+  <p>三种模式共享 embedding、cross-attention 和 FFN 参数，仅 self-attention 层分叉（编码用双向，解码用因果）。</p>
+
+  <h3>CapFilt：数据自举</h3>
+
+  <p>BLIP 引入 Captioner + Filter 机制从噪声 web 数据中自举高质量训练集：</p>
+
+  <ul>
+    <li><strong>Captioner</strong>：用 LM 微调的 decoder，为 web 图像生成合成 caption</li>
+    <li><strong>Filter</strong>：用 ITC+ITM 微调的 encoder，过滤噪声 caption</li>
+    <li>两者独立训练（共享参数会导致 confirmation bias）</li>
+  </ul>
+
+  <p>在相同 14M 数据量下，BLIP 比 ALBEF 在 COCO 检索上提升 +2.7% 平均 Recall@1，VQA 上提升 +1.6%。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">范式三</div>
+  <div class="ch-title">高效桥接：BLIP-2 / Q-Former</div>
+
+  <p>BLIP-2 解决了一个全新的问题：如何用冻结的视觉编码器和冻结的 LLM 做 VLP？</p>
+
+  <h3>Q-Former：信息瓶颈</h3>
+
+  <p>Q-Former 是一个 188M 参数的轻量桥接模块，使用 32 个可学习 query embeddings 从冻结 ViT 中提取特征。输出仅为 32×768（远小于 ViT-L 的 257×1024），形成信息瓶颈，迫使 queries 只提取与文本最相关的视觉信息。</p>
+
+  <h3>两阶段训练</h3>
+
+  <p><strong>Stage 1: Vision-Language Representation Learning</strong> — 连接冻结 ViT，联合优化 ITC + ITG + ITM：</p>
+
+  <ul>
+    <li>ITC：unimodal mask，query 和 text 互不可见</li>
+    <li>ITG：causal mask，训练 query 提取生成所需的视觉信息</li>
+    <li>ITM：bidirectional mask，细粒度图文匹配</li>
+  </ul>
+
+  <p><strong>Stage 2: Generative Learning</strong> — 连接冻结 LLM（OPT 或 FlanT5），Q-Former 输出经 FC 层投影为 soft visual prompts 前置于 LLM 输入。</p>
+
+  <p>消融实验证明：跳过 Stage 1 会导致 OPT 严重的灾难性遗忘。两阶段训练不可或缺。</p>
+
+  <h3>惊人效率</h3>
+
+  <p>BLIP-2 在 zero-shot VQAv2 上达到 65.0% 准确率，比 Flamingo-80B 的 56.3% 高出 8.7%，但可训练参数仅 108M，是 Flamingo 的 1/54。</p>
+
+  <div class="callout"><strong>可扩展性</strong>：更强的视觉编码器或更强的 LLM 都持续提升性能，验证了 BLIP-2 作为通用框架的灵活性。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">范式四</div>
+  <div class="ch-title">Few-shot 学习：Flamingo</div>
+
+  <p>Flamingo（DeepMind, 2022）走了另一条路：冻结 LLM + 视觉注入 + few-shot prompting。</p>
+
+  <h3>三大架构创新</h3>
+
+  <ol>
+    <li><strong>Perceiver Resampler</strong>：将可变大小的视觉特征压缩为 64 个固定 token</li>
+    <li><strong>Gated XATTN-DENSE</strong>：在冻结 LM 层间插入 cross-attention 层，输出乘以 tanh(α)，α 初始化为 0，确保训练初期等价于原始 LLM</li>
+    <li><strong>Image-causal masking</strong>：每个 text token 只 cross-attend 到紧邻其前的图像，通过 LM self-attention 间接依赖之前所有图像</li>
+  </ol>
+
+  <h3>交错数据训练</h3>
+
+  <p>Flamingo 在 M3W 数据集（43M 网页的交错图文）上训练，这是 few-shot 能力的关键。加上 ALIGN（1.8B）、LTIP（312M）和 VTP（27M），Flamingo 在 6/16 任务上 few-shot 性能超越了 fine-tuned SOTA。</p>
+
+  <p>Flamingo 的 Perceiver Resampler 和 Gated XAttn 直接影响了 BLIP-2 的 Q-Former 设计。但 Q-Former 更轻量（32 vs 64 queries）且用两阶段训练替代单阶段，效率更高。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">范式五</div>
+  <div class="ch-title">指令微调：LLaVA</div>
+
+  <p>LLaVA（UW/Microsoft, 2023）将 NLP 的 instruction tuning 首次系统性扩展到多模态空间。</p>
+
+  <h3>极简架构</h3>
+
+  <p>CLIP ViT-L/14（冻结）→ 简单线性层（可训练）→ Vicuna LLM（可训练）。没有 Q-Former、没有 Perceiver，就是一个 MLP。</p>
+
+  <h3>GPT-4 生成训练数据</h3>
+
+  <p>LLaVA 用语言-only GPT-4 将 COCO 的 image-text pairs 转化为 158K 多模态指令跟随数据，包含三类：Conversation (58K)、Detail Description (23K)、Complex Reasoning (77K)。</p>
+
+  <p>反直觉发现：简单 MLP 连接器在很多任务上表现优异，说明连接器复杂度不是瓶颈——数据质量和 LLM 能力更关键。LLaVA 确立了 "CLIP encoder + MLP projector + LLM" 的 MLLM 基础架构范式。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">补充</div>
+  <div class="ch-title">细粒度对齐：GLIP</div>
+
+  <p>GLIP（Microsoft, 2022）从另一个维度推进 VLP：从图像级对齐到对象级。</p>
+
+  <p>核心洞察：目标检测 = 上下文无关的短语定位。GLIP 将检测器的分类头替换为 region-word 对齐得分（S = O · P<sup>T</sup>），统一了检测和定位任务。通过 deep fusion（图像-语言编码器间的交叉注意力）使视觉表征具有语言感知能力。</p>
+
+  <p>GLIP 用 self-training 为 24M web 图文对自动生成 grounding box（78.1M 伪标注），实现了 zero-shot COCO 检测 49.8 AP（超越监督 Faster R-CNN ResNet-101 的 42.0）。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">对比分析</div>
+  <div class="ch-title">连接器架构与方法对比</div>
+
+  <h3>连接器设计对比</h3>
+
+  <table>
+    <thead>
+      <tr><th>方法</th><th>连接器</th><th>可训练参数</th><th>训练策略</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Flamingo (2022)</td><td>Perceiver Resampler + Gated XAttn</td><td>1.4-10.2B</td><td>单阶段 (LM only)</td></tr>
+      <tr><td>BLIP-2 (2023)</td><td>Q-Former (信息瓶颈)</td><td>188M</td><td>两阶段 (ITC+ITG+ITM → LM)</td></tr>
+      <tr><td>LLaVA (2023)</td><td>MLP / Linear</td><td>极少</td><td>两阶段 (预训练对齐 + 指令微调)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>训练目标对比</h3>
+
+  <table>
+    <thead>
+      <tr><th>目标</th><th>使用者</th><th>作用</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ITC (Image-Text Contrastive)</td><td>CLIP, BLIP, BLIP-2, SigLIP</td><td>对齐视觉-语言表征空间</td></tr>
+      <tr><td>ITM (Image-Text Matching)</td><td>BLIP, BLIP-2</td><td>细粒度图文匹配</td></tr>
+      <tr><td>LM (Language Modeling)</td><td>BLIP, Flamingo, LLaVA</td><td>生成能力</td></tr>
+      <tr><td>ITG (Image-grounded Text Gen)</td><td>BLIP-2</td><td>视觉条件文本生成</td></tr>
+      <tr><td>Grounding Loss</td><td>GLIP</td><td>区域-词对齐</td></tr>
+    </tbody>
+  </table>
+
+  <h3>关键定量结果对比 (Zero-shot)</h3>
+
+  <table>
+    <thead>
+      <tr><th>模型</th><th>VQAv2</th><th>COCO Caption CIDEr</th><th>Flickr30K TR@1</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CLIP ViT-L (400M)</td><td>-</td><td>-</td><td>88.0</td></tr>
+      <tr><td>BLIP ViT-L (129M)</td><td>-</td><td>-</td><td>96.7</td></tr>
+      <tr><td>Flamingo-80B</td><td>56.3 (few-shot)</td><td>-</td><td>-</td></tr>
+      <tr><td>BLIP-2 (ViT-g + FlanT5-XXL)</td><td>65.0</td><td>121.6</td><td>97.6</td></tr>
+      <tr><td>GLIP-L (zero-shot COCO det)</td><td>-</td><td>-</td><td>- (49.8 AP)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">演进脉络</div>
+  <div class="ch-title">时间线与发展趋势</div>
+
+  <p><strong>2021</strong>：对比学习范式确立。CLIP 证明大规模对比学习可行，ALIGN 证明数据规模补偿质量。</p>
+
+  <p><strong>2022</strong>：统一架构 + Few-shot + 细粒度对齐。GLIP 从图像级推进到对象级；Flamingo 证明冻结 LLM 的 few-shot 学习；BLIP 统一理解与生成。</p>
+
+  <p><strong>2023</strong>：高效桥接 + 指令微调 + 训练优化。BLIP-2 的 Q-Former 确立冻结大模型 + 轻量桥接范式；LLaVA 引入视觉指令微调；SigLIP 优化训练效率。</p>
+
+  <p><strong>2024-2026</strong>：开源追平商业 + 统一理解生成。InternVL、Cambrian-1 等开源模型达到 GPT-4V 级性能；BAGEL 等工作探索统一 tokenizer 的理解+生成；多模态 Agent 能力和视频理解成为新前沿。</p>
+
+  <div class="callout"><strong>一句话总结</strong>：CLIP 解决了"能不能对齐"，BLIP 解决了"能不能同时理解和生成"，Q-Former 解决了"能不能用现成大模型高效桥接"，LLaVA 解决了"能不能像人一样对话式交互"。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">展望</div>
+  <div class="ch-title">开放问题与未来方向</div>
+
+  <ol>
+    <li><strong>连接器的最优设计</strong>：Q-Former vs MLP vs Perceiver？复杂连接器是否必要？</li>
+    <li><strong>视觉编码器的 scaling</strong>：ViT 参数远小于 LLM，视觉侧是否需要 scaling up？</li>
+    <li><strong>统一理解+生成</strong>：理解和生成是否需要统一的 tokenizer/架构？</li>
+    <li><strong>数据工程上限</strong>：CapFilt/self-training/合成数据的天花板在哪？</li>
+    <li><strong>视频理解</strong>：如何高效建模时序信息？帧级编码是否足够？</li>
+    <li><strong>多模态 Agent</strong>：VLM 如何与工具使用、规划、记忆等 Agent 能力融合？</li>
+  </ol>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">参考文献</div>
+  <div class="ch-title">核心论文列表</div>
+
+  <ol>
+    <li>Radford, A. et al. "Learning Transferable Visual Models From Natural Language Supervision." ICML 2021. (CLIP)</li>
+    <li>Li, J. et al. "BLIP: Bootstrapping Language-Image Pre-training for Unified Vision-Language Understanding and Generation." ICML 2022.</li>
+    <li>Li, J. et al. "BLIP-2: Bootstrapping Language-Image Pre-training with Frozen Image Encoders and Large Language Models." CVPR 2023.</li>
+    <li>Alayrac, J-B. et al. "Flamingo: a Visual Language Model for Few-Shot Learning." NeurIPS 2022.</li>
+    <li>Li, L.H. et al. "Grounded Language-Image Pre-training." CVPR 2022. (GLIP)</li>
+    <li>Zhai, X. et al. "Sigmoid Loss for Language Image Pre-Training." ICCV 2023. (SigLIP)</li>
+    <li>Liu, H. et al. "Visual Instruction Tuning." NeurIPS 2023. (LLaVA)</li>
+  </ol>
+</div>
