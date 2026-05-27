@@ -1,0 +1,150 @@
+---
+title: "SigLIP：用 Sigmoid Loss 解耦 batch size 与对比学习效率"
+description: "深入解读 SigLIP（ICCV 2023）：为什么 softmax-based InfoNCE 损失不是对比学习的最优选择，sigmoid pairwise loss 如何解耦 batch size 与损失函数，以及在 WebLI 10B 数据上的训练效率突破。"
+created_at: 2026-05-27T23:44:59
+updated_at: 2026-05-28T01:28:00
+tags: [VLP, SigLIP, 对比学习, sigmoid loss, CLIP, 训练效率]
+categories: [ai-research]
+subcategory: "Vision-Language Pre-training"
+mathjax: true
+hero_title: "SigLIP"
+hero_sub: "ICCV 2023 · Google DeepMind"
+hero_tagline: "Sigmoid loss 替代 softmax，解耦 batch size 与损失函数"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">10B</span><span class="label">训练数据 WebLI</span></div>
+  <div class="stat"><span class="num b">Sigmoid</span><span class="label g">损失函数</span></div>
+  <div class="stat"><span class="num">88%</span><span class="label">零样本 ImageNet</span></div>
+  <div class="stat"><span class="num b">batch-independent</span><span class="label l">训练特性</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">问题</div>
+  <div class="ch-title">CLIP 的训练有什么隐藏代价？</div>
+
+  <p>CLIP 用 softmax-based InfoNCE 损失做对比学习。这个损失函数有一个隐含的前提：<strong>batch size 必须足够大</strong>。因为 softmax 需要在 batch 内做全局归一化——batch 中的每个负样本都参与分母的计算。batch 越大，负样本越多，对比学习的信号越强。</p>
+
+  <p>OpenAI 报告 CLIP 训练需要 32,768 的 batch size。这对大多数研究机构来说是一个巨大的硬件门槛。</p>
+
+  <p>但这引发了一个自然的问题：<strong>对比学习的性能是否必然与 batch size 绑定？</strong>有没有一种损失函数，不需要大的 batch size 也能学到好的表征？</p>
+
+  <p>SigLIP 的回答是：有。把 softmax 换成 sigmoid。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">核心思想</div>
+  <div class="ch-title">Sigmoid Loss：最简单的二元分类</div>
+
+  <p>CLIP 的 InfoNCE 损失对每个图文对做的是<strong>多分类</strong>：从 batch 的 N 个文本中找到与当前图像匹配的那一个：</p>
+
+  <blockquote>
+    \(\mathcal{L}_{i2t} = -\frac{1}{N} \sum_{i=1}^N \log \frac{\exp(S_{ii}/\tau)}{\sum_{j=1}^N \exp(S_{ij}/\tau)}\)
+  </blockquote>
+
+  <p>问题在于分母：\(\sum_{j=1}^N \exp(S_{ij}/\tau)\) 需要遍历 batch 内所有 N 个样本。当 N 很大时，内存开销随 batch size 平方增长。</p>
+
+  <p>SigLIP 的改进极其简单——把多分类变成<strong>独立的二元分类</strong>：每个图文对独立判断"是否匹配"，不依赖 batch 内其他样本：</p>
+
+  <blockquote>
+    \(\mathcal{L} = -\frac{1}{n} \sum_{i=1}^{n} \log \frac{1}{1 + e^{z_{ij} \cdot (-t) + b}}\)
+  </blockquote>
+
+  <p>其中 \(z_{ij}\) 是图文对的相似度，\(t\) 是可学习温度参数，\(b\) 是可学习偏置。正样本对的标签为 -1，负样本对为 +1。</p>
+
+  <div class="callout"><strong>关键区别</strong>：sigmoid loss 的计算是 pairwise 的——每个图文对的损失只依赖自身，不需要 batch 内全局归一化。这意味着内存开销与 batch size 线性增长，而非平方增长。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">为什么有效</div>
+  <div class="ch-title">解耦 batch size 与损失函数</div>
+
+  <h3>Softmax 的问题</h3>
+
+  <p>Softmax-based 损失有一个隐含假设：batch 中的负样本代表了"所有可能的负样本"。当 batch 小的时候，这个假设不成立——模型看到的负样本太少，学到的表征不够robust。</p>
+
+  <h3>Sigmoid 的优势</h3>
+
+  <p>Sigmoid loss 不做全局归一化，每个图文对的梯度独立计算。这意味着：</p>
+
+  <ul>
+    <li><strong>小 batch 也能有效训练</strong>：不需要大量负样本"衬托"正样本</li>
+    <li><strong>内存友好</strong>：可以拿省下的显存来增大模型或增加数据量</li>
+    <li><strong>训练更稳定</strong>：不受 batch 内样本分布变化的影响</li>
+  </ul>
+
+  <h3>消融实验</h3>
+
+  <p>SigLIP 的消融实验系统性地对比了 sigmoid 和 softmax 在不同 batch size 下的表现：</p>
+
+  <ul>
+    <li>Batch size = 512：sigmoid 和 softmax 差距不大</li>
+    <li>Batch size = 16K-32K：sigmoid 开始超越 softmax</li>
+    <li>Batch size = 64K+：sigmoid 优势更明显</li>
+  </ul>
+
+  <p>更关键的发现：sigmoid loss 在小 batch size 下的性能<strong>远好于</strong> softmax 在小 batch size 下的性能。这意味着资源有限的研究者也能训练出有竞争力的模型。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">数据</div>
+  <div class="ch-title">WebLI：10B 规模的多语言图文数据</div>
+
+  <p>SigLIP 在 WebLI（Web Language Image）数据集上训练，规模达到 10B 图文对，覆盖 100+ 语言。这个数据规模远超 CLIP 的 400M 和 ALIGN 的 1.8B。</p>
+
+  <p>大模型 + 大数据 + sigmoid loss 的组合使得 SigLIP 在零样本 ImageNet 分类上达到了约 88% 的 top-1 准确率。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">定位</div>
+  <div class="ch-title">在 VLP 演进中的角色</div>
+
+  <p>SigLIP 的贡献是<strong>正交于架构创新的训练效率优化</strong>。它不改变模型架构（仍然是双塔对比学习），只改变损失函数。这意味着它的改进可以<strong>叠加</strong>到任何基于对比学习的 VLP 方法上。</p>
+
+  <p>后续影响：</p>
+
+  <ul>
+    <li>PaliGemma 等模型直接采用了 SigLIP 作为视觉编码器的训练方式</li>
+    <li>sigmoid loss 在需要大规模训练的场景中逐渐替代 softmax</li>
+    <li>"损失函数本身可以更高效"这个观点启发了后续对对比学习本质的重新思考</li>
+  </ul>
+
+  <p>如果从更高的视角看 VLP 的发展：CLIP 证明了"对比学习 + 大规模数据"的可行性，SigLIP 证明了"对比学习的损失函数还有很大的优化空间"。一个是证明题，一个是优化题。</p>
+</div>
+
+<div class="ch fade-in"><div class="ch-label">补强 · 机制图解</div><div class="ch-title">Sigmoid loss 为什么能改变训练效率？</div>
+<div class="photo">
+  <img src="assets/media/images/siglip-2023/siglip-loss.svg" alt="图 1：Sigmoid loss 为什么能改变训练效率？（代码绘制）" loading="lazy">
+  <div class="cap">图 1：Sigmoid loss 为什么能改变训练效率？（代码绘制）</div>
+</div><p>CLIP 的 InfoNCE 把每张图像和 batch 内所有文本做 softmax 归一化。这种做法让 batch size 变成训练质量的一部分：batch 越大，负样本越多，对比信号越强。但代价是显存和通信压力巨大，也让小规模实验很难接近大模型训练效果。SigLIP 的核心是把“从 N 个文本中找正确答案”的多分类问题，改写为“这个图文 pair 是否匹配”的二分类问题。每个 pair 独立计算 sigmoid loss，不再依赖 batch 全局归一化。这个改动看似小，却把训练瓶颈从 batch 全局竞争改成独立 pair 判断。</p>
+<div class="photo">
+  <img src="assets/media/images/siglip-2023/siglip-scaling.svg" alt="图 2：关键数据或机制展开（代码绘制）" loading="lazy">
+  <div class="cap">图 2：关键数据或机制展开（代码绘制）</div>
+</div>{{< mermaid >}}
+graph LR
+  A[输入] --> B[核心模块]
+  B --> C[对齐 / 压缩 / 训练]
+  C --> D[下游能力]
+  D --> E[实验验证]
+{{< /mermaid >}}<div class="photo">
+  <img src="assets/media/images/siglip-2023/siglip-results.svg" alt="图 3：关键结果摘要（代码绘制）" loading="lazy">
+  <div class="cap">图 3：关键结果摘要（代码绘制）</div>
+</div></div>
+
+<div class="ch fade-in"><div class="ch-label">补强 · 读法</div><div class="ch-title">为什么 SigLIP 是基础设施级改进？</div>
+<p>SigLIP 不像 BLIP-2 或 LLaVA 那样改变模型交互方式，它改变的是底层训练信号。正因为改动底层，它的影响反而更容易扩散：任何需要图文对比预训练的视觉塔，都可以考虑从 softmax InfoNCE 换成 sigmoid pairwise loss。</p>
+<p>softmax 的问题在于把所有负样本放进同一个归一化竞争中。这个机制在大 batch 下很强，但也把训练质量绑定到硬件规模。sigmoid loss 则把每个 pair 的匹配判断局部化，弱化 batch size 依赖。对工业训练来说，这意味着更灵活的并行策略；对研究者来说，这意味着较小 batch 下也有可用性能。</p>
+<p>把 SigLIP 放进 VLP 时间线，它对应的是“训练效率”这条支线。CLIP 证明对比学习有效，ALIGN 证明噪声数据可规模化，SigLIP 则证明损失函数仍有优化空间。后续 PaliGemma 等模型使用 SigLIP 视觉编码器，说明这种优化已经从论文点子变成基础组件。</p></div>
+
+
+<div class="ch fade-in"><div class="ch-label">论文原图更新</div><div class="ch-title">SigLIP 图片来源说明</div>
+<div class="photo"><img src="assets/media/images/siglip-2023/page-1-01.png" alt="SigLIP PDF page 1" loading="lazy"><div class="cap">图 A：SigLIP 论文首页，arXiv HTML 未提供 figure URL，arXiv source 不可解包，故使用 CVF PDF 高 DPI 渲染作为 fallback（来源：CVF Open Access PDF page 1）</div></div>
+<div class="photo"><img src="assets/media/images/siglip-2023/page-2-02.png" alt="SigLIP PDF page 2" loading="lazy"><div class="cap">图 B：SigLIP 正文页，包含 sigmoid loss 与 softmax loss 讨论上下文（来源：CVF Open Access PDF page 2，高 DPI 渲染 fallback）</div></div>
+<p>按新版协议，SigLIP 已尝试 arXiv HTML，但未提取到真实 figure URL；arXiv e-print 返回内容无法按 tar 解包，因此退回 CVF Open Access PDF 高 DPI 渲染。这里明确标注 fallback 原因，避免把代码绘制图冒充论文原图。SigLIP 的核心解释仍以正文公式和实验表格为准。</p></div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Zhai, X. et al. "Sigmoid Loss for Language Image Pre-Training." ICCV 2023. <a href="https://arxiv.org/abs/2303.15343" target="_blank">arXiv:2303.15343</a></li>
+  </ul>
+</div>

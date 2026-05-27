@@ -1,0 +1,215 @@
+---
+title: "BLIP：统一视觉-语言理解与生成的自举预训练"
+description: "深入解读 BLIP（ICML 2022）：MED 架构如何用一个模型同时擅长理解和生成，CapFilt 机制如何从噪声数据中自举高质量训练集，以及在检索、VQA、Captioning 等任务上的定量突破。"
+created_at: 2026-05-27T23:44:49
+updated_at: 2026-05-27T23:44:49
+tags: [VLP, BLIP, 多模态, 预训练, 自举, MED, CapFilt]
+categories: [ai-research]
+subcategory: "Vision-Language Pre-training"
+mathjax: true
+hero_title: "BLIP"
+hero_sub: "ICML 2022 · Salesforce Research"
+hero_tagline: "统一理解与生成，从噪声数据中自举高质量训练集"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3</span><span class="label">预训练目标</span></div>
+  <div class="stat"><span class="num b">+3.0</span><span class="label g">COCO TR@1 提升</span></div>
+  <div class="stat"><span class="num">94.8%</span><span class="label">Flickr30K TR@1</span></div>
+  <div class="stat"><span class="num b">129M</span><span class="label l">训练数据量</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">问题</div>
+  <div class="ch-title">CLIP 留下了什么遗憾？</div>
+
+  <p>CLIP 用对比学习证明了大规模图文对预训练的威力，但它有一个根本性的局限：<strong>只能编码，不能生成</strong>。CLIP 的双塔架构在图文检索上表现优异，却无法完成 image captioning 或 VQA 这类需要语言生成的任务。</p>
+
+  <p>更深层的问题是：当时的 VLP 模型面临一个"二选一"困境——encoder-only 模型（如 CLIP）擅长理解但不擅长生成；encoder-decoder 模型（如 SimVLM）擅长生成但在理解任务上不如纯编码器。能不能用一个模型同时做好这两件事？</p>
+
+  <p>BLIP 给出了一个优雅的答案。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">核心思想</div>
+  <div class="ch-title">MED：一个模型，三种模式</div>
+
+  <p>BLIP 的核心创新是 <strong>MED（Multimodal Mixture of Encoder-Decoder）</strong>。它不是三个独立模型，而是一个共享参数的多任务架构，通过切换 self-attention 的 mask 来实现三种功能模式：</p>
+
+  <h3>模式一：Unimodal Encoder</h3>
+  <p>标准 BERT 式文本编码器。文本和图像分别独立编码，用 <strong>ITC（Image-Text Contrastive）</strong>损失对齐视觉-语言表征空间。这一模式和 CLIP 的思路一致——让匹配的图文对在嵌入空间中更接近。</p>
+
+  <h3>模式二：Image-Grounded Text Encoder</h3>
+  <p>在 self-attention 和 FFN 之间插入 cross-attention 层，让文本能够"看到"图像特征。用 <strong>ITM（Image-Text Matching）</strong>损失做细粒度图文匹配——判断一张图和一段文本是否真正匹配，而非仅仅语义相近。</p>
+
+  <h3>模式三：Image-Grounded Text Decoder</h3>
+  <p>将双向 self-attention 替换为因果 self-attention（causal mask），变成自回归解码器。用 <strong>LM（Language Modeling）</strong>损失做条件文本生成。这是"理解"到"生成"的关键一步。</p>
+
+  <div class="callout"><strong>参数共享策略</strong>：embedding 层、cross-attention 层、FFN 在三种模式间完全共享。只有 self-attention 层分叉：编码模式用双向 mask，解码模式用因果 mask。这意味着模型学习到的是"通用的视觉-语言交互方式"，而非针对单一任务的特化表示。</div>
+
+  <h3>三个目标的协同</h3>
+
+  <table>
+    <thead>
+      <tr><th>目标</th><th>激活模式</th><th>作用</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ITC</td><td>Unimodal Encoder</td><td>对齐视觉-语言表征空间（全局对齐）</td></tr>
+      <tr><td>ITM</td><td>Image-Grounded Text Encoder</td><td>细粒度图文匹配（局部对齐）</td></tr>
+      <tr><td>LM</td><td>Image-Grounded Text Decoder</td><td>条件文本生成能力</td></tr>
+    </tbody>
+  </table>
+
+  <p>三者协同的逻辑是：ITC 先建立粗粒度的全局对齐，ITM 在此基础上做细粒度匹配，LM 则利用前两者学到的视觉-语言对应关系来生成文本。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">数据自举</div>
+  <div class="ch-title">CapFilt：从噪声中提炼信号</div>
+
+  <p>BLIP 解决的第二个问题是<strong>数据质量</strong>。Web 上爬取的图文对噪声严重——很多文本描述与图片内容毫不相关。直接用这些噪声数据训练是次优的。</p>
+
+  <p>CapFilt（Captioning and Filtering）的核心思想是<strong>自举</strong>：用预训练好的模型来改进训练数据，再用改进后的数据训练更好的模型。</p>
+
+  <h3>两个角色的分工</h3>
+
+  <ul>
+    <li><strong>Captioner</strong>：用 LM 目标微调 MED 的 decoder 模式。给它一张 web 图像，它生成一条合成 caption。这条 caption 可能比原始 web 文本更准确描述图片内容。</li>
+    <li><strong>Filter</strong>：用 ITC+ITM 微调 MED 的 encoder 模式。给它一条图像-文本对，它判断文本是否与图像匹配。噪声文本会被过滤掉。</li>
+  </ul>
+
+  <p>关键工程细节：Captioner 和 Filter <strong>必须独立训练</strong>。如果共享参数，Filter 会对自己生成的 caption 产生 confirmation bias——因为它"知道"这些 caption 来自自己的模型，倾向认为它们是好的，导致噪声不被过滤。</p>
+
+  <h3>数据流水线</h3>
+
+  <p>最终训练集 = 过滤后的原始 web caption + Captioner 生成的合成 caption + 人工标注数据（如 COCO）。这个数据集比原始 web 数据干净得多，训练出的模型自然更好。</p>
+
+  <div class="callout"><strong>局限</strong>：BLIP 只做了一轮 bootstrapping。理论上可以迭代多轮（更好的模型 → 更好的数据 → 更好的模型），但这篇论文没有探索。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验</div>
+  <div class="ch-title">定量结果：全面超越前代</div>
+
+  <h3>图文检索（COCO finetuned）</h3>
+
+  <table>
+    <thead>
+      <tr><th>模型</th><th>数据量</th><th>TR@1</th><th>IR@1</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ALBEF</td><td>14M</td><td>77.6</td><td>60.7</td></tr>
+      <tr><td>BLIP</td><td>14M</td><td>80.6 (+3.0)</td><td>63.1 (+2.4)</td></tr>
+      <tr><td>BLIP ViT-L</td><td>129M</td><td>82.4</td><td>65.1</td></tr>
+    </tbody>
+  </table>
+
+  <h3>零样本检索（Flickr30K）</h3>
+
+  <table>
+    <thead>
+      <tr><th>模型</th><th>TR@1</th><th>IR@1</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CLIP (400M)</td><td>88.0</td><td>68.7</td></tr>
+      <tr><td>BLIP (14M)</td><td>94.8</td><td>84.9</td></tr>
+      <tr><td>BLIP ViT-L (129M)</td><td>96.7</td><td>86.7</td></tr>
+    </tbody>
+  </table>
+
+  <p>注意数据效率的差距：BLIP 用 14M 数据在 Flickr30K 上达到 94.8% TR@1，远超 CLIP 用 400M 数据达到的 88.0%。这说明 CapFilt 的数据质量提升比单纯堆数据量有效得多。</p>
+
+  <h3>VQA</h3>
+
+  <table>
+    <thead>
+      <tr><th>模型</th><th>test-dev</th><th>test-std</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ALBEF (14M)</td><td>75.84</td><td>76.04</td></tr>
+      <tr><td>BLIP (14M)</td><td>77.54 (+1.70)</td><td>77.62</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Image Captioning（NoCaps overall）</h3>
+
+  <table>
+    <thead>
+      <tr><th>模型</th><th>CIDEr</th><th>SPICE</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>BLIP (14M)</td><td>105.1</td><td>14.4</td></tr>
+      <tr><td>BLIP CapFilt-L (129M)</td><td>109.6</td><td>14.7</td></tr>
+    </tbody>
+  </table>
+
+  <h3>零样本视频迁移</h3>
+
+  <p>BLIP 在视频任务上展现了惊人的零样本迁移能力，尽管它只用图像训练：</p>
+
+  <ul>
+    <li>MSRVTT text-to-video retrieval: 43.3 R@1（零样本超越所有微调方法）</li>
+    <li>MSRVTT-QA: 19.2 acc（零样本）</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">定位</div>
+  <div class="ch-title">在 VLP 演进中的角色</div>
+
+  <p>BLIP 的贡献可以从两个维度理解：</p>
+
+  <p><strong>架构维度</strong>：BLIP 是第一个在单一框架内统一理解（ITC/ITM）和生成（LM）的 VLP 模型。之前的模型要么做理解（CLIP），要么做生成（SimVLM），BLIP 证明了共享参数的多任务学习可以同时做好两者。它的 MED 架构直接启发了后续 BLIP-2 的 Q-Former 设计——Q-Former 本质上是 MED 思想在"冻结大模型"约束下的重新实现。</p>
+
+  <p><strong>数据维度</strong>：CapFilt 引入了"用模型改进数据，用数据训练模型"的自举范式。这个思想不仅影响了后续 BLIP-2 的数据策略，也成为了 VLP 领域的标准操作——用已有模型生成合成数据来训练新模型。</p>
+
+  <p>一个自然的疑问是：既然 MED 已经能同时做理解和生成，为什么还需要 BLIP-2？答案在于<strong>效率</strong>。BLIP 的 MED 仍然需要端到端训练整个模型，当视觉编码器和语言模型都变得越来越大时，计算成本变得不可接受。BLIP-2 的核心贡献就是解决这个效率问题。</p>
+</div>
+
+
+<div class="ch fade-in"><div class="ch-label">补强 · 架构图解</div><div class="ch-title">MED 与 CapFilt 的完整工作流</div>
+<div class="photo">
+  <img src="assets/media/images/blip-2022/blip-med.svg" alt="图 1：BLIP 的 MED 三模式示意，Unimodal Encoder / Image-Grounded Encoder / Image-Grounded Decoder 对应 ITC、ITM、LM 三个训练目标（代码绘制）" loading="lazy">
+  <div class="cap">图 1：BLIP 的 MED 三模式示意，Unimodal Encoder / Image-Grounded Encoder / Image-Grounded Decoder 对应 ITC、ITM、LM 三个训练目标（代码绘制）</div>
+</div>
+<p>把 BLIP 讲清楚，关键是不要把 MED 理解成普通 encoder-decoder。它更像一个共享底座上的三种运行模式：当任务需要全局对齐时，模型退化为双塔式编码器；当任务需要判断图文是否细节一致时，模型打开 cross-attention，让文本 token 直接读取视觉特征；当任务需要生成 caption 或回答时，模型把文本 self-attention 切换成因果结构，从左到右生成语言。</p>
+<p>这种设计的价值在于，理解任务和生成任务不再各自训练一套模型。ITC 提供全局语义空间，ITM 提供局部图文一致性，LM 提供语言生成能力。三个目标之间并不是简单并列，而是形成一种递进关系：先知道图和文本是否大体相关，再知道哪些局部细节对应，最后才能围绕图像生成可靠文本。</p>
+<div class="photo">
+  <img src="assets/media/images/blip-2022/blip-capfilt.svg" alt="图 2：CapFilt 数据自举流程，Captioner 生成更干净的合成 caption，Filter 过滤噪声 caption（代码绘制）" loading="lazy">
+  <div class="cap">图 2：CapFilt 数据自举流程，Captioner 生成更干净的合成 caption，Filter 过滤噪声 caption（代码绘制）</div>
+</div>
+<p>CapFilt 则补上了数据侧的缺口。web caption 的问题不是“有一点噪声”，而是很多文本根本不是图像内容描述，可能是广告、导航、文件名或上下文片段。BLIP 的做法是让 Captioner 重新描述图像，再让 Filter 判断原始 caption 和合成 caption 是否可信。最终训练集由人工标注、过滤后的原始文本和合成文本共同构成。</p>
+{{< mermaid >}}
+graph LR
+  A[Web 图文对] --> B[Captioner 生成 caption]
+  A --> C[Filter 过滤噪声]
+  B --> D[合成 caption]
+  C --> E[保留可信原始 caption]
+  D --> F[新训练集]
+  E --> F
+  G[COCO 人工标注] --> F
+  F --> H[训练最终 BLIP]
+{{< /mermaid >}}<div class="photo">
+  <img src="assets/media/images/blip-2022/blip-results.svg" alt="图 3：BLIP 的关键定量结果摘要，突出数据质量与统一架构带来的收益（代码绘制）" loading="lazy">
+  <div class="cap">图 3：BLIP 的关键定量结果摘要，突出数据质量与统一架构带来的收益（代码绘制）</div>
+</div>
+<p>实验结果也支持这个判断。Flickr30K zero-shot retrieval 中，BLIP 用 14M 数据达到 94.8 TR@1，而 CLIP 用 400M 数据为 88.0。这不是说数据规模不重要，而是说明“干净且任务相关的数据”可以抵消大量噪声规模的优势。BLIP 的局限也很明确：CapFilt 只做一轮自举，每张图只生成一条 caption，视频任务仍依赖简单帧采样，没有显式时序建模。</p></div>
+
+<div class="ch fade-in"><div class="ch-label">补强 · 读法</div><div class="ch-title">读 BLIP 时最容易忽略的三点</div>
+<p>第一，BLIP 并不是简单把 CLIP 和 captioning 模型拼在一起。它真正重构的是任务接口：同一套视觉语言表示可以被用于检索、匹配和生成，区别只在 attention mask 和训练目标。这种设计让后续模型可以把“理解任务”和“生成任务”放进同一条预训练流水线中，而不是每个任务独立建模。</p>
+<p>第二，CapFilt 的意义不只是数据增强，而是数据治理。传统思路面对 web 噪声时往往选择扩大规模，BLIP 则证明可以用模型本身参与数据清洗。Captioner 生成新的语言监督，Filter 控制噪声进入训练集的比例，这让模型训练进入一个闭环：模型改造数据，数据再改造模型。</p>
+<p>第三，BLIP 的局限也正是 BLIP-2 的动机。MED 虽然统一，但仍然是一个需要训练的大模型组件。当 LLM 时代到来后，重新训练语言能力变得不划算。更自然的做法是冻结现成 LLM，只训练视觉到语言的桥。BLIP-2 可以看作 BLIP 思想在大模型时代的参数高效版本。</p></div>
+
+
+<div class="ch fade-in"><div class="ch-label">论文原图更新</div><div class="ch-title">从 arXiv source 提取 BLIP 原始图</div>
+<div class="photo"><img src="assets/media/images/blip-2022/paper-fig-1.png" alt="BLIP MED 架构原图" loading="lazy"><div class="cap">图 A：MED 架构原图，展示 Image Encoder、Unimodal Text Encoder、Image-grounded Text Encoder、Image-grounded Text Decoder 与 ITC/ITM/LM 三目标（来源：BLIP arXiv source, MED.pdf；MiniMax MCP 已辅助理解）</div></div>
+<div class="photo"><img src="assets/media/images/blip-2022/paper-fig-2.png" alt="BLIP CapFilt 原图" loading="lazy"><div class="cap">图 B：CapFilt 数据自举流程原图，展示 captioner 与 filter 如何生成/过滤 caption（来源：BLIP arXiv source, BootCap.pdf）</div></div>
+<p>按照新版 read-article 协议，这里补入论文原始图。MiniMax 对图 A 的理解确认：该图展示的是 MED 架构而非 CapFilt，核心模块包括 Image Encoder、Unimodal Text Encoder、Image-grounded Text Encoder 和 Image-grounded Text Decoder；三个训练目标分别对应 ITC、ITM 与 LM。图 B 则用于解释数据自举流程，不能用代码示意图替代。</p></div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Li, J. et al. "BLIP: Bootstrapping Language-Image Pre-training for Unified Vision-Language Understanding and Generation." ICML 2022. <a href="https://arxiv.org/abs/2201.12086" target="_blank">arXiv:2201.12086</a></li>
+    <li>代码仓库: <a href="https://github.com/salesforce/BLIP" target="_blank">salesforce/BLIP</a></li>
+  </ul>
+</div>
