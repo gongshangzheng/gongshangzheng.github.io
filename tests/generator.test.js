@@ -530,6 +530,22 @@ window.MathJax = {
       'inline math delimiters are preserved for MathJax');
   },
 
+  'MathJax: inline dollar inside HTML attributes is ignored': () => {
+    const input = '<figure><img src="x.jpg" alt="课件：Z 变换定义与 $z=e^{sT}$ 关系" loading="lazy"></figure>';
+    const result = transformLatex(input);
+    assert(result.includes('alt="课件：Z 变换定义与 $z=e^{sT}$ 关系"'), 'alt attribute should remain intact');
+    assert(!result.includes('alt="课件：Z 变换定义与 <span'), 'must not inject math span inside alt attribute');
+    const afterImg = result.replace(/<img[^>]*>/g, '');
+    assert(!afterImg.includes('$z=e^{sT}$ 关系" loading="lazy">'), 'must not leak broken attribute text into body');
+  },
+
+  'MathJax: inline backslash-paren inside HTML attributes is ignored': () => {
+    const input = '<img src="x.jpg" alt="公式 \\(x+y\\) 示例"> <p>正文 \\(x+y\\)</p>';
+    const result = transformLatex(input);
+    assert(result.includes('alt="公式 \\(x+y\\) 示例"'), 'alt attribute should preserve raw paren math');
+    assert(result.includes('<p>正文 <span class="math-inline">\\(x+y\\)</span></p>'), 'text node math should still be wrapped');
+  },
+
   'MathJax: display double-dollar protected from inline pass': () => {
     const result = transformLatex('$$\\| r_k - z \\|_2$$');
     assert.equal(result, '<div class="math-block">$$\\| r_k - z \\|_2$$</div>');

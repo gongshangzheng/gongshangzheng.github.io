@@ -37,7 +37,7 @@ module.exports = { tests, name: 'mymodule' };
 
 | File | Tests |
 |------|-------|
-| generator | 57 |
+| generator | 59 |
 | parser | 28 |
 | plot-assets | 5 |
 | replace.test.js | 0 |
@@ -45,6 +45,6 @@ module.exports = { tests, name: 'mymodule' };
 
 ## Coverage
 
-**Total:** 117 tests across 5 modules.
+**Total:** 119 tests across 5 modules.
 
 See `docs/coverage.md` for per-module breakdown.
