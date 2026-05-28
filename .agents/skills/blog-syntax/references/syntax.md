@@ -23,6 +23,8 @@ $@KL Divergence$
 
 使用 `[[@文章标题]]` 或 `[[@文章标题 | 显示文字]]` 引用站内其他文章。
 
+> 站内文章交叉引用时，**优先使用标题引用**，而不是直接手写路径。仅在需要显式指定页面路径或页内锚点时，才使用 `[[path#anchor]]`。
+
 ```
 [[@ELF: Embedded Language Flows]]
 [[@ELF: Embedded Language Flows | ELF 论文]]
