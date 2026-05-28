@@ -53,6 +53,52 @@ page_style: |
   #daily-posts .post-list .date {
     flex-shrink: 0;
   }
+  .post-list-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .sort-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-family: 'LXGW Marker Gothic', system-ui, sans-serif;
+  }
+  .sort-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: 'LXGW Marker Gothic', system-ui, sans-serif;
+    transition: all 0.2s;
+  }
+  .sort-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .sort-btn.active {
+    background: var(--accent);
+    color: var(--bg-body);
+    border-color: var(--accent);
+  }
+  #sortable-posts .post-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border-light);
+  }
+  #sortable-posts .post-list li:last-child { border-bottom: none; }
+  #sortable-posts .post-list .date {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    min-width: 80px;
+  }
   .daily-badge {
     display: inline-block;
     font-size: 0.7rem;
@@ -81,24 +127,31 @@ hero_tagline: "Nietzsche está morto"
 </div>
 
 <div class="section">
-  <h2 class="section-title">Recent Posts</h2>
-  {{RECENT_POSTS}}
+  <div class="post-list-controls">
+    <span class="sort-label">排序：</span>
+    <button class="sort-btn" data-field="sub_id" data-dir="asc">子分类顺序 ↑</button>
+    <button class="sort-btn" data-field="created_at" data-dir="desc">创建时间 ↓</button>
+    <button class="sort-btn" data-field="updated_at" data-dir="desc">更新时间 ↓</button>
+    <button class="sort-btn" data-field="title" data-dir="asc">标题 A→Z</button>
+  </div>
+  <div id="sortable-posts"></div>
 </div>
 
 <div class="section">
-  <p><a href="./posts.html">View all posts →</a></p>
+  <p><a href="./posts/index.html">View all posts →</a></p>
 </div>
 
 <script>
 (function() {
-  // 基于日期的伪随机数生成器（Mulberry32）
-  function mulberry32(a) {
-    return function() {
-      a |= 0; a = a + 0x6D2B79F5 | 0;
-      var t = Math.imul(a ^ a >>> 15, 1 | a);
-      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-      return ((t ^ t >>> 14) >>> 0) / 4294967296;
-    };
+  var PICK_COUNT = 3;
+
+  // 基于日期和文章 ID 的确定性哈希
+  function dateIdHash(dateSeed, articleId) {
+    var h = dateSeed ^ (articleId * 2654435761);
+    h = (h ^ (h >>> 16)) * 0x45d9f3b;
+    h = (h ^ (h >>> 16)) * 0x45d9f3b;
+    h = h ^ (h >>> 16);
+    return (h >>> 0) / 4294967296;
   }
 
   // 获取当天日期作为种子
@@ -107,23 +160,54 @@ hero_tagline: "Nietzsche está morto"
     return now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
   }
 
-  // Fisher-Yates 洗牌算法（使用指定的随机函数）
-  function shuffle(array, rand) {
-    var arr = array.slice();
-    for (var i = arr.length - 1; i > 0; i--) {
-      var j = Math.floor(rand() * (i + 1));
-      var temp = arr[i];
-      arr[i] = arr[j];
-      arr[j] = temp;
-    }
-    return arr;
+  function formatDate(d) {
+    if (!d) return '';
+    return d.substring(0, 10).replace(/-/g, '/');
+  }
+
+  function renderPostList(posts, container) {
+    var html = '<ul class="post-list">';
+    posts.forEach(function(p) {
+      var date = formatDate(p.created_at);
+      html += '<li><span class="date">' + date + '</span><a href="./' + p.slug + '.html">' + p.title + '</a></li>';
+    });
+    html += '</ul>';
+    container.innerHTML = html;
+  }
+
+  function sortPosts(posts, field, dir) {
+    var sorted = posts.slice();
+    sorted.sort(function(a, b) {
+      var va = a[field];
+      var vb = b[field];
+      // sub_id: undefined 排最后，其余按数字/时间/标题排序
+      if (field === 'sub_id') {
+        if (va == null && vb == null) {
+          // 两者都没有 sub_id，按 created_at 降序作为 tie-break
+          var ta = a.created_at || '';
+          var tb = b.created_at || '';
+          return tb.localeCompare(ta);
+        }
+        if (va == null) return 1;  // 无 index 的排后面
+        if (vb == null) return -1;
+        var cmp = va - vb;
+        return dir === 'asc' ? cmp : -cmp;
+      }
+      if (va == null) va = '';
+      if (vb == null) vb = '';
+      if (va < vb) return dir === 'asc' ? -1 : 1;
+      if (va > vb) return dir === 'asc' ? 1 : -1;
+      // Tie-break: use created_at desc
+      var ta = a.created_at || '';
+      var tb = b.created_at || '';
+      return tb.localeCompare(ta);
+    });
+    return sorted;
   }
 
   // 加载并显示每日文章
   function loadDailyPosts() {
-    var PICK_COUNT = 3;
     var seed = getDateSeed();
-    var rand = mulberry32(seed);
 
     // 显示日期（格式：28 May）
     var now = new Date();
@@ -134,9 +218,14 @@ hero_tagline: "Nietzsche está morto"
     fetch('./post-index.json')
       .then(function(res) { return res.json(); })
       .then(function(posts) {
-        // 使用日期种子洗牌，取前N篇
-        var shuffled = shuffle(posts, rand);
-        var picked = shuffled.slice(0, PICK_COUNT);
+        // 为每篇文章计算基于日期的得分
+        var scored = posts.map(function(p) {
+          return { post: p, score: dateIdHash(seed, p.id) };
+        });
+
+        // 按得分降序排序，取前 N 篇
+        scored.sort(function(a, b) { return b.score - a.score; });
+        var picked = scored.slice(0, PICK_COUNT).map(function(s) { return s.post; });
 
         var html = '<ul class="post-list">';
         picked.forEach(function(p) {
@@ -152,10 +241,56 @@ hero_tagline: "Nietzsche está morto"
       });
   }
 
+  // 加载并初始化可排序的文章列表
+  function initSortablePosts() {
+    var container = document.getElementById('sortable-posts');
+    var btns = document.querySelectorAll('.sort-btn');
+    var allPosts = [];
+    var currentField = 'sub_id';
+    var currentDir = 'asc';
+    var PAGE_SIZE = 10;
+
+    function renderPage(sorted) {
+      var sliced = sorted.slice(0, PAGE_SIZE);
+      renderPostList(sliced, container);
+    }
+
+    fetch('./post-index.json')
+      .then(function(res) { return res.json(); })
+      .then(function(posts) {
+        allPosts = posts;
+        var sorted = sortPosts(allPosts, currentField, currentDir);
+        renderPage(sorted);
+        btns.forEach(function(b) {
+          if (b.dataset.field === currentField && b.dataset.dir === currentDir) {
+            b.classList.add('active');
+          }
+        });
+      })
+      .catch(function(err) {
+        console.error('Failed to load posts:', err);
+        container.innerHTML = '<p style="color:var(--text-muted)">Unable to load posts.</p>';
+      });
+
+    btns.forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        currentField = btn.dataset.field;
+        currentDir = btn.dataset.dir;
+        btns.forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        renderPage(sortPosts(allPosts, currentField, currentDir));
+      });
+    });
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', loadDailyPosts);
+    document.addEventListener('DOMContentLoaded', function() {
+      loadDailyPosts();
+      initSortablePosts();
+    });
   } else {
     loadDailyPosts();
+    initSortablePosts();
   }
 })();
 </script>
