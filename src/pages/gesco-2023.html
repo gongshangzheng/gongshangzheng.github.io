@@ -1,0 +1,547 @@
+---
+title: "GESCO: 扩散模型在语义通信中的噪声鲁棒训练"
+description: "ICASSP 2023 论文解读：GESCO 通过在训练时向语义图注入随机噪声，让扩散模型学会从损坏的语义图中重建高质量图像，在 PSNR=10dB 的极端噪声下仍能保持语义可识别。"
+created_at: 2026-05-28T13:54:42
+updated_at: 2026-05-28T13:54:42
+tags: ["语义通信", "扩散模型", "生成式AI", "图像传输", "抗噪声"]
+categories: ["AI"]
+subcategory: "Visual Tokenizer"
+mathjax: true
+hero_title: "GESCO"
+hero_sub: "Generative Semantic Communication · ICASSP 2023"
+hero_tagline: "扩散模型 + 语义通信 = 极端噪声下的图像重建"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.365</span><span class="label b">mIoU @ PSNR=10dB</span></div>
+  <div class="stat"><span class="num">36.66</span><span class="label g">FID×10 @ PSNR=10dB</span></div>
+  <div class="stat"><span class="num">0.666</span><span class="label l">mAP50 @ PSNR=10dB</span></div>
+  <div class="stat"><span class="num">70%</span><span class="label b">噪声训练比例</span></div>
+</div>
+
+<div class="info-box">
+  <h3>论文信息</h3>
+  <ul>
+    <li><strong>标题</strong>：Generative Semantic Communication: Diffusion Models Beyond Bit Recovery</li>
+    <li><strong>作者</strong>：Eleonora Grassucci, Sergio Barbarossa, Danilo Comminiello（罗马大学 Sapienza）</li>
+    <li><strong>会议</strong>：ICASSP 2023</li>
+    <li><strong>arXiv</strong>：<a href="https://arxiv.org/abs/2306.04321" target="_blank">2306.04321</a></li>
+    <li><strong>代码</strong>：<a href="https://github.com/ispamm/GESCO" target="_blank">ispamm/GESCO</a></li>
+  </ul>
+</div>
+
+<!-- ============================================================
+  第一章：问题背景
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第一章 · 范式转移</div>
+  <div class="ch-title">从比特精确到语义保留：通信目标的根本转变</div>
+
+  <p>传统图像传输追求的是什么？像素级精确恢复 —— 用 PSNR、SSIM 这些指标衡量重建图像与原始图像的差距。JPEG/JPEG2000 这类编码方案在设计时核心目标就是让接收端「看不出差别」。</p>
+
+  <p>但这个思路在真实通信场景中遇到了瓶颈：带宽永远不够用，信道噪声永远存在，而很多应用场景（自动驾驶、监控分析、远程医疗）其实根本不需要精确还原每一个像素——它们只需要知道「目标在哪里、是什么、深度是多少」。</p>
+
+  <p><strong>语义通信</strong>（Semantic Communication）范式应运而生：发送端不再传输原始像素，而是提取图像的语义信息（语义标签图），接收端用生成模型「想象」出符合语义的图像。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/edit_dif3_gsc.png" alt="语义通信 vs 传统比特传输" loading="lazy">
+    <div class="cap">图 1：语义通信的核心思想——从像素传输转向语义传输（来源：GESCO 论文 Fig.3 编辑版）</div>
+  </div>
+
+  <p>这条技术路径的关键里程碑是 SDM（Semantic Image Synthesis, Wang et al., 2022）—— 首个基于 DDPM 的语义图像合成框架。SDM 证明了：给定干净的语义标签图，扩散模型可以生成高质量图像。但 SDM 有一个致命假设：**输入语义图是干净的**。</p>
+
+  <div class="callout"><strong>核心矛盾</strong>：语义通信场景下，语义图要经过压缩和信道传输，必然会引入噪声。所有已有的 SIS 方法在噪声环境下完全失效。</div>
+</div>
+
+<!-- ============================================================
+  第二章：核心挑战
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第二章 · 挑战</div>
+  <div class="ch-title">为什么现有方法在噪声下彻底崩溃？</div>
+
+  <p>论文做了一个关键实验：将语义图用 AWGN 信道干扰（PSNR = 10 dB，相当于极强噪声），然后用已有 SIS 方法重建。结果触目惊心：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方法</th>
+          <th>mIoU ↑</th>
+          <th>LPIPS ↓</th>
+          <th>FID×10 ↓</th>
+          <th>视觉质量</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Full image (JPEG)</td>
+          <td>0.331</td>
+          <td>0.687</td>
+          <td>40.56</td>
+          <td>有噪声但可识别</td>
+        </tr>
+        <tr>
+          <td>SPADE</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td><strong style="color:#e74c3c">纯噪声</strong></td>
+        </tr>
+        <tr>
+          <td>CC-FPSE</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td><strong style="color:#e74c3c">纯噪声</strong></td>
+        </tr>
+        <tr>
+          <td>SDM</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td><strong style="color:#e74c3c">纯噪声</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>所有基于干净语义图的 SIS 方法，在 PSNR=10dB 下输出全是雪花/噪声。这意味着如果直接把 SDM 用于语义通信，一旦信道条件变差（现实中这是常态），系统立即失效。</p>
+
+  <p>为什么会这样？因为这些方法训练时从未见过「损坏的语义图」——它们在干净输入上学会了精妙的条件调制机制，但这个机制完全建立在输入可信的前提上。当语义标签被噪声侵蚀，SPADE 的归一化层会把噪声放大，扩散模型的条件注入机制将错误信息传播到每个生成步骤，最终输出不可控的噪声图像。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      关键观察
+    </div>
+    <div class="admonition-content">
+      <p>现有 SIS 方法的失败不是因为它们「不够强」，而是因为它们从未被训练处理损坏的语义输入。这是一个任务适配问题，不是能力问题。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第三章：核心方法
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第三章 · 方法</div>
+  <div class="ch-title">GESCO 核心设计：噪声鲁棒扩散模型</div>
+
+  <p>GESCO 的核心 insight 简单而有力：</p>
+
+  <div class="quote">
+    <p>「既然语义图已经被严重破坏，为什么不直接让生成模型学会从损坏的语义图中重建高质量图像？」</p>
+    <div class="who">— GESCO 论文核心论点</div>
+  </div>
+
+  <p>具体做法：在训练时，向语义图注入随机噪声（70% 的 batches），让扩散模型学会对噪声不敏感的语义表示。这本质上是一种数据增强（data augmentation）策略，但应用在条件生成模型的训练阶段，而非推理阶段。</p>
+
+  <h3>3.1 Pipeline 总览</h3>
+
+  <p>完整的数据流分发送端和接收端两部分：</p>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/x1.png" alt="GESCO 系统架构图" loading="lazy">
+    <div class="cap">图 2：GESCO 端到端语义通信 Pipeline（来源：GESCO 论文 Fig.1）</div>
+  </div>
+
+  <p><strong>发送端</strong>：</p>
+  <ol>
+    <li>原始图像经过预训练语义分割模型（DRN-D-105 / MaskFormer），提取语义标签图</li>
+    <li>语义图进行 one-hot 编码，然后用 BPG 压缩器做额外压缩</li>
+    <li>压缩后的语义码流通过 AWGN 信道传输（这里引入信道噪声）</li>
+  </ol>
+
+  <p><strong>接收端</strong>：</p>
+  <ol>
+    <li>BPG 解压，得到带噪语义图 $\tilde{\mathbf{s}}$</li>
+    <li>轻量级快速去噪预处理，恢复语义结构</li>
+    <li>噪声鲁棒扩散模型以去噪后的语义图为条件，执行 DDPM 逆向过程，生成重建图像 $\hat{\mathbf{x}}$</li>
+  </ol>
+
+  <h3>3.2 发送端：语义编码</h3>
+
+  <p>GESCO 使用两种标准数据集验证：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>数据集</th>
+          <th>图像尺寸</th>
+          <th>语义类别数</th>
+          <th>典型类别</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Cityscapes</td>
+          <td>256 × 512</td>
+          <td>35</td>
+          <td>道路、汽车、行人、建筑、植被</td>
+        </tr>
+        <tr>
+          <td>COCO-Stuff</td>
+          <td>256 × 256</td>
+          <td>183</td>
+          <td>人、动物、日常物品、背景材质</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>语义标签图的信息量远低于原始 RGB 像素：35-183 类的 one-hot 标签相比 256×512×3 的像素值，压缩效率大幅提升。Cityscapes 的语义图用 BPG 压缩后码率约 0.2 bpp，而原始 JPEG 压缩到同等视觉质量需要约 1.5 bpp。</p>
+
+  <h3>3.3 接收端：噪声鲁棒扩散模型</h3>
+
+  <p>这是 GESCO 的核心创新。架构基于 SDM（U-Net + SPADE 条件调制），但训练策略完全不同：</p>
+
+  <div class="def-box">
+    <h3>噪声注入训练</h3>
+    <p>训练时，对语义条件注入加性高斯噪声：</p>
+    <p style="text-align:center">$\mathbf{n} \sim \mathcal{N}(0, \sigma^2 \mathbf{I})$</p>
+    <p>噪声水平从 PSNR = {30, 25, 20, 15, 10, 1} dB 中均匀采样。</p>
+    <p>训练 batches 分配：30% 无噪声 + 70% 有噪声。</p>
+  </div>
+
+  <p>为什么 70% 有噪声？因为真实通信场景中噪声是常态而非例外。模型需要学会在各种噪声水平下保持语义一致性。</p>
+
+  <h3>3.4 数学基础</h3>
+
+  <p>扩散模型前向过程（加噪阶段）遵循：</p>
+
+  <p style="text-align:center">
+  $$q(\mathbf{x}_t | \mathbf{x}_{t-1}) = \mathcal{N}\bigl(\mathbf{x}_t; \sqrt{1-\beta_t} \mathbf{x}_{t-1}, \beta_t \mathbf{I}\bigr)$$
+  </p>
+
+  <p>其中 $\beta_t$ 是 schedule 参数，$t = 1, \ldots, T$。前向过程将图像逐渐变成纯噪声。</p>
+
+  <p>逆向过程（生成阶段）由参数化网络 $\epsilon_\theta$ 预测噪声：</p>
+
+  <p style="text-align:center">
+  $$p_\theta(\mathbf{x}_{t-1} | \mathbf{x}_t, \tilde{\mathbf{s}}) = \mathcal{N}\bigl(\mathbf{x}_{t-1}; \mu_\theta(\mathbf{x}_t, \tilde{\mathbf{s}}, t), \sigma_t^2 \mathbf{I}\bigr)$$
+  </p>
+
+  <p>其中 $\tilde{\mathbf{s}} = \mathbf{s} + \mathbf{n}$ 是带噪语义条件。</p>
+
+  <p>训练目标（噪声鲁棒版本的 DDPM 损失）：</p>
+
+  <p style="text-align:center">
+  $$L = \mathbb{E}_{\mathbf{x}, \mathbf{s}, t, \epsilon, \mathbf{n}} \left[ \|\epsilon - \epsilon_\theta(\mathbf{x}_t, \mathbf{s} + \mathbf{n}, t) \|^2 \right]$$
+  </p>
+
+  <p>核心区别：网络输入的语义条件是 $\mathbf{s} + \mathbf{n}$ 而不是 $\mathbf{s}$。这个看似微小的变化实际上彻底改变了模型的行为——它被迫学习噪声不敏感的语义表示。</p>
+
+  <p>总损失函数加入了语义一致性正则：</p>
+
+  <p style="text-align:center">
+  $$L_{total} = L_{recon} + \lambda \cdot L_{semantic}, \quad \lambda = 0.001$$
+  </p>
+
+  <p>这个正则项确保生成图像的语义分割结果与原始语义图保持一致，防止「生成看起来真实但语义错误」的幻觉。</p>
+
+  <h3>3.5 生成策略</h3>
+
+  <p>GESCO 使用 classifier-free guidance 提升条件一致性：</p>
+
+  <p style="text-align:center">
+  $$\hat{\epsilon} = (1+s)\epsilon_\theta(\mathbf{x}_t, \tilde{\mathbf{s}}, t) - s\epsilon_\theta(\mathbf{x}_t, \emptyset, t)$$
+  </p>
+
+  <p>其中 $s$ 是 guidance scale。Cityscapes 用 $s=2.0$，COCO-Stuff 用 $s=2.5$。无条件输入（空标签）以 15% 概率随机替换，训练时采用。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/x2.png" alt="GESCO 训练过程图示" loading="lazy">
+    <div class="cap">图 3：噪声注入训练策略示意（来源：GESCO 论文 Fig.2）</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第四章：实验结果
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第四章 · 实验</div>
+  <div class="ch-title">极端噪声下的鲁棒性验证</div>
+
+  <h3>4.1 噪声鲁棒性（核心结果）</h3>
+
+  <p>在 PSNR = 10 dB（严重噪声）下，完整对比结果：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方法</th>
+          <th>mIoU ↑</th>
+          <th>LPIPS ↓</th>
+          <th>FID×10 ↓</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Full image (JPEG)</td>
+          <td>0.331</td>
+          <td>0.687</td>
+          <td>40.56</td>
+        </tr>
+        <tr>
+          <td>SPADE</td>
+          <td colspan="3" style="text-align:center;color:#e74c3c;font-weight:bold">完全失败（纯噪声输出）</td>
+        </tr>
+        <tr>
+          <td>CC-FPSE</td>
+          <td colspan="3" style="text-align:center;color:#e74c3c;font-weight:bold">完全失败（纯噪声输出）</td>
+        </tr>
+        <tr>
+          <td>SDM</td>
+          <td colspan="3" style="text-align:center;color:#e74c3c;font-weight:bold">完全失败（纯噪声输出）</td>
+        </tr>
+        <tr style="background:rgba(46,204,113,0.15)">
+          <td><strong>GESCO</strong></td>
+          <td><strong>0.365</strong></td>
+          <td><strong>0.683</strong></td>
+          <td><strong>36.66</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>GESCO 不仅没有崩溃，还在所有指标上超过直接传输压缩图像的 baseline。这说明 <strong>语义表示的信息效率远高于像素表示</strong>——即使语义图被严重破坏，其携带的语义信息仍然足以指导高质量图像生成。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/x3.png" alt="各方法在 PSNR=10dB 下的视觉对比" loading="lazy">
+    <div class="cap">图 4：PSNR=10dB 下的视觉对比——GESCO 保持语义结构，竞品全部崩溃（来源：GESCO 论文 Fig.4）</div>
+  </div>
+
+  <h3>4.2 下游任务性能</h3>
+
+  <p>语义通信的最终目标不是「图像好看」，而是「下游任务能用」。论文在目标检测和深度估计两个任务上验证：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方法</th>
+          <th>目标检测 mAP ↑</th>
+          <th>目标检测 mAP50 ↑</th>
+          <th>深度估计 RMSE ↓</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Semantic Map only（纯语义图）</td>
+          <td>—</td>
+          <td>—</td>
+          <td>208.984</td>
+        </tr>
+        <tr>
+          <td>ControlNet</td>
+          <td>0.018</td>
+          <td>0.061</td>
+          <td>199.211</td>
+        </tr>
+        <tr>
+          <td>SMIS</td>
+          <td>0.230</td>
+          <td>0.451</td>
+          <td>44.102</td>
+        </tr>
+        <tr style="background:rgba(46,204,113,0.15)">
+          <td><strong>GESCO</strong></td>
+          <td><strong>0.390</strong></td>
+          <td><strong>0.666</strong></td>
+          <td><strong>14.530</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>GESCO 在目标检测上的 mAP50 达到 0.666，比 SMIS（0.451）高出 47.7%，比 ControlNet（0.061）高出 25 倍。深度估计 RMSE 仅为 14.530，相比纯语义图的 208.984 降低了 93%。</p>
+
+  <p>这些数字说明：GESCO 生成的图像在下游任务视角下，与原始图像几乎等效。这才是语义通信真正的价值所在。</p>
+
+  <h3>4.3 与端到端 JSCC 的对比</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/comparison_djscc_swinjscc.png" alt="GESCO 与 DJSCC/SwinJSCC 对比" loading="lazy">
+    <div class="cap">图 5：GESCO 与端到端 JSCC 方法（DJSCC、SwinJSCC）在不同信道 SNR 下的性能对比（来源：GESCO 论文 Fig.11）</div>
+  </div>
+
+  <p>与 Deep JSCC（DJSCC, Bourtouelis 2020）这类端到端方法相比，GESCO 在极低 SNR（10 dB 以下）时优势明显。DJSCC 追求像素精确恢复，在高噪声下被迫用大量带宽传输像素级细节；GESCO 只传输语义标签，信息量本来就少，即使被噪声侵蚀也能保留核心语义。</p>
+
+  <div class="info-box">
+    <h3>关键实验发现</h3>
+    <p>当 SNR ≥ 25 dB 时，GESCO 的下游任务性能与端到端 JSCC 方法相近，但所需传输信息量减少约 7 倍。这说明语义传输策略在高带宽场景下也有优势——节省的带宽可用于其他信道复用。</p>
+  </div>
+
+  <h3>4.4 关键训练配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>参数</th>
+          <th>Cityscapes</th>
+          <th>COCO-Stuff</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>图像尺寸</td><td>256 × 512</td><td>256 × 256</td></tr>
+        <tr><td>语义类别数</td><td>35</td><td>183</td></tr>
+        <tr><td>Guidance scale</td><td>2.0</td><td>2.5</td></tr>
+        <tr><td>学习率</td><td>0.0001</td><td>0.0001</td></tr>
+        <tr><td>Batch size</td><td>4</td><td>4</td></tr>
+        <tr><td>扩散步数 T</td><td>1000</td><td>1000</td></tr>
+        <tr><td>优化器</td><td>AdamW</td><td>AdamW</td></tr>
+        <tr><td>EMA decay</td><td>0.9999</td><td>0.9999</td></tr>
+        <tr><td>噪声训练比例</td><td>70%</td><td>70%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/x6.png" alt="不同噪声水平下的性能曲线" loading="lazy">
+    <div class="cap">图 6：GESCO 在不同信道 SNR 下的 mIoU 性能曲线（来源：GESCO 论文 Fig.7）</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第五章：技术脉络
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第五章 · 脉络</div>
+  <div class="ch-title">语义通信的技术演进：从 Shannon 到 Diffusion</div>
+
+  <p>理解 GESCO 需要放在更宏大的技术背景下：从经典信息论到深度语义通信。</p>
+
+  <h3>5.1 理论基础：Shannon 的分离原理</h3>
+
+  <p>Shannon（1948）在《A Mathematical Theory of Communication》中证明了：信源编码和信道编码可以独立设计，在无限码长下分别达到最优。这个「分离原理」统治了通信理论 70 年。</p>
+
+  <p>但分离原理有两个隐含假设：(1) 发送端和接收端共享完整的先验知识；(2) 任务目标是精确恢复原始消息。语义通信打破的是第二个假设——如果任务只需要语义信息，为什么要精确恢复像素？</p>
+
+  <h3>5.2 JSCC 的崛起</h3>
+
+  <p>Deep JSCC（Bourtouelis, 2020）是端到端联合信源信道编码的开创性工作。它用一个神经网络直接学习从原始图像到信道符号的映射，绕过了传统信源/信道编码的分离设计。</p>
+
+  <p>Deep JSCC 的问题是：它仍然在像素级别做恢复。当信道条件变差（如 SNR 低于 5 dB），模型会输出模糊的图像——因为它试图「猜测」每个像素该是什么。</p>
+
+  <h3>5.3 生成式语义通信</h3>
+
+  <p>GESCO 的技术路径可以被总结为：</p>
+
+  <div class="callout"><strong>语义优先 + 生成重建 + 噪声鲁棒训练</strong></div>
+
+  <p>这个组合产生了一个重要性质：<strong>GESCO 的重建质量不取决于像素恢复的精确度，而取决于语义信息的保留程度</strong>。即使语义图被噪声破坏，只要关键的语义结构（目标类别、空间布局）得以保留，生成模型就能「脑补」出高质量图像。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/x8.png" alt="语义通信技术脉络图" loading="lazy">
+    <div class="cap">图 7：语义通信从 Shannon 到 Diffusion 的演进路径（来源：GESCO 论文 Fig.9）</div>
+  </div>
+
+  <h3>5.4 后续发展</h3>
+
+  <p>GESCO 之后，语义通信+扩散模型方向出现了多个变体：</p>
+
+  <ul>
+    <li><strong>Q-GESCO（2025）</strong>：量化版本，支持资源受限的边缘设备</li>
+    <li><strong>DiSC-Med（2025）</strong>：医学图像传输的扩散语义通信，在 CT/MRI 图像上验证</li>
+    <li><strong>SIC（Stable Cascade）</strong>：将稳定扩散级联架构应用于语义通信</li>
+    <li><strong>SwinJSCC</strong>：将 Swin Transformer 集成到 JSCC 框架，提升对复杂场景的建模能力</li>
+  </ul>
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      关键技术继承关系
+    </div>
+    <div class="admonition-content">
+      <p>GESCO 直接继承了 SDM（2022）的 DDPM + SPADE 架构，但训练目标完全不同。SDM 的目标是「给定干净语义图生成最佳图像」，GESCO 的目标是「给定损坏语义图生成最接近真实的图像」。这个目标转换是整篇论文的核心贡献。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第六章：局限与展望
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第六章 · 反思</div>
+  <div class="ch-title">GESCO 的局限与未来方向</div>
+
+  <h3>6.1 已承认的局限</h3>
+
+  <ol>
+    <li><strong>语义分割模型的准确性是瓶颈</strong>：发送端的语义分割质量直接决定了接收端的上限。如果分割模型把「行人」误判为「车辆」，生成模型无论如何也重建不出正确的图像。</li>
+    <li><strong>语义类别有限</strong>：35-183 类可能无法覆盖所有场景细节。某些细粒度纹理（特定植物种类、微妙材质差异）在语义图上被合并为同一类别，生成模型也无法区分。</li>
+    <li><strong>不适合需要像素精确的场景</strong>：医学影像分析（需要精确的灰度值）、法医鉴定（需要精确的指纹细节）、数字艺术（需要精确的颜色信息）——这些场景下语义通信范式天然不适用。</li>
+    <li><strong>推理延迟</strong>：T=1000 步 DDPM 采样较慢，实时应用（如自动驾驶）需要 DDIM 或更快的采样器。</li>
+  </ol>
+
+  <h3>6.2 未解决的开放问题</h3>
+
+  <ul>
+    <li><strong>自适应语义粒度</strong>：能否根据信道条件动态调整语义图的粒度？带宽充足时用细粒度分割（200+ 类），带宽紧张时用粗粒度（20 类）？</li>
+    <li><strong>语义图的端到端学习</strong>：当前语义分割是预训练模型，不是端到端优化的。是否有方法让分割模型也学会「抗噪声」表示？</li>
+    <li><strong>多模态语义通信</strong>：当发送端有图像+文本+雷达等多模态信息时，语义编码如何融合？这在自动驾驶场景尤其重要。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="assets/media/images/gesco-2023/gesco-2023/x9.png" alt="更多实验结果" loading="lazy">
+    <div class="cap">图 8：GESCO 在更丰富场景下的生成结果（来源：GESCO 论文 Fig.10）</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  总结
+  ============================================================ -->
+<div class="section fade-in">
+  <div class="section-title">核心要点速查</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>问题</th>
+          <th>答案</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>GESCO 解决的核心问题</td>
+          <td>让扩散模型能在信道噪声干扰下，从损坏的语义图中重建高质量图像</td>
+        </tr>
+        <tr>
+          <td>核心创新</td>
+          <td>训练时对语义图注入随机噪声（70% batches），让模型学会噪声不敏感的语义表示</td>
+        </tr>
+        <tr>
+          <td>关键数值 @ PSNR=10dB</td>
+          <td>mIoU=0.365, LPIPS=0.683, FID×10=36.66, mAP50=0.666</td>
+        </tr>
+        <tr>
+          <td>技术继承</td>
+          <td>SDM（DDPM+SPADE）+ 语义通信范式 + 噪声注入训练</td>
+        </tr>
+        <tr>
+          <td>适用场景</td>
+          <td>车联网、监控分析、带宽受限通信、远程医疗影像</td>
+        </tr>
+        <tr>
+          <td>不适用的场景</td>
+          <td>需要像素精确恢复（如法医鉴定）、实时性要求极高（需等 T=1000 步）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2306.04321" target="_blank">GESCO 论文 — Generative Semantic Communication: Diffusion Models Beyond Bit Recovery</a>（ICASSP 2023）</li>
+    <li><a href="https://github.com/ispamm/GESCO" target="_blank">GESCO 官方代码仓库 — ispamm/GESCO</a></li>
+    <li><a href="https://arxiv.org/abs/2112.00726" target="_blank">SDM — Semantic Image Synthesis with Diffusion Model</a>（Wang et al., 2022）</li>
+    <li><a href="https://arxiv.org/abs/2004.02088" target="_blank">SPADE — Semantic Image Synthesis with Spatially-Adaptive Normalization</a>（Park et al., 2019）</li>
+  </ul>
+</div>

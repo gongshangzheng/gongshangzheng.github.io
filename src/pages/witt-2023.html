@@ -1,0 +1,296 @@
+---
+title: "WITT：基于 Swin Transformer 的无线图像语义传输"
+description: "首次将 Swin Transformer 引入深度 JSCC，提出 Channel ModNet 实现单模型多信道自适应，在 Kodak 数据集上比 CNN-JSCC 提升 2 dB，FLOPs 降低 61%。"
+created_at: 2026-05-28T13:54:49
+updated_at: 2026-05-28T14:30:00
+tags: ["语义通信", "深度 JSCC", "Swin Transformer", "无线图像传输", "信道自适应"]
+categories: ["AI"]
+subcategory: "Semantic Communication"
+mathjax: true
+css_modules: ["mermaid"]
+notify: true
+hero_title: "WITT"
+hero_sub: "无线图像传输 Transformer · 2022"
+hero_tagline: "用 Swin Transformer 重新定义语义通信时代的图像传输"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">背景</div>
+  <div class="ch-title">为什么图像传输需要新范式？</div>
+
+  <p>在无线通信系统中，传输图像面临一个根本矛盾：无线信道是<strong>时变的、噪声的、带宽受限的</strong>，而图像本身是高维的、语义丰富的。如果沿用传统的「信源压缩 + 信道编码」分离方案——先用 BPG/JPEG 压缩图像，再用 LDPC 编码比特——整个链路在低信噪比（SNR）区域会严重退化。</p>
+
+  <p>2019 年，$@Bourtsoulatze et al., 2019$ 提出了一个革命性思路：用<strong>深度联合信源信道编码（Deep JSCC）</strong>替代分离方案，让一个端到端神经网络同时学图像压缩和信道编码。这样做的好处是：编码器可以感知信道状态，动态调整传输策略，不需要单独的比特层面错误保护。</p>
+
+  <p>然而，早期的 Deep JSCC 构建在 <strong>CNN 架构</strong>上。CNN 的卷积核有天然的局部感受野限制：当图像分辨率从 32×32 提升到 512×768 再到 2K 时，CNN 的性能会「断崖式」退化——论文原文的说法是"degrades rapidly and falls behind separation-based schemes"。这不是信道编码本身的问题，而是<strong>图像特征提取能力到了瓶颈</strong>。</p>
+
+  <div class="callout"><strong>核心问题</strong>：CNN 的局部感受野无法捕捉图像 patch 之间的长距离依赖，而无线图像传输需要编码器理解整个图像的语义结构——哪些区域重要，哪些可以牺牲。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">架构</div>
+  <div class="ch-title">WITT 整体 Pipeline</div>
+
+  <p>WIT（Wireless Image Transmission Transformer）的设计哲学是：<strong>用 Transformer 的全局注意力替代 CNN 的局部卷积</strong>，同时在信道建模上保留 JSCC 的联合优化思路。具体来说，WITT 由三大组件构成：</p>
+
+  <ol>
+    <li><strong>编码器</strong>：基于 Swin Transformer 的层级化编码器，将图像 patch 序列逐步下采样并提取语义特征</li>
+    <li><strong>Channel ModNet</strong>：插入在编码器中间层的插件模块，根据 SNR 标量动态生成调制向量，对特征做 element-wise 缩放</li>
+    <li><strong>解码器</strong>：与编码器对称的 Swin Transformer 解码器，从被噪声污染的接收信号中恢复图像</li>
+  </ol>
+
+  <p>整个端到端流程用公式表达就是：</p>
+
+  <p style="text-align:center">$y = f_e(x; \phi)$  →  $\hat{y} = h \odot y + n$  →  $\hat{x} = f_d(\hat{y}; \theta)$</p>
+
+  <p>其中 $f_e$ 是编码器，$h$ 是信道状态向量，$n \sim \mathcal{N}(0, \sigma_n^2 I_k)$ 是高斯噪声，$f_d$ 是解码器。训练目标是 MSE：$\mathcal{L} = \mathbb{E}_{x, SNR} \{ \| x - \hat{x} \|^2 \}$。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/witt-2023/Fig1.png" alt="WITT 整体架构" loading="lazy">
+    <div class="cap">图 1：(a) WITT 整体架构；(b) 两个连续的 Swin Transformer Block（W-MSA 与 SW-MSA 交替）。（来源：WIT, arXiv 2211.00937, Fig.1）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">方法一</div>
+  <div class="ch-title">Swin Transformer：层级化视觉骨干</div>
+
+  <p>为什么选 Swin 而非 vanilla ViT？论文的考量很实际：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>ViT</th><th>Swin Transformer</th></tr></thead>
+      <tbody>
+        <tr><td>输出分辨率</td><td>单一分辨率（16×16 patch）</td><td>层级化（4 stages，输出多尺度）</td></tr>
+        <tr><td>计算复杂度</td><td>$O(H^2 W^2)$（全局注意力）</td><td>$O(HW)$（窗口注意力）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>功能</th><th>设计动机</th></tr></thead>
+      <tbody>
+        <tr><td>Patch Embedding</td><td>图像 → token 序列</td><td>适配 Transformer 输入格式</td></tr>
+        <tr><td>Swin Transformer Block</td><td>全局建模 + 跨窗口信息传递</td><td>线性复杂度 + 远距离依赖</td></tr>
+        <tr><td>Patch Merging</td><td>下采样 + 通道翻倍</td><td>构建特征金字塔</td></tr>
+        <tr><td>Channel ModNet</td><td>SNR → 调制向量 → 特征缩放</td><td>单模型多信道适应</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>移位窗口机制</strong>（Shifted Windows）是 Swin 的灵魂。Stage 内连续两个 Block：Block $k_i$ 使用常规窗口分区（8×8 像素窗口），Block $k_i+1$ 将窗口向右向上各偏移半个窗口宽度。这使得相邻层的 token 可以 attend 到对方的窗口，实现了跨窗口信息传递，同时保持线性复杂度 $O(HW)$。</p>
+
+  <p style="text-align:center">
+  $\hat{y}^{(k_i)}_i = W\text{-}MSA\big(LN(y^{(k_{i-1})}_i)\big) + y^{(k_{i-1})}_i$
+  </p>
+  <p style="text-align:center">
+  $y^{(k_i)}_i = MLP\big(LN(\hat{y}^{(k_i)}_i)\big) + \hat{y}^{(k_i)}_i$
+  </p>
+
+  <p>高分辨率图像（256×256 以上）需要 4 stages 配置：$[N_1, N_2, N_3, N_4] = [1, 1, 2, 6]$，$[C_1, C_2, C_3, C_4] = [128, 192, 256, 320]$，窗口大小为 8。分辨率越高，Transformer 的优势越明显——因为全局注意力可以从一开始就在高分辨率特征上建立长距离建模，而 CNN 需要堆叠很多层才能扩大感受野。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">方法二</div>
+  <div class="ch-title">Channel ModNet：让单模型「感知」信道</div>
+
+  <p>这是 WITT 最重要的创新。传统的 Deep JSCC 在训练时固定 SNR，部署时如果信道条件变了，就需要重新训练或微调。Channel ModNet 解决的是这个问题：<strong>让同一个模型自适应任意 SNR 条件</strong>，训练范围 [1, 13] dB，部署时任何中间值都行。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/witt-2023/Fig2.png" alt="Channel ModNet 架构" loading="lazy">
+    <div class="cap">图 2：Channel ModNet 架构，由 8 层 FC 与 7 个 SNR 调制（SM）模块级联构成。（来源：WIT, arXiv 2211.00937, Fig.2）</div>
+  </div>
+
+  <p>ModNet 的输入只有一个标量：当前 SNR 值。它的输出是一个 $M$ 维调制向量 $sm_j$，对中间特征做 element-wise 缩放：</p>
+
+  <p style="text-align:center">
+  $sm_j^{(1)} = ReLU\big(W^{(1)}_{sm} \cdot SNR_j + b^{(1)}_{sm}\big)$
+  </p>
+  <p style="text-align:center">
+  $\vdots$
+  </p>
+  <p style="text-align:center">
+  $sm_j^{(M)} = Sigmoid\big(W^{(M)}_{sm} \cdot sm_j^{(M-1)} + b^{(M)}_{sm}\big)$
+  </p>
+  <p style="text-align:center">
+  $\text{output} = \text{input} \odot sm_j$
+  </p>
+
+  <p>直觉解释：在低 SNR（信道噪声强）时，ModNet 学习生成什么样的调制向量，使编码器把更多「能量」分配给语义上更重要的特征，使解码器更关注这些特征——相当于让模型在资源受限条件下学会「优先级调度」。</p>
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      两阶段训练策略
+    </div>
+    <div class="admonition-content"><p>Stage 1：冻结 ModNet（设为恒等映射 $sm_j=1$），训练 Swin backbone 学图像编解码基础能力。Stage 2：解冻 ModNet，联合训练全部模块。这避免了 ModNet 初始阶段「破坏」已学到的特征表示。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验</div>
+  <div class="ch-title">性能验证：分辨率越高，优势越显著</div>
+
+  <p>论文在三个数据集上验证：CIFAR10（32×32）、Kodak（512×768）、CLIC2021（2K）。核心结论就一句话——<strong>分辨率越高，WITT 相对 CNN-JSCC 的优势越明显</strong>。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标</th><th>WITT（本文）</th><th>ADJSCC（CNN+Attention）</th><th>改善幅度</th></tr></thead>
+      <tbody>
+        <tr><td>推理时间（Kodak）</td><td><strong>116 ms</strong></td><td>155 ms</td><td>快 25%</td></tr>
+        <tr><td>FLOPs（Kodak）</td><td><strong>198 G</strong></td><td>511 G</td><td>降低 61%</td></tr>
+        <tr><td>参数量</td><td>28.2 M</td><td>16.2 M</td><td>+75%</td></tr>
+        <tr><td>PSNR（Kodak, SNR=10dB）</td><td><strong>~29 dB</strong></td><td>~27 dB</td><td>+2 dB</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/witt-2023/Fig3a.png" alt="CIFAR10 PSNR vs SNR" loading="lazy">
+    <div class="cap">图 3：PSNR 随 SNR 变化曲线（CIFAR10 数据集，AWGN 信道，CBR=1/3）。（来源：WIT, arXiv 2211.00937, Fig.3a）</div>
+  </div>
+
+  <p>值得注意的是：<strong>参数量更大的模型反而 FLOPs 更低</strong>。原因在于 Swin 的窗口注意力比 CNN 的密集卷积更高效——即使参数矩阵更大，每次前向传播的实际运算量也少得多。这在计算资源受限的边缘设备上是关键优势。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/witt-2023/Fig4a.png" alt="Kodak PSNR vs CBR" loading="lazy">
+    <div class="cap">图 4：PSNR 随通道带宽比（CBR）变化曲线（Kodak 数据集，AWGN 信道，SNR=10dB）。（来源：WIT, arXiv 2211.00937, Fig.4a）</div>
+  </div>
+
+  <p>从图 4 可以看到，在 Kodak（高分辨率）上：WITT 在所有 CBR 下系统性超越 CNN-JSCC，与 BPG+LDPC 方案相当。但论文坦诚承认——在高 SNR + 高 CBR 区域，WITT 的性能曲线斜率放缓，与「BPG + 理想容量可达」方案存在差距。这是模拟调制（analog transmission）的理论极限，不是架构问题。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/witt-2023/Fig5a.png" alt="视觉质量对比" loading="lazy">
+    <div class="cap">图 5：AWGN 信道（SNR=10dB）下的视觉重建质量对比，红色数字表示相比 WITT 额外消耗的带宽成本。（来源：WIT, arXiv 2211.00937, Fig.5a）</div>
+  </div>
+
+  <p>视觉上，WITT 避免了传统压缩方案的<strong>块效应（block artifacts）</strong>，重建出纹理和细节更丰富的高保真图像——这正是端到端联合优化带来的感知质量优势。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">机制</div>
+  <div class="ch-title">完整信号流程图</div>
+
+  <p>用 Mermaid 整理 WITT 的端到端数据流，帮助建立系统直觉：</p>
+
+  {{< mermaid >}}
+graph LR
+    A["RGB 图像<br/>x ∈ R^{H×W×3}"] --> B["Patch Embedding<br/>l₁ = H/2 × W/2 tokens"]
+    B --> C["Stage 1: N₁ Swin Blocks"]
+    C --> D["Patch Merging"]
+    D --> E["Stage 2: N₂ Swin Blocks"]
+    E --> F["Patch Merging"]
+    F --> G["Stage 3: N₃ Swin Blocks"]
+    G --> H["Patch Merging"]
+    H --> I["Stage 4: N₄ Swin Blocks"]
+    I --> J["Channel ModNet<br/>sm = f(SNR)"]
+    J --> K["FC Layer<br/>投影至 C 维"]
+    K --> L["功率归一化<br/>ȳ = y / √E{yᵀy}"]
+    L --> M["无线信道<br/>ŷ = h ⊙ y + n"]
+    M --> N["FC Layer<br/>接收端投影"]
+    N --> O["Channel ModNet<br/>解码端调制"]
+    O --> P["Patch Division + Stage 4 Swin"]
+    P --> Q["Stage 3 Swin"]
+    Q --> R["Stage 2 Swin"]
+    R --> S["Stage 1 Swin"]
+    S --> T["图像重建<br/>x̂ ∈ R^{H×W×3}"]
+  style A fill:#e1f5fe
+  style M fill:#fff3e0
+  style T fill:#e8f5e9
+  {{< /mermaid >}}
+
+  <p>注意 decoder 侧完全对称：每个 Stage 4-3-2-1 的 Swin Block 后接 Patch Division 上采样，最后恢复原图尺寸。整个系统用 MSE 端到端训练，无需预训练 ImageNet。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">分析</div>
+  <div class="ch-title">为什么 Swin 优于 CNN？一张图讲清楚</div>
+
+  <p>要理解这个问题，需要回到感受野的本质。CNN 的卷积核在局部窗口内提取特征——一个 3×3 卷积核的感受野只有 3×3（除非叠加多层）。即使堆叠 20 层卷积，感受野也只有几十个像素量级。高分辨率图像（如 512×768）中，相隔 200 像素的两个区域在 CNN 看来毫无关系。</p>
+
+  <p>Swin Transformer 则不同：它的自注意力机制让每个 patch 可以直接 attend 到图像中任意其他 patch——理论上全局建模能力等价于 ViT，但通过窗口分区把复杂度从 $O(H^2W^2)$ 压到 $O(HW)$。对于无线图像传输，这意味着：</p>
+
+  <ol>
+    <li><strong>语义优先编码</strong>：编码器可以识别图像中的「主体」（如人脸、物体轮廓），在信道条件差时优先传输这些区域的特征</li>
+    <li><strong>跨尺度特征融合</strong>：Stage 4 的特征有最强的语义信息，Stage 1 有最精细的空间信息，层级结构让解码器同时利用两者</li>
+    <li><strong>自适应压缩粒度</strong>：Patch Merging 的下采样策略允许模型在高 CBR（压缩比大）时更激进地丢弃低频细节</li>
+  </ol>
+
+  <div class="callout"><strong>关键洞察</strong>：CNN 在低分辨率图像（32×32 CIFAR10）上与 WITT 差距不大，但分辨率提升后性能差距急剧扩大——这说明 Transformer 的优势只有在「需要全局建模」时才显现，而这正是高分辨率无线传输的核心需求。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">复现</div>
+  <div class="ch-title">训练配置与复现要点</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>CIFAR10（低分辨率）</th><th>DIV2K（高分辨率）</th></tr></thead>
+      <tbody>
+        <tr><td>Stage 数</td><td>2</td><td>4</td></tr>
+        <tr><td>Blocks per stage</td><td>[2, 4]</td><td>[1, 1, 2, 6]</td></tr>
+        <tr><td>Channels per stage</td><td>[128, 256]</td><td>[128, 192, 256, 320]</td></tr>
+        <tr><td>Window size</td><td>2</td><td>8</td></tr>
+        <tr><td>Batch size</td><td>128</td><td>16</td></tr>
+        <tr><td>Learning rate</td><td colspan="2">$1 \times 10^{-4}$（Adam）</td></tr>
+        <tr><td>训练 SNR 范围</td><td colspan="2">[1 dB, 13 dB] 均匀分布</td></tr>
+        <tr><td>信道模型</td><td colspan="2">AWGN / Rayleigh 快衰落</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>训练图像预处理：对高分辨率数据集，随机裁剪为 256×256 patches。信道模拟在每个 batch 随机采样 SNR，让模型接触多样的信道条件，而非过拟合到特定 SNR 值——这是 Channel ModNet「泛化到未见 SNR」的关键。</p>
+
+  <div class="def-box">
+    <h3>通道带宽比（Channel Bandwidth Ratio）</h3>
+    <p>$R = \frac{C}{2 \times 3 \times 2^n \times 2^n}$</p>
+    <p>其中分子 $C$ 是编码后的复数符号维度（×2 因为 I/Q 两路），分母是原始图像的采样点数（RGB 3通道，$2^n \times 2^n$ 是每 stage 下采样后的分辨率）。$R$ 越小意味着压缩越狠。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">展望</div>
+  <div class="ch-title">局限性与后续研究方向</div>
+
+  <p>论文坦诚指出了三个主要局限：</p>
+
+  <ol>
+    <li><strong>高 SNR 性能放缓</strong>：在高信道质量（>13 dB）+ 高 CBR 时，性能曲线斜率降低，与「BPG + 容量可达」方案有差距。这是模拟调制的理论约束，而非架构缺陷。</li>
+    <li><strong>信道模型局限</strong>：仅验证了 AWGN 和 Rayleigh 快衰落，尚未覆盖城市信道（3GPP 模型）或卫星通信场景。</li>
+    <li><strong>无反馈机制</strong>：对比 $@Kurka & Gündüz, 2020$ 的 DeepJSCC-f，WITT 没有利用信道反馈，这在时变信道中可能影响性能。</li>
+  </ol>
+
+  <div class="info-box">
+    <h3>技术演进脉络</h3>
+    <ul>
+      <li><strong>2018</strong>：Farsad 等首次将 DNN 用于文本 JSCC</li>
+      <li><strong>2019</strong>：Bourtsoulatze 等提出 CNN-based 图像 JSCC</li>
+      <li><strong>2020</strong>：Kurka 引入反馈机制（DeepJSCC-f）</li>
+      <li><strong>2021</strong>：Xu 等提出 Attention JSCC（ADJSCC），支持多 SNR</li>
+      <li><strong>2021</strong>：Liu 等提出 Swin Transformer（ICCV Best Paper）</li>
+      <li><strong>2022</strong>：WIT = Swin + JSCC + ModNet（本文）</li>
+    </ul>
+  </div>
+
+  <p>后续研究方向包括：用扩散模型（Diffusion）替代 MSE 损失提升感知质量、引入信道反馈的 attention 机制、面向下游机器视觉任务的语义通信，以及将框架扩展到视频传输。</p>
+</div>
+
+<div class="section fade-in">
+  <div class="section-title">总结</div>
+
+  <p>WITT 的核心贡献是三件事：<strong>用 Swin Transformer 替代 CNN backbone、用 Channel ModNet 实现单模型多信道适应、用两阶段训练避免特征破坏</strong>。最终结果是在高分辨率图像上比 CNN-JSCC 高 3-5 dB PSNR，同时 FLOPs 降低 61%、推理速度快 25%。这个「更大参数、更高效率」的悖论，正是 Transformer 架构带来的计算密度优势。</p>
+
+  <p>对于实际应用，WITT 特别适合：高分辨率图像（256×256 以上）的无线传输、移动终端等多变信道条件、带宽受限的 XR 和自动驾驶场景。代码已在 GitHub 开源：<a href="https://github.com/KeYang8/WITT" target="_blank">KeYang8/WITT</a>。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2211.00937" target="_blank">WITT: A Wireless Image Transmission Transformer for Semantic Communications — Ke Yang et al., arXiv 2211.00937 (2022)</a></li>
+    <li><a href="https://arxiv.org/abs/2103.14030" target="_blank">Swin Transformer: Hierarchical Vision Transformer Using Shifted Windows — Liu et al., ICCV 2021</a></li>
+    <li><a href="https://github.com/KeYang8/WITT" target="_blank">GitHub: KeYang8/WITT — 官方开源代码</a></li>
+    <li><a href="https://arxiv.org/abs/2010.11929" target="_blank">An Image is Worth 16×16 Words: Transformers for Image Recognition at Scale — Dosovitskiy et al., ViT (2020)</a></li>
+    <li><a href="https://ieeexplore.ieee.org/document/8719230" target="_blank">Deep Joint Source-Channel Coding for Wireless Image Transmission — Bourtsoulatze et al., IEEE TCCN 2019</a></li>
+  </ul>
+</div>

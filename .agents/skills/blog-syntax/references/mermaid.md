@@ -36,9 +36,9 @@ graph TD
 ## 技术细节
 
 - **渲染方式**：运行时，Mermaid.js v11 CDN（`cdn.jsdelivr.net/npm/mermaid@11`）
-- **按需加载**：仅当页面包含 `class="mermaid"` 元素时注入 Mermaid.js
-- **主题**：自动匹配博客 dark 模式，使用 Mermaid dark 主题
-- **样式**：外层 `.mermaid-wrap` 提供圆角背景框和居中对齐
+- **按需加载**：仅当页面包含 `class="mermaid"` 元素时注入 Mermaid.js + `mermaid-init.js`
+- **主题**：双版本预渲染——每个图表同时生成 light 和 dark 两份 SVG，切换主题时 CSS 显隐，零重渲染
+- **样式**：外层 `.mermaid-dual` 提供圆角背景框和居中对齐；内部 `.mermaid-d` / `.mermaid-d--dark` 控制可见性
 - **缩进**：shortcode 内部支持任意缩进，构建时自动去除公共前导空白
 
 ## 注意事项
