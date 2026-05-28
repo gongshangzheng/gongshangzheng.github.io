@@ -151,7 +151,25 @@ function build() {
 
   // Clean
   if (fs.existsSync(PATHS.public)) {
-    fs.rmSync(PATHS.public, { recursive: true });
+    try {
+      fs.rmSync(PATHS.public, { recursive: true });
+    } catch (e) {
+      // ENOTEMPTY fallback: delete contents then directory
+      if (e.code === 'ENOTEMPTY') {
+        const rimraf = (p) => {
+          try {
+            const st = fs.statSync(p);
+            if (st.isDirectory()) {
+              fs.readdirSync(p).forEach(f => rimraf(path.join(p, f)));
+              fs.rmdirSync(p);
+            } else {
+              fs.unlinkSync(p);
+            }
+          } catch (_) {}
+        };
+        rimraf(PATHS.public);
+      }
+    }
   }
   fs.mkdirSync(PATHS.public, { recursive: true });
 
