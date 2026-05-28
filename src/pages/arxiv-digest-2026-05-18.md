@@ -8,7 +8,7 @@ categories: [AI]
 hero_title: "每日 arXiv 论文简报"
 hero_sub: "2026-05-18 · 0 篇论文"
 hero_tagline: "自动追踪 · LLM 总览 · 研究雷达"
-subcategory: ArXiv Digest
+subcategory: 论文每日摘要
 ---
 
 

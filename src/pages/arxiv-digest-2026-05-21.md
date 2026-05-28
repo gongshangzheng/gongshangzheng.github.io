@@ -9,7 +9,7 @@ categories: [AI]
 hero_title: "每日 arXiv 论文简报"
 hero_sub: "2026-05-21 · diffusion · autoregressive · image compression · visual tokenizer"
 hero_tagline: "自动追踪 · LLM 总览 · 研究雷达"
-subcategory: ArXiv Digest
+subcategory: 论文每日摘要
 ---
 
 
