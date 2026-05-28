@@ -32,7 +32,7 @@ tags: [blog, taxonomy, categories, subcategory]
 | | `大语言模型` | 大语言模型、SFT、Prompt、RLHF、Agent、越狱 |
 | | `多模态` | 多模态大模型、VLM、视觉语言模型 |
 | | `架构` | Transformer、MoE、蒸馏、数据集、框架、AI 编年 |
-| | `ArXiv 摘要` | 每日/每周 arXiv 摘要 |
+| | `论文每日摘要` | 每日/每周 arXiv 摘要 |
 | **编程** | `前端` | HTML/CSS/JS/PHP、前端框架、Web 开发 |
 | | `工具` | 编辑器(Emacs/Vim)、工具(Git/Hugo/Rime)、Agent 工具 |
 | | `算法` | 数据结构、算法笔记、复杂度分析 |

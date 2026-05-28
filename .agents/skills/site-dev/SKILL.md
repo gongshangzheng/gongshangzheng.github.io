@@ -219,7 +219,7 @@ date = 2025-01-01
 
 | Category | 文章数 | 主要 Subcategory |
 |----------|--------|-----------------|
-| AI | 91+ | Visual Tokenizer, Diffusion, Vision Models, LLM, Multimodal, Architecture, Autoregressive, Image Compression, RL, ArXiv Digest |
+| AI | 91+ | Visual Tokenizer, Diffusion, Vision Models, LLM, Multimodal, Architecture, Autoregressive, Image Compression, RL, 论文每日摘要 |
 | 课程 | 107+ | Math, Programming, DSP, 通信原理, 旋量代数, 概率论, IGA, 认知科学, 计算机系统, 高等数学, 线性代数, 数字信号处理, 论文写作 |
 | 编程 | 25+ | Frontend, Tools |
 | 历史 | 25+ | Chinese, World, Japanese, Military, Economic, Cultural |
