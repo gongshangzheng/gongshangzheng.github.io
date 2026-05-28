@@ -1,0 +1,428 @@
+---
+title: "激活函数：从 Sigmoid 到 GELU 的演化脉络"
+description: "系统梳理深度学习中激活函数的设计哲学与演化路径——从 Sigmoid/Tanh 的梯度消失困境，到 ReLU 的革命性突破，再到 Swish/GELU 的软门控与概率统一视角。"
+created_at: 2026-05-28T11:22:57
+updated_at: 2026-05-28T11:22:57
+tags: ["激活函数", "ReLU", "Swish", "GELU", "深度学习"]
+categories: ["课程"]
+subcategory: "机器学习"
+mathjax: true
+hero_title: "激活函数"
+hero_sub: "机器学习基础 · 核心组件"
+hero_tagline: "从生物模拟到概率门控——非线性如何决定网络的深度上限"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">8</span><span class="label">核心激活函数</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">范式转移</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">交互式函数图</span></div>
+  <div class="stat"><span class="num b">1</span><span class="label g">经典例题</span></div>
+</div>
+
+<div class="wrap">
+
+<!-- ===================== Part 0 ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 0 · 学习目标</div>
+  <div class="ch-title">激活函数在神经网络中的角色</div>
+  <p>激活函数（Activation Function）是神经网络中引入非线性的核心组件。没有它，无论堆叠多少层线性变换，整个网络仍然等价于一个单层仿射映射——这就是<strong>线性坍缩（Linear Collapse）</strong>。本节从一道选择题出发，沿着时间线梳理激活函数的设计演化：为什么 Sigmoid 会被 ReLU 取代？Swish 的非单调性有什么用？GELU 为什么成了 Transformer 的标配？</p>
+</div>
+
+<div class="info-box">
+  <h3>前置知识回顾</h3>
+  <ul>
+    <li><strong>链式法则</strong>：反向传播的数学基础。不熟悉的回去看 [[@神经网络模型 · L07]]。</li>
+    <li><strong>梯度消失/爆炸</strong>：深层网络中梯度逐层衰减或增长的现象。本节会反复遇到。</li>
+    <li><strong>Sigmoid 函数</strong>：$\sigma(x) = 1/(1+e^{-x})$，值域 $(0,1)$，二分类输出层的标准选择。</li>
+  </ul>
+</div>
+
+<!-- ===================== 引子：例题 ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">引子</div>
+  <div class="ch-title">一道关于 Swish 的选择题</div>
+
+  <div class="example-box">
+    <h3>例题：Swish 激活函数的特性</h3>
+    <p><strong>题目：</strong>Swish 激活函数定义为 $f(x) = x \cdot \sigma(x)$。相比于 ReLU，Swish 的主要特点是？</p>
+    <ol>
+      <li><strong>A.</strong> 它是非单调的</li>
+      <li><strong>B.</strong> 它是完全非负的</li>
+      <li><strong>C.</strong> 它的计算成本比 ReLU 低得多</li>
+      <li><strong>D.</strong> 它在负区间有平滑的曲线，可能保留更多信息</li>
+    </ol>
+    <p><strong>答案：D</strong></p>
+    <p><strong>逐项分析：</strong></p>
+    <ul>
+      <li><strong>A（非单调）</strong>：技术上正确——Swish 确实在 $x \approx -1.278$ 处有一个极小值点，函数先降后升，所以是非单调的。但"非单调"只是一个数学性质，没有揭示它为什么比 ReLU 更好。</li>
+      <li><strong>B（完全非负）</strong>：错误。Swish 在负半轴的输出小于零（在极小值附近约为 $-0.278$），所以不是完全非负的。</li>
+      <li><strong>C（计算成本更低）</strong>：错误。Swish 需要计算 Sigmoid，比 ReLU 的简单比较操作慢 3–5 倍。</li>
+      <li><strong>D（负区间平滑保留信息）</strong>：✅ 这是 Swish 的核心优势。ReLU 对所有负输入直接清零（硬门控），而 Swish 在负区间有一条平滑的曲线，允许小幅负值通过——这使得网络能在负值区域保留梯度流和特征信息，而不是一刀切。</li>
+    </ul>
+    <div class="callout"><strong>关键辨析</strong>：A 和 D 都在描述 Swish 的真实性质，但 D 更准确地概括了 Swish 相比 ReLU 的"主要"优势——它回答的是"为什么用 Swish 而不是 ReLU"这个工程决策问题。</div>
+  </div>
+
+  <p>这道题引出了本节的核心问题：激活函数的设计一直在<strong>非线性表达能力</strong>和<strong>梯度流动性</strong>之间寻找平衡。下面我们从历史脉络中追踪这个平衡点的移动。</p>
+</div>
+
+<!-- ===================== Part 1: 线性坍缩 ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 根本问题</div>
+  <div class="ch-title">为什么需要激活函数？</div>
+
+  <div class="def-box">
+    <h3>线性坍缩问题</h3>
+    <p>没有激活函数的多层线性网络，无论多少层，等价于单层线性变换：</p>
+    <p>$$\mathbf{h}^{(L)} = \mathbf{W}^{(L)} \cdots \mathbf{W}^{(2)} \mathbf{W}^{(1)} \mathbf{x} = \mathbf{W}^{(\text{equiv})} \mathbf{x}$$</p>
+    <p>多层复合被"坍缩"为一个矩阵乘法，表达能力与单层感知机无异。</p>
+  </div>
+
+  <p>激活函数的本质是向网络注入<strong>逐元素的非线性</strong>，使得多层复合不再可约化。从几何角度看，非线性对输入空间实施"扭曲"——将原本线性不可分的数据弯曲到新的特征空间中，使线性分类器（下一层的加权求和）能够分离。</p>
+
+  <div class="callout"><strong>直觉类比</strong>：想象你有一张揉皱的纸，上面画着两类无法用一条直线分开的点。你把纸展平（非线性变换）后，直线就能把两类点分开了。激活函数就是那个"展平"的操作。</div>
+</div>
+
+<!-- ===================== Part 2: Sigmoid/Tanh ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 早期方案</div>
+  <div class="ch-title">Sigmoid 与 Tanh：梯度消失的困境</div>
+
+  <div class="def-box">
+    <h3>Sigmoid 函数</h3>
+    <p>$$\sigma(x) = \frac{1}{1 + e^{-x}}, \quad \sigma'(x) = \sigma(x)(1 - \sigma(x))$$</p>
+    <ul>
+      <li><strong>值域</strong>：$(0, 1)$</li>
+      <li><strong>导数最大值</strong>：$\sigma'(0) = 0.25$</li>
+      <li><strong>饱和区</strong>：$|x|$ 较大时，导数趋近于 0</li>
+    </ul>
+  </div>
+
+  <div class="def-box">
+    <h3>Tanh 函数（双曲正切）</h3>
+    <p>$$\tanh(x) = 2\sigma(2x) - 1, \quad \tanh'(x) = 1 - \tanh^2(x)$$</p>
+    <ul>
+      <li><strong>值域</strong>：$(-1, 1)$，<strong>零中心</strong></li>
+      <li><strong>导数最大值</strong>：$\tanh'(0) = 1$（比 Sigmoid 的 0.25 好得多）</li>
+      <li><strong>改进</strong>：零中心输出缓解了 Sigmoid 的 zigzag 梯度更新问题</li>
+    </ul>
+  </div>
+
+  <p>两者的<strong>共同致命缺陷</strong>是<strong>梯度消失</strong>。在饱和区（$|x|$ 较大时），导数趋近于零。链式法则下，梯度逐层乘以一个 $\leq 0.25$（Sigmoid）或 $< 1$（Tanh）的因子，指数衰减。10 层 Sigmoid 网络的底层梯度约为 $0.25^9 \approx 10^{-5}$，底层权重几乎无法更新。</p>
+
+  <p>Sigmoid 还有一个额外问题：<strong>输出非零中心</strong>。$\sigma(x) > 0$ 对所有 $x$ 成立，导致梯度更新方向总保持同一符号，走"之字形"路径，收敛慢。</p>
+
+  {{< jsxgraph title="Sigmoid vs Tanh 函数图像" height="360" >}}
+  var b = JXG.JSXGraph.initBoard(el, {
+    boundingbox: [-6, 3.5, 6, -2.5],
+    showCopyright: false,
+    showNavigation: false
+  });
+  b.create('axis', [[0,0],[1,0]], { ticks: { drawLabels: true } });
+  b.create('axis', [[0,0],[0,1]], { ticks: { drawLabels: true } });
+
+  // Sigmoid
+  b.create('functiongraph', [function(x) {
+    return 1 / (1 + Math.exp(-x));
+  }], { strokeColor: '#e07b39', strokeWidth: 2.2, highlight: false, name: 'sigmoid' });
+
+  // Tanh
+  b.create('functiongraph', [function(x) {
+    return Math.tanh(x);
+  }], { strokeColor: '#2563eb', strokeWidth: 2.2, highlight: false, name: 'tanh' });
+
+  // y=0 and y=1 references
+  b.create('line', [[-6,0],[6,0]], { strokeColor: '#ccc', strokeWidth: 1, dash: 1, highlight: false });
+  b.create('line', [[-6,1],[6,1]], { strokeColor: '#e07b3955', strokeWidth: 1, dash: 2, highlight: false });
+  b.create('line', [[-6,1],[6,1]], { strokeColor: '#e07b3933', strokeWidth: 1, dash: 2, highlight: false });
+
+  // Legend
+  b.create('text', [3.5, 2.8, 'Sigmoid'], { fontSize: 13, color: '#e07b39' });
+  b.create('text', [3.5, 2.2, 'Tanh'], { fontSize: 13, color: '#2563eb' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>历史注记</strong>：Sigmoid 是 1986 年 Rumelhart 等人 BP 算法的默认选择，受生物神经元阈值效应启发。Tanh 曾长期作为 RNN/LSTM 门控机制的标配。两者在 2012 年 AlexNet 之后迅速被 ReLU 取代。</div>
+</div>
+
+<!-- ===================== Part 3: ReLU ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · ReLU 革命</div>
+  <div class="ch-title">简单分段线性为什么就够了？</div>
+
+  <div class="def-box">
+    <h3>ReLU（Rectified Linear Unit）</h3>
+    <p>$$\text{ReLU}(x) = \max(0, x) = \begin{cases} x & x > 0 \\ 0 & x \leq 0 \end{cases}$$</p>
+    <p>$$\text{ReLU}'(x) = \begin{cases} 1 & x > 0 \\ 0 & x < 0 \end{cases}$$</p>
+    <ul>
+      <li><strong>值域</strong>：$[0, +\infty)$</li>
+      <li><strong>正半轴导数恒为 1</strong>：梯度不衰减！</li>
+      <li><strong>计算成本</strong>：仅需一次比较操作，GPU 高效向量化</li>
+    </ul>
+  </div>
+
+  <p>ReLU 的革命性在于它<strong>从根本上解决了梯度消失</strong>。正半轴导数恒为 1，梯度可以无衰减地穿过任意深的网络。Glorot et al. (2011) 的实验表明，使用 ReLU 的网络比 Sigmoid/Tanh 快 6 倍以上收敛。</p>
+
+  <p>另一个优势是<strong>稀疏表征</strong>：约 50% 的神经元输出为零（假设输入分布对称），降低了过拟合风险和计算开销。这被解释为一种隐式的结构正则化。</p>
+
+  <div class="theorem-box">
+    <h3>Dead ReLU 问题</h3>
+    <p>ReLU 的核心缺陷：一旦某个神经元的输入在训练过程中始终为负（权重偏移过大或学习率过高），该神经元将永远输出 0，梯度永远为 0——它"死了"。实践中约 20%–40% 的神经元可能处于死亡状态。</p>
+    <p><strong>为什么仍被接受</strong>：稀疏子网络通常仍有足够的表达能力（lottery ticket hypothesis），且简单性带来的工程便利远大于损失。</p>
+  </div>
+
+  {{< jsxgraph title="ReLU 函数图像" height="300" >}}
+  var b = JXG.JSXGraph.initBoard(el, {
+    boundingbox: [-5, 5, 5, -1.5],
+    showCopyright: false,
+    showNavigation: false
+  });
+  b.create('axis', [[0,0],[1,0]], {});
+  b.create('axis', [[0,0],[0,1]], {});
+  b.create('functiongraph', [function(x) {
+    return x > 0 ? x : 0;
+  }], { strokeColor: '#059669', strokeWidth: 2.5, highlight: false });
+  b.create('text', [3, 4, 'ReLU'], { fontSize: 14, color: '#059669' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>历史里程碑</strong>：2012 年 AlexNet（Krizhevsky et al.）使用 ReLU 在 ImageNet 上大幅领先，引发深度学习革命。至今 ReLU 仍是大多数视觉 CNN 和简单 MLP 的默认选择。</div>
+</div>
+
+<!-- ===================== Part 4: ReLU 变体 ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · ReLU 变体群像</div>
+  <div class="ch-title">从 Dead ReLU 到自归一化</div>
+
+  <p>ReLU 的成功催生了一系列变体，各自针对特定缺陷进行改进：</p>
+
+  <div class="def-box">
+    <h3>Leaky ReLU</h3>
+    <p>$$\text{LeakyReLU}(x) = \begin{cases} x & x > 0 \\ \alpha x & x \leq 0 \end{cases}, \quad \alpha \in (0,1) \text{（通常 } 0.01 \text{）}$$</p>
+    <p>允许负轴有小幅非零梯度，消除 Dead ReLU。$\alpha$ 为超参数，需手动调。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>PReLU（Parametric ReLU）</h3>
+    <p>$$\text{PReLU}_a(x) = \begin{cases} x & x > 0 \\ a \cdot x & x \leq 0 \end{cases}$$</p>
+    <p>将 Leaky ReLU 的 $\alpha$ 设为<strong>可学习参数</strong>，让网络自动适应最优负轴斜率。He et al. (2015) 在 ResNet 中使用 PReLU 获得小幅提升。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>ELU（Exponential Linear Unit）</h3>
+    <p>$$\text{ELU}(x) = \begin{cases} x & x > 0 \\ \alpha(e^x - 1) & x \leq 0 \end{cases}$$</p>
+    <p>负半轴输出在 $[-\alpha, 0)$ 区间，使输出<strong>均值接近零</strong>（零中心），收敛更快。代价是包含 $e^x$，计算成本高于 ReLU。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>SELU（Scaled ELU）</h3>
+    <p>$$\text{SELU}(x) = \lambda \cdot \begin{cases} x & x > 0 \\ \alpha(e^x - 1) & x \leq 0 \end{cases}$$</p>
+    <p>其中 $\lambda \approx 1.0507$，$\alpha \approx 1.6733$（由 Banach 不动点定理推导）。通过激活函数本身实现<strong>自归一化</strong>——每层输出自动趋向均值 0、方差 1，无需 BatchNorm。但需要 LeCun 初始化 + Alpha Dropout，约束较多。</p>
+  </div>
+
+  <div class="table-wrap"><table><thead><tr><th>激活函数</th><th>正半轴导数</th><th>负半轴行为</th><th>输出中心</th><th>Dead Neuron</th><th>计算成本</th></tr></thead><tbody>
+    <tr><td>ReLU</td><td>1</td><td>硬清零</td><td>非零中心</td><td>有</td><td>极低</td></tr>
+    <tr><td>Leaky ReLU</td><td>1</td><td>小斜率 $\alpha x$</td><td>非零中心</td><td>无</td><td>极低</td></tr>
+    <tr><td>PReLU</td><td>1</td><td>可学习斜率</td><td>非零中心</td><td>无</td><td>极低</td></tr>
+    <tr><td>ELU</td><td>1</td><td>软饱和 $[-\alpha,0)$</td><td>接近零</td><td>无</td><td>中等</td></tr>
+    <tr><td>SELU</td><td>$\lambda$</td><td>缩放软饱和</td><td>零均值</td><td>无</td><td>中等</td></tr>
+  </tbody></table></div>
+</div>
+
+<!-- ===================== Part 5: Swish ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 搜索发现的突破</div>
+  <div class="ch-title">Swish：非单调性与自门控</div>
+
+  <p>2017 年，Google Brain 的 Ramachandran, Zoph & Le 使用<strong>强化学习自动搜索</strong>激活函数——搜索空间是基本数学运算的组合。最佳发现被命名为 <strong>Swish</strong>：</p>
+
+  <div class="def-box">
+    <h3>Swish（$\beta=1$ 时即 SiLU）</h3>
+    <p>$$\text{Swish}(x) = x \cdot \sigma(\beta x) = \frac{x}{1 + e^{-\beta x}}$$</p>
+    <p>$$\text{Swish}'(x) = \sigma(\beta x)\bigl(1 + \beta x(1 - \sigma(\beta x))\bigr)$$</p>
+    <ul>
+      <li>$\beta \to 0$：退化为 $f(x) = x/2$（线性）</li>
+      <li>$\beta \to +\infty$：退化为 $\text{ReLU}(x)$（硬阈值）</li>
+      <li>$\beta = 1$ 时：有唯一极小值点 $x \approx -1.278$，函数值约为 $-0.278$</li>
+    </ul>
+  </div>
+
+  <p>Swish 有三大核心特征：</p>
+
+  <p><strong>1. 非单调性。</strong>几乎所有主流激活函数都是单调递增的，但 Swish 在负区间先降后升，存在一个极小值"凹陷"。这使得网络能够对负输入产生<strong>抑制效应</strong>而非简单清零——在拟合峰值型分布等复杂目标时具有本质优势。这也正是例题选项 D 所描述的核心特性。</p>
+
+  <p><strong>2. 平滑性。</strong>Swish 处处 $C^\infty$ 可微，无 ReLU 在 $x=0$ 处的不可导"突变点"。光滑的损失面使梯度下降更稳定。</p>
+
+  <p><strong>3. 自门控（Self-Gated）。</strong>门控思想借鉴自 LSTM：用 Sigmoid 作为"软开关"调制主信号。但 Swish 的门控信号是 $x$ 自身，不需要额外参数：</p>
+  <p>$$\text{Swish}(x) = \underbrace{x}_{\text{主信号}} \cdot \underbrace{\sigma(\beta x)}_{\text{自门控}}$$</p>
+
+  {{< jsxgraph title="ReLU vs Swish 函数图像（交互式 β 滑块）" height="420" >}}
+  var b = JXG.JSXGraph.initBoard(el, {
+    boundingbox: [-5, 5, 5, -2],
+    showCopyright: false,
+    showNavigation: false
+  });
+  b.create('axis', [[0,0],[1,0]], {});
+  b.create('axis', [[0,0],[0,1]], {});
+
+  // beta slider
+  var beta = b.create('slider', [[-4.5, 4.2],[-1, 4.2],[0.1, 1, 5]], {
+    name: 'beta', snapWidth: 0.1, precision: 1
+  });
+
+  // ReLU
+  b.create('functiongraph', [function(x) {
+    return x > 0 ? x : 0;
+  }], { strokeColor: '#059669', strokeWidth: 2, dash: 2, highlight: false });
+
+  // Swish
+  b.create('functiongraph', [function(x) {
+    var bVal = beta.Value();
+    return x / (1 + Math.exp(-bVal * x));
+  }], { strokeColor: '#dc2626', strokeWidth: 2.5, highlight: false });
+
+  // Legend
+  b.create('text', [2, 4.2, function() { return 'Swish (beta=' + beta.Value().toFixed(1) + ')'; }], { fontSize: 13, color: '#dc2626' });
+  b.create('text', [2, 3.5, 'ReLU'], { fontSize: 13, color: '#059669' });
+  {{< /jsxgraph >}}
+
+  <p>拖动滑块观察 $\beta$ 的效果：$\beta$ 越大，Swish 越接近 ReLU；$\beta = 1$ 时可以看到明显的非单调凹陷。</p>
+
+  <div class="callout"><strong>实验数据</strong>：Mobile NASNet-A 从 ReLU 换成 Swish，ImageNet top-1 准确率提升 0.9%；Inception-ResNet-v2 提升 0.6%。提升在更深的网络上更显著。</div>
+</div>
+
+<!-- ===================== Part 6: GELU ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 概率统一视角</div>
+  <div class="ch-title">GELU：当激活函数遇到 Dropout</div>
+
+  <div class="def-box">
+    <h3>GELU（Gaussian Error Linear Unit）</h3>
+    <p>$$\text{GELU}(x) = x \cdot \Phi(x)$$</p>
+    <p>其中 $\Phi(x)$ 是标准正态分布的累积分布函数（CDF）：</p>
+    <p>$$\Phi(x) = \int_{-\infty}^{x} \frac{1}{\sqrt{2\pi}} e^{-t^2/2} \, dt$$</p>
+    <p><strong>快速近似</strong>（Hendrycks & Gimpel 2016，误差 $< 0.02\%$）：</p>
+    <p>$$\text{GELU}(x) \approx 0.5x\left(1 + \tanh\left(\sqrt{\frac{2}{\pi}}\left(x + 0.044715x^3\right)\right)\right)$$</p>
+  </div>
+
+  <p>GELU 最深刻的设计洞察在于它<strong>统一了 Dropout 和非线性变换</strong>：</p>
+
+  <div class="theorem-box">
+    <h3>Dropout → GELU：从硬门控到软门控</h3>
+    <p><strong>Dropout 的本质</strong>：以概率 $p$ 将输入随机置零，等价于 $x \cdot \xi$，其中 $\xi \sim \text{Bernoulli}(p)$。</p>
+    <p><strong>GELU 的本质</strong>：将 Bernoulli 随机变量替换为正态 CDF 的<strong>软概率加权</strong>——以输入值为阈值，从标准正态中采样，当采样值小于输入时"部分保留"。</p>
+    <p>两者都实现了"输入依赖的随机抑制"，只是一个用 $0/1$ 硬门控，一个用 $\Phi(x) \in (0,1)$ 软门控。</p>
+  </div>
+
+  <p>这个概率视角解释了为什么 GELU 和 Transformer 天然契合：Attention 本质上是概率加权（Query-Key 归一化），GELU 的概率加权形式与之一致。BERT/GPT 的示范效应进一步巩固了 GELU 在 NLP 中的统治地位。</p>
+
+  <div class="callout"><strong>与 Swish 的关系</strong>：Swish 使用 $\sigma(x)$ 做门控，GELU 使用 $\Phi(x)$ 做门控。$\sigma(x)$ 和 $\Phi(x)$ 的形状非常接近（两者都是 S 形曲线），但 $\Phi(x)$ 的概率含义更丰富。实践中 GELU 通常略优于 Swish，但计算上 Swish 更简单。</div>
+</div>
+
+<!-- ===================== Part 7: Mish ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 自正则化</div>
+  <div class="ch-title">Mish：平滑近似 ReLU 的另一条路</div>
+
+  <div class="def-box">
+    <h3>Mish</h3>
+    <p>$$\text{Mish}(x) = x \cdot \tanh(\text{softplus}(x)) = x \cdot \tanh\bigl(\ln(1 + e^x)\bigr)$$</p>
+    <p>其中 $\text{softplus}(x) = \ln(1 + e^x)$ 是 ReLU 的平滑近似。</p>
+  </div>
+
+  <p>Mish 借鉴了 Swish 的自门控思路，但用 $\tanh$ 替代 $\sigma$。关键优势是<strong>自正则化</strong>：$\tanh$ 的压缩效应在 $|x|$ 过大时自动抑制输出值，防止梯度爆炸，减少对 BatchNorm/LayerNorm 的依赖。</p>
+
+  <div class="table-wrap"><table><thead><tr><th>性质</th><th>ReLU</th><th>Swish</th><th>GELU</th><th>Mish</th></tr></thead><tbody>
+    <tr><td>单调性</td><td>单调</td><td>非单调</td><td>非单调</td><td>非单调</td></tr>
+    <tr><td>平滑性</td><td>$x=0$ 不连续</td><td>$C^\infty$</td><td>$C^\infty$</td><td>$C^\infty$</td></tr>
+    <tr><td>门控机制</td><td>无</td><td>$\sigma(x)$</td><td>$\Phi(x)$</td><td>$\tanh(\text{softplus})$</td></tr>
+    <tr><td>自正则化</td><td>无</td><td>无</td><td>无</td><td>有</td></tr>
+    <tr><td>负值处理</td><td>硬清零</td><td>软保留</td><td>软保留</td><td>软保留+压缩</td></tr>
+    <tr><td>计算成本</td><td>极低</td><td>中等</td><td>中高</td><td>中等</td></tr>
+  </tbody></table></div>
+</div>
+
+<!-- ===================== Part 8: 设计哲学 ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 8 · 三次范式转移</div>
+  <div class="ch-title">激活函数设计哲学的演化</div>
+
+  <p>从 Sigmoid 到 GELU，激活函数的设计经历了三次根本性的范式转移：</p>
+
+  <div class="info-box">
+    <h3>三次范式转移</h3>
+    <ul>
+      <li><strong>① 生物模拟 → 数学优化</strong>（Sigmoid/Tanh → ReLU）：从模拟神经元阈值行为，转向追求梯度流动性和计算效率。核心矛盾从"像不像生物"变成"梯度能不能流过去"。</li>
+      <li><strong>② 硬阈值 → 软门控</strong>（ReLU → Swish/GELU）：从简单的 $0/1$ 分段线性，转向概率加权的连续门控。负值从"一刀切"变成"按需保留"。</li>
+      <li><strong>③ 单一目标 → 多目标协同</strong>：ReLU 的"简单即正义" vs. GELU 的"概率一致性" vs. Mish 的"自正则化"。工程实践中的成熟体现。</li>
+    </ul>
+  </div>
+
+  <p>贯穿始终的底层矛盾是<strong>非线性</strong>与<strong>梯度流动性</strong>的张力——非线性越强（表达能力越强），梯度越容易在某个区域衰减或爆炸。每一种新激活函数都是在重新校准这个平衡点。</p>
+</div>
+
+<!-- ===================== Part 9: 实践指南 ===================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 9 · 实践选择指南</div>
+  <div class="ch-title">不同场景下该选哪个？</div>
+
+  <div class="table-wrap"><table><thead><tr><th>任务类型</th><th>推荐</th><th>理由</th></tr></thead><tbody>
+    <tr><td>图像分类（CNN）</td><td>ReLU / GELU</td><td>GELU 在 ViT 中占优；ReLU 仍是经典 CNN 性价比之选</td></tr>
+    <tr><td>NLP / Transformer</td><td>GELU</td><td>BERT/GPT 示范效应，与 Attention 概率本质契合</td></tr>
+    <tr><td>语音识别</td><td>Leaky ReLU / ELU</td><td>需要处理连续音频中的负振幅</td></tr>
+    <tr><td>自编码器 / VAE</td><td>Leaky ReLU / ELU</td><td>重建任务需要保留负值信息</td></tr>
+    <tr><td>GAN 生成器</td><td>ReLU / Leaky ReLU</td><td>稀疏激活保持多样性</td></tr>
+    <tr><td>GAN 判别器</td><td>Leaky ReLU</td><td>需处理全范围输出</td></tr>
+    <tr><td>深度强化学习</td><td>ReLU</td><td>计算效率优先</td></tr>
+    <tr><td>搜索到的新架构</td><td>Swish / Mish</td><td>算力充足时即插即用替代 ReLU</td></tr>
+  </tbody></table></div>
+
+  <div class="callout"><strong>经验法则</strong>：不确定就用 ReLU——它仍然是 80% 场景下最安全的选择。如果你的网络足够深（Transformer 级别），试试 GELU。如果你在做 NAS 或有充足算力做消融实验，Swish/Mish 值得尝试。</div>
+</div>
+
+<!-- ===================== 复习速查 ===================== -->
+<div class="review-box">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>为什么需要激活函数</strong>：没有非线性，多层网络坍缩为单层线性变换。</li>
+    <li><strong>Sigmoid/Tanh 的问题</strong>：梯度消失（饱和区导数趋零）+ Sigmoid 输出非零中心。</li>
+    <li><strong>ReLU 的突破</strong>：正半轴导数恒为 1，梯度不衰减。缺陷：Dead ReLU。</li>
+    <li><strong>ReLU 变体</strong>：Leaky ReLU（小负斜率）→ PReLU（可学习斜率）→ ELU（零中心）→ SELU（自归一化）。</li>
+    <li><strong>Swish 三大特征</strong>：非单调性（负区间凹陷）、平滑性（$C^\infty$）、自门控（$x \cdot \sigma(x)$）。</li>
+    <li><strong>GELU 核心洞察</strong>：$x \cdot \Phi(x)$ = Dropout 的软门控版本。Transformer 标配。</li>
+    <li><strong>Mish</strong>：$x \cdot \tanh(\text{softplus}(x))$，额外具有自正则化能力。</li>
+    <li><strong>三次范式转移</strong>：生物模拟→数学优化，硬阈值→软门控，单目标→多目标协同。</li>
+  </ul>
+</div>
+
+<!-- ===================== 参考来源 ===================== -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Rumelhart et al. (1986) — Learning representations by back-propagating errors. <em>Nature</em>.</li>
+    <li>Glorot & Bengio (2011) — Understanding the difficulty of training deep feedforward neural networks.</li>
+    <li>Krizhevsky et al. (2012) — ImageNet Classification with Deep Convolutional Neural Networks (AlexNet).</li>
+    <li>Clevert et al. (2016) — Fast and Accurate Deep Network Learning by Exponential Linear Units (ELU).</li>
+    <li>Hendrycks & Gimpel (2016) — Gaussian Error Linear Units (GELUs). arXiv:1606.08415.</li>
+    <li>Ramachandran, Zoph & Le (2017) — Searching for Activation Functions (Swish). Google Brain.</li>
+    <li>Klambauer et al. (2017) — Self-Normalizing Neural Networks (SELU).</li>
+    <li>Devlin et al. (2018) — BERT: Pre-training of Deep Bidirectional Transformers.</li>
+    <li>Misra (2019) — Mish: A Self Regularized Non-Monotonic Activation Function. BMVC 2020.</li>
+    <li>课程课件：25C07 第 5–13 页（神经元、激活函数、输出单元）— [[@神经网络模型 · L07]]</li>
+  </ul>
+</div>
+
+<!-- ===================== 章节导航 ===================== -->
+<div class="chapter-nav">
+  <a class="nav-card" href="advanced-ml-l07-neural-network-models.html">
+    <span class="nav-label">上一章</span>
+    <span class="nav-title">神经网络模型 · L07</span>
+  </a>
+  <a class="nav-card current" href="advanced-ml-course.html">
+    <span class="nav-label">枢纽页</span>
+    <span class="nav-title">高级机器学习</span>
+  </a>
+  <a class="nav-card" href="损失函数.html">
+    <span class="nav-label">相关主题</span>
+    <span class="nav-title">损失函数</span>
+  </a>
+</div>
+
+</div>
