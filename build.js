@@ -9,7 +9,7 @@ const path = require('path');
 const { CONFIG, RECENT_COUNT, PATHS } = require('./lib/config');
 const { parseFrontmatter, parseListField } = require('./lib/parser');
 const { copyDir, walkDir } = require('./lib/utils');
-const { buildArticles, buildPostsPage, buildTaxonomyPages, buildSearch, buildIndex } = require('./lib/generator');
+const { buildArticles, buildPostsPage, buildTaxonomyPages, buildSearch, buildIndex, buildRss } = require('./lib/generator');
 
 // Run unit tests before build (non-blocking)
 // Tests must pass before building — exit on failure
@@ -183,6 +183,7 @@ function build() {
   buildTaxonomyPages(PATHS, allPosts, buildContext);
   buildSearch(PATHS, allPosts);
   buildIndex(PATHS, allPosts);
+  buildRss(PATHS, allPosts, buildContext);
 
   console.log('\n✅ Build complete!');
 }
