@@ -293,6 +293,31 @@ graph TD
 
 构建时转为 `<div class="mermaid-wrap"><pre class="mermaid">...</pre></div>`，页面加载时由 Mermaid.js 渲染为 SVG。仅在页面包含 mermaid 元素时加载 Mermaid.js CDN。详见 `references/syntax.md`。
 
+### 多语言代码块（`.code-tabs`）
+
+```html
+<div class="code-tabs">
+  <div class="code-tabs-header">
+    <button class="code-tab-btn active" data-tab="python">Python 3</button>
+    <button class="code-tab-btn" data-tab="cpp">C++17</button>
+  </div>
+  <div class="code-tab-content active" data-panel="python">
+    <pre><code class="language-python"># Python 代码</code></pre>
+  </div>
+  <div class="code-tab-content" data-panel="cpp">
+    <pre><code class="language-cpp">// C++ 代码</code></pre>
+  </div>
+</div>
+```
+
+**规则**：
+- `data-tab` 和 `data-panel` 值必须配对（如 `python`/`python`）
+- 第一个按钮和面板加 `active` class 作为默认显示
+- 代码块照常使用 `language-*` class，Prism.js 自动高亮
+- 支持 2 个以上的语言 tab，按需添加按钮和面板即可
+
+适用：题解、教程等需要展示多语言实现的场景。普通的单语言代码块继续用 `<pre><code>` 即可。
+
 ---
 
 ## 行内语法
@@ -361,6 +386,7 @@ graph TD
 | `.divider` | 装饰分隔线 |
 | `.sources` | 参考来源（必须用此组件） |
 | `.table-wrap` | 响应式表格容器 |
+| `.code-tabs` | 多语言代码块 tab 切换 |
 | `.wrap` | 正文容器（最大宽度 800px） |
 | `.fade-in` | 滚动渐入动画 |
 

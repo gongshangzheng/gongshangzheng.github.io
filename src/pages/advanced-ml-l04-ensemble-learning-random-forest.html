@@ -1,9 +1,9 @@
 ---
 title: "集成学习与随机森林 · L04"
-description: "个体学习器为什么要“好而不同”，以及 AdaBoost、Bagging、随机森林的核心逻辑。"
+description: "个体学习器为什么要「好而不同」，以及 AdaBoost、Bagging、随机森林的核心逻辑。包含 AdaBoost 手算推导与偏差-方差视角的比较。"
 created_at: 2026-05-28T01:28:18
-updated_at: 2026-05-28T01:28:18
-tags: ["高级机器学习", "集成学习", "AdaBoost", "随机森林"]
+updated_at: 2026-05-28T11:10:01
+tags: ["高级机器学习", "集成学习", "AdaBoost", "随机森林", "Bagging"]
 categories: ["课程"]
 subcategory: "机器学习"
 mathjax: true
@@ -13,77 +13,252 @@ hero_tagline: "单模型不稳时，集成是在偏差与方差之间找平衡"
 ---
 
 <div class="stats">
-  <div class="stat"><span class="num">4</span><span class="label">核心板块</span></div>
-  <div class="stat"><span class="num b">2</span><span class="label g">重点例题</span></div>
-  <div class="stat"><span class="num">3</span><span class="label">课件引用</span></div>
-  <div class="stat"><span class="num b">4</span><span class="label">参考来源</span></div>
+  <div class="stat"><span class="num">6</span><span class="label">核心概念</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">完整推导</span></div>
+  <div class="stat"><span class="num">7</span><span class="label">课件引用</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label">参考来源</span></div>
 </div>
 <div class="wrap">
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 0 · 学习目标</div>
   <div class="ch-title">本节在课程中的位置</div>
-  <p>理解为什么多个弱一些但互补的模型结合起来，常常比单个强模型更稳。</p>
+  <p>理解为什么多个弱一些但互补的模型结合起来，常常比单个强模型更稳。掌握 Boosting（串行纠错）与 Bagging（并行扰动）两类集成策略的数学动机、算法流程与性能差异。</p>
+  <p>从课程脉络看：C03 引入了概率视角下的多模型融合（贝叶斯模型平均），C04 则从频率派角度给出另一条路——不建模概率分布，而是直接组织多个学习器做加权投票。同时，集成思想在 L07 的 Dropout 等正则化技术中会以新的形式再次出现。</p>
 </div>
+
 <div class="info-box">
   <h3>前置知识回顾</h3>
   <ul>
-    <li><strong>偏差与方差</strong>：理解集成为什么能稳定输出</li>
-    <li><strong>决策树</strong>：Bagging 与随机森林通常以树为基础学习器</li>
-    <li><strong>监督学习</strong>：集成不是新范式，而是组织已有学习器的方式</li>
+    <li><strong>偏差-方差分解</strong>：单个模型的泛化误差可分解为偏差（系统性偏移）与方差（对数据扰动敏感度）。作用：理解 Boosting 降偏差、Bagging 降方差的分工。去哪里补：L02 线性模型。</li>
+    <li><strong>决策树</strong>：集成方法中最常用的基学习器。作用：Bagging 和随机森林都以树为基本组件。去哪里补：周志华《机器学习》第 4 章。</li>
+    <li><strong>信息增益与熵</strong>：决策树分裂准则的核心度量。作用：理解随机森林中节点分裂如何被特征子集约束。去哪里补：25C04 课件第 24–28 页。</li>
   </ul>
 </div>
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 1 · 背景问题</div>
-  <div class="ch-title">为什么需要这一讲</div>
-  <p>单个学习器容易受数据划分、噪声和模型容量影响。集成学习的想法很朴素：如果个体学习器足够“好而不同”，组合后的错误可以互相抵消。</p>
+  <div class="ch-title">为什么需要集成</div>
+  <p>单个学习器容易受数据划分、噪声和模型容量影响。训练过程本身的随机性（数据采样、参数初始化、特征选择）意味着同一算法在不同训练集上可能产出差异很大的模型。集成学习的动机非常朴素：如果个体学习器<strong>准确率都高于随机猜测</strong>，且<strong>错误彼此不完全重叠</strong>，那么投票或加权组合后的预测可以比任何一个单模型都更稳。</p>
+  <p>课件用一张三分类器的投票表（$h_1, h_2, h_3$）清楚展示了这个直觉：即使每个个体都犯了错，但错误位置不同，集成就可能全部判对。</p>
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=4 title="投票示例与好而不同" >}}
+
+  <div class="callout"><strong>核心矛盾</strong>：个体学习器的<strong>准确性</strong>和<strong>多样性</strong>存在冲突——它们都是为解决同一个问题训练出来的，天然相似。如何产生并结合"好而不同"的个体学习器，是集成学习的核心问题。</div>
 </div>
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 2 · 概念定义</div>
   <div class="ch-title">直觉、定义与符号</div>
-  <div class="def-box"><h3>定义 / 符号</h3><p>集成学习通过构建并结合多个个体学习器完成任务。序列化方法如 Boosting 强调“逐轮纠错”，并行方法如 Bagging 与随机森林强调“对数据或特征做随机扰动后再平均”。</p></div>
-  <div class="callout"><strong>一句话理解</strong>：集成学习的核心矛盾只有一个：个体既要够准，又要彼此不一样。</div>
+
+  <div class="def-box">
+    <h3>定义 / 符号</h3>
+    <p><strong>集成学习 (Ensemble Learning)</strong>：通过构建并结合多个学习器来完成学习任务，又名多分类器系统 (Multi-classifier System) 或基于委员会的学习 (Committee-based Learning)。</p>
+    <ul>
+      <li><strong>同质集成</strong>：所有个体学习器为同种类型，称为<strong>基学习器</strong> (Base Learner)。</li>
+      <li><strong>异质集成</strong>：个体学习器为不同类型，称为<strong>组件学习器</strong> (Component Learner)。</li>
+    </ul>
+  </div>
+
+  <p>集成学习按个体学习器的依赖关系分为两大家族：</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>家族</th><th>依赖关系</th><th>代表方法</th><th>核心思路</th></tr></thead>
+    <tbody>
+      <tr><td>Boosting</td><td>强依赖、串行生成</td><td>AdaBoost, Gradient Boosting</td><td>逐轮纠错，降低偏差</td></tr>
+      <tr><td>Bagging</td><td>无强依赖、并行生成</td><td>Bagging, 随机森林</td><td>样本/特征扰动，降低方差</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout"><strong>一句话理解</strong>：Boosting 像"接力赛"——每棒补前一棒的短板；Bagging 像"评审团"——各自独立打分再平均。</div>
 </div>
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 3 · 推导与结构</div>
-  <div class="ch-title">从课件主线看方法怎么长出来</div>
-  <p>Boosting 的逻辑是把前一轮分错的样本权重调高，让下一轮更关注这些难点。AdaBoost 则把这个思想公式化：误差越小的基学习器，在最终加权投票中权重越大。相对地，Bagging 不做串行纠错，而是通过 Bootstrap 采样制造数据多样性，再把结果做平均或投票。随机森林更进一步，在每个分裂节点随机选特征，继续降低相关性。</p>{{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=4 title="个体学习器为什么要好而不同" >}}{{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=12 title="AdaBoost 算法" >}}
-  {{< docpage "pdf/机器学习/25C04_集成学习与随机森林.pdf" page=4 title="集成学习与随机森林课件页" >}}
+  <div class="ch-title">AdaBoost：从弱到强的递推</div>
+
+  <p>AdaBoost（Adaptive Boosting）是 Boosting 家族最经典的代表。它的算法框架如下：</p>
+
+  <div class="def-box">
+    <h3>AdaBoost 算法流程</h3>
+    <p><strong>输入</strong>：训练集 $D = \{(x_1, y_1), \ldots, (x_N, y_N)\}$，$y_i \in \{-1, +1\}$；基学习器空间 $\mathcal{H}$；训练轮数 $T$。</p>
+    <ol>
+      <li><strong>初始化</strong>：样本权值分布 $D_1(i) = 1/N$。</li>
+      <li><strong>for</strong> $t = 1, 2, \ldots, T$：
+        <ol type="a">
+          <li>基于分布 $D_t$ 从 $D$ 中训练出基分类器 $h_t(x)$。</li>
+          <li>估计 $h_t$ 的加权误差：$e_t = \sum_{i=1}^N D_t(i) \cdot \mathbb{I}[h_t(x_i) \neq y_i]$。</li>
+          <li>确定 $h_t$ 的权重：$\alpha_t = \frac{1}{2} \ln \frac{1 - e_t}{e_t}$。</li>
+          <li>更新样本分布：$D_{t+1}(i) = \frac{D_t(i)}{Z_t} \exp\bigl(-\alpha_t \, y_i \, h_t(x_i)\bigr)$，其中 $Z_t$ 为归一化因子。</li>
+        </ol>
+      </li>
+      <li><strong>输出</strong>：$H(x) = \mathrm{sign}\!\left(\sum_{t=1}^T \alpha_t \, h_t(x)\right)$。</li>
+    </ol>
+  </div>
+
+  <p>这个递推结构的设计包含了三层直觉：</p>
+  <ul>
+    <li><strong>误差 $e_t$ 驱动权重</strong>：$e_t$ 越小，$\alpha_t$ 越大——越准的分类器在最终投票中话语权越重。</li>
+    <li><strong>指数更新放大难样本</strong>：被 $h_t$ 分错的样本（$y_i h_t(x_i) = -1$），下一轮权值被放大 $e^{\alpha_t}$ 倍；分对的则缩小 $e^{-\alpha_t}$ 倍。</li>
+    <li><strong>归一化因子 $Z_t$</strong>：确保 $D_{t+1}$ 仍是合法概率分布。</li>
+  </ul>
+
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=8 title="Boosting 机制三步图" >}}
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=12 title="AdaBoost 算法步骤" >}}
+  {{< docpage "pdf/机器学习/25C04_集成学习与随机森林.pdf" page=8 title="Boosting 串行机制" >}}
 </div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 续 · Bagging 与随机森林</div>
+  <div class="ch-title">并行扰动策略</div>
+
+  <p>Bagging（Bootstrap Aggregating）不走串行纠错路线，而是通过数据扰动制造多样性：</p>
+
+  <div class="def-box">
+    <h3>Bagging 算法流程</h3>
+    <ol>
+      <li>对训练集 $D$ 做 $T$ 次<strong>有放回采样</strong>（Bootstrap），得到 $T$ 个子集 $D_1, D_2, \ldots, D_T$。</li>
+      <li>在每个子集上独立训练基学习器 $h_1, h_2, \ldots, h_T$。</li>
+      <li>分类任务用<strong>多数投票</strong>，回归任务用<strong>简单平均</strong>。</li>
+    </ol>
+  </div>
+
+  <p>随机森林在 Bagging 基础上引入了第二层随机性：<strong>属性扰动</strong>。在构建每棵决策树时，每个节点不再遍历全部 $n$ 个特征，而是先随机选 $K$ 个特征子集，再在其中找最优分裂。常用设置：$K = \log_2 n$（分类）或 $K = n/3$（回归）。</p>
+
+  <div class="callout"><strong>随机森林的两层随机</strong>：Bootstrap 采样提供样本多样性，特征子集提供结构多样性。两层叠加使得个体树之间的相关性远低于纯 Bagging。</div>
+
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=21 title="Bagging 算法" >}}
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=32 title="随机森林与 Bagging 的区别" >}}
+</div>
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 4 · 性质与比较</div>
-  <div class="ch-title">公式、条件和方法差异</div>
-  <div class="table-wrap"><table><thead><tr><th>方法</th><th>生成方式</th><th>降低什么</th></tr></thead><tbody><tr><td>AdaBoost</td><td>串行、逐轮改权重</td><td>偏差</td></tr><tr><td>Bagging</td><td>Bootstrap 并行训练</td><td>方差</td></tr><tr><td>随机森林</td><td>Bagging + 随机特征子集</td><td>方差并降低树间相关性</td></tr></tbody></table></div>
+  <div class="ch-title">偏差-方差视角的统一理解</div>
+
+  <div class="theorem-box">
+    <h3>偏差-方差分解（回顾）</h3>
+    <p>单个模型的期望泛化误差可分解为：$\mathbb{E}[\text{Error}] = \text{Bias}^2 + \text{Variance} + \text{Noise}$。集成方法的性能差异，主要来自它们分别对这个分解的不同项做了优化。</p>
+  </div>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>维度</th><th>AdaBoost</th><th>Bagging</th><th>随机森林</th></tr></thead>
+    <tbody>
+      <tr><td>个体生成方式</td><td>串行、逐轮改权重</td><td>Bootstrap 并行训练</td><td>Bootstrap + 随机特征子集</td></tr>
+      <tr><td>主要降低</td><td>偏差</td><td>方差</td><td>方差 + 个体相关性</td></tr>
+      <tr><td>基学习器要求</td><td>弱于随机即可</td><td>不稳定的学习器效果最好</td><td>不稳定的学习器效果最好</td></tr>
+      <tr><td>多样性来源</td><td>样本权值重分配</td><td>样本扰动</td><td>样本扰动 + 属性扰动</td></tr>
+      <tr><td>计算效率</td><td>必须串行</td><td>可并行</td><td>可并行</td></tr>
+      <tr><td>对噪声敏感度</td><td>较高（会过拟合噪声样本）</td><td>较低</td><td>较低</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>课件第 35 页展示了一组 UCI 数据集上的实验：随着树数量增加，随机森林的泛化误差收敛且始终低于 Bagging，证明了属性扰动的额外收益。</p>
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=35 title="RF vs Bagging 泛化误差曲线" >}}
 </div>
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 5 · 例题与应用</div>
-  <div class="ch-title">把抽象概念落到具体问题上</div>
-  <div class="example-box"><h3>例题：为什么随机森林通常比单棵树稳？</h3><p><strong>题目：</strong>单棵决策树在训练集上很容易长得很深，为什么随机森林反而常常泛化更好？</p><ol><li><strong>第一步：</strong>决策树高方差，小扰动就可能导致结构大变。</li><li><strong>第二步：</strong>Bagging 通过多次 Bootstrap 采样训练多棵树，再投票或平均。</li><li><strong>第三步：</strong>随机子特征进一步打散树之间的相关性。</li></ol><p><strong>答案：</strong>平均多个高方差但近似无偏的学习器，通常能显著降低整体方差。</p><div class="callout"><strong>易错点</strong>：别把随机森林理解成“树越多越好”，真正关键的是个体之间的相关性有没有被压下去。</div></div>
+  <div class="ch-title">例 1：AdaBoost 手算三步迭代</div>
+
+  <div class="example-box">
+    <h3>例题：AdaBoost 权值更新手算</h3>
+    <p><strong>题目：</strong>给定 10 个训练样本（二分类，$y \in \{-1, +1\}$），基分类器形式为"阈值分割"（$h(x) = \mathrm{sign}(x - \theta)$）。要求手动迭代 3 轮 AdaBoost。</p>
+    <p><strong>目标：</strong>理解每轮权值如何变化、$\alpha_t$ 如何计算、最终强分类器如何形成。</p>
+    <ol>
+      <li><strong>初始化</strong>：$D_1(i) = 1/10 = 0.1$，所有样本等权。</li>
+      <li><strong>第 1 轮</strong>：训练 $h_1$，假设加权错误率 $e_1 = 0.3$。则 $\alpha_1 = \frac{1}{2}\ln\frac{0.7}{0.3} \approx 0.4236$。被 $h_1$ 分错的 3 个样本在 $D_2$ 中权值升高，分对的 7 个样本权值降低。</li>
+      <li><strong>第 2 轮</strong>：新的权值分布 $D_2$ 使前一轮分错的样本占比更高。训练 $h_2$，假设 $e_2 = 0.2$，则 $\alpha_2 = \frac{1}{2}\ln\frac{0.8}{0.2} \approx 0.6931$。</li>
+      <li><strong>第 3 轮</strong>：类似地训练 $h_3$，得到 $\alpha_3$。</li>
+      <li><strong>最终分类器</strong>：$H(x) = \mathrm{sign}(\alpha_1 h_1(x) + \alpha_2 h_2(x) + \alpha_3 h_3(x))$。</li>
+    </ol>
+    <p><strong>观察</strong>：第 1 轮错误率为 30%，第 2 轮降到 20%——因为 $D_2$ 让 $h_2$ 更关注 $h_1$ 分错的难点。这正是 Boosting "逐轮纠错"的直观体现。</p>
+    <div class="callout"><strong>易错点</strong>：$\alpha_t$ 的公式中分母是 $e_t$，当 $e_t > 0.5$ 时 $\alpha_t$ 变负，意味着这个基学习器比随机猜还差。实际实现中通常会直接终止或翻转预测。</div>
+  </div>
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=14 title="AdaBoost 数字分类手算示例" >}}
 </div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 续 · 例题与应用</div>
+  <div class="ch-title">例 2：Bagging vs 随机森林——为什么属性扰动有效</div>
+
+  <div class="example-box">
+    <h3>例题：随机森林为什么比单棵树和纯 Bagging 都稳？</h3>
+    <p><strong>题目：</strong>在相同数据集上对比三种方案的泛化表现，解释差异来源。</p>
+    <ol>
+      <li><strong>单棵决策树</strong>：高方差。数据中微小的扰动就可能让分裂路径完全不同，导致预测大变。</li>
+      <li><strong>Bagging</strong>：通过 Bootstrap 采样训练多棵树再投票。样本扰动引入了多样性，降低了集成后的方差。但个体树仍然每次看全部特征，分裂逻辑容易趋同。</li>
+      <li><strong>随机森林</strong>：在 Bagging 基础上限制每次分裂只看 $K$ 个随机特征。这意味着即使两棵树的训练集很相似，它们在关键分裂点上也可能走向不同方向。</li>
+    </ol>
+    <p><strong>答案：</strong>随机森林的额外属性扰动进一步降低了个体之间的相关性。在偏差-方差分解中，集成的方差正比于 $\bar{\sigma}^2 \cdot \rho$（平均方差 × 相关系数），所以降低 $\rho$ 直接降低总方差。</p>
+    <div class="callout"><strong>易错点</strong>：树的数量不是越多越好。树增加到一定数量后，OOB 错误率趋于平稳；真正需要调的是特征子集大小 $K$——$K$ 太大退化为 Bagging，$K$ 太小则个体太弱。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 续 · 应用案例</div>
+  <div class="ch-title">从理论到实践</div>
+
+  <p>课件给出的两个经典应用场景帮助理解集成方法的落地：</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>应用</th><th>方法</th><th>核心思路</th></tr></thead>
+    <tbody>
+      <tr><td>数字分类</td><td>AdaBoost + 阈值分类器</td><td>每轮找一个新阈值，逐步聚焦错分区域，三轮后分类边界远比单阈值复杂</td></tr>
+      <tr><td>人脸检测（Viola-Jones）</td><td>AdaBoost + Haar-like 特征</td><td>级联结构：每层用 AdaBoost 筛出少量强特征，逐层过滤非人脸区域，实现实时检测</td></tr>
+    </tbody>
+  </table></div>
+
+  {{< docref "机器学习/25C04_集成学习与随机森林.pdf" page=16 title="Viola-Jones 人脸检测" >}}
+</div>
+
+<!-- ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 6 · 后续章节</div>
   <div class="ch-title">这一讲会把后面哪些内容撑起来</div>
-  <div class="theorem-box"><h3>后续用途 / 连接</h3><p>L05 会把“高维结构先验”推进到稀疏性，改问：如果数据本身可稀疏表示，采样与重建是否都能重写。</p></div>
+
+  <div class="theorem-box">
+    <h3>后续用途 / 连接</h3>
+    <ul>
+      <li><strong>L05 压缩感知</strong>：集成学习强调"多样性"，压缩感知强调"稀疏性"——二者在高维数据中相互补充。多字典集成（Ensemble Dictionary）就是两者结合的典型思路。</li>
+      <li><strong>L07 神经网络</strong>：Dropout 训练时随机丢弃神经元，本质上是隐式地训练了 $2^n$ 个子网络的集成。这种"在线集成"的思想直接来自 Bagging 的启发。</li>
+      <li><strong>C03 → C04 桥梁</strong>：贝叶斯模型平均（后验加权预测）与集成学习（频率派加权投票）解决的是同一类"多假设融合"问题，只是哲学出发点不同。</li>
+    </ul>
+  </div>
 </div>
+
 <div class="review-box">
   <h3>复习速查</h3>
   <ul>
-    <li>好而不同是集成学习的核心准则</li>
-    <li>Boosting 关注难样本，Bagging 关注扰动稳定性</li>
-    <li>随机森林本质上是低相关树的投票系统</li>
+    <li><strong>核心准则</strong>：好而不同——个体准确且错误不重叠。</li>
+    <li><strong>AdaBoost</strong>：串行纠错，指数更新权值，$\alpha_t = \frac{1}{2}\ln\frac{1-e_t}{e_t}$，主要降偏差。</li>
+    <li><strong>Bagging</strong>：Bootstrap 采样 + 并行训练 + 投票/平均，主要降方差。</li>
+    <li><strong>随机森林</strong>：Bagging + 属性扰动（$K$ 个随机特征），进一步降低个体相关性。</li>
+    <li><strong>选择策略</strong>：基学习器不稳定时用 Bagging/RF；基学习器欠拟合时用 Boosting。</li>
   </ul>
 </div>
+
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
-    <li>课程课件：25C04 第 4 页（好而不同）</li>
-    <li>课程课件：25C04 第 8–12 页（Boosting 与 AdaBoost）</li>
-    <li>公开参考：https://sebastianraschka.com/pdf/lecture-notes/stat451fs20/07-ensembles__notes.pdf</li>
-    <li>公开参考：https://scikit-learn.org/stable/modules/ensemble.html</li>
+    <li>课程课件：25C04 第 4–5 页（投票示例与好而不同）</li>
+    <li>课程课件：25C04 第 8–15 页（Boosting 机制、AdaBoost 算法、手算示例）</li>
+    <li>课程课件：25C04 第 21–23 页（Bagging 算法）</li>
+    <li>课程课件：25C04 第 32–35 页（随机森林与误差曲线）</li>
+    <li>公开参考：Sebastian Raschka, <em>STAT 451 Ensemble Notes</em>（https://sebastianraschka.com/pdf/lecture-notes/stat451fs20/07-ensembles__notes.pdf）</li>
+    <li>公开参考：scikit-learn Ensembles 文档（https://scikit-learn.org/stable/modules/ensemble.html）</li>
+    <li>公开参考：Weinan Zhang, <em>Ensemble and Boosting Algorithms</em>（http://wnzhang.net/teaching/cs420/slides/6-ensemble-boosting.pdf）</li>
   </ul>
 </div>
+
 <div class="chapter-nav">
   <a class="nav-card" href="advanced-ml-l03-bayesian-classification-pgm.html"><span class="nav-label">上一页</span><span class="nav-title">贝叶斯分类与概率图模型 · L03</span></a>
   <a class="nav-card current" href="advanced-ml-course.html"><span class="nav-label">枢纽页</span><span class="nav-title">高级机器学习</span></a>
   <a class="nav-card" href="advanced-ml-l05-compressed-sensing.html"><span class="nav-label">下一页</span><span class="nav-title">压缩感知 · L05</span></a>
 </div>
+
 </div>
