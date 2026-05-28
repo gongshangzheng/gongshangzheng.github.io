@@ -1,232 +1,257 @@
 ---
-title: "gen-sc-2024"
-description: ""
-date: 2026-05-28T13:54:33
-created_at: 2026-05-28T13:54:33
-updated_at: 2026-05-28T13:54:33
-tags: []
-categories: []
+title: "Gen-SC：用语言传输图像的极端语义通信"
+description: "论文精读：Language-oriented Semantic Communication for Image Transmission with Fine-Tuned Diffusion Model。解析 Gen-SC 如何用 99% 压缩率实现语义级图像传输。"
+created_at: 2026-05-28T14:30:00
+updated_at: 2026-05-28T14:30:00
+tags: ["语义通信", "扩散模型", "图像传输", "LoRA", "论文精读"]
+categories: ["AI"]
+subcategory: "图像压缩"
+mathjax: true
+notify: true
+hero_title: "Gen-SC"
+hero_sub: "Language-oriented Semantic Communication · arXiv 2024"
+hero_tagline: "把图像压缩成一句话传输，接收端用扩散模型重建"
 ---
+
+<div class="stats">
+  <div class="stat"><span class="num">99%</span><span class="label">压缩率</span></div>
+  <div class="stat"><span class="num b">>80%</span><span class="label g">语义准确率</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">核心模块</span></div>
+  <div class="stat"><span class="num b">10</span><span class="label l">微调图像</span></div>
+</div>
+
+<div class="wrap">
+
 <!-- ============================================================
-  本模板展示所有构建系统支持的语法。
-  详细规范参见 ~/.hanako/skills/html-blog/references/
-  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
-  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
+  Part 1 · 引言
   ============================================================ -->
 
-<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
-<div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+<div class="ch fade-in">
+  <div class="ch-label">背景 · Background</div>
+  <div class="ch-title">图像传输一定要传像素吗？</div>
+
+  <p>想象一个场景：你在深海作业的潜水器上，需要把一张人脸照片传回岸上。带宽极其有限（几 kbps），信道噪声很大（SNR 5–10 dB），但你真正需要的不是"像素级精确"的图像——你只需要让岸上的人知道：这个人长什么样、什么表情、什么年龄。</p>
+
+  <p>传统图像传输的目标是"逐像素还原"。JPEG 压缩后用 LDPC 纠错，或者 DeepJSCC 端到端编码，本质上都在做同一件事：把图像的每个像素尽可能准确地传过去。但在上述场景中，这个目标是错的——你不需要像素，你需要<strong>语义</strong>。</p>
+
+  <p>Gen-SC（Wei et al., 2024）提出了一个极端但优雅的方案：==把图像压缩成一句话传输，接收端用微调的扩散模型从这句话重建图像==。传输数据量减少 99%，而语义准确率仍保持在 80% 以上。</p>
+
+  <div class="callout"><strong>核心洞察</strong>：文本比像素流更紧凑，但能保留"意图"而非"像素"。当你的目标是"让对方知道这是谁"而不是"让对方看到每个像素"时，文本是比比特流更高效的语义载体。</div>
 </div>
 
 <!-- ============================================================
-  章节容器
+  Part 2 · 方法 Pipeline
   ============================================================ -->
 
-<!-- 章节叙事（.ch）— .ch-title 自动加入 TOC -->
 <div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <div class="ch-label">方法 · Method</div>
+  <div class="ch-title">图像 → 文本 → 图像：三模块 Pipeline</div>
 
-  <p>正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。</p>
+  <p>Gen-SC 的 Pipeline 由三个模块组成，每个模块都有明确的设计动机。</p>
 
-  <!-- ==高亮== → <mark> -->
-  <p>这是一段包含 ==高亮文字== 的正文。</p>
+  <h3>模块 1：语义编码器（BLIP）</h3>
+  <p>发送端用 BLIP 图像描述模型将图像转换为文本描述。选择 BLIP 的理由很直接：它是统一的视觉-语言预训练模型，零样本泛化能力强，生成的描述与图像语义高度对齐。</p>
 
-  <!-- Markdown 加粗/斜体也支持（HTML 源文件中） -->
-  <!-- **加粗** → <strong> / *斜体* → <em> -->
+  <p>例如，一张人脸图像会被描述为：<code>"A woman with brown hair, smiling"</code>。这个描述只有几十个字符，而原始图像有 512×512×3 = 786,432 个像素值。</p>
 
-  <!-- 图片 — 放在所讲解段落之后，不要堆在文件末尾 -->
-  <div class="photo">
-    <img src="assets/media/images/sengoku-japan/nobunaga.jpg" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
-  </div>
+  <h3>模块 2：语义传输器（BART-SC）</h3>
+  <p>文本描述通过 BART-SC 端到端文本信道编码器传输。BART 是一个预训练的去噪自编码器，它的预训练目标就是在噪声条件下恢复文本——这与信道噪声的场景天然契合。</p>
 
-  <!-- 提示框 -->
-  <div class="callout"><strong>提示</strong>：提示框内容。</div>
+  <p><strong>BART-SC 的训练损失</strong>是标准的语言模型交叉熵：</p>
+  <p style="text-align:center">
+  \[\mathcal{L}_{\text{BART-SC}} = -\sum_{t=1}^{|S|} \log P_\theta(s_t | s_{<t}, \boldsymbol{h})\]
+  </p>
+  <p>其中 $s_t$ 是文本序列的第 $t$ 个 token，$\boldsymbol{h}$ 是经信道传输的嵌入向量。信道模型为 AWGN + 衰落：$y = h \cdot x + n, \quad n \sim \mathcal{N}(0, \sigma^2)$。</p>
 
-  <!-- 信息框（蓝底） -->
-  <div class="info-box">
-    <h3>信息框标题</h3>
-    <p>信息框内容。标题不加入 TOC。</p>
-  </div>
+  <p>BART-SC 联合优化了文本编码、信道编码和文本解码，比分离式方案（先压缩文本再纠错）更鲁棒。</p>
 
-  <!-- 定义框 / 定理框 / 例题框 / 复习速查 / 章节导航 -->
-  <div class="def-box">
-    <h3>定义框</h3>
-    <p>放定义、符号、直觉解释。</p>
-  </div>
-  <div class="theorem-box">
-    <h3>定理框</h3>
-    <p>放命题、定理、推论和判定条件。</p>
-  </div>
-  <div class="example-box">
-    <h3>例题框</h3>
-    <p><strong>题目：</strong>示例题目。</p>
-    <p><strong>答案：</strong>示例答案。</p>
-    <div class="callout"><strong>易错点</strong>：示例提醒。</div>
-  </div>
-  <div class="review-box">
-    <h3>复习速查</h3>
-    <ul>
-      <li><strong>定义</strong>：一行回忆核心概念。</li>
-      <li><strong>公式</strong>：列最重要的结论。</li>
-    </ul>
-  </div>
-  <div class="chapter-nav">
-    <a class="nav-card" href="prev.html"><span class="nav-label">上一章</span><span class="nav-title">上一章标题</span></a>
-    <a class="nav-card current" href="hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">枢纽页标题</span></a>
-    <a class="nav-card" href="next.html"><span class="nav-label">下一章</span><span class="nav-title">下一章标题</span></a>
-  </div>
+  <h3>模块 3：语义解码器（DreamBooth + LoRA 微调的 SDXL）</h3>
+  <p>接收端用微调的 SDXL 扩散模型从恢复的文本描述生成图像。这里的关键问题是：标准的 Stable Diffusion 生成的是"通用"图像，但通信场景需要生成"特定人"的图像。</p>
 
-  <!-- 引用块 -->
-  <blockquote>
-    <p>引用内容。</p>
-    <p><em>— 来源</em></p>
-  </blockquote>
+  <p>解决方案是 <strong>DreamBooth + LoRA</strong> 微调。DreamBooth 用少量图像（10 张）教模型"认识"特定主体，LoRA 用低秩矩阵高效更新模型权重：</p>
+  <p style="text-align:center">
+  \[\mathcal{G}_s = \{ G | \text{rank}(\Theta(G) - \Theta(G_s)) \leq R \}\]
+  </p>
+  <p>其中 $R=128$，学习率 $10^{-5}$，10 张图像 × 10 epochs。微调后 LPIPS 降低约 0.1，语义分类准确率 >80%。</p>
 
-  <!-- 表格 -->
   <div class="table-wrap">
     <table>
-      <thead><tr><th>表头1</th><th>表头2</th><th>表头3</th></tr></thead>
+      <thead><tr><th>模块</th><th>功能</th><th>输入</th><th>输出</th><th>关键参数</th></tr></thead>
       <tbody>
-        <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+        <tr><td>BLIP</td><td>图像→文本</td><td>512×512 图像</td><td>文本描述</td><td>零样本</td></tr>
+        <tr><td>BART-SC</td><td>文本→信道→文本</td><td>文本 token</td><td>恢复文本</td><td>SNR 5–10 dB</td></tr>
+        <tr><td>SDXL + LoRA</td><td>文本→图像</td><td>文本描述</td><td>512×512 图像</td><td>Rank=128, 10 imgs</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 3 · 完整数据流
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">数据流 · Pipeline</div>
+  <div class="ch-title">从发送端到接收端的完整链路</div>
+
+  <div class="info-box">
+    <h3>完整数据流</h3>
+    <p><strong>发送端</strong>：原始图像 v (512×512×3) → BLIP Img2Txt → 语义文本 s = "A woman with brown hair, smiling" → BART-SC Encoder → 文本嵌入 h → 信道 (AWGN + fading h=0.9) → 噪声嵌入 y</p>
+    <p><strong>接收端</strong>：噪声嵌入 y → BART-SC Decoder → 恢复文本 ŝ ≈ "A woman with brown hair, smiling" → Fine-tuned SDXL → 重建图像 v̂ (512×512×3)</p>
+  </div>
+
+  <p>这个 Pipeline 的核心优势是<strong>极端压缩</strong>：原始图像有 786,432 个像素值，而文本描述只有几十个 token。传输数据量减少 99%，但语义信息（谁、什么表情、什么特征）被完整保留。</p>
+
+  <p>一个直觉类比：如果你要告诉远方的朋友"张三笑了"，你不需要发送张三的高清照片——你只需要说"张三笑了"这四个字，朋友的脑子里（如果有张三的记忆）就能"生成"出张三微笑的画面。Gen-SC 的 SDXL 就是那个"有记忆的大脑"。</p>
+</div>
+
+<!-- ============================================================
+  Part 4 · 实验结果
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">实验 · Experiments</div>
+  <div class="ch-title">99% 压缩率下还能保持什么？</div>
+
+  <h3>文本传输质量：BART-SC 的优势</h3>
+  <p>BART-SC 在所有 SNR 下均优于 baseline。核心原因是 BART 的去噪预训练天然适配噪声信道——它本来就是从损坏的输入中恢复文本的。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>SNR (dB)</th><th>Huffman+RS</th><th>DeepSC</th><th>BART-SC</th></tr></thead>
+      <tbody>
+        <tr><td>5</td><td>~0.1</td><td>~0.3</td><td><strong>~0.45</strong></td></tr>
+        <tr><td>7</td><td>~0.2</td><td>~0.4</td><td><strong>~0.55</strong></td></tr>
+        <tr><td>9</td><td>~0.3</td><td>~0.5</td><td><strong>~0.65</strong></td></tr>
+        <tr><td>10</td><td>~0.35</td><td>~0.55</td><td><strong>~0.7</strong></td></tr>
       </tbody>
     </table>
   </div>
 
-  <!-- 有序/无序列表 -->
-  <ol>
-    <li>第一项</li>
-    <li>第二项</li>
-  </ol>
-  <ul>
-    <li>列表项</li>
-  </ul>
+  <h3>图像感知质量：DreamBooth 微调的效果</h3>
+  <p>DreamBooth 微调显著提升图像质量。在 SNR=5dB 下，微调后 LPIPS 从 0.3 降到 0.2，改善 0.1。</p>
 
-  <!-- 术语解释：Term :: Definition → <dl class="term-list"> -->
-  <ul>
-    <li><strong>术语一</strong> :: 这是定义说明</li>
-    <li><em>带强调的术语</em> :: 定义内容</li>
-  </ul>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>SNR (dB)</th><th>传统方法</th><th>DeepSC</th><th>非微调 Gen-SC</th><th>微调 Gen-SC</th></tr></thead>
+      <tbody>
+        <tr><td>5</td><td>~0.45</td><td>~0.35</td><td>~0.3</td><td><strong>~0.25</strong></td></tr>
+        <tr><td>7</td><td>~0.4</td><td>~0.3</td><td>~0.25</td><td><strong>~0.2</strong></td></tr>
+        <tr><td>10</td><td>~0.3</td><td>~0.2</td><td>~0.18</td><td><strong>~0.12</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
 
-  <!-- 代码块 -->
-  <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-  </code></pre>
+  <h3>语义分类准确率</h3>
+  <p>即使在严重噪声下，语义信息仍能有效保持。性别分类最准确（~95%），表情分类最困难（~87%）。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>SNR (dB)</th><th>年龄</th><th>性别</th><th>表情</th></tr></thead>
+      <tbody>
+        <tr><td>5</td><td>~80%</td><td><strong>~90%</strong></td><td>~80%</td></tr>
+        <tr><td>7</td><td>~85%</td><td><strong>~92%</strong></td><td>~82%</td></tr>
+        <tr><td>10</td><td>~90%</td><td><strong>~95%</strong></td><td>~87%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：年龄精度最低。这符合直觉——"年龄"是一个连续变量，文本描述很难精确表达（"A woman in her 30s" 可能对应 25–40 岁的范围）。而性别是二元分类，文本描述可以非常精确（"A woman" vs "A man"）。</div>
 </div>
 
 <!-- ============================================================
-  数学公式 — 需要 frontmatter mathjax: true
+  Part 5 · 与相关工作的对比
   ============================================================ -->
-<!--
-  行内：$...$ 或 \(...\) → <span class="math-inline">...</span>
-  独立：$$...$$ 或 \[...\] → <div class="math-block">$$...$$</div>
-  引用：$@key$ → <cite>@key</cite>
-  注意：< 替换为 \lt，避免 \left( 改用 \Bigl(
--->
 
 <div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
+  <div class="ch-label">对比 · Comparison</div>
+  <div class="ch-title">Gen-SC 在技术谱系中的位置</div>
 
-  <p>行内公式 $O(T\epsilon^2)$ 或 \(x\in\mathbb{R}^{d}\)，必须嵌入段落中。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工作</th><th>传输内容</th><th>信道编码</th><th>生成模型</th><th>个性化</th><th>压缩率</th></tr></thead>
+      <tbody>
+        <tr><td>DeepJSCC</td><td>压缩像素</td><td>JSCC</td><td>无</td><td>无</td><td>中等</td></tr>
+        <tr><td>DeepSC</td><td>语义向量</td><td>JSCC</td><td>无</td><td>无</td><td>中等</td></tr>
+        <tr><td>Nam et al.</td><td>文本</td><td>独立编码</td><td>基础 SD</td><td>无</td><td>高</td></tr>
+        <tr><td><strong>Gen-SC</strong></td><td><strong>文本</strong></td><td><strong>端到端 BART-SC</strong></td><td><strong>微调 SDXL</strong></td><td><strong>DreamBooth</strong></td><td><strong>99%</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
 
-  <p style="text-align:center">
-  \[\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)\]
-  </p>
+  <p>Gen-SC 的独特之处在于三个"端到端"：</p>
+  <ul>
+    <li><strong>端到端文本信道编码</strong>（BART-SC）：不是先压缩文本再纠错，而是联合优化编码+信道+解码</li>
+    <li><strong>端到端生成模型微调</strong>（DreamBooth + LoRA）：不是用通用 SD，而是针对目标主体微调</li>
+    <li><strong>端到端语义评估</strong>：不是只看 PSNR/LPIPS，而是用年龄/性别/表情分类准确率衡量语义保真度</li>
+  </ul>
 </div>
 
 <!-- ============================================================
-  引用语法
+  Part 6 · 局限性与开放问题
   ============================================================ -->
-<!--
-  $@key$ → <cite>@key</cite>（注意 @ 前缀）
-  key 含空格 → 引用；无空格 → 行内公式
--->
 
 <div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
+  <div class="ch-label">局限 · Limitations</div>
+  <div class="ch-title">效率与保真度的核心张力</div>
 
-  <p>根据 $@Hinton et al., 2015$ 的开创性工作。$@KL Divergence$ 是核心指标。</p>
+  <h3>局限性</h3>
 
-  <div class="sources">
-    <h3>参考来源</h3>
+  <p><strong>1. 表情重建偏差</strong>：SDXL 倾向将中性表情误判为负面表情。这可能是因为训练数据中负面表情的人像更多（"皱眉"比"面无表情"更有辨识度）。</p>
+
+  <p><strong>2. 年龄粒度粗糙</strong>：文本描述很难精确表达年龄。"A woman in her 30s" 可能对应 25–40 岁的范围，而实际年龄可能是 28 岁。</p>
+
+  <p><strong>3. 场景受限</strong>：实验仅验证 CelebA 人像。对于其他类型图像（风景、物体、医学影像），BLIP 的描述质量可能下降，SDXL 的生成质量也可能不如人像。</p>
+
+  <p><strong>4. 微调依赖</strong>：需要 10 张目标域图像进行 DreamBooth 微调。在实际通信场景中，发送端和接收端需要共享微调好的模型，增加了部署复杂度。</p>
+
+  <p><strong>5. 推理延迟</strong>：SDXL 扩散模型需要多步采样（默认 50 步），推理时间在秒级。对于实时通信场景（如视频通话），这个延迟是不可接受的。</p>
+
+  <h3>开放问题</h3>
+
+  <p><strong>1. 如何在语义效率与细节保真之间取得平衡？</strong>Gen-SC 用 99% 的压缩率证明了"语义比像素更高效"，但也暴露了根本张力：当图像包含细微纹理（如电缆缺陷、医学影像中的微小异常）时，文本描述无法捕获足够的细节，扩散模型会"想象"出不存在的内容。这是生成式语义通信尚未解决的核心问题。</p>
+
+  <p><strong>2. 能否扩展到非人像场景？</strong>BLIP 对人像的描述质量很高（"A woman with brown hair, smiling"），但对风景或物体的描述可能不够精确（"A landscape with mountains" 丢失了大量细节）。需要更细粒度的视觉-语言模型。</p>
+
+  <p><strong>3. 能否实现端到端联合训练？</strong>当前 Gen-SC 的三个模块是独立训练的（BLIP 零样本、BART-SC 单独训练、SDXL 单独微调）。如果能端到端联合训练，可能进一步提升性能。</p>
+</div>
+
+<!-- ============================================================
+  Part 7 · 总结
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">总结 · Conclusion</div>
+  <div class="ch-title">一句话总结</div>
+
+  <p>Gen-SC 用"图像→文本→图像"的极端语义通信范式，实现了 99% 压缩率下的语义级图像传输。BART-SC 端到端文本信道编码在所有 SNR 下优于传统方法，DreamBooth + LoRA 微调的 SDXL 在 10 张图像上实现个性化生成。但这个方案也暴露了生成式语义通信的核心张力：==效率与保真度之间的权衡==——当你的目标是"让对方知道这是谁"时，文本是完美的载体；但当你的目标是"让对方看到每个像素"时，文本是灾难性的压缩。</p>
+
+  <div class="review-box">
+    <h3>复习速查</h3>
     <ul>
-      <li><a href="https://arxiv.org/abs/1503.02531" target="_blank">$@Hinton et al., 2015$ — Distilling the Knowledge in a Neural Network</a></li>
+      <li><strong>核心范式</strong>：图像 → 文本 → 图像，99% 压缩率</li>
+      <li><strong>三大模块</strong>：BLIP（编码）+ BART-SC（传输）+ SDXL+LoRA（解码）</li>
+      <li><strong>关键数值</strong>：BLEU +0.15, LPIPS -0.1, 语义准确率 >80%, LoRA Rank=128</li>
+      <li><strong>核心张力</strong>：效率（99% 压缩）vs 保真度（细节丢失）</li>
+      <li><strong>适用场景</strong>：人脸表情分析、AR/VR 头像、低带宽监控</li>
+      <li><strong>不适用</strong>：医学影像、工业检测（需要像素精确）</li>
     </ul>
   </div>
 </div>
 
 <!-- ============================================================
-  Shortcode 语法 {{< ... >}}
+  参考来源
   ============================================================ -->
 
-<div class="ch fade-in">
-  <div class="ch-label">Shortcode</div>
-  <div class="ch-title">Shortcode 语法</div>
-
-  <p>{{< bg yellow >}}黄色高亮{{< /bg >}}</p>
-  <p>{{< bg red >}}红色高亮{{< /bg >}}</p>
-  <p>{{< bg blue >}}蓝色高亮{{< /bg >}}</p>
-
-  <p>{{< details summary="点击展开" openByDefault=true >}}</p>
-  <p>隐藏内容。</p>
-  <p>{{< /details >}}</p>
-
-  <p>{{< bilibili BV1xxooXX1Xx >}}</p>
-  <p>{{< youtube dQw4w9WgXcQ "说明" >}}</p>
-  <p>{{< video "assets/media/video/sample.mp4" >}}</p>
-  <p>{{< googleslides "https://docs.google.com/presentation/d/..." >}}</p>
-</div>
-
-<!-- ============================================================
-  Wiki 链接 [[...]]
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">链接语法</div>
-  <div class="ch-title">Wiki 类链接</div>
-
+<div class="sources">
+  <h3>参考来源</h3>
   <ul>
-    <li>[[wiki.en Albert Einstein | 爱因斯坦]]</li>
-    <li>[[wiki.zh 日本历史]]</li>
+    <li><a href="https://arxiv.org/abs/2409.17104" target="_blank">Wei et al. "Language-oriented Semantic Communication for Image Transmission with Fine-Tuned Diffusion Model." arXiv:2409.17104, 2024.</a></li>
+    <li><a href="https://arxiv.org/abs/2201.12086" target="_blank">Li et al. "BLIP: Bootstrapping Language-Image Pre-training." ICML, 2022.</a></li>
+    <li><a href="https://arxiv.org/abs/2208.12242" target="_blank">Ruiz et al. "DreamBooth: Fine Tuning Text-to-Image Diffusion Models for Subject-Driven Generation." CVPR, 2023.</a></li>
+    <li><a href="https://arxiv.org/abs/2106.09685" target="_blank">Hu et al. "LoRA: Low-Rank Adaptation of Large Language Models." ICLR, 2022.</a></li>
+    <li><a href="https://arxiv.org/abs/1910.13461" target="_blank">Lewis et al. "BART: Denoising Sequence-to-Sequence Pre-training." ACL, 2020.</a></li>
   </ul>
-
-  <p>[[arxiv 2301.00001 abs | 论文]]</p>
-  <p>[[github pytorch/pytorch | PyTorch]]</p>
-  <p>[[google transformer architecture | 搜索 Transformer]]</p>
-
-  <!-- 内部跳转 -->
-  <p>[[posts.html | 返回文章列表]]</p>
 </div>
 
-<!-- ============================================================
-  Wiki 图片 ![[...]]
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">资源引用</div>
-  <div class="ch-title">Wiki 图片语法</div>
-
-  <!-- ![[filename | width # caption]] -->
-  <p>![[sengoku-japan/nobunaga.jpg | 400 # 织田信长]]</p>
-
-  <!-- 纯图片，无宽度无说明 -->
-  <p>![[japan-history/oda-nobunaga.jpg]]</p>
-</div>
-
-<!-- ============================================================
-  普通 Section（不加入 TOC）
-  ============================================================ -->
-
-<div class="section fade-in">
-  <div class="section-title">结语</div>
-  <p>使用 <code>.section</code> 创建普通段落，不出现在 TOC 中。</p>
 </div>
