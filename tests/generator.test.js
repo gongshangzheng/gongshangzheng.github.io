@@ -378,11 +378,11 @@ window.MathJax = {
   },
 
   'categoryUrl: uses taxonomy slug': () => {
-    assert.equal(categoryUrl('Visual AI'), './categories/Visual-AI.html');
+    assert.equal(categoryUrl('Visual AI'), './categories/Visual-AI/index.html');
   },
 
   'subcategoryUrl: nests subcategory under category': () => {
-    assert.equal(subcategoryUrl('AI', 'Visual Tokenizer'), './categories/AI/Visual-Tokenizer.html');
+    assert.equal(subcategoryUrl('AI', 'Visual Tokenizer'), './categories/AI/Visual-Tokenizer/index.html');
   },
 
   // ===== extractFirstDiv: attribute edge cases =====
