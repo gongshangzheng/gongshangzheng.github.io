@@ -164,7 +164,17 @@ function build() {
 
   fs.mkdirSync(PATHS.public, { recursive: true });
 
-  const assetStats = copyDir(PATHS.assets, path.join(PATHS.public, 'assets'));
+  const assetStats = copyDir(
+    PATHS.assets,
+    path.join(PATHS.public, 'assets'),
+    (srcPath) => {
+      const rel = path.relative(PATHS.assets, srcPath).replace(/\\/g, '/');
+      if (rel === 'css/hugo-theme.css') return false;
+      if (rel === 'css/css-manifest.json') return false;
+      if (rel.startsWith('css/modules/')) return false;
+      return true;
+    }
+  );
   const mediaDir = path.join(PATHS.src, 'media');
   const mediaStats = copyDir(mediaDir, path.join(PATHS.public, 'media'));
   const audioStats = copyDir(mediaDir, path.join(PATHS.public, 'audio'), (srcPath) => /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(srcPath));

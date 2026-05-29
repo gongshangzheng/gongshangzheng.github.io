@@ -43,7 +43,7 @@ npx serve public     # 本地预览
 | 文件 | 作用 |
 |------|------|
 | `build.js` | 构建脚本：解析 Markdown → 生成 HTML |
-| `src/assets/css/hugo-theme.css` | 主题样式 |
+| `src/assets/css/modules/` | 主题样式模块源文件（构建时自动合并为 `public/assets/css/hugo-theme.css`） |
 | `public/` | 构建输出目录（由 CI 自动生成，不提交） |
 
 ## 注意事项

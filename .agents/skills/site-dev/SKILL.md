@@ -34,7 +34,7 @@ src/
     _footer.html      # 页脚 + back-to-top
   assets/
     css/
-      hugo-theme.css  # 全站样式（62 KB，CSS 变量驱动双主题）
+      modules/        # 全站样式模块源文件；构建时自动合并为 public/assets/css/hugo-theme.css
       plots.css       # functionplot / jsxgraph 样式
     js/
       dark-mode.js    # 主题切换 + TOC + hamburger + Prism + 搜索下拉（19 KB）
