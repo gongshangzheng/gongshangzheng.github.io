@@ -75,6 +75,33 @@
 
 ---
 
+## 段落语法（`<p>` 标签）
+
+> **`<p>` 标签可选**：构建系统会自动为 `.html` 源文件中的裸文本行补上 `<p>` 标签，因此写作时无需手动包裹。
+> 已有的 `<p>` 不会重复包裹。以下内容不受自动包裹影响：
+>
+> - 以 `<` 开头的行（HTML 标签，如 `<div>`、`<p>`、`<h3>`）
+> - 以 `{{` 开头的行（Shortcode，如 `{{< docpage >}}`）
+> - `<pre>`、`<script>`、`<style>`、`<table>` 内部的内容
+> - `\[...\]` 和 `$$...$$` display math 块内部
+>
+> **推荐写法**：直接写裸文本，省去每行 `<p>` 包裹：
+>
+> ```html
+> <div class="ch fade-in">
+>   <div class="ch-label">Part 1</div>
+>   <div class="ch-title">章节标题</div>
+>   这里是正文段落，不需要手动加 <p> 标签。
+>   第二段也是裸文本，构建时自动补 <p>。
+>   <div class="info-box">...</div>   <!-- HTML 标签不会被包裹 -->
+>   {{< mermaid >}}graph TD...{{< /mermaid >}}  <!-- shortcode 也不会 -->
+> </div>
+> ```
+>
+> 如果需要 `<p>` 上的属性（如 `style="text-align:center"`），则必须手动写 `<p>`。
+
+---
+
 ## 内容组件
 
 ### 图片

@@ -687,6 +687,96 @@ window.MathJax = {
     assert(script.includes('ensurePdfJs('), 'should contain ensurePdfJs');
     assert(script.includes('renderOne('), 'should contain renderOne');
   },
+  // ===== wrapBareParagraphs =====
+
+  'wrapBareParagraphs: wraps bare text lines': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = 'Hello world\n\n  Some text  ';
+    const result = wrapBareParagraphs(input);
+    assert.equal(result, '<p>Hello world</p>\n\n  <p>Some text</p>');
+  },
+
+  'wrapBareParagraphs: skips HTML tags': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = '<p>Already wrapped</p>\n<div class="ch">content</div>';
+    const result = wrapBareParagraphs(input);
+    assert.equal(result, input);
+  },
+
+  'wrapBareParagraphs: skips shortcodes': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = '{{< docpage "test.pdf" page=1 >}}';
+    const result = wrapBareParagraphs(input);
+    assert.equal(result, input);
+  },
+
+  'wrapBareParagraphs: preserves pre blocks': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = 'Bare text\n<pre>  if (x) {\n    return 1\n  }</pre>\nMore bare text';
+    const result = wrapBareParagraphs(input);
+    assert(result.includes('<p>Bare text</p>'), 'bare text wrapped');
+    assert(result.includes('<pre>  if (x) {\n    return 1\n  }</pre>'), 'pre block preserved');
+    assert(result.includes('<p>More bare text</p>'), 'trailing bare text wrapped');
+  },
+
+  'wrapBareParagraphs: mixed content': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = '<div class="ch fade-in">\n  <div class="ch-title">Title</div>\n  Bare paragraph text\n  <p>Already wrapped</p>\n</div>';
+    const result = wrapBareParagraphs(input);
+    assert(result.includes('<p>Bare paragraph text</p>'), 'bare text wrapped');
+    assert(result.includes('<p>Already wrapped</p>'), 'existing p untouched');
+    assert(result.includes('<div class="ch-title">Title</div>'), 'div untouched');
+  },
+
+  'wrapBareParagraphs: empty string unchanged': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    assert.equal(wrapBareParagraphs(''), '');
+  },
+
+  'wrapBareParagraphs: preserves script blocks': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = 'Before\n<script>var x = 1 < 2;</script>\nAfter';
+    const result = wrapBareParagraphs(input);
+    assert(result.includes('<p>Before</p>'), 'before text wrapped');
+    assert(result.includes('<script>var x = 1 < 2;</script>'), 'script preserved');
+    assert(result.includes('<p>After</p>'), 'after text wrapped');
+  },
+
+  'wrapBareParagraphs: bare table rows get wrapped for transformMarkdownTables': () => {
+    const { wrapBareParagraphs, transformMarkdownTables } = require('../lib/generator');
+    const input = '| A | B |\n|---|---|\n| 1 | 2 |';
+    const wrapped = wrapBareParagraphs(input);
+    // All rows should now be <p>|...|</p>
+    assert.equal(wrapped, '<p>| A | B |</p>\n<p>|---|---|</p>\n<p>| 1 | 2 |</p>');
+    // And transformMarkdownTables should convert them to a table
+    const table = transformMarkdownTables(wrapped);
+    assert(table.includes('<div class="table-wrap">'), 'table generated');
+    assert(table.includes('<th>A</th>'), 'header A');
+    assert(table.includes('<td>1</td>'), 'data 1');
+  },
+
+  'wrapBareParagraphs: skips LaTeX \\[-\\] display math blocks': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = '<p style="text-align:center">\\[\ns = \\sigma + j\\omega\n\\]</p>';
+    const result = wrapBareParagraphs(input);
+    assert.equal(result, input, 'LaTeX block lines should not be wrapped');
+  },
+
+  'wrapBareParagraphs: skips LaTeX $$ display math blocks': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = '$$\nE = mc^2\n$$';
+    const result = wrapBareParagraphs(input);
+    assert.equal(result, input, '$$ block lines should not be wrapped');
+  },
+
+  'wrapBareParagraphs: text before and after LaTeX block gets wrapped': () => {
+    const { wrapBareParagraphs } = require('../lib/generator');
+    const input = 'Some intro text\n<p>\\[\nX(s) = \\int x(t) e^{-st} dt\n\\]</p>\nMore text after';
+    const result = wrapBareParagraphs(input);
+    assert(result.includes('<p>Some intro text</p>'), 'text before wrapped');
+    assert(result.includes('<p>More text after</p>'), 'text after wrapped');
+    assert(result.includes('X(s) = '), 'LaTeX content preserved without extra <p>');
+  },
 };
 
 module.exports = { tests, name: 'generator' };
