@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * HtmlBlogs Build Script
+ * gongshangzheng.github.io Build Script
  * Incremental build with cache-aware asset copy and summary output.
  */
 
@@ -104,7 +104,7 @@ function buildCss() {
   }
 
   fs.mkdirSync(publicCssDir, { recursive: true });
-  const header = '/* ========================================\n   HtmlBlogs Theme — Auto-generated from modules\n   Do not edit hugo-theme.css directly — edit modules/*.css instead\n   ======================================== */\n\n';
+  const header = '/* ========================================\n   gongshangzheng.github.io Theme — Auto-generated from modules\n   Do not edit hugo-theme.css directly — edit modules/*.css instead\n   ======================================== */\n\n';
   const merged = manifest.always.reduce((acc, mod) => {
     const modPath = path.join(modulesDir, mod + '.css');
     if (fs.existsSync(modPath)) return acc + fs.readFileSync(modPath, 'utf8') + '\n';
@@ -160,7 +160,7 @@ function postsFingerprint(allPosts) {
 }
 
 function build() {
-  console.log('🔨 Building HtmlBlogs...\n');
+  console.log('🔨 Building gongshangzheng.github.io...\n');
 
   fs.mkdirSync(PATHS.public, { recursive: true });
 

@@ -18,9 +18,10 @@ push → main 分支 → GitHub Actions 触发 → build → deploy
 |------|------|
 | Checkout | 拉取最新代码 |
 | Setup Node.js | 安装 Node 20 |
-| Install | `npm install` 安装依赖 |
+| Install | `npm ci` 安装依赖 |
+| Test | `npm test` 运行测试 |
 | Build | `npm run build` 执行构建，生成 `public/` 目录 |
-| Deploy | 将 `public/` 推送到 `gh-pages` 分支 |
+| Deploy | 将 `public/` 推送到当前仓库的 `gh-pages` 分支 |
 
 ## 本地预览
 
@@ -33,8 +34,8 @@ npx serve public     # 本地预览
 
 ## 部署目标
 
-- **源码仓库**：`gongshangzheng/HtmlBlogs`（`main` 分支）
-- **站点仓库**：`gongshangzheng/HtmlBlogs`（`gh-pages` 分支）
+- **源码仓库**：`gongshangzheng/gongshangzheng.github.io`（`main` 分支）
+- **站点分支**：当前仓库的 `gh-pages` 分支
 - **访问地址**：https://gongshangzheng.github.io
 
 ## 关键文件

@@ -1,5 +1,5 @@
 /**
- * migrate-hugo.js — 从 Hugo 迁移到 HtmlBlogs
+ * migrate-hugo.js — 从 Hugo 迁移到 gongshangzheng.github.io
  * 运行: node migrate-hugo.js
  */
 
@@ -9,7 +9,7 @@ const { marked } = require('marked');
 
 const HUGO_NOTE = path.join(process.env.HOME, 'blogs/content/note');
 const HUGO_POSTS = path.join(process.env.HOME, 'blogs/content/posts');
-const DEST = path.join(process.env.HOME, 'HtmlBlogs/src/pages');
+const DEST = path.join(process.env.HOME, 'gongshangzheng.github.io/src/pages');
 
 function slugify(name) {
   return name

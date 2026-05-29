@@ -1,4 +1,4 @@
-# HtmlBlogs
+# gongshangzheng.github.io
 
 A minimalist blog built with pure HTML, CSS, and JavaScript. No frameworks.
 
