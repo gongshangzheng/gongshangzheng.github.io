@@ -1,0 +1,309 @@
+---
+title: "JPEG 与 DCT 时代：有损压缩的核心算法"
+description: "系统讲解 JPEG 压缩的完整流程：色彩空间转换、8×8 分块、DCT 变换、量化、Zigzag 扫描与 Huffman/算术编码，以及 DCT 的数学原理"
+created_at: 2026-05-29T21:11:54
+updated_at: 2026-05-29T21:15:00
+categories: ["AI"]
+subcategory: "图像压缩"
+tags: [JPEG, DCT, 有损压缩, 量化, Huffman编码]
+mathjax: true
+hero_title: "JPEG 与 DCT 时代"
+hero_sub: "传统图像与视频压缩技术全景 · 第二篇"
+hero_tagline: "离散余弦变换如何让 JPEG 统治图像压缩三十年"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">系列文章</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">本篇：JPEG 与 DCT</span></div>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">引言</div>
+<div class="ch-title">JPEG：统治互联网三十年的图像格式</div>
+
+1992 年，JPEG（Joint Photographic Experts Group）标准正式发布。在此后的三十多年里，JPEG 成为互联网上使用最广泛的图像格式，至今仍占据网页图片的 40% 以上。它的成功并非偶然：JPEG 在压缩比和视觉质量之间找到了一个精妙的平衡点，而这个平衡的核心，就是离散余弦变换（DCT）。
+
+本篇将完整拆解 JPEG 的压缩流程，从色彩空间转换开始，经过 DCT 变换、量化、Zigzag 扫描，最终到 Huffman/算术编码，每一步都给出算法细节和数学原理。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 1</div>
+<div class="ch-title">JPEG 压缩的完整流程</div>
+
+JPEG 的有损压缩可以分解为以下步骤：
+
+```
+RGB 输入 → 色彩空间转换 (RGB→YCbCr) → 色度子采样 → 8×8 分块
+→ DCT 变换 → 量化 → Zigzag 扫描 → 熵编码 (Huffman/算术) → JPEG 文件
+```
+
+下面逐步详解。
+
+### 第一步：色彩空间转换
+
+JPEG 首先将 RGB 图像转换到 YCbCr 色彩空间：
+
+- **Y**：亮度（Luminance），表示像素的明暗程度
+- **Cb**：蓝色色度（Chroma Blue），表示蓝色偏移量
+- **Cr**：红色色度（Chroma Red），表示红色偏移量
+
+转换公式（ITU-R BT.601 标准）：
+
+$$Y = 0.299R + 0.587G + 0.114B$$
+$$Cb = -0.169R - 0.331G + 0.500B + 128$$
+$$Cr = 0.500R - 0.419G - 0.081B + 128$$
+
+为什么要做这个转换？因为人眼对亮度比对色度敏感得多。人类视觉系统中，视网膜上的视杆细胞（感知亮度）数量远多于视锥细胞（感知色度）。这意味着我们可以对色度通道进行更激进的压缩，而人眼几乎察觉不到差异。
+
+### 第二步：色度子采样（Chroma Subsampling）
+
+利用人眼对色度不敏感的特性，JPEG 可以对 Cb 和 Cr 通道进行下采样。常见的子采样模式：
+
+| 模式 | 含义 | 数据量 |
+|------|------|--------|
+| 4:4:4 | 不子采样 | 100% |
+| 4:2:2 | 水平子采样 2:1 | 67% |
+| 4:2:0 | 水平+垂直子采样 2:1 | 50% |
+
+4:2:0 是最常用的模式，它将色度通道的分辨率在水平和垂直方向各降低一半，直接将色度数据量减少到原来的 25%。这一步就已经实现了 2:1 的压缩比，且几乎不影响视觉质量。
+
+### 第三步：8×8 分块
+
+JPEG 将图像分成 8×8 像素的小块，对每个块独立处理。选择 8×8 是因为：
+- 足够小：可以假设块内像素相关性均匀
+- 足够大：能捕获有意义的频率信息
+- 计算友好：8 是 2 的幂，便于快速算法实现
+
+对于不满足 8 的整数倍的图像边缘，JPEG 会进行填充（padding）。
+
+### 第四步：DCT 变换
+
+这是 JPEG 压缩的核心。每个 8×8 块经过二维离散余弦变换（2D DCT），从空间域转换到频率域。
+
+#### DCT 的数学定义
+
+对于一个 $N \times N$ 的矩阵 $f(x, y)$，二维 DCT 定义为：
+
+$$F(u, v) = \frac{2}{N} C(u) C(v) \sum_{x=0}^{N-1} \sum_{y=0}^{N-1} f(x, y) \cos\frac{(2x+1)u\pi}{2N} \cos\frac{(2y+1)v\pi}{2N}$$
+
+其中：
+$$C(k) = \begin{cases} \frac{1}{\sqrt{2}} & k = 0 \\ 1 & k > 0 \end{cases}$$
+
+对于 JPEG 使用的 8×8 DCT（$N=8$）：
+
+$$F(u, v) = \frac{1}{4} C(u) C(v) \sum_{x=0}^{7} \sum_{y=0}^{7} f(x, y) \cos\frac{(2x+1)u\pi}{16} \cos\frac{(2y+1)v\pi}{16}$$
+
+#### DCT 的物理意义
+
+DCT 将 8×8 像素块分解为 64 个基函数的加权和。每个基函数对应一个特定的空间频率：
+
+- $F(0, 0)$ 是 DC 系数（直流分量），表示块的平均亮度
+- $F(u, v)$（$u, v > 0$）是 AC 系数（交流分量），表示块中不同方向和频率的变化
+
+低频系数（左上角）对应图像中缓慢变化的区域（如天空、皮肤），高频系数（右下角）对应快速变化的细节（如边缘、纹理）。
+
+#### 为什么选择 DCT 而不是 DFT？
+
+离散傅里叶变换（DFT）也能实现频率分解，但 DCT 有两个关键优势：
+
+1. **实数输出**：DCT 的输出全是实数，而 DFT 输出复数
+2. **能量集中**：DCT 的能量集中特性优于 DFT。对于自然图像，DCT 的低频系数集中了大部分能量，高频系数接近零，这使得量化后的零值更多，压缩效率更高
+
+JPEG 使用的整数近似 DCT（避免浮点精度问题）：
+
+$$F(u, v) = \frac{1}{4} C(u) C(v) \sum_{x=0}^{7} \sum_{y=0}^{7} f(x, y) \cos\frac{(2x+1)u\pi}{16} \cos\frac{(2y+1)v\pi}{16}$$
+
+实际实现中使用快速算法，将 $O(N^4)$ 的直接计算降低到 $O(N^2 \log N)$。
+
+### 第五步：量化
+
+量化是 JPEG 中**唯一引入信息损失**的步骤，也是压缩比的主要控制点。
+
+量化的核心思想：将 DCT 系数除以量化表中对应的值，然后取整。高频系数对应的量化步长大，低频系数对应的量化步长小。
+
+JPEG 标准定义了两个默认量化表（用于 8bit 图像）：
+
+**亮度量化表**（Luminance）：
+
+```
+16  11  10  16  24  40  51  61
+12  12  14  19  26  58  60  55
+14  13  16  24  40  57  69  56
+14  17  22  29  51  87  80  62
+18  22  37  56  68 109 103  77
+24  35  55  64  81 104 113  92
+49  64  78  87 103 121 120 101
+72  92  95  98 112 100 103  99
+```
+
+**色度量化表**（Chrominance）：
+
+```
+17  18  24  47  99  99  99  99
+18  21  26  66  99  99  99  99
+24  26  56  99  99  99  99  99
+47  66  99  99  99  99  99  99
+99  99  99  99  99  99  99  99
+99  99  99  99  99  99  99  99
+99  99  99  99  99  99  99  99
+99  99  99  99  99  99  99  99
+```
+
+注意色度量化表的值普遍更大，这意味着色度通道的高频信息会被更激进地丢弃。
+
+量化过程：
+
+$$F_q(u, v) = \text{round}\left(\frac{F(u, v)}{Q(u, v)}\right)$$
+
+其中 $Q(u, v)$ 是量化表中对应的值。用户通过调节质量参数（Quality Factor, QF，1–100）来缩放量化表：QF=1 时量化步长最大（压缩比最高，质量最差），QF=100 时量化步长最小（压缩比最低，质量最好）。
+
+量化后的效果：大量高频 AC 系数被量化为零，尤其是右下角的高频区域。这些零值是 JPEG 高压缩比的关键来源。
+
+### 第六步：Zigzag 扫描
+
+量化后的 8×8 系数矩阵需要被展平为一维序列，以便进行熵编码。JPEG 使用 **Zigzag**（之字形）扫描顺序：
+
+```
+→ → ↘ ↙ ↘ → → →
+  ↗ ↗ ↘ ↙ ↘ ↗ ↗
+    → ↗   → ↘
+      ↘ ↗ ↙ ↘
+        → → ↘ ↙
+          ↗ ↗ ↘
+            → ↗
+              ↘
+```
+
+Zigzag 扫描从左上角（DC 系数）开始，沿着对角线方向扫描到右下角。这种扫描顺序的设计考虑了量化后系数的分布特性：低频系数（非零概率高）集中在左上角，高频系数（量化后多为零）集中在右下角。Zigzag 扫描使得连续的零值聚集在一起，便于后续的游程编码。
+
+### 第七步：熵编码
+
+JPEG 支持两种熵编码方式：Huffman 编码（标准 JPEG）和算术编码（JPEG 可选扩展）。
+
+#### DC 系数的差分编码
+
+DC 系数表示每个 8×8 块的平均亮度。由于相邻块的平均亮度通常很接近，JPEG 不直接编码 DC 值，而是编码相邻块 DC 值的**差分**（DPCM）：
+
+$$\Delta DC = DC_{\text{current}} - DC_{\text{previous}}$$
+
+差分值的绝对值通常很小，可以用较短的 Huffman 码字高效编码。
+
+#### AC 系数的游程编码
+
+AC 系数经过 Zigzag 扫描后，形成一个包含大量连续零值的序列。JPEG 使用 **(Run, Level)** 对来编码：
+
+- **Run**：当前非零系数之前连续零的个数（0–15）
+- **Level**：当前非零系数的值
+
+如果连续零的个数超过 15，需要使用 ZRL（Zero Run Length，值为 15,0）符号来表示 16 个零。块结束时使用 EOB（End of Block）符号。
+
+每个 (Run, Level) 对被映射为一个 Huffman 码字（表示 Run 和 Level 的组合类别），后面跟着 Level 的额外比特（表示精确值）。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 2</div>
+<div class="ch-title">DCT 的数学深入</div>
+
+### DCT 与傅里叶变换的关系
+
+DCT 可以看作是 DFT 的一种特殊形式。对于长度为 $N$ 的实数序列 $f(x)$，如果将其对称延拓为 $2N$ 长度的偶函数，然后做 DFT，结果就等价于对原序列做 DCT。
+
+这种对称延拓消除了 DFT 在边界处的不连续性（Gibbs 现象），使得 DCT 的能量集中特性优于 DFT。对于自然图像来说，这意味着更多的能量集中在少数低频系数中。
+
+### DCT 的快速算法
+
+直接计算 $8 \times 8$ 的 2D DCT 需要 $O(N^4) = O(4096)$ 次乘法。实际中使用快速算法：
+
+1. **行-列分解**：2D DCT 可以分解为两步 1D DCT（先对每行做 1D DCT，再对每列做 1D DCT）
+2. **蝶形算法**：1D DCT 可以用蝶形运算实现，复杂度降到 $O(N \log N)$
+
+对于 $N=8$，快速 1D DCT 只需要 11 次乘法和 29 次加法（直接计算需要 64 次乘法和 56 次加法）。
+
+### 整数 DCT
+
+为了确保编解码器之间的精确一致性（避免浮点精度差异导致的漂移），JPEG 实际使用的是**整数近似 DCT**。变换矩阵的所有系数都是整数，通过缩放因子保证可逆性。
+
+H.264 标准中的整数 DCT 更加激进，使用完全整数运算：
+
+$$Y = C_f X C_f^T$$
+
+其中 $C_f$ 是 $4 \times 4$ 的整数变换矩阵：
+
+$$C_f = \begin{bmatrix} 1 & 1 & 1 & 1 \\ 2 & 1 & -1 & -2 \\ 1 & -1 & -1 & 1 \\ 1 & -2 & 2 & -1 \end{bmatrix}$$
+
+这种设计使得变换和反变换都可以完全用整数加法和移位实现，无需浮点运算。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 3</div>
+<div class="ch-title">JPEG 的变体与局限</div>
+
+### JPEG 的变体
+
+#### Progressive JPEG
+
+标准 JPEG（Baseline JPEG）按从左到右、从上到下的顺序逐块编码。Progressive JPEG 则分多轮扫描整个图像：
+
+1. 第一轮：只编码 DC 系数（粗略的全局预览）
+2. 后续轮次：逐步添加 AC 系数（从低频到高频，细节逐渐清晰）
+
+Progressive JPEG 在网络传输中有优势：用户可以先看到模糊的全图，然后逐渐变清晰，而不是等待左上角先加载完。
+
+#### Lossless JPEG
+
+JPEG 标准也定义了无损模式，使用预测编码（而非 DCT）+ Huffman/算术编码。但其压缩比远低于有损模式，实际应用很少。
+
+#### JPEG-LS
+
+1998 年发布的近无损（near-lossless）压缩标准，基于预测和上下文建模，压缩性能优于 Lossless JPEG，但同样应用有限。
+
+### JPEG 的固有局限
+
+#### 块效应（Blocking Artifacts）
+
+JPEG 的 8×8 分块处理导致在低比特率下，块边界处出现明显的不连续。这是 JPEG 最常见的视觉伪影。
+
+块效应的根源：每个 8×8 块独立做 DCT 和量化，相邻块之间没有信息交换。当量化步长很大时，相邻块的重建值可能差异显著，在边界处产生可见的"网格"。
+
+#### 振铃效应（Ringing Artifacts）
+
+在高对比度边缘附近，JPEG 会产生"振铃"伪影（类似吉布斯现象的视觉表现）。这是因为边缘处的高频 DCT 系数被量化后丢失，导致重建信号在边缘处产生振荡。
+
+#### 色度模糊
+
+由于色度子采样（4:2:0），色度通道的分辨率只有亮度通道的 1/4。在颜色边界处（如红白文字），色度信息的丢失会导致颜色"渗出"。
+
+#### 不支持透明度和动画
+
+标准 JPEG 不支持 Alpha 通道透明度，也不支持动画（MJPEG 是一个简单的扩展，但效率很低）。
+
+这些局限推动了后续图像格式的发展：JPEG2000 用小波变换替代 DCT 以消除块效应，WebP 用更先进的预测和熵编码提高压缩比，AVIF 则借鉴了视频编码的帧内预测工具。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">参考来源</div>
+<div class="ch-title">References</div>
+
+1. Wallace, G. K. (1992). "The JPEG Still Picture Compression Standard". *IEEE Transactions on Consumer Electronics*, 38(1), xvi–xxxiv.
+2. Pennebaker, W. B., & Mitchell, J. L. (1993). *JPEG: Still Image Data Compression Standard*. Van Nostrand Reinhold.
+3. ITU-T T.81 (1992). "Information Technology — Digital Compression and Coding of Continuous-Tone Still Images".
+4. ITU-T T.87 (1997). "Information Technology — Lossless and Near-Lossless Multicompression of Continuous-Tone Still Images".
+5. Poynton, C. (2012). *A Technical Introduction to Digital Video*. Wiley.
+6. Rao, K. R., & Yip, P. (1990). *Discrete Cosine Transform: Algorithms, Advantages, Applications*. Academic Press.
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">系列导航</div>
+<div class="ch-title">下一篇</div>
+
+本篇是系列的第二篇。下一篇将深入讲解**小波变换与 JPEG2000**，展示另一种完全不同的频率分析方法如何为图像压缩带来新的可能性。
+
+- 上一篇：[图像压缩基础与无损压缩](/compression-fundamentals)
+- 下一篇：小波变换与 JPEG2000
+
+</div>

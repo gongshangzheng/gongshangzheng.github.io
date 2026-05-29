@@ -1,0 +1,330 @@
+---
+title: "小波变换与 JPEG2000：多分辨率分析的压缩革命"
+description: "系统讲解离散小波变换（DWT）的数学原理、Mallat 算法、提升方案，以及 JPEG2000 的完整压缩流程（EBCOT 熵编码、ROI 支持）"
+created_at: 2026-05-29T21:12:54
+updated_at: 2026-05-29T21:15:00
+categories: ["AI"]
+subcategory: "图像压缩"
+tags: [小波变换, JPEG2000, DWT, EBCOT, 多分辨率分析]
+mathjax: true
+hero_title: "小波变换与 JPEG2000"
+hero_sub: "传统图像与视频压缩技术全景 · 第三篇"
+hero_tagline: "从 DCT 到小波，图像压缩的范式转换"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">系列文章</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">本篇：小波变换与 JPEG2000</span></div>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">引言</div>
+<div class="ch-title">DCT 的局限与小波变换的兴起</div>
+
+JPEG 的 DCT 变换将图像分成固定的 8×8 块独立处理，这带来了两个根本性问题：块效应（blocking artifacts）和缺乏多分辨率支持。在低比特率下，这些块边界变得极为明显。
+
+1980 年代末，小波变换（Wavelet Transform）作为一种全新的时频分析工具进入图像压缩领域。与 DCT 不同，小波变换对整个图像进行多分辨率分解，不引入块边界，天然支持渐进式传输。1992 年， Mallat 提出的多分辨率分析框架为小波图像压缩奠定了理论基础。2000 年，JPEG2000 标准正式发布，标志着小波变换在工业界的落地。
+
+本篇将从连续小波变换讲起，逐步深入到离散小波变换、Mallat 算法、提升方案，最后完整拆解 JPEG2000 的压缩架构。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 1</div>
+<div class="ch-title">小波变换的数学基础</div>
+
+### 从傅里叶变换到小波变换
+
+傅里叶变换将信号分解为正弦波的叠加，提供了精确的频率信息，但完全丢失了时间（空间）信息。对于图像压缩来说，我们不仅需要知道"有哪些频率成分"，还需要知道"这些成分出现在哪里"。
+
+短时傅里叶变换（STFT）通过加窗解决了这个问题，但窗宽固定，无法同时获得好的时间和频率分辨率（受制于 Heisenberg 不确定性原理）。
+
+小波变换用**可变尺度的基函数**替代了固定窗长的正弦波，实现了多分辨率分析：在低频区域使用宽窗口（好的频率分辨率），在高频区域使用窄窗口（好的空间分辨率）。
+
+### 连续小波变换（CWT）
+
+对于一维信号 $f(t)$，连续小波变换定义为：
+
+$$W_f(a, b) = \frac{1}{\sqrt{|a|}} \int_{-\infty}^{\infty} f(t) \psi^*\left(\frac{t-b}{a}\right) dt$$
+
+其中：
+- $\psi(t)$ 是**母小波**（mother wavelet），一个均值为零的振荡函数
+- $a$ 是**尺度参数**（scale），控制小波的伸缩。$a$ 越大，小波越宽，对应低频成分
+- $b$ 是**平移参数**（translation），控制小波的位置
+- $\psi^*$ 表示复共轭
+
+CWT 将一维信号映射为二维的时频表示 $W_f(a, b)$，其中横轴是位置，纵轴是尺度（频率）。
+
+### 离散小波变换（DWT）
+
+实际计算中，我们对尺度和平移参数进行离散化。最常见的是二进离散化：$a = 2^j$，$b = k \cdot 2^j$，其中 $j, k$ 为整数。
+
+离散小波变换的基函数：
+
+$$\psi_{j,k}(t) = \frac{1}{\sqrt{2^j}} \psi\left(\frac{t - k \cdot 2^j}{2^j}\right)$$
+
+DWT 的系数为：
+
+$$c_{j,k} = \int_{-\infty}^{\infty} f(t) \psi_{j,k}^*(t) \, dt$$
+
+### 多分辨率分析与 Mallat 算法
+
+Mallat 在 1989 年提出了离散小波变换的快速算法——Mallat 算法（也称为金字塔算法或滤波器组算法）。这是小波变换在工程中最核心的实现方式。
+
+#### 滤波器组视角
+
+DWT 可以等价地看作信号通过一对**正交镜像滤波器**（Quadrature Mirror Filters, QMF）：
+
+1. **低通滤波器 $g[n]$**：提取信号的近似（低频）成分
+2. **高通滤波器 $h[n]$**：提取信号的细节（高频）成分
+3. 每个滤波器后接**2 倍下采样**（丢弃一半样本）
+
+$$y_{\text{low}}[n] = (x * g)[2n] = \sum_{k} x[k] \cdot g[2n - k]$$
+$$y_{\text{high}}[n] = (x * h)[2n] = \sum_{k} x[k] \cdot h[2n - k]$$
+
+#### 级联分解
+
+Mallat 算法的关键洞察：对低频输出递归地重复上述过程，形成**滤波器组**（filter bank）：
+
+```
+信号 x[n]
+  ├── 高通 → 下采样 → 细节系数 D1（最高频）
+  └── 低通 → 下采样
+        ├── 高通 → 下采样 → 细节系数 D2
+        └── 低通 → 下采样
+              ├── 高通 → 下采样 → 细节系数 D3
+              └── 低通 → 下采样 → 近似系数 A3（最低频）
+```
+
+每一级分解将频率范围减半，同时空间分辨率也减半。$n$ 级分解后，信号被分解为 1 个近似系数和 $n$ 个细节系数。
+
+#### 计算复杂度
+
+Mallat 算法的时间复杂度为 $O(N)$（线性），其中 $N$ 是信号长度。这比 FFT 的 $O(N \log N)$ 还要快。原因在于：每级分解后信号长度减半，总计算量为几何级数求和。
+
+### 二维 DWT（图像处理）
+
+对于二维图像，DWT 采用**可分离**的方式实现：先对每行做 1D DWT，再对每列做 1D DWT。
+
+一次二维 DWT 将图像分解为 4 个子带：
+
+| 子带 | 含义 | 频率范围 |
+|------|------|----------|
+| LL | 近似（低频-低频） | 低-低 |
+| LH | 水平细节（低频-高频） | 低-高 |
+| HL | 垂直细节（高频-低频） | 高-低 |
+| HH | 对角细节（高频-高频） | 高-高 |
+
+对 LL 子带递归分解，形成**小波金字塔**：
+
+```
+原始图像 (N×N)
+  ┌─────┬─────┐
+  │ LL2 │ HL2 │  ← 第 2 级
+  ├─────┼─────┤
+  │ LH2 │ HH2 │
+  ├─────┼─────┤
+  │ LH1 │ HH1 │  ← 第 1 级
+  ├─────┤─────┤
+  │     │     │
+  └─────┴─────┘
+```
+
+### 常用小波基
+
+不同的小波基函数有不同的性质，适合不同的应用：
+
+| 小波族 | 滤波器长度 | 特点 | 应用 |
+|--------|-----------|------|------|
+| Haar | 2 | 最简单，不连续 | 教学、快速计算 |
+| Daubechies (dbN) | 2N | 紧支撑、正交 | 通用压缩 |
+| LeGall 5/3 | 5/3 | 整数系数、可逆 | JPEG2000 无损模式 |
+| CDF 9/7 | 9/7 | 双正交、光滑 | JPEG2000 有损模式 |
+
+JPEG2000 选择了两种小波：
+- **LeGall 5/3**：用于无损压缩（整数到整数变换，计算简单）
+- **CDF 9/7**（Cohen-Daubechies-Feauveau）：用于有损压缩（更好的能量集中）
+
+### 提升方案（Lifting Scheme）
+
+提升方案是 DWT 的一种高效实现方式，由 Sweldens 在 1996 年提出。它将滤波器组分解为一系列**预测**和**更新**操作：
+
+1. **分裂（Split）**：将信号分为偶数样本和奇数样本
+2. **预测（Predict）**：用偶数样本预测奇数样本，奇数样本减去预测值得到细节系数
+3. **更新（Update）**：用细节系数更新偶数样本，得到近似系数
+
+提升方案的优势：
+- **原位计算**：不需要额外的存储空间
+- **整数到整数变换**：通过取整操作实现可逆的整数小波变换
+- **计算速度**：比传统的滤波器组实现快约 2 倍
+- **任意长度信号**：不需要信号长度为 2 的幂
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 2</div>
+<div class="ch-title">JPEG2000 的完整架构</div>
+
+JPEG2000 于 2000 年由 ISO/IEC 发布（ISO/IEC 15444-1），旨在解决 JPEG 的固有问题。其压缩流程：
+
+```
+输入图像 → 预处理（分块 + DC 位移）→ DWT → 量化 → EBCOT 熵编码 → JPEG2000 码流
+```
+
+### 第一步：预处理
+
+#### DC 位移
+
+对于无符号样本值（如 8bit 图像的 0–255），JPEG2000 首先减去 $2^{B-1}$（其中 $B$ 是位深），将值域中心化到零附近。这一步不引入信息损失。
+
+#### 分块（Tiling）
+
+JPEG2000 将图像分成矩形的**块**（tile），每个块独立处理。块的大小可以是任意的（默认通常是 256×256 或 192×192）。
+
+分块的好处：
+- 支持随机访问：可以只解码图像的一部分
+- 降低内存需求：不需要同时处理整幅图像
+- 支持 ROI（感兴趣区域）编码
+
+分块的代价：块边界处可能产生伪影（类似 JPEG 的块效应，但程度轻得多）。
+
+### 第二步：DWT
+
+每个块独立进行多级二维 DWT。JPEG2000 支持 9/7（有损）和 5/3（无损/有损）两种小波基。
+
+DWT 分解级数通常为 4–6 级。对于 512×512 的块，5 级分解后 LL 子带的大小为 16×16。
+
+DWT 的输出是一个小波系数金字塔，包含多个子带（LL, LH, HL, HH 在每个级别的副本）。
+
+### 第三步：量化
+
+JPEG2000 使用**均匀 dead-zone 量化器**。对于每个子带 $b$，量化步长为：
+
+$$\Delta_b = \frac{\Delta_{\text{base}}}{2^{R_b}}$$
+
+其中 $\Delta_{\text{base}}$ 是基础量化步长，$R_b$ 是子带 $b$ 的指数衰减量（取决于分解级别和子带类型）。
+
+量化后的系数为：
+
+$$q_b(u, v) = \text{sign}(w_b(u, v)) \cdot \left\lfloor \frac{|w_b(u, v)|}{\Delta_b} + r_b \right\rfloor$$
+
+其中 $r_b$ 是 dead-zone 偏移量（有损模式下通常为 0.5，无损模式下为 0）。
+
+### 第四步：EBCOT 熵编码
+
+EBCOT（Embedded Block Coding with Optimal Truncation）是 JPEG2000 的核心创新之一，由 Taubman 在 2000 年提出。
+
+#### 编码块（Code-Block）
+
+每个子带被进一步分成小的**编码块**（code-block），典型大小为 32×36 或 64×64。编码块是 EBCOT 的基本处理单元。
+
+#### 嵌入式编码
+
+EBCOT 对每个编码块进行**嵌入式编码**：码流按重要性从高到低排列，可以随时截断。截断点越靠后，重建质量越高。这使得 JPEG2000 天然支持渐进式传输和精确的码率控制。
+
+#### 上下文建模
+
+EBCOT 使用**上下文建模**来预测每个系数位的概率。对于编码块中的每个系数，它检查 3×3 邻域中 8 个邻居的"重要性状态"（是否已经编码为非零），形成一个上下文索引。
+
+上下文状态根据以下条件分类：
+- 邻域中非零系数的个数（0–8）
+- 邻域中非零系数的位置分布
+- 当前系数的重要性状态（已/未变为非零）
+
+共有 19 种不同的上下文状态。每个上下文状态对应一个自适应算术编码器。
+
+#### 三遍扫描
+
+EBCOT 对每个编码块进行三遍扫描（pass-based encoding）：
+
+1. **显著性传播扫描（Significance Propagation Pass）**：编码尚未变为"显著"（非零）的系数的当前位
+2. **幅值细化扫描（Magnitude Refinement Pass）**：对已经显著的系数编码下一位
+3. **清理扫描（Cleanup Pass）**：编码剩余的系数位
+
+每遍扫描中，对每个系数位使用上下文建模 + 算术编码。
+
+#### 最优截断
+
+EBCOT 的"最优截断"（Optimal Truncation）特性：对于每个编码块，可以独立选择截断点，使得在给定总码率约束下，整体失真最小。这是一个拉格朗日优化问题：
+
+$$\min \sum_{i} D_i(R_i) \quad \text{s.t.} \quad \sum_{i} R_i \leq R_{\text{total}}$$
+
+其中 $D_i(R_i)$ 是编码块 $i$ 在码率 $R_i$ 下的失真。
+
+### JPEG2000 的高级特性
+
+#### 渐进式传输
+
+JPEG2000 支持多种渐进式传输模式：
+- **分辨率渐进**：先显示低分辨率，逐步增加细节
+- **质量渐进**：先传输最重要的位，逐步提高质量
+- **层渐进**：按预定义的质量层逐步传输
+- **空间渐进**：从左上角开始，逐步扩展到全图
+
+#### ROI（感兴趣区域）
+
+JPEG2000 允许指定图像中的某个区域为 ROI，该区域的编码优先级高于背景。ROI 区域的小波系数被移位到更高位平面，确保在码流截断时优先保留。
+
+#### 无损压缩
+
+使用 5/3 整数小波 + 无量化，JPEG2000 可以实现完全无损的压缩。这在医学影像和卫星图像等对精度要求极高的领域非常重要。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 3</div>
+<div class="ch-title">小波变换 vs DCT：系统对比</div>
+
+<div class="table-wrap">
+<table>
+<tr><th>维度</th><th>DCT (JPEG)</th><th>DWT (JPEG2000)</th></tr>
+<tr><td>基函数</td><td>8×8 固定余弦波</td><td>多尺度小波（可变长度）</td></tr>
+<tr><td>处理方式</td><td>分块独立处理</td><td>全局分解（或分块）</td></tr>
+<tr><td>多分辨率</td><td>不支持</td><td>天然支持</td></tr>
+<tr><td>块效应</td><td>低比特率下明显</td><td>块边界处轻微伪影</td></tr>
+<tr><td>渐进式传输</td><td>Progressive JPEG（有限）</td><td>多种渐进模式</td></tr>
+<tr><td>无损模式</td><td>L JPEG（压缩比低）</td><td>5/3 整数小波（压缩比高）</td></tr>
+<tr><td>ROI 支持</td><td>不支持</td><td>原生支持</td></tr>
+<tr><td>计算复杂度</td><td>低</td><td>中等</td></tr>
+<tr><td>专利问题</td><td>已过期</td><td>早期有争议（已解决）</td></tr>
+<tr><td>工业采用</td><td>极广泛</td><td>有限（医学、卫星）</td></tr>
+</table>
+</div>
+
+### 为什么 JPEG2000 没有取代 JPEG？
+
+尽管 JPEG2000 在技术上全面优于 JPEG，但它的工业采用远不如预期。主要原因：
+
+1. **计算复杂度高**：EBCOT 的上下文建模和算术编码使编码速度比 JPEG 慢 5–10 倍
+2. **专利问题**：早期 JPEG2000 涉及多个专利，阻碍了开源实现的普及
+3. **JPEG 的惯性**：JPEG 已经嵌入到几乎所有图像处理软件和硬件中，替换成本极高
+4. **WebP 和 HEIF 的竞争**：在 JPEG2000 专利问题解决之前，WebP 和 HEIF 已经提供了更好的压缩性能
+
+JPEG2000 的主要应用场景集中在：医学影像（DICOM 标准支持 JPEG2000）、数字电影（DCI 标准）、地理信息系统（GeoTIFF）和档案存储。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">参考来源</div>
+<div class="ch-title">References</div>
+
+1. Mallat, S. (1989). "A Theory for Multiresolution Signal Decomposition: The Wavelet Representation". *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 11(7), 674–693.
+2. Daubechies, I. (1990). "The Wavelet Transform, Time-Frequency Localization and Signal Analysis". *IEEE Transactions on Information Theory*, 36(5), 961–1005.
+3. Sweldens, W. (1996). "The Lifting Scheme: A Custom-Design Construction of Biorthogonal Wavelets". *Applied and Computational Harmonic Analysis*, 3(2), 186–200.
+4. Taubman, D. S. (2000). "High Performance Scalable Image Compression with EBCOT". *IEEE Transactions on Image Processing*, 9(7), 1158–1170.
+5. ISO/IEC 15444-1 (2000). "Information Technology — JPEG 2000 Image Coding System — Part 1: Core Coding System".
+6. Taubman, D. S., & Marcellin, M. W. (2001). *JPEG2000: Image Compression Fundamentals, Standards and Practice*. Kluwer Academic Publishers.
+7. Christopoulos, C., Skodras, A., & Ebrahimi, T. (2000). "The JPEG2000 Still Image Coding System: An Overview". *IEEE Transactions on Consumer Electronics*, 46(4), 1103–1127.
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">系列导航</div>
+<div class="ch-title">下一篇</div>
+
+本篇是系列的第三篇。下一篇将讲解**现代图像格式 — WebP、AVIF 与 BPG**，看看视频编码技术如何反哺图像压缩。
+
+- 上一篇：[JPEG 与 DCT 时代](/jpeg-dct-compression)
+- 下一篇：现代图像格式 — WebP、AVIF 与 BPG
+
+</div>

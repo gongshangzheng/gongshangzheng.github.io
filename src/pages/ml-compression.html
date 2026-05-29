@@ -1,0 +1,322 @@
+---
+title: "机器学习在图像/视频压缩中的应用现状"
+description: "系统讲解端到端学习式图像/视频编解码器（VAE、熵模型、率失真优化）、神经网络增强的传统编码器、以及 AI 压缩的现状与未来方向"
+created_at: 2026-05-29T21:16:36
+updated_at: 2026-05-29T21:16:36
+categories: ["AI"]
+subcategory: "图像压缩"
+tags: [学习式压缩, 神经网络, VAE, 端到端编码, AI压缩, 率失真优化]
+mathjax: true
+hero_title: "机器学习在图像/视频压缩中的应用现状"
+hero_sub: "传统图像与视频压缩技术全景 · 第七篇（终篇）"
+hero_tagline: "当深度学习遇上压缩：从理论突破到工程落地"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">系列文章</span></div>
+  <div class="stat"><span class="num b">7</span><span class="label g">本篇：ML 压缩（终篇）</span></div>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">引言</div>
+<div class="ch-title">从手写特征到端到端学习</div>
+
+传统图像/视频压缩标准（JPEG、H.264、AV1 等）的核心模块——变换、量化、熵编码——都是由工程师手工设计的。每个模块的优化目标是局部的：DCT 最大化能量集中，量化表根据人眼视觉模型设计，Huffman/算术编码逼近熵的理论极限。
+
+但这些手工设计的模块之间存在信息瓶颈：每个模块独立优化，无法保证全局最优。2016 年以来，深度学习为压缩领域带来了全新的范式——**端到端学习式压缩**（End-to-End Learned Compression），将变换、量化、熵编码统一为一个可微分的神经网络，通过率失真损失函数进行全局优化。
+
+本篇将系统讲解学习式压缩的原理、架构、进展与局限。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 1</div>
+<div class="ch-title">端到端学习式压缩的基本架构</div>
+
+### 统一压缩框架
+
+无论是传统压缩还是学习式压缩，都可以用一个统一的框架描述：
+
+$$\boldsymbol{x} \xrightarrow{g_a} \boldsymbol{y} \xrightarrow{Q} \hat{\boldsymbol{y}} \xrightarrow{\text{Entropy Coding}} \text{Bitstream}$$
+$$\hat{\boldsymbol{y}} \xrightarrow{g_s} \hat{\boldsymbol{x}}$$
+
+其中：
+- $\boldsymbol{x}$：输入图像
+- $g_a$：分析变换（编码器），将图像映射到潜在表示 $\boldsymbol{y}$
+- $Q$：量化，将连续值离散化
+- 熵编码：无损压缩量化后的潜在表示
+- $g_s$：合成变换（解码器），从潜在表示重建图像 $\hat{\boldsymbol{x}}$
+
+在传统压缩中，$g_a$ 是 DCT/DWT，$Q$ 是固定的量化表，熵编码是 Huffman/算术编码。在学习式压缩中，$g_a$ 和 $g_s$ 是深度神经网络，$Q$ 是可微分的量化模块，熵编码使用神经熵模型。
+
+### 变分自编码器（VAE）框架
+
+学习式压缩的主流架构基于**变分自编码器**（Variational Autoencoder, VAE），由 Ballé 等人在 2017 年提出。
+
+#### 编码器 $g_a$
+
+编码器是一个卷积神经网络，将 $H \times W \times 3$ 的输入图像映射为 $h \times w \times M$ 的潜在表示 $\boldsymbol{y}$。通常通过步长为 2 的卷积实现空间下采样（如 4× 或 8×），通道数 $M$ 通常为 192 或 320。
+
+典型的编码器结构：
+
+```
+输入 (H×W×3)
+  → Conv 5×5, stride 2, 128
+  → GDN
+  → Conv 5×5, stride 2, 192
+  → GDN
+  → Conv 5×5, stride 2, M
+  → GDN
+  → 输出 y (h×w×M)
+```
+
+其中 **GDN**（Generalized Divisive Normalization）是 Ballé 提出的非线性激活函数，专门用于压缩任务：
+
+$$\text{GDN}(\boldsymbol{y})_i = \frac{y_i}{\sqrt{\beta_i + \sum_j \gamma_{ij} y_j^2}}$$
+
+GDN 通过归一化局部统计量来降低信号的高阶统计依赖，类似于批归一化但更适合压缩场景。
+
+#### 量化 $Q$
+
+量化将连续的潜在表示 $\boldsymbol{y}$ 映射为离散的 $\hat{\boldsymbol{y}}$。最简单的方式是均匀量化（取整）：
+
+$$\hat{y}_i = \text{round}(y_i)$$
+
+但取整操作不可微分，无法直接用于反向传播。常用的替代方案：
+
+1. **加性均匀噪声**（训练时）：$\hat{y}_i = y_i + \epsilon$，其中 $\epsilon \sim \mathcal{U}[-0.5, 0.5]$
+2. **直通估计器**（STE）：前向传播时取整，反向传播时梯度直接穿过
+
+#### 熵模型
+
+熵模型预测潜在表示 $\hat{\boldsymbol{y}}$ 中每个元素的概率分布，用于算术编码。有三种主要的熵模型：
+
+**1. 分解式模型（Factorized Model）**
+
+假设 $\hat{\boldsymbol{y}}$ 的每个元素独立同分布：
+
+$$p(\hat{\boldsymbol{y}}) = \prod_i p(\hat{y}_i)$$
+
+每个元素的概率由一个小型神经网络预测（输出高斯混合模型的参数）。这是最简单的熵模型，压缩性能有限。
+
+**2. 超先验模型（Hyperprior Model）**
+
+Ballé 等人（2018）提出。在主编码器之外，增加一个**超编码器**（hyper-encoder），对主潜在表示 $\boldsymbol{y}$ 再次编码，得到超潜在表示 $\boldsymbol{z}$。
+
+超潜在表示 $\boldsymbol{z}$ 被无损编码并传输到解码器，解码器用它来构建更精确的概率模型。这类似于 JPEG2000 中的 EBCOT 上下文建模，但使用神经网络实现。
+
+超先验模型的率失真性能显著优于分解式模型。
+
+**3. 自回归模型（Autoregressive Model）**
+
+使用掩码卷积（masked convolution）在解码过程中逐步生成概率估计。每个 $\hat{y}_i$ 的概率基于所有之前已解码的元素：
+
+$$p(\hat{y}_i | \hat{y}_{<i}) = \mathcal{N}\left(\mu_i(\hat{y}_{<i}), \sigma_i^2(\hat{y}_{<i})\right)$$
+
+自回归模型提供最精确的概率估计，但编解码速度最慢（因为必须顺序处理）。
+
+#### 解码器 $g_s$
+
+解码器是编码器的镜像，通过转置卷积（上采样）将潜在表示重建为图像：
+
+```
+输入 y_hat (h×w×M)
+  → ConvT 5×5, stride 2, 192
+  → IGDN
+  → ConvT 5×5, stride 2, 128
+  → IGDN
+  → ConvT 5×5, stride 2, 3
+  → 输出 x_hat (H×W×3)
+```
+
+**IGDN**（Inverse GDN）是 GDN 的逆操作。
+
+### 率失真优化
+
+学习式压缩的核心训练目标是**率失真损失**：
+
+$$\mathcal{L} = R + \lambda \cdot D$$
+
+其中：
+- $R$ 是码率（潜在表示的熵），用估计的概率分布计算
+- $D$ 是失真（重建图像与原始图像的差异），常用 MSE 或 MS-SSIM
+- $\lambda$ 是拉格朗日乘子，控制率失真权衡
+
+通过调节 $\lambda$，同一个模型可以产生不同码率/质量的编码输出。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 2</div>
+<div class="ch-title">学习式压缩的性能对比</div>
+
+### 图像压缩
+
+在 Kodak 测试集上，端到端学习式压缩的率失真性能已经全面超越传统编解码器：
+
+| 编码器 | 类型 | BD-rate (vs JPEG) | BD-rate (vs BPG) |
+|--------|------|-------------------|-------------------|
+| JPEG | 传统 | 基准 | +50% |
+| JPEG2000 | 传统 | -20% | +30% |
+| WebP | 传统 | -25% | +20% |
+| BPG (HEVC Intra) | 传统 | -40% | 基准 |
+| AV1 Intra | 传统 | -45% | -5% |
+| bmshj2018-factorized | 学习式 | -50% | -10% |
+| cheng2020-anchor | 学习式 | -60% | -20% |
+| elic2022 | 学习式 | -65% | -25% |
+
+**BD-rate** 是衡量压缩效率的标准指标：负值表示在相同质量下需要更少的比特。例如 -50% 表示比基准节省 50% 的比特。
+
+最新学习式压缩模型（如 elic2022）在 PSNR 指标上已经显著超越所有传统编解码器，包括 VTM（HEVC 的参考软件）。
+
+### 视频压缩
+
+学习式视频压缩的研究始于 2018 年，进展迅速：
+
+- **DVC（Deep Video Compression）**（Lu 等，2019）：第一个端到端视频压缩框架，使用光流估计运动信息
+- **FVC（Fully Video Compression）**（Hu 等，2021）：用神经网络替代所有传统模块
+- **DCVC-FM**（He 等，2022）：在低延迟模式下超越 H.265
+
+学习式视频压缩的主要挑战：
+1. **时序建模**：如何高效地利用帧间的时间相关性
+2. **运动估计**：神经网络的运动估计（如光流）比块匹配慢得多
+3. **算术编码速度**：神经熵模型的概率预测需要逐元素计算，阻碍了并行化
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 3</div>
+<div class="ch-title">神经网络增强的传统编码器</div>
+
+端到端学习式压缩并非 ML 在压缩领域的唯一应用方向。另一个重要方向是**用神经网络增强传统编码器**的各个模块：
+
+### 神经网络环路滤波
+
+用深度学习替代传统的去块滤波器和 SAO。例如：
+- **DnCNN**（Zhang 等，2017）：用于去除 JPEG 压缩伪影
+- **VRCNN**（Dai 等，2019）：用于 HEVC 环路滤波
+- HEVC 标准中已经采纳了基于 DNN 的环路滤波工具
+
+### 神经网络帧内/帧间预测
+
+用神经网络改进传统编码器的预测模块：
+- **学习式运动估计**：用光流网络替代块匹配
+- **学习式帧内预测**：用 CNN 预测帧内块的内容
+- **学习式模式决策**：用分类网络选择最优编码模式
+
+### 神经网络量化
+
+用学习的方式优化量化参数：
+- **自适应量化**：根据图像内容动态调整每个块的量化步长
+- **感知量化**：根据人眼视觉模型设计量化表
+
+### Codec 域外的应用
+
+#### Coding for Machines (CfM)
+
+MPEG 正在探索**面向机器的编码**：不以人眼视觉质量为优化目标，而是以机器视觉任务（目标检测、语义分割等）的性能为优化目标。
+
+在这种范式下：
+- 编码器提取任务相关的特征
+- 只传输紧凑的任务特征表示
+- 解码端（或云端）直接在特征上执行推理
+
+这可以将传输比特降低到传统编码的 1/10 以下，但解码端得到的不是图像，而是特征向量。
+
+#### Neural Image Codec 在浏览器中的部署
+
+Google Chrome 已经开始试验内置的神经图像编解码器。通过 WebAssembly 和 WebGPU 加速，神经编解码器可以在浏览器中实时运行。这预示着学习式压缩从研究走向实际部署的趋势。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 4</div>
+<div class="ch-title">AI 压缩的现状、挑战与未来</div>
+
+### 当前状态
+
+- **图像压缩**：学习式模型在率失真性能上已全面超越传统方法，但计算复杂度仍是部署的主要障碍
+- **视频压缩**：学习式模型在学术指标上接近或超越 H.265，但在编码速度和实际部署上仍落后
+- **标准化**：MPEG 正在评估神经网络编解码器作为未来标准的候选方案
+
+### 核心挑战
+
+#### 1. 计算复杂度
+
+学习式压缩的推理计算量比传统编解码器高 100–10000 倍。这限制了其在移动端和实时应用中的部署。
+
+应对方向：
+- 模型压缩（剪枝、量化、知识蒸馏）
+- 硬件加速（NPU、专用 AI 芯片）
+- 更高效的网络架构（如基于 Transformer 的轻量级模型）
+
+#### 2. 率失真优化的端到端训练
+
+虽然端到端训练是学习式压缩的核心优势，但在实践中存在挑战：
+- 量化操作的不可微分性
+- 率估计的准确性
+- 多码率/多质量的联合优化
+
+#### 3. 泛化能力
+
+在特定数据集上训练的模型可能在未见过的图像类型上表现不佳。传统编解码器基于通用的信号处理原理，泛化能力更强。
+
+#### 4. 与现有生态的兼容性
+
+学习式压缩产生的码流格式与传统编解码器不兼容。这需要整个生态系统（播放器、浏览器、硬件解码器）的同步更新。
+
+### 未来方向
+
+1. **混合架构**：将神经网络嵌入传统编码器框架（如 AV1 + 神经网络环路滤波），在保持兼容性的同时提升性能
+2. **神经编解码器的硬件化**：随着 NPU 在移动芯片中的普及，专用的神经编解码器硬件加速器将成为可能
+3. **任务驱动的压缩**：从"压缩给人看"转向"压缩给机器看"，为自动驾驶、视频监控等场景优化
+4. **扩散模型压缩**：利用扩散模型强大的生成能力，在极低码率下生成高质量的重建图像
+5. **视频压缩的时序建模**：用 Transformer 等序列模型替代光流，实现更高效的时序依赖建模
+
+### 系列总结
+
+回顾整个系列，我们看到了图像和视频压缩技术四十年的演进：
+
+- **1980s–1990s**：信息论奠基 → JPEG（DCT）→ PNG（无损）→ MPEG-1/2
+- **2000s**：JPEG2000（小波变换）→ H.264/AVC（混合编码的巅峰）
+- **2010s**：WebP/AVIF（视频编码反哺图像）→ HEVC/VP9/AV1
+- **2020s**：AV2/VVC → 端到端学习式压缩 → 神经网络增强传统编码
+
+压缩技术的核心始终是在**比特数**和**重建质量**之间寻找最优平衡。从香农的率失真理论到 VAE 的端到端优化，这个目标从未改变，只是实现方式在不断进化。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">参考来源</div>
+<div class="ch-title">References</div>
+
+1. Ballé, J., et al. (2017). "End-to-end Optimized Image Compression". ICLR 2017.
+2. Ballé, J., et al. (2018). "Variational Image Compression with a Scale Hyperprior". ICLR 2018.
+3. Minnen, D., et al. (2018). "Joint Autoregressive and Hierarchical Priors for Learned Image Compression". NeurIPS 2018.
+4. Cheng, Z., et al. (2020). "Learning Image Compression with Quantized Hierarchical VAE". NeurIPS 2020.
+5. He, D., et al. (2022). "Context-based Learned Image Compression". arXiv:2109.09766.
+6. Lu, G., et al. (2019). "Deep Video Compression: Learnable Compression for Video Streaming". CVPR 2019.
+7. Agustsson, E., et al. (2020). "End-to-End Learned Video Compression: A Benchmark". CVPR Workshop 2020.
+8. Zhang, K., et al. (2017). "Beyond a Gaussian Denoiser: Residual Learning of Deep CNN for Image Denoising". TIP 2017.
+9. Li, J., et al. (2025). "End-to-end learned video compression: A comprehensive review". Neurocomputing, 2026.
+10. MPEG (2024). "Video Coding for Machines: A Paradigm Shift in Visual Data Compression".
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">系列导航</div>
+<div class="ch-title">系列完结</div>
+
+本篇是"传统图像与视频压缩技术全景"系列的第七篇，也是最后一篇。
+
+**完整系列索引**：
+
+1. [图像压缩基础与无损压缩：从信息论到 PNG](/compression-fundamentals)
+2. [JPEG 与 DCT 时代：有损压缩的核心算法](/jpeg-dct-compression)
+3. [小波变换与 JPEG2000：多分辨率分析的压缩革命](/wavelet-jpeg2000)
+4. [现代图像格式：WebP、AVIF 与 BPG](/modern-image-formats)
+5. [视频压缩基础：从 MPEG-1 到 H.264/AVC](/video-compression-h264)
+6. [H.265/HEVC、AV1 与下一代视频编码](/hevc-av1-nextgen-video)
+7. [机器学习在图像/视频压缩中的应用现状](/ml-compression)
+
+</div>
