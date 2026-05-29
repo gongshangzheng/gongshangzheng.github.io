@@ -64,6 +64,10 @@ const testFiles = fs.readdirSync(__dirname)
   .filter(f => f.endsWith('.test.js'))
   .sort();
 
+function loadTestModule(file) {
+  return require(path.join(__dirname, file));
+}
+
 if (testFiles.length === 0) {
   log(`${YELLOW}No test files found in tests/${RESET}`);
   process.exit(0);
@@ -76,7 +80,7 @@ log(`${DIM}Discovered: ${testFiles.join(', ')}${RESET}\n`);
 const startTime = Date.now();
 
 for (const file of testFiles) {
-  const mod = require(path.join(__dirname, file));
+  const mod = loadTestModule(file);
   const { tests = {}, name = file } = mod;
   log(`${BOLD}[${name}]${RESET} ${Object.keys(tests).length} tests`);
 
@@ -112,7 +116,7 @@ if (!fs.existsSync(docsDir)) fs.mkdirSync(docsDir, { recursive: true });
 
 // Write test coverage manifest
 const coverage = testFiles.map(f => {
-  const mod = require(path.join(__dirname, f));
+  const mod = loadTestModule(f);
   const { tests = {}, name = f } = mod;
   return { file: f, name, count: Object.keys(tests).length };
 });
