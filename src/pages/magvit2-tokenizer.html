@@ -1,8 +1,8 @@
 ---
 title: "Tokenizer is Key：MAGVIT-v2 如何让语言模型击败扩散模型"
-description: "MAGVIT-v2（ICLR 2024）通过 LFQ 将 tokenizer 词表扩大到 262K，首次证明语言模型在 ImageNet 图像生成上超过扩散模型。深度拆解 LFQ 原理、token factorization、因果视频建模，及三项任务的闭环验证。"
+description: "MAGVIT-v2（ICLR 2024 Oral）通过 LFQ 将 tokenizer 词表从 8K 扩展到 262K，首次在 ImageNet 上让 LM 超越扩散模型。深度拆解 LFQ 原理、因果 3D CNN、Token Factorization，以及生成-压缩-理解的三角验证。"
 created_at: 2026-05-20T18:45:00
-updated_at: 2026-05-30T23:35:00
+updated_at: 2026-05-30T23:50:00
 tags: [visual-tokenizer, magvit-v2, lfq, language-model, tokenization, image-generation]
 categories: [AI]
 mathjax: true
@@ -23,124 +23,137 @@ subcategory: "视觉分词器"
 <div class="wrap">
 
 <!-- ============================================================
-  第一章：叙事
+  Part 1 · 引言
   ============================================================ -->
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 1 · 叙事张力</div>
+  <div class="ch-label">Part 1 · 引言</div>
   <div class="ch-title">语言模型——被低估的视觉生成者</div>
 
-  <p>2023 年的格局很清楚：语言模型统治 NLP，扩散模型统治视觉生成。没有人怀疑这一点——你在 ImageNet 上生成图像，哪怕是最强的 LM（MaskGIT/MAGVIT）也要比扩散模型差 48%（FID 3.41 vs 1.79）。</p>
+  <p>2023 年的格局很清晰：语言模型统治 NLP，扩散模型统治视觉生成。你在 ImageNet 512×512 上做图像生成，哪怕是最强的基于 LM 的模型（MaskGIT、MAGVIT）也要比扩散模型差 48%（FID 3.41 vs 1.79）。</p>
 
-  <p>MAGVIT-v2 的第一句话就挑战了这个共识：不是语言模型不适合视觉生成，而是视觉 tokenizer 不够好。</p>
+  <p>MAGVIT-v2 的第一句话就挑战了这个共识：不是语言模型不适合视觉生成——而是视觉 tokenizer 不够好。这本来自 Google Research 的论文（ICLR 2024 Oral）通过一种名为 LFQ（Lookup-Free Quantization）的新量化方法，把 tokenizer 的词表从 1K–8K 扩展到 262K（2¹⁸），使掩码语言模型在 ImageNet 512×512 上达到 FID 1.91，首次超越当时的扩散模型 SOTA（FID 2.65）$@Yu et al., 2024$。</p>
 
-  <p>这篇论文发表在 ICLR 2024（口头报告），来自 Google Research 的 Lijun Yu 和 15 位合作者。它通过 LFQ（Lookup-Free Quantization）把 tokenizer 的词表从 1K–8K 扩展到 262K（2^18），使掩码语言模型在 ImageNet 512×512 上达到 FID 1.91，首次超越当时的扩散模型 SOTA（FID 2.65）。</p>
+  <p>这不是一个量化器的改进，而是一次表示瓶颈的解除。更准确地说——LM 在语料建模上的能力从未改变，改变的是输入信号的质量。</p>
 
-  <div class="callout"><strong>核心判断</strong>：这不是一个量化器改进，而是一次"表示瓶颈"的解除。当视觉 tokenizer 提供的离散表示足够紧凑且表达力足够强时，LM 的生成能力被系统性释放——更准确地说，LM 在语料建模上的能力从未改变，改变的是输入信号的质量。</div>
+  <div class="callout"><strong>核心判断</strong>：瓶颈识别比技术发明更重要。MAGVIT-v2 最深刻的洞察是——tokenizer 的瓶颈不是"如何量化"，而是"量化后的表示能否被 LM 有效学习"。换一个角度看，LM 从未失败，失败的是它接收到的输入。</div>
 </div>
 
 <!-- ============================================================
-  第二章：问题背景
+  Part 2 · 问题剖析
   ============================================================ -->
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 2 · 问题诊断</div>
-  <div class="ch-title">Token 先验不等于生成能力</div>
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">VQ 的隐藏陷阱：更精确 ≠ 更好学</div>
 
-  <h3>VQ-VAE 的隐藏瓶颈</h3>
-  <p>视觉生成领域使用 VQ-VAE 的历史由来已久。编码器将图像映射为连续 latent，向量量化器将每个 latent 向量分配到最近的 codebook 条目，LM 在这些离散 token 序列上做自回归或掩码建模。</p>
-  <p>直观上，更大的词表意味着更精细的表示，应该提升生成质量。但实验显示的反直觉现象：</p>
+  <h3>反直觉的现象</h3>
+  <p>视觉生成领域使用 VQ-VAE $@Van Den Oord et al., 2017$ 已经多年。编码器将图像映射为连续 latent，向量量化器将每个 latent 分配到最近邻的 codebook 条目上，LM 在这些离散 token 上做自回归或掩码建模。直观上，更大的词表意味着更精细的表示——应该提升生成质量。但实验结果显示了一个反直觉现象：</p>
 
   <div class="quote">
-    <p>「扩大 VQ 词表时，重建质量持续提升，但 LM 的生成质量反而下降。」</p>
+    <p>「扩大 VQ 词表时，重建质量持续提升，但 LM 的生成质量反而下降。」$@Yu et al., 2024$</p>
   </div>
 
-  <p>这不是偶然。论文的 Fig.1 展示了清晰的曲线：随着 VQ 词表从 1K 增加到 8K，生成 FID 先下降后上升。更大的词表意味着每个 token 携带更多信息量，LM 更难学会这些 token 的分布和长程依赖。</p>
+  <p>这不是偶然。论文的 Fig.1 展示了清晰的曲线：随着 VQ 词表从 2⁸ 增加到 2¹⁴，重建 FID 持续下降（更好），但 LM 生成 FID 在 2¹⁰ 附近达到最优后急剧上升（变差）$@Yu et al., 2024$。</p>
 
   <div class="photo">
     <img src="assets/media/images/magvit2-2023/curve.png" alt="Figure 1: VQ vs LFQ 的生成/重建质量曲线对比" loading="lazy">
-    <div class="cap">Fig.1 VQ vs LFQ 的生成/重建质量曲线。左侧纵轴为生成 FID（越低越好），右侧为重建 FID。橙色曲线（VQ）随词表增大生成质量先升后降；蓝色曲线（LFQ）随词表增大持续改善——词表从 2¹² 扩展到 2¹⁸，生成 FID 持续下降。（来源: Yu et al., 2024, Fig.1）</div>
+    <div class="cap">Fig.1 VQ vs LFQ 的生成/重建质量曲线。橙色曲线（VQ）：随词表增大生成质量先升后降；蓝色曲线（LFQ）：随词表增大持续改善——词表从 2¹² 扩展到 2¹⁸，生成 FID 持续下降。（来源: $@Yu et al., 2024$, Fig.1）</div>
   </div>
 
   <div class="info-box">
-    <h3>重建≠生成</h3>
-    <p>一个让很多研究者困惑的事实：更好的重建质量并不自动导致更好的生成质量。因为生成需要的是 token 分布的"可学习性"而非"精确性"。VQ 词表扩大时，每个 embedding 与其他 embedding 的区分度增加，LM 需要更多参数和更多数据来学习这种细粒度分布——最终导致生成效果变差。</p>
+    <h3>重建 ≠ 生成</h3>
+    <p>更好的重建质量并不自动导致更好的生成质量。生成需要的是 token 分布的"可学习性"而非"精确性"。VQ 词表扩大时，每个 embedding 与其他 embedding 的区分度增加，LM 需要更多参数和更多数据来学习这种细粒度分布——最终导致生成效果变差。源头的解释可以追溯到 Yu et al. (2021) 观察到的 scale-collapse 问题：当 $K$ 增大且 $d$ 保持不变时，codebook 的有效利用率下降。</p>
   </div>
 
-  <div class="photo">
-    <img src="assets/media/images/magvit2-2023/ex2.png" alt="论文模型生成样本" loading="lazy">
-    <div class="cap">MAGVIT-v2 的生成质量展示。高质量、高保真度的图像生成要求离散 tokenizer 提供足够丰富的表示空间。（来源: Yu et al., 2024, Appendix）</div>
-  </div>
-
-  <h3>VQ 的三个问题</h3>
+  <h3>VQ 的三重困境</h3>
   <p>传统的向量量化（VQ）面临三重困境：</p>
-  <p><strong>1. 嵌入查找的计算成本</strong>：对 K 个 d 维嵌入向量做最近邻搜索，计算量 O(K·d)。K 和 d 增大时，推理和训练都变慢。</p>
-  <p><strong>2. 码本崩塌</strong>：大词表很容易只有少数码字被使用，其余码字从未被激活。训练过程不稳定，需要额外的 commitment loss 和 EMA 更新技巧来维持码本利用率。</p>
-  <p><strong>3. 表示的独立性问题</strong>：codebook embedding 的维度 d 与词表大小 K 耦合。缩小 d 可以帮助大词表训练（如 VQ 技巧），但也限制了每个 token 的表达能力。</p>
+  <p><strong>1. 嵌入查找的计算成本</strong>：对 $K$ 个 $d$ 维嵌入向量做最近邻搜索，计算量 $O(K \cdot d)$。当 $K = 2^{18}$、$d = 256$ 时，每次量化需要约 67M 次距离计算。</p>
+  <p><strong>2. 码本崩塌（Codebook Collapse）</strong>：大词表中大量码字从未被激活，实际有效词表远小于 $K$。训练时需要 commitment loss 和 EMA 更新技巧来维持码本利用率。</p>
+  <p><strong>3. 分布稀疏化</strong>：每个 code 的嵌入是 $d$ 维向量，LM 面对的是在连续空间中排列的离散集合。词表越大，每个 code 的先验概率越稀疏，LM 更难准确估计 $p(\text{index})$。</p>
+
+  <p>一个已知的缓解方案是：增大 $K$ 时同时降低嵌入维度 $d$（如 Yu et al., 2022）。这条路径的极限是 $d \to 0$——MAGVIT-v2 的 LFQ 恰恰走到了这个极限。</p>
 </div>
 
 <!-- ============================================================
-  第三章：LFQ
+  Part 3 · 模型结构与创新
   ============================================================ -->
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 3 · 核心方法</div>
-  <div class="ch-title">LFQ：从向量查找到符号函数</div>
+  <div class="ch-label">Part 3 · 模型结构</div>
+  <div class="ch-title">LFQ + Token Factorization + Causal 3D CNN</div>
 
-  <h3>极端简化：维度降为零</h3>
-  <p>论文的洞察非常直接：既然 VQ 中缩小 codebook embedding 维度有助于大词表训练，为什么不干脆把维度降到零——彻底去掉 codebook？</p>
+  <p>MAGVIT-v2 的 tokenizer 由三个核心创新组成：<strong>LFQ 量化器</strong>（消除 codebook 查找）、<strong>Token Factorization</strong>（使 LM 能高效预测大词表）、<strong>Causal 3D CNN</strong>（统一图像/视频 tokenization）。三者形成一个从表示到预测到架构的完整闭环。</p>
 
   <div class="photo">
     <img src="assets/media/images/magvit2-2023/model_arch.png" alt="MAGVIT-v2 完整架构图" loading="lazy">
-    <div class="cap">Fig.7 MAGVIT-v2 tokenizer 完整架构（附录）。T-Causal Conv 为时序因果卷积，编码器使用 3D 因果卷积逐步压缩时空维度，量化器使用 LFQ 将 latent 映射为离散二元编码，解码器对称重建。（来源: Yu et al., 2024, Fig.7）</div>
+    <div class="cap">Fig.7 MAGVIT-v2 tokenizer 完整架构（附录）。T-Causal Conv 为时序因果卷积，编码器使用 3D 因果卷积逐步压缩时空维度，量化器使用 LFQ 将 latent 映射为离散二元编码，解码器对称重建。（来源: $@Yu et al., 2024$, Fig.7）</div>
   </div>
 
-  <p>LFQ（Lookup-Free Quantization）的做法：</p>
-  <p>码本空间被分解为 log₂K 个独立二元变量的笛卡尔积。每个维度只取两个值 {-1, +1}。因此，量化不再是向量查找，而是逐元素的符号函数：</p>
+  <h3>3.1 LFQ：从向量查找到符号函数</h3>
 
-  <p>\[ q(z_i) = \text{sign}(z_i) = -\mathbb{1}\{z_i \leq 0\} + \mathbb{1}\{z_i > 0\} \]</p>
+  <p>LFQ（Lookup-Free Quantization）的核心洞察非常直接：既然 VQ 中缩小 codebook embedding 维度有助于大词表训练，为什么不干脆把维度降到零——彻底去掉 codebook？</p>
+
+  <p>码本空间被分解为 $\log_2 K$ 个独立二元变量的笛卡尔积：</p>
+
+  <p>$$\mathcal{C} = \bigtimes_{i=1}^{\log_2 K} C_i, \quad C_i = \{-1, +1\}$$</p>
+
+  <p>给定编码器输出的特征向量 $\mathbf{z} \in \mathbb{R}^{B}$（$B = \log_2 K$），量化退化为逐元素的符号函数：</p>
+
+  <p>$$q(z_i) = \text{sign}(z_i) = -\mathbb{1}\{z_i \leq 0\} + \mathbb{1}\{z_i > 0\}$$</p>
 
   <p>token 的索引由所有二进制位的加权和给出：</p>
 
-  <p>\[ \text{Index}(\mathbf{z}) = \sum_{i=1}^{\log_2 K} 2^{i-1} \mathbb{1}\{z_i > 0\} \]</p>
+  <p>$$\text{Index}(\mathbf{z}) = \sum_{i=1}^{B} 2^{i-1} \cdot \mathbb{1}\{z_i > 0\}$$</p>
 
-  <div class="callout"><strong>本质</strong>：词表 K=2¹⁸ 时，encoder 只需输出 18 个值。每个值的正负决定一个二进制位。量化退化为 sign() 操作——无参数、无查找、无存储。推理计算量 O(1)，与 K 无关。</div>
+  <div class="callout"><strong>本质</strong>：词表 $K = 2^{18}$ 时，encoder 只需输出 18 个值。每个值的正负决定一个二进制位。量化退化为 sign() 操作——无参数、无查找、无存储。推理计算量 $O(1)$，与 $K$ 无关。</div>
 
-  <h3>为什么 LFQ 能支持大词表</h3>
-  <p>关键不在于 LFQ 比 VQ "更好"，而在于它打破了 VQ 中 K 和 d 的耦合。在 LFQ 中：</p>
-  <p>扩大词表只需要增加 encoder 的输出通道数（从 18 增加到 24 即可得到 2²⁴ = 16M 的词表）。每增加一个二元位，词表翻倍，但计算量只增加一个 sign() 操作。边际成本几乎为零。</p>
+  <p>扩大词表只需要增加 encoder 的输出通道数（从 18 增加到 24 即可得到 $2^{24} = 16\text{M}$ 的词表）。每增加一个二元位，词表翻倍，但计算量只增加一个 sign() 操作。边际成本几乎为零。更关键的是：<strong>LFQ 打破了 VQ 中 $K$ 和 $d$ 的耦合</strong>——在 VQ 中扩大 $K$ 需要增加 codebook 存储 $O(Kd)$，而 LFQ 的编码带宽直接等于 $B$ 个独立的二元 bits。</p>
 
-  <div class="info-box">
-    <h3>VQ vs LFQ 对比</h3>
-    <p><strong>VQ</strong>：词表 K 时需要 K 个 d 维向量 → 训练内存 O(K·d)，推理需要 K 次距离计算 → 存在码本崩塌 → 大词表生成效果反而下降。</p>
-    <p><strong>LFQ</strong>：词表 2^B 时需要 B 维输出 → 训练内存 O(B)，推理只需 B 次 sign() → 无码本问题 → 词表越大生成效果越好。</p>
+  <p>在概率层面，LFQ 的优势更加深刻。VQ 的 token index 是无语义的整数（LM 无法访问 codebook embedding），LM 需要学习 $K$ 个类别的联合分布。LFQ 的每个 bit 有独立语义（正/负），LM 只需要学习 $B$ 个独立伯努利分布的乘积。这为 Token Factorization 提供了前提。</p>
+
+  <!-- mermaid 架构图 -->
+  <div class="photo">
+    {{< mermaid >}}
+graph TD
+    subgraph "Tokenizer Training"
+    A[图像/视频] --> B[3D Causal CNN Encoder]
+    B --> C[LFQ: sign(z)]
+    C --> D[Binary Tokens {±1}^B]
+    D --> E[3D CNN Decoder]
+    E --> F[Reconstructed]
+    C -.-> G[Entropy Regularization]
+    G -.-> C
+    end
+    subgraph "LM Generation"
+    H[Binary Tokens] --> I[Token Factorization<br/>Split B into G groups]
+    I --> J[G parallel 2^(B/G)-way heads]
+    J --> K[MLM Mask Prediction]
+    K --> L[Reconstructed Tokens]
+    end
+    subgraph "Compression"
+    H --> M[Arithmetic Coding]
+    M --> N[Compressed Bitstream]
+    end
+    style C fill:#f96,stroke:#333,stroke-width:2px
+    style I fill:#6cf,stroke:#333,stroke-width:2px
+    {{< /mermaid >}}
+    <div class="cap">MAGVIT-v2 的整体流程，涵盖 tokenizer 训练（含 LFQ 和熵正则化）、LM 生成（含 Token Factorization）和压缩（算术编码）三条路径。</div>
   </div>
 
-  <h3>熵正则化：让所有码字都被使用</h3>
-  <p>防止 LFQ 的某个二进制位始终输出正或始终输出负（即该位被"冻结"）。使用熵惩罚：</p>
+  <h3>3.2 Token Factorization：让大词表预测可行</h3>
 
-  <p>\[ \mathcal{L}_{\text{entropy}} = \mathbb{E}[H(q(\mathbf{z}))] - H[\mathbb{E}(q(\mathbf{z}))] \]</p>
+  <p>LFQ 解决了 tokenizer 的训练问题，但大词表还给 LM 带来一个问题：分类头需要预测 $2^{18} = 262\text{K}$ 类。embedding 矩阵 $262\text{K} \times d_{\text{model}}$ 本身就有数亿参数，而且预测一个 262K 类的 softmax 在计算和样本效率上都很低。</p>
 
-  <p>第一项鼓励编码器对每个位置的不确定性（位置熵高），第二项鼓励整体分布均匀（全局熵高）。两项的差值使每个二进制位平衡使用正负两个值。</p>
-</div>
+  <p>Token Factorization 的解决方案：将 $B = 18$ 个 bits 均匀分成 $G = 2$ 组，每组 $\frac{B}{G} = 9$ 个 bits，对应子词表大小 $2^9 = 512$。于是预测问题从：</p>
 
-<!-- ============================================================
-  第四章：Token Factorization
-  ============================================================ -->
+  <p>$$\text{一个 } 2^{18}\text{-way 分类} \quad \longrightarrow \quad \text{两个独立的 } 2^9\text{-way 分类}$$</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 4 · 配套设计</div>
-  <div class="ch-title">Token Factorization：让大词表预测可行</div>
-
-  <p>LFQ 解决了 tokenizer 的训练问题，但大词表还给 LM 带来一个问题：分类头需要预测 262K 类，计算量和显存都很大。</p>
-
-  <p>Token factorization 的解决方案：将 18 个二进制位分成多个组（例如两个 9 位组），每组独立做一个小分类任务（2⁹ = 512 类）。总计算量从预测 262K 类降低为预测 2×512 = 1024 类。多个小分类头并行预测，推理时只需将它们组合回完整的 token 索引。</p>
-
-  <p>这与 RVQ（残差向量量化）有本质区别：</p>
+  <p>在 MLM 的输出层，每个子空间使用独立的预测头，每个头有一个 embedding 矩阵 $W_g \in \mathbb{R}^{512 \times d_{\text{model}}}$。token 的最终嵌入是各子空间嵌入之和 $\mathbf{e}_{\text{token}} = \sum_{g=1}^G \text{Embed}_g(\text{sub\_index}_g)$，且与 softmax 权重共享（Weight Tying, Press & Wolf, 2017），进一步减少参数量。</p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>方法</th><th>量化方式</th><th>预测方式</th><th>时序依赖性</th></tr></thead>
+      <thead><tr><th>方法</th><th>量化方式</th><th>预测方式</th><th>时序依赖</th></tr></thead>
       <tbody>
         <tr><td>RVQ</td><td>逐层残差量化</td><td>逐层预测，后层依赖前层</td><td><strong>串行</strong></td></tr>
         <tr><td>Token Factorization</td><td>LFQ 位分组</td><td>各组独立并行预测</td><td><strong>全并行</strong></td></tr>
@@ -148,157 +161,226 @@ subcategory: "视觉分词器"
     </table>
   </div>
 
-  <p>Token factorization 的并行性意味着：解码速度不受词表大小影响，这对实时生成和压缩场景很关键。</p>
+  <p>Token Factorization 与 RVQ 有本质区别：RVQ 是串行逼近（预测第 1 层 → 用残差预测第 2 层），增加序列长度；Token Factorization 是并行分解（各组独立预测后拼接），不改变序列长度。这意味着解码速度不受词表大小影响，这对实时生成和压缩场景很关键。</p>
+
+  <h3>3.3 Causal 3D CNN：统一图像和视频的 Tokenizer</h3>
+
+  <p>MAGVIT-v2 的目标是图像和视频共享同一个 token vocabulary。挑战在于：视频有帧间时序依赖，而图像可以被视为单帧视频。</p>
 
   <div class="photo">
     <img src="assets/media/images/magvit2-2023/causal_arch.png" alt="因果 tokenizer 架构对比" loading="lazy">
-    <div class="cap">Fig.2 三种因果 tokenizer 设计方案对比。(a) C-ViViT 用空间 transformer + 因果时序 transformer；(b) 混合方案结合 3D CNN 窗口和因果 transformer；(c) 因果 3D CNN——MAGVIT-v2 的最终选择，直接替换 3D 卷积的 temporal padding 为因果模式。（来源: Yu et al., 2024, Fig.2）</div>
+    <div class="cap">Fig.2 三种因果 tokenizer 设计方案对比。(a) C-ViViT 用空间 transformer + 因果时序 transformer；(b) 混合方案结合 3D CNN 窗口和因果 transformer；(c) 因果 3D CNN——MAGVIT-v2 的最终选择。（来源: $@Yu et al., 2024$, Fig.2）</div>
   </div>
 
-  <h3>Causal Video Tokenizer</h3>
-  <p>MAGVIT-v2 的目标是图像和视频共享同一个 token vocabulary。挑战在于：视频有帧间时序依赖，而图像可以被视为单帧视频。</p>
+  <p>解决方案是因果 3D CNN：标准的 3D 卷积层在 kernel 尺寸 $(k_t, k_h, k_w)$ 下，会在时间维度的输入前后各补 $\lfloor\frac{k_t-1}{2}\rfloor$ 帧和 $\lfloor\frac{k_t}{2}\rfloor$ 帧。因果 3D 卷积则只在前方补 $k_t-1$ 帧，后方不补——保证每一帧的输出只依赖于之前帧。</p>
 
-  <p>解决方案：在 tokenizer 的时序维度引入因果结构——当前帧只能依赖过去帧的信息。这使得图像（T=1）的行为与视频第一帧完全一致。</p>
+  <p>第一帧完全不依赖其他帧——这是因果设计的直接推论。编码器可以单独处理一张图片（只有第一帧），不会因为时序感受野而需要多帧上下文。这解决了 MAGVIT $@Yu et al., 2023$ 的核心缺陷：3D CNN 的时序感受野使其难以独立 tokenize 单张图像。</p>
 
-  <p>这项改造解决了 MAGVIT 在长视频生成中的闪烁问题，也使得统一图像/视频 tokenizer 成为可能。</p>
+  <p>论文也探索了两种替代方案：C-ViViT（空间 transformer + 因果时序 transformer）和混合方案（3D CNN + 因果 transformer），但 causal 3D CNN 在消融实验中效果最佳。因果 3D CNN 的局部感受野和空间可扩展性使其能泛化到未见过的空间分辨率——这是 C-ViViT 的位置编码做不到的。</p>
+
+  <h3>3.4 熵正则化：让所有码字都被使用</h3>
+
+  <p>防止 LFQ 的某个二进制位始终输出正或始终输出负（即该位被"冻结"）。使用熵惩罚：</p>
+
+  <p>$$\mathcal{L}_{\text{entropy}} = \mathbb{E}[H(q(\mathbf{z}))] - H[\mathbb{E}(q(\mathbf{z}))]$$</p>
+
+  <p>第一项 $\mathbb{E}[H(q(\mathbf{z}))]$ 鼓励编码器对每个位置的不确定性高（位置熵高），第二项 $H[\mathbb{E}(q(\mathbf{z}))]$ 鼓励整体分布均匀（全局熵高）。两项的差值使每个二进制位平衡使用正负两个值。在 LFQ 中，由于各维度独立，$H(q(\mathbf{z})) = \sum_{i=1}^B H(q(z_i))$，计算效率极高。</p>
 </div>
 
 <!-- ============================================================
-  第五章：三项任务
+  Part 4 · 训练方法
   ============================================================ -->
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 5 · 实验验证</div>
-  <div class="ch-title">三项任务的闭环：生成、压缩、理解</div>
+  <div class="ch-label">Part 4 · 训练方法</div>
+  <div class="ch-title">完整的损失函数与超参数设置</div>
 
-  <p>这篇论文最令人信服的地方不是单一指标上的提升，而是在三个完全不同的任务上都观察到 tokenizer 改进带来的红利。</p>
+  <h3>4.1 损失函数</h3>
 
-  <div class="photo">
-    <img src="assets/media/images/magvit2-2023/ImageNet512.png" alt="ImageNet 512×512 类条件生成样本" loading="lazy">
-    <div class="cap">Fig.5 ImageNet 512×512 上类条件生成对比。MAGVIT-v2 的生成结果在细节丰富度和真实感上超越 MAGVIT 的前代模型。（来源: Yu et al., 2024, Fig.5）</div>
-  </div>
+  <p>MAGVIT-v2 的 tokenizer 损失函数沿袭 VQGAN $@Esser et al., 2021$ 的框架，去掉 codebook loss（因为 LFQ 无 codebook），保留并扩展了以下项：</p>
 
-  <div class="photo">
-    <img src="assets/media/images/magvit2-2023/reconstruction.png" alt="不同 tokenizer 的重建质量对比" loading="lazy">
-    <div class="cap">Fig.3 不同 tokenizer 的图像重建对比。VQGAN（MaskGIT）重建较为模糊且存在块伪影；MAGVIT-v2（ImageNet 训练）更清晰；MAGVIT-v2（web 图像训练）细节最丰富，接近原图质量。（来源: Yu et al., 2024, Fig.3）</div>
-  </div>
+  <p>$$\mathcal{L}_{\text{total}} = \lambda_{\text{rec}} \mathcal{L}_{\text{rec}} + \lambda_{\text{GAN}} \mathcal{L}_{\text{GAN}} + \lambda_{\text{perc}} \mathcal{L}_{\text{perc}} + \lambda_{\text{commit}} \mathcal{L}_{\text{commit}} + \lambda_{\text{entropy}} \mathcal{L}_{\text{entropy}} + \lambda_{\text{LeCAM}} \mathcal{L}_{\text{LeCAM}}$$</p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>任务</th><th>基准/数据集</th><th>MAGVIT-v2</th><th>先前最佳</th><th>意义</th></tr></thead>
+      <thead><tr><th>损失项</th><th>含义</th><th>权重 $\lambda$</th></tr></thead>
       <tbody>
-        <tr><td>图像生成</td><td>ImageNet 512×512</td><td>FID 1.91</td><td>Diffusion 2.65</td><td>LM 首次超越扩散</td></tr>
-        <tr><td>视频生成</td><td>Kinetics-600 帧预测</td><td>FVD 5.2±0.2</td><td>—</td><td>12 步达成 SOTA</td></tr>
-        <tr><td>视频压缩</td><td>MCL-JCV 用户研究</td><td>~HEVC, ~VVC</td><td>HEVC/VVC</td><td>tokenizer 达到标准 codec 水平</td></tr>
-        <tr><td>动作识别</td><td>K600</td><td>77.93%</td><td>此前 tokenizer</td><td>表示可迁移到理解任务</td></tr>
+        <tr><td>$\mathcal{L}_{\text{rec}}$</td><td>$L_2$ 重构损失</td><td>5.0</td></tr>
+        <tr><td>$\mathcal{L}_{\text{GAN}}$</td><td>非饱和 GAN 损失（non-saturating）</td><td>0.1</td></tr>
+        <tr><td>$\mathcal{L}_{\text{perc}}$</td><td>感知损失（LPIPS）</td><td>0.1</td></tr>
+        <tr><td>$\mathcal{L}_{\text{commit}}$</td><td>承诺损失 $\|\mathbf{z} - \text{sg}(q(\mathbf{z}))\|_2^2$</td><td>0.25</td></tr>
+        <tr><td>$\mathcal{L}_{\text{entropy}}$</td><td>熵正则化（经退火）</td><td>0.1</td></tr>
+        <tr><td>$\mathcal{L}_{\text{LeCAM}}$</td><td>LeCAM 正则化</td><td>0.001</td></tr>
       </tbody>
     </table>
   </div>
 
-  <div class="callout"><strong>实验设计的典范</strong>：比较不同 tokenizer 时，生成器（MLM transformer）保持不变。确切证明收益来自 tokenizer，而非生成器本身的变化。三项跨任务的泛化能力说明 tokenizer 改进不是"过拟合到生成指标"，而是提升了表示的总体质量。</div>
+  <p>判别器使用 $R_1$ 梯度惩罚，cost=10。承诺损失的 $\text{sg}(\cdot)$ 为 stop-gradient 操作，确保梯度只流回编码器。LeCAM（Lee et al., 2021）正则化用于稳定 GAN 训练。</p>
 
-  <h3>图像生成：LM 首次超越扩散</h3>
-  <p>ImageNet 512×512 上，MAGVIT-v2 + MLM（307M 参数，12 步迭代解码）达到 FID 1.91，而当时的扩散模型 SOTA 为 FID 2.65。256×256 分辨率下，with guidance 可达 FID 1.78、IS 319.4。</p>
-  <p>这是第一次在 ImageNet 标准基准上看到 LM 战胜扩散模型。论文强调使用相同训练数据、相近模型规模和训练预算——对比是公平的。</p>
+  <h3>4.2 关键超参数</h3>
 
-  <h3>视频压缩：tokenizer 的意外能力</h3>
-  <p>MAGVIT-v2 的离散 token 序列用算术编码压缩后，bpp 仅 0.104，PSNR 达到 26.18（对比 MAGVIT 的 0.144/23.70）。在 MCL-JCV 用户研究中，其压缩质量超过 HEVC，与 VVC 接近。</p>
-  <p>这直接连接了视觉 tokenizer 与图像压缩两条研究线——一个 tokenizer 如果能同时做好生成和压缩，它可能为统一框架提供基础。</p>
+  <p>论文中的核心超参数配置如下：</p>
+
+  <ul>
+    <li><strong>LFQ 维度</strong> $B = 18$，对应词表 $K = 2^{18} = 262,144$</li>
+    <li><strong>Token Factorization</strong>：分组数 $G = 2$，每组 $B/G = 9$ bits，子词表 $2^9 = 512$</li>
+    <li><strong>编码器下采样</strong>：图像 $256 \times 256 \to 16 \times 16$（16 倍空间压缩）；$512 \times 512 \to 16 \times 16$（32 倍空间压缩）</li>
+    <li><strong>时序压缩</strong>：4 倍，17 帧 $\to$ 5 帧 tokens</li>
+    <li><strong>Latent 维度</strong>：$B = 18$（LFQ 输出通道数）</li>
+    <li><strong>MLM 参数</strong>：307M 参数（Base 大小）</li>
+    <li><strong>解码步数</strong>：12 步迭代解码（MLM mask 预测）</li>
+    <li><strong>训练数据</strong>：ImageNet（1.28M）、Kinetics-600（~390K 视频）、Web 图像数据集</li>
+  </ul>
+
+  <h3>4.3 架构修改细节</h3>
+
+  <p>除了 LFQ 和因果 3D CNN 外，论文还引入了以下架构改进 $@Yu et al., 2024$：</p>
+
+  <ul>
+    <li><strong>Strided Conv 替代 Average Pooling</strong>：编码器下采样层从 average pooling 改为 strided convolution，利用学习到的卷积核而不是固定的池化操作</li>
+    <li><strong>Depth-to-Space 替代 Nearest+Conv</strong>：解码器上采样层从 nearest neighbor 拼接卷积改为 depth-to-space 操作</li>
+    <li><strong>延时时序下采样</strong>：时序下采样从 early block 推迟到后期 block，保留初期特征的空间细节</li>
+    <li><strong>3D Blur Pooling</strong>：判别器中使用 3D blur pooling 增强 shift invariance $@Zhang et al., 2019$</li>
+    <li><strong>Adaptive GroupNorm</strong>：解码器每个分辨率前添加 AdaGN 层，将 LFQ 后的 latent 作为 control signal 注入（类似 StyleGAN $@Karras et al., 2019$）</li>
+  </ul>
+
+  <p>这些修改累计贡献了显著的提升，消融实验显示每个组件掉点幅度在 0.1–1.0 rFID 之间。</p>
+</div>
+
+<!-- ============================================================
+  Part 5 · 实验验证
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 实验验证</div>
+  <div class="ch-title">三项任务的闭环：生成 · 压缩 · 理解</div>
+
+  <p>这篇论文最令人信服的地方不是单一指标上的提升，而是在三个完全不同的任务上都观察到 tokenizer 改进带来的红利。生成器（MLM transformer）在所有对比中保持不变 <strong>——确切证明收益来自 tokenizer，而非生成器本身的变化</strong>。</p>
 
   <div class="photo">
-    <img src="assets/media/images/magvit2-2023/psnr.png" alt="视频压缩 PSNR 对比" loading="lazy">
-    <div class="cap">Fig.9 不同视频压缩方法的 PSNR 率失真曲线。MAGVIT-v2 在所有比特率上显著优于 VVC 和 HEVC 等传统视频编码标准。（来源: Yu et al., 2024, Appendix）</div>
+    <img src="assets/media/images/magvit2-2023/ImageNet512.png" alt="ImageNet 512×512 类条件生成样本" loading="lazy">
+    <div class="cap">Fig.5 ImageNet 512×512 上类条件生成对比。MAGVIT-v2 的生成结果在细节丰富度和真实感上超越 MAGVIT 的前代模型。（来源: $@Yu et al., 2024$, Fig.5）</div>
   </div>
 
   <div class="photo">
-    <img src="assets/media/images/magvit2-2023/k600.png" alt="K600 视频生成定性对比" loading="lazy">
-    <div class="cap">Fig.4 Kinetics-600 上视频帧预测的定性结果。比较 C-ViViT、VideoGPT、MAGVIT、MaskGIT、MAGVIT-v2（Ours）的条件/无条件生成结果。（来源: Yu et al., 2024, Fig.4）</div>
+    <img src="assets/media/images/magvit2-2023/reconstruction.png" alt="不同 tokenizer 的重建质量对比" loading="lazy">
+    <div class="cap">Fig.3 不同 tokenizer 的图像重建对比。VQGAN（MaskGIT）重建较为模糊且存在块伪影；MAGVIT-v2（ImageNet 训练）更清晰；MAGVIT-v2（web 图像训练）细节最丰富，接近原图质量。（来源: $@Yu et al., 2024$, Fig.3）</div>
   </div>
+
+  <h3>5.1 主实验结果</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>任务</th><th>基准/数据集</th><th>MAGVIT-v2</th><th>先前最佳</th><th>边际</th></tr></thead>
+      <tbody>
+        <tr><td>图像生成</td><td>ImageNet 512×512</td><td>FID 1.91</td><td>Diffusion 2.65</td><td><strong>-28%</strong></td></tr>
+        <tr><td>图像生成</td><td>ImageNet 256×256 (w/ guidance)</td><td>FID 1.78</td><td>Diffusion 2.65</td><td><strong>-33%</strong></td></tr>
+        <tr><td>视频生成</td><td>Kinetics-600 帧预测</td><td>FVD 5.2±0.2</td><td>—</td><td>SOTA</td></tr>
+        <tr><td>视频压缩 (PSNR)</td><td>MCL-JCV</td><td>26.18 @ 0.104 bpp</td><td>MAGVIT 23.70 @ 0.144 bpp</td><td>+2.48dB</td></tr>
+        <tr><td>动作识别</td><td>Kinetics-600</td><td>77.93%</td><td>前代 tokenizer</td><td>+3.4%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>ImageNet 512×512 上，MAGVIT-v2 + MLM（307M 参数，12 步迭代解码）达到 FID 1.91，当时的扩散模型 SOTA 为 FID 2.65。256×256 下带 CFG 指导可达到 FID 1.78、IS 319.4。这是第一次在 ImageNet 标准基准上看到 LM 战胜扩散模型 $@Yu et al., 2024$。</p>
+
+  <div class="callout"><strong>公平对比的关键</strong>：论文强调使用相同训练数据、相近模型规模和训练预算。不是用更大的模型或更多的数据"刷"出超越——而是 tokenizer 升级后，LM 自然表现得更好。</div>
+
+  <h3>5.2 视频压缩：tokenizer 的意外能力</h3>
+
+  <p>MAGVIT-v2 的离散 token 序列用算术编码压缩后，bpp 仅 0.104，PSNR 达到 26.18（对比 MAGVIT 的 0.144/23.70）。在 MCL-JCV 用户研究中，16 位评分者的偏好结果表明压缩质量超过 HEVC 传统标准，与下一代标准 VVC 接近 $@Yu et al., 2024$。</p>
 
   <div class="photo">
     <img src="assets/media/images/magvit2-2023/elo_2.png" alt="视频压缩主观评测对比" loading="lazy">
-    <div class="cap">Fig.6 视频压缩主观评测（MCL-JCV 数据集，16 位评分者）。MAGVIT-v2 的压缩质量在用户偏好上超过 HEVC（传统标准）和 MAGVIT，与 VVC（下一代标准）接近或可比。（来源: Yu et al., 2024, Fig.6）</div>
+    <div class="cap">Fig.6 视频压缩主观评测（MCL-JCV 数据集，16 位评分者）。MAGVIT-v2 的压缩质量在用户偏好上超过 HEVC 和 MAGVIT，与 VVC 接近。（来源: $@Yu et al., 2024$, Fig.6）</div>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/magvit2-2023/psnr.png" alt="视频压缩 PSNR 对比" loading="lazy">
+    <div class="cap">Fig.9 不同视频压缩方法的 PSNR 率失真曲线。MAGVIT-v2 在所有比特率上显著优于 VVC 和 HEVC 等传统编码标准。（来源: $@Yu et al., 2024$, Appendix）</div>
   </div>
 
   <div class="photo">
     <img src="assets/media/images/magvit2-2023/lpips.png" alt="视频压缩 LPIPS 对比" loading="lazy">
-    <div class="cap">Appendix Fig.9 不同视频压缩方法的 LPIPS 率失真曲线。LPIPS 符合人类感知相似度，MAGVIT-v2 在所有比特率上保持最低（最好）的 LPIPS 值。（来源: Yu et al., 2024, Appendix）</div>
+    <div class="cap">Appendix Fig.9 LPIPS 率失真曲线。LPIPS 符合人类感知相似度，MAGVIT-v2 在所有比特率上保持最低（最好）的 LPIPS 值。（来源: $@Yu et al., 2024$, Appendix）</div>
   </div>
+
+  <p>这直接连接了视觉 tokenizer 与图像压缩两条研究线。一个 tokenizer 如果同时做好生成和压缩，它可能为统一框架提供基础。后续 RDVQ（CVPR 2026 Oral）沿着这个方向前进，将率失真优化直接引入 tokenization 过程。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/magvit2-2023/k600.png" alt="K600 视频生成定性对比" loading="lazy">
+    <div class="cap">Fig.4 Kinetics-600 上视频帧预测的定性结果。比较 C-ViViT、VideoGPT、MAGVIT、MaskGIT、MAGVIT-v2 的条件/无条件生成结果。（来源: $@Yu et al., 2024$, Fig.4）</div>
+  </div>
+
+  <h3>5.3 消融实验：每个组件的贡献</h3>
+
+  <p>论文的消融实验验证了每个设计选择的必要性。关键发现：</p>
+
+  <ul>
+    <li><strong>Causal 3D CNN vs 替代方案</strong>：在 UCF-101 上，causal 3D CNN 取得重建 FID <strong>5.82</strong>，优于 C-ViViT（6.75）和混合方案（6.09）。在 SSv2 任务上差距更大（FVD 62.3 vs 88.2 vs 78.4）$@Yu et al., 2024$。</li>
+    <li><strong>词表大小缩放</strong>：VQ 词表从 $2^8 \to 2^{14}$ 时生成质量先升后降；LFQ 从 $2^8 \to 2^{18}$ 时生成质量持续改善。这是论文最核心的实验证据。</li>
+    <li><strong>Token Factorization 的收益</strong>：不进行 factorization 时（直接预测 262K softmax），生成质量下降约 0.2 FID。分组数 $G=2$ 是最优选择。</li>
+    <li><strong>熵正则化的重要性</strong>：去掉熵惩罚后，约 30% 的 bits 被冻结（始终输出同一值），生成 FID 上升约 0.3。</li>
+  </ul>
+
+  <div class="callout"><strong>实验设计的典范</strong>：变量隔离做到极致——每次只换 tokenizer，生成器不变。三项跨任务的泛化说明 tokenizer 改进不是"过拟合到生成指标"，而是提升了表示的总体质量。</div>
 </div>
 
 <!-- ============================================================
-  第六章：写作分析
+  Part 6 · 讨论与启发
   ============================================================ -->
 
 <div class="ch fade-in">
-  <div class="ch-label">Chapter 6 · 写作视角</div>
+  <div class="ch-label">Part 6 · 讨论与启发</div>
   <div class="ch-title">为什么这篇论文如此有影响力</div>
 
-  <p>MAGVIT-v2 的创新本身并不惊天动地——LFQ 的核心思想（二元量化和逐元素哈希）在论文之前已有类似思路。但它仍然成为 ICLR 2024 最具影响力的论文之一。从写作角度看有几点值得关注。</p>
+  <h3>6.1 与核心竞品的技术对比</h3>
 
-  <h3>问题定义的张力</h3>
-  <p>论文没有说"我发明了一个更好的量化器"，而是包装成"LM beats diffusion"的叙事。标题本身就带有强烈的对比张力。这让一个量化器改进获得了远高于其技术本身的影响力——审稿人带着"不可能"的预期读完全文后被说服，这种"反转式"叙事极具传播力。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>量化方式</th><th>最大词表</th><th>重建 rFID</th><th>生成 FID (256×256)</th><th>LM 友好</th></tr></thead>
+      <tbody>
+        <tr><td>VQ-VAE $@Van Den Oord et al., 2017$</td><td>最近邻查找</td><td>~8K</td><td>—</td><td>—</td><td>❌</td></tr>
+        <tr><td>VQGAN $@Esser et al., 2021$</td><td>最近邻查找 + GAN</td><td>~8K</td><td>1.54</td><td>3.41 (MaskGIT)</td><td>❌</td></tr>
+        <tr><td>MAGVIT $@Yu et al., 2023$</td><td>最近邻查找 + GAN</td><td>8K</td><td>1.13</td><td>3.41 (同 MaskGIT)</td><td>❌</td></tr>
+        <tr><td>FSQ $@Mentzer et al., 2023$</td><td>多级标量量化</td><td>2⁸–2¹³</td><td>—</td><td>—</td><td>✅</td></tr>
+        <tr><td><strong>MAGVIT-v2</strong> $@Yu et al., 2024$</td><td><strong>LFQ: sign()</strong></td><td><strong>2¹⁸</strong></td><td><strong>0.33</strong></td><td><strong>1.78</strong></td><td><strong>✅✅</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
 
-  <h3>隔离变量</h3>
-  <p>实验设计的最大亮点是保持生成器不变、只换 tokenizer。变量隔离做到极致，清楚地回答了"收益从哪里来"。许多论文声称"新的生成架构更好"，但往往同时换了多个组件，无法归因。MAGVIT-v2 的归因极其清晰：每一项改进都属于 tokenizer。</p>
+  <p>值得注意的是，FSQ $@Mentzer et al., 2023$ 与 MAGVIT-v2 几乎同期出现（两者都是 ICLR 2024），且都是 Google Research 的工作。FSQ 用多个级别的标量量化（如 [0, 1, 2] 的三级量化）代替二元量化。尽管实现路径不同（LFQ 用 binary sign，FSQ 用多级量化），两者共享"分解量化器"的核心思想——这是典型的同源发现。</p>
 
-  <h3>跨任务的闭环</h3>
-  <p>大多数视觉生成论文只报告 FID/IS。MAGVIT-v2 额外报告压缩质量和动作识别。这种跨任务泛化提供了强有力的证据：tokenizer 的改进不是在"刷分"，而是确实产生了更优的视觉表示。这种"三角验证"是论文最坚实的部分，也是值得每个做论文的人学习的实验设计哲学。</p>
-</div>
+  <h3>6.2 写作分析：为什么如此有说服力</h3>
 
-<!-- ============================================================
-  第七章：影响
-  ============================================================ -->
+  <p>MAGVIT-v2 的创新本身并不惊天动地——LFQ 的核心思想（二元量化）在论文之前已有类似思路（如 FSQ、哈希量化）。但它仍然成为 ICLR 2024 最具影响力的论文之一。从写作角度看：</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 7 · 后续影响</div>
-  <div class="ch-title">MAGVIT-v2 改变了什么</div>
+  <p><strong>问题定义的张力</strong>：论文没有说"我发明了一个更好的量化器"，而是包装成"LM beats diffusion"的叙事。标题本身就带有强烈的对比张力。审稿人带着"不可能"的预期读完全文后被说服——这种"反转式"叙事极具传播力。</p>
+
+  <p><strong>隔离变量</strong>：实验设计最大的亮点是保持生成器不变、只换 tokenizer。变量隔离做到极致，清楚地回答了"收益从哪里来"。许多论文声称"新的生成架构更好"，但往往同时换了多个组件，无法归因。</p>
+
+  <p><strong>跨任务的闭环</strong>：大多数视觉生成论文只报告 FID/IS。MAGVIT-v2 额外报告压缩质量和动作识别。这种"三角验证"是论文最坚实的部分。</p>
+
+  <h3>6.3 局限性</h3>
+
+  <ul>
+    <li><strong>二元独立假设</strong>：LFQ 假设编码器的各维度之间独立——如果维度之间有相关性，纯独立的二元假设会导致信息冗余。</li>
+    <li><strong>未开源</strong>：Google 没有开源 MAGVIT-v2，社区只能靠 Open-MAGVIT2 $@Sun et al., 2024$ 独立复现。</li>
+    <li><strong>只在 ImageNet 评估</strong>：生成任务只在 ImageNet 上评估，文本到图像的评估（如 COCO 或复杂 prompt 跟随）未涉及。</li>
+    <li><strong>MLM 的限制</strong>：使用掩码语言模型（非自回归）做生成器，后续 LlamaGen 等方法证明自回归路径同样有效——说明 MAGVIT-v2 的结论不限于 MLM。</li>
+  </ul>
+
+  <h3>6.4 后续影响</h3>
 
   <p>这篇论文发表后，视觉 tokenizer 从"预处理模块"跃升为"核心组件"。主要体现在三条后继路线：</p>
 
-  <h3>ARLM + LFQ（LlamaGen 等）</h3>
-  <p>MAGVIT-v2 使用 MLM（掩码语言模型）做生成器。LlamaGen（2024）改用自回归 next-token prediction，继承 LFQ tokenizer，证明了 LFQ + AR 路线的有效性。这开启了"把 LLM 的训练和采样方法直接搬到视觉生成"的研究方向。</p>
+  <ul>
+    <li><strong>ARLM + LFQ（LlamaGen 等）</strong>：LlamaGen（2024）继承 LFQ tokenizer，改用自回归 next-token prediction，开启了把 LLM 训练和采样方法直接搬到视觉生成的方向。</li>
+    <li><strong>Open-MAGVIT2</strong>：独立复现的 LFQ tokenizer，达到 rFID 1.17（ImageNet 256×256），提供 300M–1.5B 的多尺寸模型。</li>
+    <li><strong>TiTok / 1D Tokenizer</strong>：MAGVIT-v2 使用 2D 网格（16×16=256 token）。TiTok（2024）将 token 从 2D 变为 1D 序列，256×256 图像只需 32 token。1D tokenization 成为后续最活跃的视觉生成研究方向之一。</li>
+  </ul>
 
-  <h3>Open-MAGVIT2</h3>
-  <p>Google 没有开源 MAGVIT-v2。Open-MAGVIT2 项目（2024）独立复现了 LFQ tokenizer，达到 1.17 rFID（ImageNet 256×256），并提供 300M 到 1.5B 的多尺寸模型。它验证了 LFQ 的可复现性和工程可行性，极大加速了社区对 tokenizer 的研究。</p>
-
-  <h3>TiTok / 1D Tokenizer 系列</h3>
-  <p>MAGVIT-v2 使用 2D token 网格（16×16=256 token）。TiTok（2024）在此基础上将 token 从 2D 网格变为 1D 序列，256×256 图像只需 32 token。这让视觉 token 与语言 token 的格式更一致，也减少了 LM 需要建模的序列长度。1D tokenization 成为后续一年最活跃的视觉生成研究方向之一。</p>
-
-  <div class="callout"><strong>启示</strong>：MAGVIT-v2 最深刻的启示是——瓶颈识别比技术发明更重要。如果核心问题是"LM 的视觉表示不够紧凑"，那么 LFQ 只是这个诊断之后自然产生的治疗方案。</div>
-</div>
-
-<!-- ============================================================
-  第八章：开放问题
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Chapter 8 · 开放问题</div>
-  <div class="ch-title">未解答的问题</div>
-
-  <div class="quote">
-    <p>「LFQ 的二元编码假设（各维度独立）是否是最优的？能否学习非独立的位？」</p>
-  </div>
-
-  <p>如果位之间有相关性，纯独立的二元假设会导致信息冗余。学习独立因子仍然是一个未完全解决的问题。</p>
-
-  <div class="quote">
-    <p>「tokenizer 和生成器的参数配比是否存在最优比例？」</p>
-  </div>
-
-  <p>MAGVIT-v2 使用 307M 的 MLM。如果生成器扩大到 1B 或 10B，tokenizer 需要同步扩大吗？还是固定 tokenizer 容量后生成器可以持续获益？这是 scaling law 视角下的核心问题。</p>
-
-  <div class="quote">
-    <p>「LFQ 能否推广到 3D、音频、点云？」</p>
-  </div>
-
-  <p>LFQ 的核心假设是"量化的维度之间独立"，这不限于视觉数据。如果推广到其他模态，可能会产生跨模态统一的 tokenization 框架。</p>
-
-  <div class="quote">
-    <p>「生成式压缩中，LFQ tokenizer + 算术编码能否达到甚至超越传统 codec？」</p>
-  </div>
-
-  <p>MAGVIT-v2 的视频压缩已经接近 VVC。后续 RDVQ（CVPR 2026 Oral）将 RD 优化直接引入 tokenization，这是连接 tokenizer 和图像压缩的最直接路径。</p>
+  <div class="callout"><strong>最终启示</strong>：MAGVIT-v2 最深刻的启示是——瓶颈识别比技术发明更重要。如果核心问题是"LM 的视觉表示不够紧凑"，那么 LFQ 只是这个诊断后自然产生的治疗方案。在所有领域，问对问题往往比给出答案更难。</div>
 </div>
 
 <!-- ============================================================
@@ -308,14 +390,15 @@ subcategory: "视觉分词器"
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
-    <li>Yu et al. (2024) <em>Language Model Beats Diffusion — Tokenizer is Key to Visual Generation</em> — <a href="https://arxiv.org/abs/2310.05737" target="_blank">arXiv:2310.05737</a></li>
-    <li>Yu et al. (2023) <em>MAGVIT: Masked Generative Video Transformer</em> — <a href="https://arxiv.org/abs/2212.05199" target="_blank">arXiv:2212.05199</a></li>
-    <li>Chang et al. (2022) <em>MaskGIT: Masked Generative Image Transformer</em> — <a href="https://arxiv.org/abs/2202.04200" target="_blank">arXiv:2202.04200</a></li>
-    <li>Sun et al. (2024) <em>Open-MAGVIT2: An Open-Source Project Toward Democratizing Auto-regressive Visual Generation</em> — <a href="https://arxiv.org/abs/2409.04410" target="_blank">arXiv:2409.04410</a></li>
-    <li>TiTok (2024) <em>An Image is Worth 32 Tokens for Reconstruction and Generation</em> — <a href="https://arxiv.org/abs/2406.07550" target="_blank">arXiv:2406.07550</a></li>
-    <li>Van Den Oord et al. (2017) <em>Neural Discrete Representation Learning (VQ-VAE)</em> — <a href="https://arxiv.org/abs/1711.00937" target="_blank">arXiv:1711.00937</a></li>
-    <li>Esser et al. (2021) <em>Taming Transformers for High-Resolution Image Synthesis (VQGAN)</em> — <a href="https://arxiv.org/abs/2012.09841" target="_blank">arXiv:2012.09841</a></li>
-    <li>Mentzer et al. (2023) <em>Finite Scalar Quantization: VQ-VAE Made Simple</em> — <a href="https://arxiv.org/abs/2309.15505" target="_blank">arXiv:2309.15505</a></li>
+    <li data-cite-key="Yu-et-al.-2024">Yu, L. et al. (2024). Language Model Beats Diffusion — Tokenizer is Key to Visual Generation. <em>ICLR 2024 Oral</em>. <a href="https://arxiv.org/abs/2310.05737" target="_blank">arXiv:2310.05737</a></li>
+    <li data-cite-key="Yu-et-al.-2023">Yu, L. et al. (2023). MAGVIT: Masked Generative Video Transformer. <em>CVPR 2023</em>. <a href="https://arxiv.org/abs/2212.05199" target="_blank">arXiv:2212.05199</a></li>
+    <li data-cite-key="Chang-et-al.-2022">Chang, H. et al. (2022). MaskGIT: Masked Generative Image Transformer. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2202.04200" target="_blank">arXiv:2202.04200</a></li>
+    <li data-cite-key="Sun-et-al.-2024">Sun, Z. et al. (2024). Open-MAGVIT2: An Open-Source Project Toward Democratizing Auto-regressive Visual Generation. <a href="https://arxiv.org/abs/2409.04410" target="_blank">arXiv:2409.04410</a></li>
+    <li data-cite-key="Van-Den-Oord-et-al.-2017">Van Den Oord, A. et al. (2017). Neural Discrete Representation Learning (VQ-VAE). <em>NeurIPS 2017</em>. <a href="https://arxiv.org/abs/1711.00937" target="_blank">arXiv:1711.00937</a></li>
+    <li data-cite-key="Esser-et-al.-2021">Esser, P. et al. (2021). Taming Transformers for High-Resolution Image Synthesis (VQGAN). <em>CVPR 2021</em>. <a href="https://arxiv.org/abs/2012.09841" target="_blank">arXiv:2012.09841</a></li>
+    <li data-cite-key="Mentzer-et-al.-2023">Mentzer, F. et al. (2023). Finite Scalar Quantization: VQ-VAE Made Simple. <em>ICLR 2024</em>. <a href="https://arxiv.org/abs/2309.15505" target="_blank">arXiv:2309.15505</a></li>
+    <li data-cite-key="Karras-et-al.-2019">Karras, T. et al. (2019). A Style-Based Generator Architecture for Generative Adversarial Networks (StyleGAN). <em>CVPR 2019</em>. <a href="https://arxiv.org/abs/1812.04948" target="_blank">arXiv:1812.04948</a></li>
+    <li data-cite-key="Zhang-et-al.-2019">Zhang, R. et al. (2019). Making Convolutional Networks Shift-Invariant Again. <em>ICML 2019</em>. <a href="https://arxiv.org/abs/1904.11486" target="_blank">arXiv:1904.11486</a></li>
   </ul>
 </div>
 
