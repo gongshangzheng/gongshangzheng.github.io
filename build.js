@@ -76,6 +76,7 @@ function collectPosts() {
       categories: parseListField(fm.categories),
       subcategory: String(fm.subcategory || '').trim(),
       subcategory_index: typeof fm.subcategory_index === 'number' ? fm.subcategory_index : null,
+      sub_id: typeof fm.sub_id === 'number' ? fm.sub_id : null,
       aliases: parseListField(fm.aliases),
       created_at: fm.created_at || '',
       updated_at: fm.updated_at || '',
