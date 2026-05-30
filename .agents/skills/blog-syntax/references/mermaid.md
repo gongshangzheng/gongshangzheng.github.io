@@ -1,4 +1,4 @@
-# Mermaid 图表：`{{< mermaid >}}`
+# Mermaid 图表
 
 > 从 `syntax.md` 拆分。所有 Mermaid 语法集中在此。
 
@@ -6,7 +6,9 @@
 
 ## 基本语法
 
-在 HTML 源文件中直接写 Mermaid 语法，构建时转为 `<pre class="mermaid">` 块，页面加载时由 Mermaid.js 在客户端渲染为 SVG。
+在 HTML 源文件中使用 **短代码** 或 **div 容器** 两种写法之一，构建时统一转为 `<pre class="mermaid">` 块，页面加载时由 Mermaid.js 在客户端渲染为 SVG。
+
+### 方式一：短代码（推荐）
 
 ```html
 {{< mermaid >}}
@@ -20,6 +22,24 @@ graph TD
     G --> H[电路层]
 {{< /mermaid >}}
 ```
+
+### 方式二：div 容器（兼容）
+
+```html
+<div class="mermaid">
+graph LR
+    subgraph Abelian["交换群 (Abelian)"]
+        Cn["C_n 循环群"]
+    end
+    style Cn fill:#e8f5e9
+</div>
+```
+
+两种写法等价，构建时都转化为 `<pre class="mermaid">`。短代码形式更简洁，推荐优先使用。
+
+<div class="info-box">
+  <strong>注意</strong>：div 写法支持任意 HTML 属性（如 <code>data-type</code>、<code>style</code>），构建时自动剥离，只保留 mermaid 代码内容。
+</div>
 
 ## 支持的图表类型
 
