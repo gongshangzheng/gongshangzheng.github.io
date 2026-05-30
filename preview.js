@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const ROOT = '/Users/zhengxinyu/gongshangzheng.github.io';
+const ROOT = path.resolve(__dirname);
 const PUBLIC = path.join(ROOT, 'public');
 
 // ---------- LiveReload snippet ----------

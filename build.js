@@ -15,7 +15,7 @@ const { ensureTaxonomyRegistry } = require('./lib/taxonomy');
 const { buildArticles, buildPostsPage, buildTaxonomyPages, buildSearch, buildIndex, buildRss } = require('./lib/generator');
 
 const CACHE_PATH = path.join(PATHS.root, '.cache', 'build-manifest.json');
-const cache = createBuildCache(CACHE_PATH);
+const cache = createBuildCache(CACHE_PATH, PATHS.root);
 const BUILD_FORCE = process.env.FORCE_BUILD === '1' || process.argv.includes('--full');
 const BUILD_VERBOSE = process.env.BUILD_VERBOSE === '1';
 

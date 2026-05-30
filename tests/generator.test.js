@@ -402,7 +402,7 @@ window.MathJax = {
     const tempDir = '/tmp/article-slug-test-' + Date.now();
     fs.mkdirSync(tempDir, { recursive: true });
     const cwd = process.cwd();
-    process.chdir('/Users/zhengxinyu/gongshangzheng.github.io');
+    process.chdir(path.resolve(__dirname, '..'));
     try {
       const registry = ensureArticleSlugs([
         { sourcePath: 'src/pages/a.md', title: '扩散模型概述' },
