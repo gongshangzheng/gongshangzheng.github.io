@@ -161,7 +161,7 @@ graph TB
 
   <div class="callout"><strong>核心思路</strong>：通过调节 v，我们可以<strong>在压缩率和重建质量之间连续调节</strong>。v 越大，可见的 image tokens 越多，bits per pixel 越高，细节信息保留越完整；v 越小，压缩率越高，但模型只能依赖 semantic tokens 恢复图像。</div>
 
-  <p>这是一个最基本的设计——它也暴露了当前架构的<strong>核心问题</strong>：image tokens 和 semantic tokens 在码本层面是独立量化的，但它们之间如何配合、各自应该承担多少信息量，完全由 v 这个超参数硬编码，而不是通过端到端学习来决定的。这引导我们接下来需要探索的问题：如何设计码本及量化策略，让语义信息和细节信息能<strong>自适应地</strong>分配到两个码本中。</p>
+  <p>需要强调的是，这只是一个<strong>最基本、最朴素的设计</strong>——我们没有对两个码本之间的关系做任何特殊的设计，也没有引入额外的对齐或交互机制。后续实验将检验：即使在这种最简单的双量化器设计下，语义-细节解耦是否至少<strong>不会损害</strong>重建效果？以及这种设计能否让 TiTok 支持<strong>单模型多 bpp</strong> 的灵活压缩？</p>
 </div>
 
 <!-- ============================================================ -->
@@ -170,9 +170,11 @@ graph TB
 
 <div class="ch fade-in">
   <div class="ch-label">Part 4</div>
-  <div class="ch-title">初步验证：v 对重建质量的影响</div>
+  <div class="ch-title">初步验证：最简单的解耦，至少不损害</div>
 
-  为了验证双量化器的可行性，我们首先进行了一组 v 参数扫描实验，固定模型结构，只改变 image tokens 的随机 mask 比例。使用 LPIPS 作为重建质量的评估指标。
+  为了验证这种最简单的双量化器解耦是否可行——或者说，<strong>至少不会损害</strong>重建质量——我们进行了一组 v 参数扫描实验。固定模型结构，只改变 image tokens 的随机 mask 比例。使用 LPIPS 作为重建质量的评估指标。
+
+  更重要的是，通过这种设计，<strong>TiTok 首次具备了用一个模型处理不同 bpp 下图像 token-based 压缩的能力</strong>：只需要在推理时调节 v，就能在压缩率和重建质量之间连续切换，无需为每个 bpp 训练独立的模型。
 
   <div class="photo">
     <img src="assets/media/images/comtok-idea/lpips-v-sweep.png" alt="不同 v 值下的 LPIPS 曲线" loading="lazy">
@@ -200,12 +202,13 @@ graph TB
   <h3 class="section-title">关键发现</h3>
 
   <ol>
-    <li><strong>visible 比例越高，重建越好</strong>：v 从 0.00 → 0.25 → 0.50 → 1.00，LPIPS 从 0.3016 单调下降到 0.1926。image tokens 的可见比例直接决定重建质量。</li>
-    <li><strong>v = 1.00 超越 MaskGIT baseline</strong>：在全部 image tokens 可见的配置下，双量化器结构反而超越了标准 maskgit baseline，说明共享 Encoder 中语义 token 和图像 token 的信息交换对图像特征学习有促进作用。</li>
-    <li><strong>完全 mask（v = 0.00）损失最大</strong>：纯语义 tokenizer 的 LPIPS = 0.3016，与 MaskGIT 的 0.1963 差距明显——这证实了语义 token 确实会丢失像素信息，image tokens 的存在是必要的。</li>
+    <li><strong>解耦至少不损害重建</strong>：v = 1.00（全图像 token）时，双量化器结构的 LPIPS = 0.1926，<strong>略优于</strong>标准 MaskGIT baseline 的 0.1963。说明简单地分出独立语义量化器并没有破坏重建能力，反而可能因共享 Encoder 的信息交换而微幅提升。</li>
+    <li><strong>单调的率失真曲线</strong>：v 从 0.00 → 0.25 → 0.50 → 1.00，LPIPS 从 0.3016 单调下降到 0.1926。v 可以作为<strong>单个连续参数</strong>控制整个率失真曲线。</li>
+    <li><strong>单模型覆盖多 bpp</strong>：仅需训练一个模型，推理时通过调节 v 即可在 <strong>0 ~ 最大 bpp</strong> 之间切换——这是传统固定 token 数量的 tokenizer 做不到的。</li>
+    <li><strong>完全 mask 的退化下限</strong>：v = 0.00 时 LPIPS = 0.3016，比 MaskGIT 的 0.1963 差距明显——这本身就是合理的：语义 token 本就不以重建为目的，丢失像素信息是预期的行为。</li>
   </ol>
 
-  <div class="callout"><strong>结论</strong>：双量化器 + image tokens 随机 mask 的机制是可行的——增大 v（更多可见 image tokens）能单调提升重建质量。下一步需要验证：<strong>降低 v 实现的更高压缩率，能否在保持可接受重建质量的同时保留足够的语义信息用于理解任务？</strong></div>
+  <div class="callout"><strong>结论</strong>：即使是最简单的双量化器解耦设计，<strong>至少不会损害重建效果</strong>（v=1.00 甚至微幅优于 baseline），并且赋予了 TiTok <strong>单模型多 bpp 连续调节</strong>的能力——这是传统固定 token 数量的 tokenizer 难以实现的。</div>
 </div>
 
 <!-- ============================================================ -->
