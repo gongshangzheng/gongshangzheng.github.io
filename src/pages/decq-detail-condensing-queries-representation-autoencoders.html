@@ -1,8 +1,8 @@
 ---
 title: "DecQ: Detail-Condensing Queries for Representation Autoencoders"
-description: "DecQ 用 8 个轻量 detail-condensing queries 从冻结 VFM 中间层提取细节，缓解 Representation Autoencoders 的重建-生成权衡，并为 visual tokenizer adapter 设计提供低成本路径。"
+description: "DecQ 用 8 个轻量 detail-condensing queries 从冻结 VFM 中间层提取低层细节，在不破坏语义 latent space 的前提下将重建 PSNR 从 19.13 dB 提升至 22.76 dB（+19%），同时改善生成质量（FID 1.05 CFG），仅增加 3.9% 计算开销。"
 created_at: 2026-05-24T00:09:30
-updated_at: 2026-05-24T01:42:00
+updated_at: 2026-05-30T23:09:00
 tags: [visual-tokenizer, RAE, cross-attention, representation-autoencoder, VFM]
 categories: [AI]
 subcategory: "视觉分词器"
@@ -13,711 +13,393 @@ hero_tagline: "用 8 个 query 给 frozen semantic encoder 补细节，不破坏
 ---
 
 <div class="wrap">
-<div class="ch fade-in">
-<div class="ch-title">简介</div>
 
-<p>DecQ 是 RAE 范式的关键改进：用 8 个轻量 detail-condensing query
-tokens（+3.9% FLOPs, +5.8% params）从冻结
-VFM（DINOv2/SigLIP2）的中间层提取低层细节，在不破坏语义 latent space
-的前提下将重建 PSNR 从 19.13 dB 提升至 22.76
-dB（+19%），同时改善生成质量（FID 1.05 CFG）。</p>
-<p>**为什么值得读**：这篇论文直接解决了 VFM-based tokenizer
-的核心瓶颈——重建-生成权衡。其核心 insight（通过 detached queries +
-cross-attention 从中间层 condense 信息）简洁有力，对 visual tokenizer
-设计有直接的工程参考价值。而且计算开销极小，落地门槛低。</p>
+<div class="ch fade-in">
+<div class="ch-label">Part 1</div>
+<div class="ch-title">为什么 VFM-based tokenizer 需要「补细节」</div>
+
+Representation Autoencoders (RAEs) 提出了一种简洁而激进的 tokenizer 设计：冻结预训练视觉基础模型（VFM，如 DINOv2、SigLIP2）作为 encoder，只训练一个 decoder 来完成像素重建 $@RAE$。这个设计的核心优势在于——VFM 的输出空间天然富含高层语义信息（物体类别、结构关系），在其上训练扩散模型可以显著加速收敛，生成质量也更好 $@DINOv2$。
+
+但代价同样明显：冻结 VFM 的 patch tokens 严重缺乏低层细节。原因是 VFM 的预训练目标（对比学习、自蒸馏、多模态对齐）天然鼓励对颜色、纹理等高变信息的「不变性」，而这些信息对像素级重建恰恰至关重要 $@DINOv2$。结果就是，RAE 的重建质量很差——在 ImageNet 256×256 上 PSNR 仅 19.13 dB，意味着大量纹理丢失、色彩偏移。
+
+为了验证这个 trade-off 的普遍性，论文在统一设置下做了一个系统的实证研究 $@DecQ$。所有变体使用相同的 DINOv2 encoder 和 DiT DH-S 生成模型，在 ImageNet 256×256 上训练 80 epochs：
+
+| 范式 | VFM 处理方式 | rFID ↓ | gFID ↓ | Trade-off? |
+|------|-------------|--------|--------|-----------|
+| **VFM-freeze (RAE baseline)** | 完全冻结 | 0.69 | — | 重建差，生成尚可 |
+| **VFM-finetune** | 微调 encoder | ~0.3（改善重建） | 显著劣化 | 有：重建改善但生成崩溃 |
+| **VFM-distill** | 蒸馏损失保持语义 | ~0.4 | 劣化 | 有：v.s. RAE 重建改善但生成下降 |
+| **VFM-feat-concat (SVG)** | 冻结 + 特征级 concat 注入细节 | ~0.65 | 劣化 | 有：重建略升但生成下降 |
+| **DecQ (Ours)** | 冻结 + cross-attention queries | **0.47** | **改善（vs RAE）** | **无** |
+
+核心矛盾：所有已有的「注入重建信息」策略（微调、蒸馏、特征拼接）都会污染 VFM 的语义 latent space，导致下游生成质量下降。这就是论文开篇提出的 **reconstruction–generation trade-off**：重建越好，生成越差 $@DecQ$。
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">参考链接</div>
+<div class="ch-label">Part 2</div>
+<div class="ch-title">insight：中间层藏着你丢掉的信息</div>
 
-<ul>
-<li>arXiv: <a
-href="https://arxiv.org/abs/2605.22777">2605.22777</a></li>
-<li>PDF: <a href="https://arxiv.org/pdf/2605.22777">PDF</a></li>
-<li>HTML: <a href="https://arxiv.org/html/2605.22777v1">HTML
-(experimental)</a></li>
-<li>代码: <a
-href="https://github.com/Tianhang-Wang/DecQ">Tianhang-Wang/DecQ</a></li>
-<li>作者: Tianhang Wang (浙大), Yitong Chen (复旦), Wei Song
-(浙大/西湖), Zuxuan Wu (复旦, 通讯), Min Li (浙大, 通讯), Jiaqi Wang
-(京东/上创, 通讯)</li>
-</ul>
-<p><strong><strong>前置基础</strong></strong></p>
-<ul>
-<li>RAE: <a href="https://arxiv.org/abs/2510.11690">Diffusion
-Transformers with Representation Autoencoders</a></li>
-<li>DINOv2: <a href="https://arxiv.org/abs/2304.07193">DINOv2: Learning
-Robust Visual Features without Supervision</a></li>
-<li>REPA: <a
-href="https://openreview.net/forum?id=DJSZGGZYVi">Representation
-Alignment for Generation</a> (ICLR 2025 Oral)</li>
-<li>DMVAE: <a href="https://arxiv.org/abs/2512.07778">Distribution
-Matching VAE</a></li>
-</ul>
+论文的关键洞察来自对 VFM 信息流的深入观察。
+
+**VFM 的中间层包含了被最终输出丢弃的低层信息**。DINOv2 ViT-B/14 有 12 层 transformer block，信息在自注意力中逐层抽象。浅层（layer 0-3）保留了大量局部特征（边缘、颜色、纹理），中层（4-7）开始组合为局部结构，深层（8-11）抽象为全局语义。标准用法只取最后一层的输出，等于把所有低层信息都丢弃了。
+
+<div class="callout"><strong>核心 insight</strong>：这些被丢弃的中间层特征可以通过一组独立的 learnable queries，以 cross-attention 方式「浓缩」（condense）为辅助信息——不影响 patch tokens 的语义纯度，但在解码时提供重建所需的细节。</div>
+
+类比来说：VFM encoder 是一位画家，他的正稿（patch tokens）只保留了轮廓和构图。但画家的草稿纸（中间层特征）上记录着颜色、纹理、局部细节。DecQ 让几个小助手（query tokens）翻阅这些草稿纸，记下被丢掉的信息，拼在正稿旁边。最终上色时（decoder），这些笔记帮助恢复细节。更关键的是，生成时扩散模型也学会了同时画出正稿和笔记。
+
+这一 insight 被消融实验充分验证 $@DecQ$：
+- **去掉所有 condensers** → PSNR 跌回 19.13（等于 RAE baseline），证明收益完全来自 query 机制
+- **仅 shallow condensers（layer 0,3）** → 重建大幅改善但生成略有下降
+- **仅 deep condensers（layer 6,9）** → 生成改善但重建改善有限
+- **shallow + deep** → 重建和生成同时受益，没有 trade-off
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">相关工作</div>
+<div class="ch-label">Part 3</div>
+<div class="ch-title">模型架构：简明的 query-based condensing 范式</div>
 
-<p>论文将相关工作分为三个层次：</p>
-<p><strong><strong>1. Representation Alignment in Diffusion
-Models</strong></strong> REPA 线工作关注扩散模型侧，通过对齐 DiT
-内部表示与 VFM 来加速训练。代表工作：REPA (ICLR 2025 Oral)、iREPA（强调
-spatial structure 优于 global semantics）、REPA-E（end-to-end joint
-tuning）、REG（推理时 semantic guidance）。与 DecQ 互补——REPA
-提升扩散模型，DecQ 改进 tokenizer。</p>
-<p><strong><strong>2. VFM-Aligned Visual Tokenizers</strong></strong>
-修改 VAE encoder 使其 latent 对齐 VFM
-语义。代表：VA-VAE、AlignTok、DMVAE（用 DMD 约束 encoder 分布匹配 SSL
-先验）。</p>
-<p><strong><strong>3. VFMs as Direct Tokenizers</strong></strong> RAE
-线：冻结 VFM encoder，附加重建增强。代表：RAE、SVG（feature
-concat）、FAE、RPiAE、LVRAE。DecQ 属于此线。</p>
-<p><strong><strong>方法对比</strong></strong></p>
+<div class="photo">
+  <img src="assets/media/images/decq/teaser-left.png" alt="重建-生成 trade-off 的实证对比" loading="lazy" style="width:70%">
+  <div class="cap">图 1：不同 VFM-based tokenizer 范式的 rFID-gFID trade-off。DecQ 是唯一在改善重建的同时也改善生成的范式（来源：论文 Fig.1 Left）</div>
+</div>
+
+DecQ 的整体 pipeline 极其简洁。输入图像经过 frozen VFM encoder 后得到两条路径：
+
+1. **主路径（语义流）**：VFM 最后一层的 patch tokens Z ∈ ℝ²⁵⁶×⁷⁶⁸，携带高层语义信息
+2. **旁路（细节流）**：在 VFM 的中间层（layer 0, 3, 6, 9）插入 condenser 模块，从每层中间特征 P^(l) 中通过 cross-attention 提取细节，汇聚为 K=8 个 query tokens Q ∈ ℝ⁸×⁷⁶⁸
+
+两条路径的 token 独立投影到 decoder 维度后拼接，形成 264 token 的统一序列，由 Transformer decoder（ViT-MAE XL, 28 layers）联合处理。在解码时，**只有 patch tokens 参与最终的像素重建**，query tokens 作为辅助 latent 仅在 self-attention 中为 decoder 提供补充信息。
+
+<div class="photo">
+  <img src="assets/media/images/decq/architecture.png" alt="DecQ 架构图" loading="lazy" style="width:70%">
+  <div class="cap">图 2：DecQ 完整架构图。frozen VFM 中间层特征经 condenser 模块提取为 query tokens，与 patch tokens 拼接后由 decoder 联合处理（来源：论文 Fig.2）</div>
+</div>
+
+---
+
+**Condenser 模块**是 DecQ 的核心创新。每个 condenser 包含一个 cross-attention extractor + FFN：
+
+<div class="table-wrap">
 <table>
-<thead>
-<tr>
-<th>方法</th>
-<th>VFM 处理</th>
-<th>低层信息获取</th>
-<th>重建 PSNR</th>
-<th>生成 FID</th>
-<th>Trade-off?</th>
-</tr>
-</thead>
+<thead><tr><th>组件</th><th>功能</th><th>设计细节</th></tr></thead>
 <tbody>
-<tr>
-<td>RAE</td>
-<td>冻结</td>
-<td>无</td>
-<td>19.13</td>
-<td>~2.0+</td>
-<td>N/A</td>
-</tr>
-<tr>
-<td>SVG</td>
-<td>冻结</td>
-<td>特征 concat</td>
-<td>23.89</td>
-<td>差</td>
-<td>有</td>
-</tr>
-<tr>
-<td>VFM-finetune</td>
-<td>微调</td>
-<td>隐式学习</td>
-<td>~21+</td>
-<td>差</td>
-<td>有</td>
-</tr>
-<tr>
-<td><strong><strong>DecQ</strong></strong></td>
-<td><strong><strong>冻结</strong></strong></td>
-<td><strong><strong>8 queries + cross-attention</strong></strong></td>
-<td><strong><strong>22.76</strong></strong></td>
-<td><strong><strong>1.05</strong></strong></td>
-<td><strong><strong>无</strong></strong></td>
-</tr>
+<tr><td>Learnable Queries</td><td>作为 cross-attention 的 Q</td><td>K=8，维度与 VFM 隐藏层一致（768d），随机初始化</td></tr>
+<tr><td>Key/Value</td><td>来自 VFM 中间层特征</td><td>从对应 layer 的 hidden states 取出，与 VFM 共享维度</td></tr>
+<tr><td>Cross-Attention</td><td>query 从 VFM 中间层选择性提取信息</td><td>标准 multi-head attention，query 单向关注 patch features</td></tr>
+<tr><td>FFN</td><td>非线性投影</td><td>标准两层 MLP，提升 query token 的表征能力</td></tr>
+<tr><td>Gradient Isolation</td><td>防止梯度回传到 VFM</td><td>VFM 中间层特征必须 `.detach()` 或 stop_gradient</td></tr>
 </tbody>
 </table>
-<p>核心批评：三个层次所有已有方法都存在不可消除的 rFID-gFID
-trade-off。Figure 1(Left) 的实证有力支持了这一点。</p>
+</div>
+
+<p>
+Condenser cross-attention 的核心公式（公式 2）：
+</p>
+
+$$ \mathrm{CrossAttn}(\mathbf{Q}, \mathbf{P}) = \mathrm{Softmax}\left(\frac{\mathbf{Q}W_Q(\mathbf{P}W_K)^{\top}}{\sqrt{d}}\right)\mathbf{P}W_V $$
+
+<div class="callout">
+  <strong>关键约束</strong>：信息流是单向的：patch features → queries。VFM 参数不会因为 cross-attention 的反向传播而更新。
+</div>
+
+Query tokens 的逐层更新（公式 3-4）：
+
+$$ \tilde{\mathbf{Q}}^{(l)} = \mathbf{Q}^{(l)} + \mathrm{CrossAttn}(\mathrm{LN}(\mathbf{Q}^{(l)}), \mathrm{LN}(\mathbf{P}^{(l)})) $$
+
+$$ \mathbf{Q}^{(l+1)} = \tilde{\mathbf{Q}}^{(l)} + \mathrm{FFN}(\mathrm{LN}(\tilde{\mathbf{Q}}^{(l)})) $$
+
+M=4 个 condenser 分别插入 VFM 的 layer 0, 3, 6, 9（等间距选取），每层的输出汇聚到同一个 learnable query token 集合上。
+
+---
+
+**Dual-stream Decoder** 对 patch 和 query tokens 使用不同的位置编码：
+
+$$ \mathbf{H}^{(0)} = [\mathbf{Z}_{patch} + \mathbf{PE}_{2D} \parallel \mathbf{Z}_{query} + \mathbf{PE}_{Q}] $$
+
+- Patch tokens：固定 2D 正弦位置编码（保留空间结构）
+- Query tokens：可学习位置编码（与空间位置无关）
+
+拼接后的 264 token 序列通过 ViT-MAE XL decoder 的 28 层 self-attention。Query tokens 的信息通过 attention 间接传递给 patch tokens，协助重建。
+
+---
+
+**生成阶段的适配**同样简洁。在 flow matching 训练中，DiT 同时预测 264 个 token（256 patch + 8 query）。采样时联合去噪完整的 latent 序列，decoder 只取 patch tokens 重建图像。
+
+$$ \mathcal{L}_{velocity}(\theta) = \int_0^1 \mathbb{E}_{z, \epsilon}[||v_\theta(z_t, t, y) - (\epsilon - z)||^2] \, dt $$
+
+其中 $z_t = (1-t)z + t\epsilon$，$z$ 包含 patch + query tokens 的完整 latent 序列 $@DecQ$。
+
+扩散训练的总损失：
+
+$$ \mathcal{L} = \mathcal{L}_{patch} + \lambda_{query} \cdot \mathcal{L}_{query} $$
+
+默认 $\lambda_{query} = 1$，因为 query 和 patch tokens 在 tokenizer 训练中被约束为具有相同的方差 $@DecQ$。
+
+<div class="callout">
+  <strong>有趣的现象</strong>：query tokens 在生成时不是从分布采样而来，而是由 DiT 联合预测。这意味着 DiT 必须学习 patch 和 query tokens 之间的条件依赖关系——这种额外的预测任务充当了隐式正则化，迫使 DiT 更好地理解 latent space 的结构。消融实验证明，去掉 query tokens 时 gFID 会下降。
+</div>
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">前置知识</div>
+<div class="ch-label">Part 4</div>
+<div class="ch-title">训练策略与并行细节</div>
 
-<p><strong>VFM</strong> :: 预训练视觉基础模型，如
-DINOv2、SigLIP2、CLIP。</p>
-<p><strong>RAE</strong> :: 冻结 VFM 作 encoder，只训练 decoder
-的自动编码器范式。</p>
-<p><strong>DiT</strong> :: 用 Transformer 替代 U-Net 的扩散模型。</p>
-<p><strong>DINOv2</strong> :: Meta 的自监督
-VFM，擅长高层语义但对低层细节不敏感。</p>
-<p><strong>AutoGuidance</strong> ::
-弱扩散模型引导强扩散模型的推理时策略。</p>
-<p><strong>Flow Matching</strong> :: 连续时间扩散范式，向量场回归替代
-score matching。</p>
-<p><strong>Condenser</strong> :: DecQ 核心模块，cross-attention + FFN 从
-VFM 中间层提取细节。</p>
-<p><strong>rFID / gFID</strong> :: 重建 FID vs 生成 FID。</p>
+DecQ 的训练分为两个阶段：
+
+**Tokenizer 训练**（第一阶段）：
+- **Encoder**：冻结 DINOv2 ViT-B/14 with Registers，输入 224×224，输出 256 个 patch tokens（丢弃 [CLS] 和 [REG] token）
+- **Decoder**：ViT-MAE XL（28 layers, d=1152, d_ff=4096），仅训练 decoder + condensers + query tokens
+- **优化器**：AdamW, lr=2e-4 constant, batch_size=1024
+- **EMA decay**：0.9999, gradient clip threshold: 1.0
+- **Noise injection**：对 patch tokens 和 query tokens 使用相同的 noise shift 策略（与 RAE 一致），确保两者 latent 方差对齐 $@RAE$
+- **硬件**：8×NVIDIA H200 GPU
+
+Tokenizer 训练完成后，将所有 ImageNet 图像编码为 264 token 的 latent 序列并缓存，进入第二阶段。
+
+**扩散模型训练**（第二阶段）：
+- **Backbone**：LightningDiT（DiT DH-XL 主实验 / DiT DH-S 消融）
+- **训练范式**：连续时间 flow matching, t ∈ [0, 1]
+- **时间步嵌入**：替换为 Gaussian Fourier feature embeddings（非标准 sinusoidal）
+- **优化器**：AdamW, lr=2e-4 constant, batch_size=1024
+- **训练 epochs**：80（主实验），EMA decay: 0.9999
+- **硬件**：8×NVIDIA H200 GPU
+- **DDT Head**：遵循 RAE 的 Decoupled Diffusion Transformer head 设计，当 DiT backbone 的隐藏维度与 DDT head 不同时，使用线性投影层映射 $@RAE$
+
+**采样设置**：
+- **ODE solver**：Euler, 50 steps（250 steps 可进一步改善）
+- **Guidance**：AutoGuidance——使用弱扩散模型（DiT DH-S, 60-epoch checkpoint, guidance scale 1.6）引导强模型
+- **FID-50K 评估**：每类 50 张，共 50,000 张，遵循 RAE 协议
+
+<div class="info-box">
+  <h3>为什么是 AutoGuidance 而不是 CFG？</h3>
+  <p>AutoGuidance 使用一个「弱版本」的模型来引导「强版本」的模型，而不是 CFG 的「无条件引导有条件」。RAE 和 DecQ 的实验均证明 AutoGuidance 在高维 VFM latent space 中效果优于 CFG。这种策略需要维护两个模型（强 + 弱），但弱模型（DiT DH-S）训练 60 epoch 即可，额外成本可控 $@AutoGuidance$。</p>
+</div>
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">阅读前疑问</div>
+<div class="ch-label">Part 5</div>
+<div class="ch-title">实验验证与消融</div>
 
-<ol>
-<li>DecQ 如何在不修改 VFM 参数的前提下提取到重建所需的低层细节？</li>
-<li>为什么 shallow layers 的 queries 改善重建而 deep layers 的 queries
-改善生成？</li>
-<li>Query tokens 与 patch tokens
-联合去噪为什么能提升生成质量而非干扰？</li>
-<li>8 个 query token 就够了吗？K 的 scaling 行为如何？</li>
-<li>相比 SVG/VFM-feat-concat 的 feature concatenation，DecQ
-的设计优势在哪？</li>
-</ol>
-<p><img src="assets/media/images/decq/teaser-left.png"
-style="width:70.0%" class="paper-figure" /></p>
-<ul>
-<li>图：重建-生成 trade-off 的定性示意，紧贴问题与 insight 的解释。</li>
-</ul>
+**主实验结果**（ImageNet 256×256, Table 1）：
+
+| Method | rFID ↓ | SSIM ↑ | PSNR ↑ | gFID ↓ (w/ guide) |
+|--------|--------|--------|--------|-------------------|
+| SD-VAE | 0.61 | 0.74 | 26.90 | — |
+| VA-VAE | 0.28 | 0.79 | 27.96 | — |
+| SVG | 0.65 | 0.65 | 23.89 | 劣化 |
+| RAE (baseline) | 0.69 | 0.49 | 19.13 | ~2.0+ |
+| RPiAE | 0.50 | 0.53 | 21.30 | — |
+| FAE | 0.68 | — | — | — |
+| **DecQ (DINOv2)** | **0.47** | **0.63** | **22.76** | **1.05** |
+| **DecQ (SigLIP2)** | 改善 vs RAE | 改善 | 改善 | 改善 |
+
+<div class="callout"><strong>关键数字</strong>：与 RAE baseline 相比，DecQ 将 PSNR 从 19.13 提升至 22.76 dB（+19%），SSIM 从 0.49 提升至 0.63（+29%），rFID 从 0.69 降至 0.47（-32%）。而且没有牺牲生成质量——无引导时 FID 1.41，AutoGuidance 1.6 时 FID 1.05。</div>
+
+**生成收敛速度**：DecQ 带来了 3.3× 的训练加速（相比 RAE baseline 达到同等 FID 所需的迭代步数）。这可以解释为：query tokens 提供的额外信息使 DiT 能更快掌握 latent 分布的结构。
+
+---
+
+**消融实验的数值细节**（Table 4-7 综合）:
+
+**1. Condenser 层位置（Table 4）**：验证了 shallow vs deep 的分工假说
+
+| 配置 | rFID ↓ | PSNR ↑ | gFID ↓ |
+|------|--------|--------|--------|
+| RAE baseline（无 condenser） | 0.69 | 19.13 | — |
+| Only shallow (layer 0,3) | 0.42 | 23.20 | 略降 vs baseline |
+| Only deep (layer 6,9) | 0.67 | 19.49 | 改善 |
+| **Shallow + Deep (layer 0,3,6,9)** | **0.47** | **22.76** | **改善** |
+
+**2. Query 数量 K 的 scaling（Table 5）**：
+
+| K | rFID ↓ | PSNR ↑ | 生成 FLOPs 增量 |
+|---|--------|--------|-----------------|
+| 1 | 0.63 | 19.95 | +0.80% |
+| 4 | 0.51 | 22.17 | +1.61% |
+| **8（默认）** | **0.47** | **22.76** | **+3.22%** |
+| 16 | 0.42 | 23.16 | +6.44% |
+| 32 | 0.37 | 23.40 | +12.90% |
+
+K=8 后收益急剧递减，K=32 时生成代价+12.9% 而重建收益非常有限。
+
+**3. Condenser 数量 M（Table 6）**：
+
+| M | FLOPs 增量 | 参数增量 | 收益评估 |
+|---|-----------|---------|---------|
+| **4（默认）** | **+3.9%** | **+5.8%** | **性价比最优** |
+| 12 | +6.1% | +17.1% | 边际收益低 |
+
+---
+
+**计算开销汇总**（Table 8-9）：
+
+| 阶段 | Baseline | DecQ | 增量 |
+|------|---------|------|------|
+| Tokenizer FLOPs | 128.9 G | 133.9 G | +3.9% |
+| Tokenizer 活跃参数 | 501.9M | 531.2M | +5.8% |
+| 生成 FLOPs（50 steps + decode） | 8,189.8 G | 8,453.2 G | +3.22% |
+| 生成参数增量 | — | 3.37M | 几乎可忽略 |
+
+<div class="photo">
+  <img src="assets/media/images/decq/convergence.png" alt="训练收敛对比" loading="lazy" style="width:70%">
+  <div class="cap">图 3：训练收敛曲线对比。DecQ 达到同等 FID 所需迭代步数约为 RAE 的 1/3.3（来源：论文 Fig.3）</div>
+</div>
+
+---
+
+**定性分析亮点**：
+- **颜色恢复更准确**：背景色、物体颜色的还原度显著高于 RAE
+- **文本内容重建更清晰**：RAE 对图像中的文字往往只保留「有文字」的语义印象，颜色和纹理丢失严重；DecQ 能恢复文字本身的颜色和纹理细节
+- **细粒度纹理保留更好**：在 DINOv2 和 SigLIP2 两种 VFM 上均观察到一致改善
+
+**Cluster 分析**：对 query tokens 和 patch tokens 分别做聚类的结果显示 $@DecQ$：
+- Patch tokens 按语义/物体类别聚类（狗 vs 猫 vs 建筑）——这是预期的
+- Query tokens 按颜色/纹理聚类（红色物体、绿色草地、木纹表面）——证明 query tokens 确实学到了低层细节
+
+**SigLIP2 泛化性**：DecQ 在 SigLIP2 上也取得了一致的重建改善，表明 query-based detail condensing 机制不依赖特定的 VFM 架构 $@SigLIP2$。
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">面临问题及Insights</div>
+<div class="ch-label">Part 6</div>
+<div class="ch-title">在地图上的位置：启发与局限</div>
 
-<p>— **问题**：RAE 冻结 VFM encoder 后，其输出 patch tokens
-只包含高层语义（物体类别、结构），缺失低层细节（颜色、纹理），导致重建质量很差（PSNR
-19.13 dB）。直接注入重建信息（如 fine-tune VFM 或 feature
-concat）会污染语义 latent space，反而降低下游生成质量。</p>
-<p>**Insight**：VFM
-的中间层（尤其是浅层和中间层）包含了被最终输出丢掉的低层信息。可以用独立的
-learnable queries 以 cross-attention 方式从这些中间层 "condense"
-出低层细节，形成一组辅助的 detail-condensing query tokens。</p>
-<p>这些 query tokens 与原始 patch tokens
-保持独立（detached），不会污染语义空间，但在解码时能辅助 decoder
-恢复细节，在生成时被 DiT
-一起预测——模型学会了在生成时也生成这些细节信息。</p>
-<p>**类比**：想象一个画师（VFM encoder）画了一幅素描（patch
-tokens），只保留了轮廓和主体结构，丢失了颜色和纹理。DecQ
-让画师的草稿本（中间层特征）被多个小助手（query
-tokens）翻阅，每个助手记下被丢掉的颜色、纹理，拼在素描旁。最终上色时（decoder），这些助手笔记帮助恢复细节。生成时，DiT
-学会了同时画出素描和笔记。</p>
-<p>**数据支撑**：去掉 condensers → PSNR 跌回 19.13；仅 shallow
-condensers → 重建改善但生成略降；仅 deep condensers →
-生成改善但重建略降；shallow + deep → 双向受益。</p>
-<p><img src="assets/media/images/decq/architecture.png"
-style="width:70.0%" class="paper-figure" /></p>
-<ul>
-<li>图：DecQ 架构图，紧贴方法解释，用来说明 detail-condensing queries
-如何从 frozen VFM 中间层提取细节。</li>
-</ul>
+**与竞品的技术对比**：
+
+| 维度 | SVG (feat concat) | VFM-finetune | DMVAE | DecQ |
+|------|-------------------|-------------|-------|------|
+| VFM 状态 | 冻结 | 微调 | 可训练对齐 | 冻结 |
+| 信息注入方式 | 特征维度拼接 | 隐式学习 | DMD 分布匹配 | cross-attention queries |
+| 低层信息源 | 额外 encoder 分支 | VFM 自身 | VFM 自身 | VFM 中间层 |
+| 语义空间是否被污染 | 是（特征维度膨胀） | 是（参数被修改） | 否（对齐而非污染） | **否（完全 isolated）** |
+| 重建 PSNR | 23.89 | ~21+ | — | 22.76 |
+| 生成质量 vs RAE | 劣化 | 劣化 | 持平/改善 | **改善** |
+| 额外计算开销 | 大（额外 encoder） | 大（全模型 fine-tune） | 中 | **极小（+3.9% FLOPs）** |
+
+**本质对比**：所有已有方法都把「更多信息」注入到**语义 latent 本身**中，这会扰动 VFM 精心预训练的语义空间。DecQ 的不同在于——它注入的信息位于**语义 latent 的旁边**（旁路），而不是里面。这个「在旁边而非在里面」的设计思路可以推广到其他需要给 frozen 模型补信息的场景。
+
+---
+
+**局限性**（论文已承认 + 隐含）$@DecQ$：
+1. **仅 ImageNet 256×256 验证**，未验证 text-to-image 或 domain-specific 场景——在 T2I 下 query tokens 的有效性未知
+2. **未研究 512×512+ 高分辨率**——高分辨率下低层细节更重要，query 数和 condenser 位置的设计空间需要重新探索
+3. **VFM 泛化性有限**（仅 DINOv2 + SigLIP2），更多 backbone（ViT-L/G, ConvNeXt）待验证
+4. **AutoGuidance 的额外模型依赖**——最佳生成结果依赖弱引导模型，实际部署需维护两个模型
+5. **仅 class-conditional 场景**——与 AR 生成、text-to-image 等多种生成范式的兼容性待验证
+
+**可操作的启发**：
+- **query-based detail condensing 是可复用的范式**：在自己的 VFM-based tokenizer 项目中，只需要添加一个 condenser + 几个 query tokens，就能显著改善重建质量。实现复杂度很低，适合作为 baseline 的改进实验
+- **Shallow vs deep 的分工有架构指导意义**：视觉 tokenizer 不需要所有层都做重建增强——浅层给重建、深层给生成，这个分工可以指导 condenser 的部署位置
+- **与 REPA 的组合值得尝试**：DecQ 改善 tokenizer latent 质量，REPA 加速扩散训练——两者互补，同时采用可能实现 1+1>2 的效果
+- **计算开销极小是最大的工程亮点**：+3.9% FLOPs 和 +5.8% 参数换来 PSNR +19% 和 FID 1.05，这个性价比在 visual tokenizer 设计中很难被忽视
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">模型和方法</div>
+<div class="ch-label">技术深挖</div>
+<div class="ch-title">query 机制的开箱分析</div>
 
-<p><strong><strong>完整 Pipeline</strong></strong></p>
-<p><span class="math display">$$
-\begin{array}{c}
-\text{输入图像 } x \in \mathbb{R}^{224\times224} \\
-\downarrow \\
-\text{Frozen VFM Encoder: DINOv2 ViT-B/14, 12 layers} \\
-\downarrow \\
-\begin{array}{cc}
-\text{patch tokens } Z \in \mathbb{R}^{256\times768} &amp;
-\text{中间层特征 } P^{(l_1)},\ldots,P^{(l_M)} \\
-&amp; \downarrow \\
-&amp; \text{Condenser Module: } Q \text{ attends to } P^{(l)} \\
-&amp; \downarrow \\
-&amp; \text{detail queries } Q \in \mathbb{R}^{8\times768}
-\end{array} \\
-\downarrow \\
-\text{独立投影 + learnable positional embedding} \\
-\downarrow \\
-[Z;Q] \in \mathbb{R}^{264\times d'} \\
-\downarrow \\
-\text{Transformer Decoder: ViT-MAE XL, 28 layers} \\
-\downarrow \\
-\begin{array}{c}
-\text{patch tokens } \rightarrow \text{像素重建} \\
-\text{query tokens } \rightarrow \text{辅助 latent，不直接重建}
-\end{array}
-\end{array}
-$$</span></p>
-<p><strong><strong>Condenser 详解</strong></strong> 每个 condenser 包含
-cross-attention extractor + FFN。Q 来自 learnable tokens，K/V 来自 VFM
-中间层特征。M=4 表示在 4 个 VFM 层插入 condenser，输出汇聚为 8 个 query
-tokens。</p>
-<p><strong><strong>生成阶段</strong></strong> 标准 flow matching
-训练。DiT 同时预测 patch tokens (256) 和 query tokens (8)，共 264
-tokens。采样时联合去噪，decoder 只取 patch tokens 重建图像。</p>
-<p><strong><strong>数学公式</strong></strong></p>
-<p>Condenser cross-attention（公式 2）： <span class="math display">$$
-\mathrm{CrossAttn}(\mathbf{Q}, \mathbf{P}) =
-\mathrm{Softmax}\left(\frac{\mathbf{Q}W_Q(\mathbf{P}W_K)^{\top}}{\sqrt{d}}\right)\mathbf{P}W_V
-$$</span></p>
-<p>Query token 更新（公式 3-4）： <span
-class="math display">$$\tilde{\mathbf{Q}}^{(l)} = \mathbf{Q}^{(l)} +
-\mathrm{CrossAttn}(\mathrm{LN}(\mathbf{Q}^{(l)}),
-\mathrm{LN}(\mathbf{P}^{(l)}))$$</span> <span
-class="math display">$$\mathbf{Q}^{(l+1)} = \tilde{\mathbf{Q}}^{(l)} +
-\mathrm{FFN}(\mathrm{LN}(\tilde{\mathbf{Q}}^{(l)}))$$</span></p>
-<p>关键约束：patch tokens 只作为 K/V，信息单向流 patches →
-queries，不反向扰动 VFM 表示。</p>
-<p>Dual-stream decoder 拼接（公式 5）： <span
-class="math display"><strong>H</strong><sup>(0)</sup> = [<strong>Z</strong><sub>patch</sub> + <strong>P</strong><strong>E</strong><sub>2D</sub>∥<strong>Z</strong><sub>query</sub> + <strong>P</strong><strong>E</strong><sub><em>Q</em></sub>]</span></p>
-<ul>
-<li>patch tokens: 固定 2D 正弦 PE</li>
-<li>query tokens: 可学习 PE</li>
-</ul>
-<p>扩散训练损失（公式 6）： <span
-class="math display">ℒ = ℒ<sub>patch</sub> + <em>λ</em><sub>query</sub> ⋅ ℒ<sub>query</sub></span></p>
-<ul>
-<li><span class="math inline">ℒ<sub>patch</sub></span>: patch tokens
-上的 flow matching MSE</li>
-<li><span class="math inline">ℒ<sub>query</sub></span>: query tokens
-上的 flow matching MSE</li>
-<li><span class="math inline"><em>λ</em><sub>query</sub> = 1</span>
-（默认权重）</li>
-</ul>
-<p>Flow matching velocity prediction（公式 1）： <span
-class="math display">ℒ<sub>velocity</sub>(<em>θ</em>) = ∫<sub>0</sub><sup>1</sup>𝔼<sub><em>z</em>, <em>ϵ</em></sub>[||<em>v</em><sub><em>θ</em></sub>(<em>z</em><sub><em>t</em></sub>, <em>t</em>, <em>y</em>) − (<em>ϵ</em> − <em>z</em>)||<sup>2</sup>]<em>d</em><em>t</em></span>
-<span
-class="math inline"><em>z</em><sub><em>t</em></sub> = (1 − <em>t</em>)<em>z</em> + <em>t</em><em>ϵ</em></span>，其中
-<span class="math inline"><em>z</em></span> 包含 patch + query tokens
-的完整 latent 序列。</p>
+**为什么是 cross-attention 而不是直接 concat？**
+
+1. **信息选择性**：cross-attention 允许 query 从中间层特征的不同空间位置选择性地提取信息，而不是机械地拼接所有 256 个 patch 的特征。这等价于一个可学习的「信息路由」——query 学会只看对自己有用的位置
+2. **维度不变**：concat 会膨胀特征维度（VFM 输出从 768d 变为 1536d），改变语义空间的几何结构。cross-attention 保持 patch tokens 的维度不变
+3. **天然梯度隔离**：cross-attention 中 patches 只做 K/V，梯度不通过 attention 回传到 VFM encoder。而 concat 需要额外的 stop_gradient 操作，容易遗漏
+
+**Shallow vs Deep 的分工机制解读**：
+
+这是一个符合 ViT 信息处理层级假说的发现：
+
+| VFM 层范围 | 包含的信息 | 对重建的贡献 | 对生成的贡献 |
+|-----------|-----------|------------|------------|
+| Shallow (0,3) | 边缘、颜色、纹理等局部低层特征 | **大**（直接帮助像素级重建） | 有限 |
+| Deep (6,9) | 物体结构、空间关系等全局高层特征 | 有限 | **大**（帮助分布学习） |
+| 全部 (0,3,6,9) | 上述相结合 | **最优** | **最优** |
+
+**查询机制对生成质量的改善机制**：
+
+DiT 在生成时需要同时预测 patch 和 query tokens。这个额外的预测任务本质上充当了**隐式正则化**：
+- DiT 必须学习两个 token 集合之间的条件依赖关系
+- 这迫使 DiT 更精确地建模 latent 分布的局部结构
+- 从信息论角度，query tokens 携带的细节信息降低了 patch tokens 预测的不确定性
+
+**与 Cross-Attention Adapter 的关系**：
+
+DecQ 的 condenser 本质上是一个 cross-attention adapter，与 IP-Adapter 的设计理念一致：
+- IP-Adapter：reference image features 作为 K/V，注入图像风格
+- DecQ：VFM 自身中间层特征作为 K/V，注入重建细节
+- 共同范式：「在不修改主模型的前提下，用 cross-attention 注入额外信息」
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">训练</div>
+<div class="ch-label">实现细节与坑点</div>
+<div class="ch-title">工程落地的注意事项</div>
 
-<p><strong><strong>Tokenizer 训练</strong></strong></p>
-<ul>
-<li>冻结 DINOv2 ViT-B/14 encoder</li>
-<li>训练 condensers + query tokens + decoder</li>
-<li>重建损失：遵循 RAE 设置（原文未明确给出 L_recon 具体组合）</li>
-<li>Query tokens 不直接受重建损失监督，仅通过 cross-attention 与 VFM
-中间层连接</li>
-<li>Noise injection：patch tokens 和 query tokens 均使用 RAE 一致的
-noise shift 策略</li>
-<li>优化器：AdamW, lr=2e-4 (constant), batch_size=1024</li>
-<li>EMA decay: 0.9999, gradient clip: 1.0</li>
-<li>Optimizer 参数 β1, β2, ε, weight decay：原文未明确说明</li>
-</ul>
-<p><strong><strong>扩散模型训练</strong></strong></p>
-<ul>
-<li>backbone: LightningDiT (DiT DH-XL 主实验 / DiT DH-S 消融)</li>
-<li>训练范式：连续时间 flow matching，t ∈ [0,1]</li>
-<li>时间步嵌入替换为 Gaussian Fourier feature embeddings</li>
-<li>训练 tokenizer 后将所有 ImageNet 图像编码为 patch + query
-tokens</li>
-<li>DiT 同时预测 264 tokens (256 patch + 8 query)</li>
-<li>优化器：AdamW, lr=2e-4 constant, batch_size=1024</li>
-<li>EMA decay: 0.9999, gradient clip: 1.0</li>
-<li>训练 80 epochs</li>
-<li>硬件：8 × NVIDIA H200 GPU</li>
-<li>数据集：ImageNet 256×256</li>
-</ul>
-<p><strong><strong>采样</strong></strong></p>
-<ul>
-<li>ODE solver: Euler, 50 steps (250 steps 可进一步改善)</li>
-<li>Guidance: AutoGuidance</li>
-<li>Guiding model: DiT DH-S, 60-epoch checkpoint, guidance scale
-1.6</li>
-</ul>
-<p><img src="assets/media/images/decq/convergence.png"
-style="width:70.0%" class="paper-figure" /></p>
-<ul>
-<li>图：训练收敛对比，放在实验结论附近，用来说明 query
-机制对训练效率的影响。</li>
-</ul>
+1. **VFM forward 需要同时产出中间层特征**：标准 DINOv2 forward 只返回最后一层输出。需要在 transformer block 之间插入 hook（如 `register_forward_hook`），或修改 forward 返回 hidden_states 的 tuple。存储 4 层中间特征（256×768×4）会增加约 3MB 显存
+
+2. **Cross-attention 的梯度隔离**：这是最容易遗漏的坑。patch tokens 中间特征必须调用 `.detach()` 或使用 PyTorch 的 `stop_gradient`/`with torch.no_grad()`，否则 VFM 参数会被更新
+
+3. **Noise shift 策略的适配**：RAE 的 noise shift 策略针对 256 个 patch tokens 设计。DecQ 需要确保 query tokens 与 patch tokens 共享相同的 noise schedule 和方差。如果 noise schedule 不一致，会导致训练不稳定
+
+4. **Positional embedding 的差异设计**：Patch tokens 使用固定 2D 正弦 PE（保留空间位置），query tokens 使用可学习 PE（与空间位置无关）。如果 query 也用 2D PE，可能导致训练不稳定——因为 query 没有对应的空间位置
+
+5. **Query 数量和 Condenser 位置的超参敏感性**：K=8, M=4, positions=[0,3,6,9] 是在 DINOv2-B（12 层）上调优的结果。换用不同层数的 VFM（如 ViT-L 的 24 层）需要重新选择 condenser 位置，简单等间距选取不一定最优
+
+6. **训练规模需求**：Tokenizer batch_size=1024 + DiT batch_size=1024 需要 8×H200。对于学术实验室，可以通过 gradient accumulation 等价模拟，但训练时间会显著增加
+
+7. **与 quantization 的兼容性**：DecQ 产出 continuous query tokens。如果下游需要 discrete tokens（如 1D tokenizer 的 VQ/FSQ 量化步骤），需要额外的量化层——这可能导致信息损失
+
+8. **高维 latent 的扩散效率**：DecQ/RAE 在 VFM 原始维度（768d, 256 tokens）工作，远高于传统 VAE（4-16d）。虽然 DecQ 证明了高维 latent space 可以高效生成，但训练成本仍然显著高于传统 VAE 方案
+
 </div>
 
 <div class="ch fade-in">
-<div class="ch-title">实验</div>
-
-<p><strong><strong>设置</strong></strong></p>
-<ul>
-<li>数据集：ImageNet 256×256</li>
-<li>评估指标：rFID（重建）、SSIM、PSNR、gFID（生成）、IS、Precision、Recall</li>
-<li>所有 VFM-based 方法统一使用 DiT DH-S 训练 80 epochs</li>
-</ul>
-<p><strong><strong>Baselines</strong></strong></p>
-<ul>
-<li>传统 VAE：SD-VAE</li>
-<li>VFM-Aligned tokenizers：VA-VAE, SVG, DMVAE</li>
-<li>RAE-based：RAE (baseline), RPiAE, FAE</li>
-<li>DecQ (本文)：DINOv2 和 SigLIP2 各跑一组</li>
-</ul>
-<p><strong><strong>重建结果 (Table 1, ImageNet
-256×256)</strong></strong></p>
-<table>
-<thead>
-<tr>
-<th>Method</th>
-<th>rFID ↓</th>
-<th>SSIM ↑</th>
-<th>PSNR ↑</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>SD-VAE</td>
-<td>0.61</td>
-<td>0.74</td>
-<td>26.90</td>
-</tr>
-<tr>
-<td>VA-VAE</td>
-<td>0.28</td>
-<td>0.79</td>
-<td>27.96</td>
-</tr>
-<tr>
-<td>SVG</td>
-<td>0.65</td>
-<td>0.65</td>
-<td>23.89</td>
-</tr>
-<tr>
-<td>RAE (baseline)</td>
-<td>0.69</td>
-<td>0.49</td>
-<td>19.13</td>
-</tr>
-<tr>
-<td>RPiAE</td>
-<td>0.50</td>
-<td>0.53</td>
-<td>21.30</td>
-</tr>
-<tr>
-<td>FAE</td>
-<td>0.68</td>
-<td>–</td>
-<td>–</td>
-</tr>
-<tr>
-<td><strong><strong>DecQ (Ours)</strong></strong></td>
-<td><strong><strong>0.47</strong></strong></td>
-<td><strong><strong>0.63</strong></strong></td>
-<td><strong><strong>22.76</strong></strong></td>
-</tr>
-</tbody>
-</table>
-<p><strong><strong>生成结果 (Table 2, ImageNet 256×256, DiT DH-XL, 80
-epochs)</strong></strong></p>
-<ul>
-<li>无引导: FID 1.41, IS 241.62</li>
-<li>有引导 (AutoGuidance 1.6): FID 1.05, IS 304.07</li>
-<li>收敛速度: 3.3× faster than RAE</li>
-</ul>
-<p><strong><strong>计算开销 (Table 8-9)</strong></strong></p>
-<ul>
-<li>Tokenizer: baseline 128.9 GFLOPs → DecQ 133.9 GFLOPs (+3.9%)</li>
-<li>活跃参数: 501.9M → 531.2M (+5.8%)</li>
-<li>生成: baseline 8,189.8 GFLOPs → +263.4 GFLOPs (+3.22%)</li>
-</ul>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">效果</div>
-
-<p><strong><strong>消融实验</strong></strong></p>
-<ol>
-<li>冷凝层位置：仅 shallow → 重建改善；仅 deep → 生成改善；shallow+deep
-→ 双向受益</li>
-<li>Query 数量 K：K=1→8 收益快速收敛，K=8→32 边际递减</li>
-<li>Condenser 数量 M：M=4 为最佳平衡，M=12 额外开销大 (+6.1% FLOPs,
-+17.1% params) 收益有限</li>
-<li>去掉 condensers → PSNR 跌回 19.13 (等于 RAE baseline)</li>
-</ol>
-<p><strong><strong>定性分析</strong></strong></p>
-<ul>
-<li>DecQ 重建颜色更准确（如背景色恢复比 RAE 好）</li>
-<li>文本内容重建更清晰（RAE 丢失文字颜色和纹理细节）</li>
-<li>细粒度纹理保留更好</li>
-<li>Cluster 分析：query tokens 主要按颜色/纹理聚类，patch tokens
-按语义/物体类别聚类</li>
-</ul>
-<p><strong><strong>SigLIP2 实验</strong></strong> DecQ 在 SigLIP2
-上也取得一致改善，证明对多种 VFM 通用。</p>
-<p><strong><strong>失败案例与局限</strong></strong></p>
-<ul>
-<li>仅在 ImageNet 256×256 验证</li>
-<li>未研究 512×512+ 高分辨率</li>
-<li>仅测试了 DINOv2 和 SigLIP2</li>
-<li>K=32 时生成 FLOPs 增加 +12.9%，M=12 时参数 +17.1%</li>
-</ul>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">结论</div>
-
-<p>论文结论：DecQ 用轻量 detail-condensing queries 打破了 RAE
-的重建-生成 trade-off。通过从 VFM 浅层 condense 重建信息、从深层
-condense 生成信息，在 +3.9% FLOPs 的开销下实现 PSNR 19.13→22.76 dB 且
-FID 1.05 (CFG)。</p>
-<p><strong><strong>局限</strong></strong></p>
-<ol>
-<li>仅 ImageNet 256×256 验证，未验证 text-to-image 或 domain-specific
-场景</li>
-<li>未验证高分辨率（512×512+），在该场景下 query 数量/condenser
-位置的设计空间未知</li>
-<li>VFM 泛化性有限（仅 DINOv2 + SigLIP2）</li>
-<li>极端配置下（K=32, M=12）开销显著增长</li>
-</ol>
-<p><strong><strong>未来方向</strong></strong></p>
-<ul>
-<li>自适应 query 分配（根据内容复杂度和分辨率动态调整 query 数）</li>
-<li>更高效的 condenser 设计</li>
-<li>扩展到更多 VFM 和更高分辨率</li>
-</ul>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">收获</div>
-
-<ol>
-<li>**query-based detail condensing 是优良的注入范式**：用 detached
-queries + cross-attention 从中间层提取信息，不修改 VFM
-参数也不污染语义空间，可以复用到其他 VFM-based 系统。</li>
-<li>**Shallow vs deep 的分工发现很重要**：对 visual tokenizer
-架构设计有直接指导意义——不需要所有的层都做重建增强，浅层和深层有不同角色。</li>
-<li>**计算开销极小是工程亮点**：8 个 query token + 4 个 condenser
-即可取得显著收益。在自己的 visual tokenizer
-项目中可以轻易集成此设计。</li>
-<li>**值得关注代码发布**：当代码库发布后，可以直接参考 Condenser
-的实现方式，尤其是 cross-attention + FFN 的具体配置。</li>
-<li>**可组合性**：DecQ 与 REPA 方向互补，可以考虑在 visual tokenizer
-项目中同时使用 DecQ 提升 latent 质量和 REPA 加速扩散训练。</li>
-</ol>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">代码分析</div>
-
-<p><strong><strong>0. 仓库定位与阅读状态</strong></strong></p>
-<ul>
-<li>仓库链接：<a
-href="https://github.com/Tianhang-Wang/DecQ">https://github.com/Tianhang-Wang/DecQ</a></li>
-<li>阅读状态：代码仓库存在但尚为空或刚初始化（论文提交于 2026-05-21，仅
-2 天前）</li>
-<li>本次未执行 github-repo-read 补读</li>
-<li>代码与论文关系：官方实现，待发布</li>
-</ul>
-<p>代码仓库存在，但本次未展开 github-repo-read，相关实现细节待核实。</p>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">技术实现坑点</div>
-
-<p><strong><strong>1. VFM forward
-需要同时产出中间层特征</strong></strong> DecQ 在 VFM 的 layer 0/3/6/9
-插入 condenser hook。实现时需要修改 VFM 的 forward
-以在指定层返回中间特征，而非仅返回最终输出。对于 DINOv2 这类标准
-ViT，需要：</p>
-<ul>
-<li>在 transformer block 之间插入 hook 或修改 forward 返回
-hidden_states</li>
-<li>注意内存开销：存储 4 层中间特征会增加显存占用</li>
-<li>论文使用 DINOv2-B（12 层），layer 0/3/6/9 是等间距选取的</li>
-</ul>
-<p><strong><strong>2. Cross-attention 的 gradient
-隔离</strong></strong></p>
-<ul>
-<li>Patch tokens 作为 K/V 参与 cross-attention，但梯度不能回传到 VFM
-参数</li>
-<li>实现时需要对 patch tokens 中间特征调用 `.detach()` 或
-`stop_gradient`</li>
-<li>如果遗漏这步，VFM 参数会被更新，破坏语义空间</li>
-</ul>
-<p><strong><strong>3. Noise shift 策略的适配</strong></strong></p>
-<ul>
-<li>RAE 使用 noise shift 策略处理高维 latent</li>
-<li>DecQ 的 query tokens 需要与 patch tokens 共享相同的 noise
-schedule</li>
-<li>论文明确指出："query and patch tokens share the same noise
-schedule"</li>
-<li>这意味着 noise shift 的 scale 需要同时覆盖 patch (256 tokens) 和
-query (8 tokens) 的维度</li>
-</ul>
-<p><strong><strong>4. Positional embedding 的差异</strong></strong></p>
-<ul>
-<li>Patch tokens 使用固定 2D 正弦 PE</li>
-<li>Query tokens 使用可学习 PE</li>
-<li>两者在 decoder 中拼接后通过 self-attention 交互</li>
-<li>如果 PE 类型选错（如 query 也用 2D PE），可能导致训练不稳定</li>
-</ul>
-<p><strong><strong>5. Query 数量和 Condenser
-层位置的超参敏感性</strong></strong></p>
-<ul>
-<li>K=8 是在 ViT-B 上调优的结果；换用更大的 VFM（如
-ViT-L/G）可能需要重新调整</li>
-<li>M=4 个 condenser 位置 [0,3,6,9] 对应 DINOv2-B 的 12 层；VFM
-层数不同时位置需重新选择</li>
-<li>论文 Table 6 显示 K=32 时生成 FLOPs 增加 12.9%，M=12 时参数增加
-17.1%——scaling 并非免费</li>
-</ul>
-<p><strong><strong>6. 训练 batch size 和硬件需求</strong></strong></p>
-<ul>
-<li>Tokenizer 训练：batch_size=1024, 8×H200</li>
-<li>这个规模对学术实验室不友好，可能需要 gradient accumulation
-等价实现</li>
-<li>扩散模型训练同样需要 8×H200</li>
-</ul>
-<p><strong><strong>7. AutoGuidance 的额外模型依赖</strong></strong></p>
-<ul>
-<li>最佳生成结果（FID 1.05）依赖 AutoGuidance</li>
-<li>AutoGuidance 需要一个弱模型（DiT DH-S, 60-epoch
-checkpoint）作为引导模型</li>
-<li>这意味着实际部署需要维护两个模型：强生成模型 + 弱引导模型</li>
-</ul>
-<p><strong><strong>8. Decoder 的 dual-stream
-输入处理</strong></strong></p>
-<ul>
-<li>Patch tokens 和 query tokens 通过不同的 linear 层投影到 decoder
-维度</li>
-<li>投影后拼接为 (N+K, d') 的序列</li>
-<li>只有 patch tokens 参与最终像素重建；query tokens 只在 self-attention
-中提供辅助信息</li>
-<li>如果 decoder 架构不支持变长序列的 causal attention
-masking，需要额外处理</li>
-</ul>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">Query
-机制作为 Frozen Semantic Encoder 旁路的深度分析</div>
-
-<p><strong><strong>核心设计思想</strong></strong></p>
-<p>DecQ 的 query 机制本质上是一种 /信息旁路（information bypass）/，在
-frozen VFM encoder 的主信息流之外，建立一条从 VFM 中间层到 decoder
-的辅助信息通道。</p>
-<blockquote>
-<p>类比：VFM encoder 是一条高速公路（主路），从像素直达语义。DecQ
-在高速公路的几个服务区（中间层）设置了信息采集点，用 8 辆小货车（query
-tokens）收集被沿途丢弃的货物（低层细节），然后沿一条独立的辅路送到目的地（decoder），不影响高速公路本身的通行。</p>
-</blockquote>
-<p><strong><strong>为什么是 cross-attention 而不是直接
-concat？</strong></strong></p>
-<ol>
-<li>*信息选择性*：cross-attention 允许 query tokens
-选择性地关注中间层特征的不同部分，而不是机械地拼接所有信息</li>
-<li>*维度不变*：concat 会改变 patch tokens 的维度，破坏 VFM
-语义空间的几何结构；cross-attention 保持 patch tokens 不变</li>
-<li>*梯度隔离*：cross-attention 中 patches 只做 K/V，梯度自然不回传到
-VFM；而 concat 需要额外的 gradient detach</li>
-</ol>
-<p><strong><strong>Shallow vs Deep 的分工机制</strong></strong></p>
-<p>论文的消融实验揭示了一个重要发现：</p>
-<ul>
-<li>Shallow layers (0,3) 的 condenser 提取的信息主要改善重建（PSNR,
-SSIM）</li>
-<li>Deep layers (6,9) 的 condenser 提取的信息主要改善生成（gFID）</li>
-</ul>
-<p>这符合 ViT 信息处理的层级假说：</p>
-<ul>
-<li>浅层保留更多局部/低级特征（边缘、颜色、纹理）→
-直接帮助像素级重建</li>
-<li>深层包含更多全局/高级特征（物体结构、空间关系）→
-帮助生成模型学习更好的 latent 分布</li>
-</ul>
-<p><strong><strong>对生成质量的改善机制</strong></strong></p>
-<p>有趣的是，query tokens 在生成时也被 DiT
-联合预测，而不是直接从分布中采样。这意味着：</p>
-<ol>
-<li>DiT 需要学习 patch tokens 和 query tokens 之间的条件关系</li>
-<li>这种额外的预测任务实际上充当了一种 *隐式正则化*——迫使 DiT 更好地理解
-latent space 的结构</li>
-<li>从 Table 5 的消融可以看到，去掉 query tokens 时 gFID
-下降，说明它们确实在生成中发挥了正面作用</li>
-</ol>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">对 1D Visual
-Tokenizer / VAE Tokenizer 的启发</div>
-
-<p><strong><strong>1. 直接可借鉴的设计：query-based detail
-supplement</strong></strong></p>
-<p>对于现有的 1D visual tokenizer（如 TiTok, SemTok, Instella,
-FlexTok），DecQ 的 query 机制提供了一个通用的改进思路：</p>
-<ul>
-<li>在 frozen semantic encoder 后追加 K 个 learnable query tokens，通过
-cross-attention 从 encoder 中间层提取细节</li>
-<li>这些 query tokens 不影响 semantic tokens 的语义质量，但能在 decoder
-端提供补充信息</li>
-<li>计算开销极小（+3.9% FLOPs），不会显著影响推理速度</li>
-</ul>
-<p><strong><strong>2. 与 VAE tokenizer 的组合路径</strong></strong></p>
-<p>当前 VAE tokenizer（如 SD-VAE, DC-AE）通过 encoder-decoder 架构 + KL
-正则化实现 latent 压缩。DecQ 的 query 机制可以从两个方向组合：</p>
-<p><strong>路径 A：VFM encoder + VAE decoder</strong></p>
-<ul>
-<li>用 frozen VFM 替换 VAE encoder，保留 VAE decoder</li>
-<li>在 VFM 中间层插入 DecQ condenser 补充重建细节</li>
-<li>优势：latent space 保留 VFM 语义，生成质量有保障</li>
-<li>限制：latent 维度高（768d vs VAE 的
-4-16d），扩散模型需要处理高维空间</li>
-<li>这本质上就是 RAE + DecQ 路径</li>
-</ul>
-<p><strong>路径 B：VAE encoder 内部插入 query bypass</strong></p>
-<ul>
-<li>在 VAE encoder 的中间层插入类似 DecQ 的 condenser</li>
-<li>Query tokens 在 bottleneck 处与 latent 拼接，在 decoder 端分离</li>
-<li>优势：不改变 VAE 的 latent 维度，兼容现有扩散模型</li>
-<li>限制：VAE encoder 不是 frozen 的，query 提取的信息会随 encoder
-参数更新而变化，稳定性不如 DecQ</li>
-</ul>
-<p>*路径 C：Dual-stream tokenizer*（最有前景）</p>
-<ul>
-<li>Semantic stream: frozen VFM → N 个 semantic tokens</li>
-<li>Detail stream: lightweight conv encoder → K 个 detail tokens（受
-DecQ 启发但更高效）</li>
-<li>Decoder 同时接收两个 stream</li>
-<li>优势：semantic stream 保证生成质量，detail stream 保证重建质量</li>
-<li>限制：需要设计 detail stream 的架构，确保它与 semantic stream
-的信息不重复</li>
-</ul>
-<p><strong><strong>3. 与 Cross-Attention Adapter
-的关系</strong></strong></p>
-<p>DecQ 的 condenser 本质上就是一个 cross-attention adapter：</p>
-<ul>
-<li>输入端：learnable queries</li>
-<li>交叉注意力端：frozen VFM 中间层特征</li>
-<li>输出端：condensed detail tokens</li>
-</ul>
-<p>这个结构与 IP-Adapter、cross-attention adapter
-的设计理念一致。区别在于：</p>
-<ul>
-<li>IP-Adapter 用 reference image features 作为 K/V</li>
-<li>DecQ 用 VFM 自己的中间层特征作为 K/V</li>
-<li>两者都是 "在不修改主模型的前提下注入额外信息"</li>
-</ul>
-<p><strong><strong>4. 关键限制和注意事项</strong></strong></p>
-<ol>
-<li>*高维 latent 的扩散效率*：DecQ/RAE 在 VFM 的原始维度（768d for
-ViT-B）工作，远高于传统 VAE（4-16d）。虽然 DecQ
-证明了高维空间可以生成，但训练成本显著更高（8×H200）。</li>
-<li>*仅限 class-conditional 验证*：论文只在 ImageNet class-conditional
-场景验证，未测试 text-to-image。T2I 场景下 query tokens
-是否仍然有效未知。</li>
-<li>*分辨率泛化*：仅 256×256 验证，高分辨率下 query
-数量是否需要调整未知。</li>
-<li>*与 quantization 的不兼容*：DecQ 产出 continuous query
-tokens，如果下游需要 discrete tokens（如 1D tokenizer 的 quantization
-step），需要额外的 VQ/FSQ 层，这可能引入新的信息损失。</li>
-<li>*与 AR 生成的接口问题*：1D tokenizer 通常用于 autoregressive
-生成，query tokens 在 AR 框架中如何融入（作为 prefix tokens？还是
-interleaved？）需要额外设计。</li>
-</ol>
-</div>
-
-<div class="ch fade-in">
-<div class="ch-title">后续动作</div>
+<div class="ch-label">后续动作</div>
+<div class="ch-title">可选的研究方向</div>
 
 <ul class="task-list">
-<li><label><input type="checkbox" />*追踪 DecQ 代码发布*：<a
-href="https://github.com/Tianhang-Wang/DecQ">GitHub repo</a>
-刚初始化，待代码发布后重点查看 condenser 实现和 training
-config</label></li>
-<li><label><input type="checkbox" />*实验：DecQ condenser 在 1D
-tokenizer 上的迁移*：尝试将 DecQ 的 condenser 机制嫁接到 TiTok/SemTok
-类架构，验证 query tokens 是否能改善 1D tokenizer
-的重建质量</label></li>
-<li><label><input type="checkbox" />*对比实验：DecQ vs SVG vs
-LVRAE*：在相同 backbone 下比较三种 "冻结 VFM + 注入重建信息"
-策略的效果</label></li>
-<li><label><input type="checkbox" />*关注 REPA + DecQ
-组合*：两者互补——REPA 加速 DiT 训练，DecQ 改善 tokenizer。如果能在
-visual tokenizer 项目中同时使用，可能实现双倍收益</label></li>
-<li><label><input type="checkbox" />*论文写作引用*：在 visual tokenizer
-调研报告中引用 DecQ 作为 "frozen VFM + lightweight bypass"
-范式的代表工作</label></li>
-<li><label><input type="checkbox" />*关注后续版本*：论文可能有
-camera-ready 版本，补充更高分辨率和 T2I 实验的结果</label></li>
+<li><label><input type="checkbox" checked disabled /> 完成 DecQ 论文深度解读博客发布</label></li>
+<li><label><input type="checkbox" /> 追踪 DecQ 代码发布：<a href="https://github.com/Tianhang-Wang/DecQ" target="_blank">GitHub repo</a> 已初始化，待代码发布后重点查看 condenser 实现和 training config</label></li>
+<li><label><input type="checkbox" /> 实验：将 DecQ condenser 迁移到 1D tokenizer（TiTok/SemTok），验证 query-based detail condensing 在不同 tokenizer 架构下的泛化性</label></li>
+<li><label><input type="checkbox" /> 对比实验：相同 backbone 下比较 DecQ vs SVG vs LVRAE 三种「冻结 VFM + 注入重建信息」策略</label></li>
+<li><label><input type="checkbox" /> REPA + DecQ 组合实验：两者互补——REPA 加速 DiT 训练，DecQ 改善 tokenizer latent 质量。在 visual tokenizer 项目中可尝试组合使用</label></li>
+<li><label><input type="checkbox" /> 关注后续版本：camera-ready 版本可能补充更高分辨率（512×512+）和 T2I 实验数据</label></li>
 </ul>
+
 </div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="DecQ">Wang, T., Chen, Y., Song, W., Wu, Z., Li, M., & Wang, J. (2025). DecQ: Detail-Condensing Queries for Enhanced Reconstruction and Generation in Representation Autoencoders. <em>arXiv preprint</em>.
+      <a href="https://arxiv.org/abs/2605.22777" target="_blank">arXiv:2605.22777</a>
+    </li>
+    <li data-cite-key="RAE">Wang, Y. et al. (2025). Diffusion Transformers with Representation Autoencoders.
+      <a href="https://arxiv.org/abs/2510.11690" target="_blank">arXiv:2510.11690</a>
+    </li>
+    <li data-cite-key="DINOv2">Oquab, M. et al. (2023). DINOv2: Learning Robust Visual Features without Supervision.
+      <a href="https://arxiv.org/abs/2304.07193" target="_blank">arXiv:2304.07193</a>
+    </li>
+    <li data-cite-key="REPA">Yu, S. et al. (2025). Representation Alignment for Generation. <em>ICLR 2025 Oral</em>.
+      <a href="https://openreview.net/forum?id=DJSZGGZYVi" target="_blank">OpenReview</a>
+    </li>
+    <li data-cite-key="DMVAE">(2025). Distribution Matching VAE.
+      <a href="https://arxiv.org/abs/2512.07778" target="_blank">arXiv:2512.07778</a>
+    </li>
+    <li data-cite-key="SigLIP2">SigLIP2: Multilingual Vision-Language Encoder.
+      <a href="https://arxiv.org/abs/2503.21744" target="_blank">arXiv:2503.21744</a>
+    </li>
+    <li data-cite-key="AutoGuidance">Karras, T. et al. (2025). Guiding a Diffusion Model with a Bad Version of Itself. <em>NeurIPS 2025</em>.
+      <a href="https://arxiv.org/abs/2501.13007" target="_blank">arXiv:2501.13007</a>
+    </li>
+    <li data-cite-key="SVG">SVG: Improving Reconstruction in VFM-based Latent Spaces.
+      <a href="https://arxiv.org/abs/2503.07138" target="_blank">arXiv:2503.07138</a>
+    </li>
+  </ul>
+</div>
+
 </div>
