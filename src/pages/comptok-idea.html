@@ -1,0 +1,440 @@
+---
+title: "CompTok：通过双量化器解耦语义与像素特征"
+description: "CompTok 在 TiTok 1D tokenizer 的基础上引入双量化器结构，通过控制图像 token 的比例 v 实现语义信息与细节信息的解耦。初步实验表明，增加图像 token 的比例能单调提升重建质量（LPIPS），且 v=1.00 超越 MaskGIT baseline。"
+created_at: 2026-05-30T22:01:09
+updated_at: 2026-05-30T22:08:26
+tags: ["CompTok", "TiTok", "视觉分词器", "双量化器", "研究笔记"]
+categories: ["AI"]
+subcategory: "视觉分词器"
+mathjax: true
+notify: true
+hero_title: "CompTok：通过双量化器解耦语义与像素特征"
+hero_sub: "研究思路 · 2026年5月"
+hero_tagline: "用一个 v 参数在语义理解和像素重建之间平滑过渡"
+---
+
+<!-- ============================================================ -->
+<!-- Part 1 · Introduction -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">Introduction：纯粹的码本压缩</div>
+
+  <p>我的研究方向是：<strong>以码本为核心设计高效的图像表示方法</strong>。核心思路是将图像编码为离散 token 序列，通过可学习的码本在离散空间中完成特征的紧凑表示。我关注的主要问题有两个：</p>
+
+  <ol>
+    <li><strong>如何设计码本及码本所采用的量化策略。</strong></li>
+    <li><strong>如何把原始特征信息高效地进行量化。</strong></li>
+  </ol>
+
+  <h3 class="section-title">核心困难：语义与细节的解耦</h3>
+
+  <p>然而，图像中包含了两种不同类型的信息：</p>
+
+  <ul>
+    <li><strong>语义信息</strong>：图像的内容和类别（"是什么"），如"这是一只猫"、"这是一个房间"——这类信息抽象、全局，但对像素级的精确度要求不高</li>
+    <li><strong>细节信息</strong>：图像的纹理和结构（"长什么样"），如毛发的走向、光影的渐变——这类信息具体、局部，但对重建质量至关重要</li>
+  </ul>
+
+  <p>在高效压缩的场景下，我希望在有限的 token 数量内同时保留这两类信息。但现有的单码本方案将所有 token 混在一起量化，无法区分哪部分 token 负责语义、哪部分负责细节。<strong>这导致一个两难困境：如果你追求高压缩比（少 token），语义保留好了但细节丢失严重；如果你追求细节保真度（多 token），又失去了压缩的意义。</strong></p>
+
+  <p>理想的做法是：<strong>在有限的 token 预算内，让一部分 token 专心承载语义，另一部分专心承载细节。两者在码本层面就是分离的。</strong></p>
+
+  <div class="callout"><strong>核心问题</strong>：我能不能在 TiTok 的 1D tokenizer 框架上，设计一种<strong>双量化器结构</strong>，用一个参数 v 控制"多少 token 给像素、多少给语义"，从而在压缩和保真度之间连续调节？</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 2 · TiTok 预备知识 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">TiTok：1D Tokenizer 的奠基工作</div>
+
+  <p>CompTok 建立在 TiTok 的 1D tokenizer 框架之上。TiTok (NeurIPS 2024) 的核心贡献是把传统图像 tokenizer 的 2D 空间 grid 表示（如 256×256 图像 → 16×16 = 256 个 patch-aligned tokens）替换为 <strong>1D latent sequence</strong>，将一张 256×256 图像压缩到仅 32 个离散 token。</p>
+
+  <p>TiTok 最大的优势在于，它将一张图片转成了一维的结构——这就像用一段<strong>语义稠密的"话"</strong>来描述这张图片。每个 token 不局限于固定的空间位置，而是汇聚全局信息，因此可以用更少的 token 表达图像的语义内容。但代价是，<strong>这种"高度概括"不可避免地会丢失细节信息</strong>——就像一段话可以准确描述"一只橙猫坐在窗台上"，但无法精确还原每一根毛发的走向和光影的渐变。</p>
+
+  <h3 class="section-title">TiTok 的架构</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/comptok-idea/titok-architecture.png" alt="TiTok 架构图" loading="lazy">
+    <div class="cap">图 1：TiTok 架构（来源：TiTok 论文, Fig.1）。(a) 图像重建：编码器 + VQ 量化 → 32 个离散 token → 解码器重建；(b) 图像生成：mask 部分 token → Bidirectional Transformer 预测被遮 tokens；(c) 量化细节：图像 patches + 可学习 latent tokens → ViT 编码 → Codebook 量化 → mask tokens + ViT 解码。</div>
+  </div>
+
+  {{< mermaid >}}
+graph TB
+    subgraph Enc[编码 Enc]
+        A[输入图像] --> B[Patchify]
+        B --> C[patches]
+        C --> D[ViT Encoder]
+        E[可学习的 latent tokens<br>K 个] --> D
+        D --> F[K 个 latent tokens]
+    end
+
+    subgraph VQ[量化 VQ]
+        F --> G[Codebook lookup]
+        G --> H[K 个离散索引]
+    end
+
+    subgraph Dec[解码 Dec]
+        H --> I[ViT Decoder]
+        J[mask tokens] --> I
+        I --> K[重建图像]
+    end
+  {{< /mermaid >}}
+
+  <p>关键设计在于 <strong>latent tokens</strong>：编码器输入时除了图像 patch 序列，还拼接了 K 个可学习的 token embedding。经过 ViT 的自注意力编码后，这些 latent tokens 汇聚了全局图像信息，而图像 patches 则被丢弃。解码时再将 K 个量化后的 latent tokens 与 mask tokens 一起送入 ViT 解码器，<strong>一次性 unmask 所有 mask token</strong>，在单次前向中完成整张图像的重建。</p>
+
+  <p>详细的 TiTok 综述和演进路线参见：<a href="https://gongshangzheng.github.io/titok-1d-visual-tokenizer-survey.html">TiTok 与 1D Visual Tokenizer：研究现状与演进方向</a>。</p>
+
+  <h3 class="section-title">TiTok 的局限</h3>
+
+  <p>这种语义稠密的 1D 表示本质上是在<strong>用有限的 token 容量去同时表达语义和细节两类信息</strong>。但由于所有 token 共享同一个码本，码本中的码字必须同时兼顾语义抽象和像素保真——这导致了一个两难的选择：追求语义压缩就会牺牲细节重建，追求细节保真又会稀释语义表达的密度。</p>
+
+  <p>这带来了 CompTok 的核心动机：</p>
+
+  <div class="callout"><strong>核心想法</strong>：如果我把部分 latent tokens 交给专门的「语义量化器」处理，另一部分交给「图像量化器」处理，是否能把语义信息和细节信息解耦，从而<strong>用一个可调节的比率 v 控制两种信息的比例</strong>，在压缩性能和信息完整性之间灵活权衡？</div>
+
+  <p>换句话说，CompTok 希望将 TiTok 的<strong>单码本、全压缩</strong>范式扩展为<strong>双量化器、可调节</strong>范式——不是简单地压缩图像，而是有选择地保留不同类型的信息。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 3 · 模型架构 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">CompTok 模型架构</div>
+
+  CompTok 的核心是一个双量化器结构——这是我基于当前想法设计的<strong>最简单的基线架构</strong>：
+
+  <ol>
+    <li>输入图像经过 <strong>Patchify</strong> 得到 $N$ 个 patches，并额外添加 $M$ 个可学习的 semantic tokens</li>
+    <li>所有 $N + M$ 个 tokens 一起通过 <strong>共享 Encoder</strong>，利用自注意力让语义 token 与图像 token 相互交换信息</li>
+    <li>Encoder 输出的 tokens 分为两路：
+      <ul>
+        <li>$N$ 个 <strong>image tokens</strong> → <strong>Image Quantizer</strong>（像素级码本）</li>
+        <li>$M$ 个 <strong>semantic tokens</strong> → <strong>Semantic Quantizer</strong>（语义级码本）</li>
+      </ul>
+    </li>
+    <li>两组量化后的 tokens 拼接，送入 <strong>Decoder</strong> 重建图像</li>
+  </ol>
+
+  {{< mermaid >}}
+graph TB
+    subgraph Enc[编码 Enc]
+        A[输入图像] --> B[Patchify]
+        B --> C[patches]
+        C --> D[Shared ViT Encoder]
+        E[semantic tokens<br>M 个] --> D
+    end
+
+    D --> F
+    D --> G
+
+    subgraph Img[图像量化]
+        F[image tokens N 个] --> H[Random Mask<br>visible 比例 = v]
+        H --> I[Image Quantizer]
+    end
+
+    subgraph Sem[语义量化]
+        G[semantic tokens M 个] --> J[Semantic Quantizer]
+    end
+
+    subgraph Dec[解码 Dec]
+        I --> K
+        J --> K[Concat]
+        K --> L[Decoder]
+        L --> M[重建图像]
+    end
+  {{< /mermaid >}}
+
+  <h3 class="section-title">v 参数：通过随机 mask 控制压缩率</h3>
+
+  在训练和推理过程中，为了能让模型以不同的 <strong>bits per pixel (bpp)</strong> 工作，我对 image tokens 施加一次随机 mask。参数 <strong>v</strong> 表示 mask 后的 <strong>visible 比例</strong>：
+
+  $$v = \frac{N_{\text{visible}}}{N_{\text{total}}}$$
+
+  其中 $N_{\text{total}}$ 是 image tokens 的总数，$N_{\text{visible}}$ 是随机 mask 后保留的 image token 数量。当 $v = 1.00$ 时，所有 image tokens 都可见，重建质量最高但 bpp 最大；当 $v = 0.00$ 时，所有 image tokens 都被 mask 掉，只有 semantic tokens 参与重建，bpp 最小但细节损失最大。
+
+  <div class="callout"><strong>核心思路</strong>：通过调节 v，我可以<strong>在压缩率和重建质量之间连续调节</strong>。v 越大，可见的 image tokens 越多，bits per pixel 越高，细节信息保留越完整；v 越小，压缩率越高，但模型只能依赖 semantic tokens 恢复图像。</div>
+
+  <p>需要强调的是，这只是一个<strong>最基本、最朴素的设计</strong>——我没有对两个码本之间的关系做任何特殊的设计，也没有引入额外的对齐或交互机制。后续实验将检验：即使在这种最简单的双量化器设计下，语义-细节解耦是否至少<strong>不会损害</strong>重建效果？以及这种设计能否让 TiTok 支持<strong>单模型多 bpp</strong> 的灵活压缩？</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 4 · 实验验证 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">初步验证：最简单的解耦，至少不损害</div>
+
+  为了验证这种最简单的双量化器解耦是否可行——或者说，<strong>至少不会损害</strong>重建质量——我进行了一组 v 参数扫描实验。固定模型结构，只改变 image tokens 的随机 mask 比例。使用 LPIPS 作为重建质量的评估指标。
+
+  更重要的是，通过这种设计，<strong>TiTok 首次具备了用一个模型处理不同 bpp 下图像 token-based 压缩的能力</strong>：只需要在推理时调节 v，就能在压缩率和重建质量之间连续切换，无需为每个 bpp 训练独立的模型。
+
+  <div class="photo">
+    <img src="assets/media/images/comptok-idea/lpips-v-sweep.png" alt="不同 v 值下的 LPIPS 曲线" loading="lazy">
+    <div class="cap">图 2：Image token mask 后的 visible 比例 v 对 LPIPS 的影响。随着 v 从 0 增大到 1，LPIPS 单调下降，重建质量持续提升。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>实验配置</th><th>v（mask 后 visible 比例）</th><th>LPIPS↓</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>maskgit</code></td><td>—</td><td>0.1963</td><td>标准 VQ baseline</td></tr>
+        <tr><td><code>mtok/s1/v~0.00</code></td><td>0.00</td><td>0.3016</td><td>所有 image tokens 被 mask，仅语义 token</td></tr>
+        <tr><td><code>mtok/s1/v~0.25</code></td><td>0.25</td><td>0.2436</td><td>25% image tokens 可见</td></tr>
+        <tr><td><code>mtok/s1/v~0.50</code></td><td>0.50</td><td>0.2163</td><td>50% image tokens 可见</td></tr>
+        <tr><td><code>mtok/s1/v~1.00</code></td><td>1.00</td><td><strong>0.1926</strong></td><td>全部 image tokens 可见</td></tr>
+        <tr><td><code>titok/s1</code></td><td>—</td><td>0.3433†</td><td>1D Tokenizer（仅 71k 步）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="font-size:0.9em; color:var(--text-muted);">† <code>titok/s1</code> 仅训练到 71k 步，未完全收敛。</p>
+
+  <h3 class="section-title">关键发现</h3>
+
+  <ol>
+    <li><strong>解耦至少不损害重建</strong>：v = 1.00（全图像 token）时，双量化器结构的 LPIPS = 0.1926，<strong>略优于</strong>标准 MaskGIT baseline 的 0.1963。说明简单地分出独立语义量化器并没有破坏重建能力，反而可能因共享 Encoder 的信息交换而微幅提升。</li>
+    <li><strong>单调的率失真曲线</strong>：v 从 0.00 → 0.25 → 0.50 → 1.00，LPIPS 从 0.3016 单调下降到 0.1926。v 可以作为<strong>单个连续参数</strong>控制整个率失真曲线。</li>
+    <li><strong>单模型覆盖多 bpp</strong>：仅需训练一个模型，推理时通过调节 v 即可在 <strong>0 ~ 最大 bpp</strong> 之间切换——这是传统固定 token 数量的 tokenizer 做不到的。</li>
+    <li><strong>完全 mask 的退化下限</strong>：v = 0.00 时 LPIPS = 0.3016，比 MaskGIT 的 0.1963 差距明显——这本身就是合理的：语义 token 本就不以重建为目的，丢失像素信息是预期的行为。</li>
+  </ol>
+
+  <h3 class="section-title">失败的尝试：多步推理的不可行性</h3>
+
+  <p>在完成 v 参数扫描后，我曾希望更进一步——在推理阶段通过<strong>多步推理</strong>来逐步优化生成效果。但直到开始写代码才发现，这在 TiTok 的框架下是<strong>不可能的</strong>。</p>
+
+  <p>原因在于 TiTok 的两阶段训练策略：</p>
+  <ul>
+    <li><strong>第一阶段</strong>：以预训练好的 MaskGIT-VQGAN 的码字作为训练目标，通过 CE loss 训练 tokenizer</li>
+    <li><strong>第二阶段</strong>：直接训练<strong>一步重建</strong>——latent tokens + mask tokens → 一次性输出完整图像</li>
+  </ul>
+
+  <p>由于第二阶段训练的存在，decoder 已经失去了对<strong>逐步重建被 mask 的码字</strong>的能力——它只学会了"看到 mask 就一次性补全"。要想实现推理时的多步迭代优化，必须<strong>抛弃第二阶段训练</strong>，但这又意味着 decoder 永远学不会高质量重建。</p>
+
+  <h3 class="section-title">CompACT Tokenizer：相同的思路，已经做出来了</h3>
+
+  <p>后来我发现，<strong>CompACT Tokenizer</strong>（Kim et al., 2026）基本上已经把我的想法实现了。它的实现思路与我几乎完全一致，但已经先做出来了。站内文章：<a href="./compact-tokenizer-2026.html">CompACT Tokenizer：面向决策时规划的紧凑潜空间世界模型</a>。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/compact-tokenizer-2026/fig2_user.png" alt="CompACT Tokenizer 架构细节" loading="lazy">
+    <div class="cap">图 3：CompACT Tokenizer 架构细节（来源: Kim et al., 2026, Fig.2）。训练时只更新 Latent Resampler 和 D<sub>compact</sub>；E<sub>ψ</sub>（VQGAN）产生掩码目标 token，D<sub>ψ</sub> 仅在推理时用于像素重建——这就是<strong>舍弃了训练 VQGAN Decoder 换来的</strong>。</div>
+  </div>
+
+  <p>CompACT 的核心设计：</p>
+  <ul>
+    <li><strong>Encoder 解耦</strong>：使用冻结的 DINOv3 提取语义特征，通过 Latent Resampler（交叉注意力）聚合为少量紧凑 token</li>
+    <li><strong>生成式解码</strong>：引入 MaskGIT-VQGAN 的 latent tokens 作为中间表示，compact token 通过生成式解码（而非直接重建）恢复像素信息——但因为面向机器人领域，它<strong>不需要重建细节</strong>，只要语义信息足够做决策就行</li>
+    <li><strong>舍弃 VQGAN Decoder 训练</strong>：训练时只更新 Latent Resampler 和 D<sub>compact</sub>，VQGAN 的编码器 E<sub>ψ</sub> 只用于产生掩码目标 token，解码器 D<sub>ψ</sub> 仅在推理时固定使用——这是"抛弃第二阶段训练"想法的工程化实现</li>
+  </ul>
+
+  <div class="callout"><strong>区别</strong>：CompACT 面向<strong>机器人领域</strong>的决策时规划——它只需要语义理解，不需要重建细节。而我的目标是<strong>图像压缩</strong>——需要用最少的 bits 保留尽可能多的语义与细节信息。目标不同，意味着技术路线的选择也会不同：CompACT 可以放弃重建质量换取极致压缩，而我需要在压缩率和重建质量之间找到平衡。</div>
+
+  <div class="callout"><strong>结论</strong>：即使是最简单的双量化器解耦设计，<strong>至少不会损害重建效果</strong>（v=1.00 甚至微幅优于 baseline），并且赋予了 TiTok <strong>单模型多 bpp 连续调节</strong>的能力——这是传统固定 token 数量的 tokenizer 难以实现的。</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 5 · 双流编码器 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">双流编码器：语义与细节的源头分离</div>
+
+  <p>当前 CompTok 的最简设计暴露了两个主要局限：</p>
+
+  <ol>
+    <li><strong>Encoder 未解耦</strong>：用一个共享 Encoder 同时提取语义和图像特征，两种不同性质的信息在编码阶段就混合在一起</li>
+    <li><strong>Quantizer 之间缺少对齐</strong>：两个码本是完全独立量化的，它们之间没有任何交互或对齐机制来协调各自承担的信息量，如何分配完全由 v 硬编码</li>
+  </ol>
+
+  <p>更先进的基于 token 的方法（TokenFlow、SemHiTok）在 Encoder 和 Quantizer 层面都做出了解耦设计——但它们的目标是统一理解与生成 (UMM)，而非压缩。CompTok 可以从中借鉴思路，用于图像压缩。</p>
+
+  <h3 class="section-title">TokenFlow：双编码器 + 共享映射</h3>
+
+  <p>TokenFlow (ByteDance, CVPR 2025) 的核心在于 Encoder 端的彻底解耦。完整解读见站内文章：<a href="./tokenflow-2024.html">TokenFlow：双码本共享映射实现统一多模态理解与生成</a>。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/tokenflow-2024/pipeline.png" alt="TokenFlow 整体架构图" loading="lazy">
+    <div class="cap">TokenFlow 整体架构（来源：TokenFlow, Fig.3）。双编码器分别提取语义和像素特征，通过共享映射机制联合量化为统一索引。</div>
+  </div>
+
+  <p>TokenFlow 在 Encoder 端的设计要点：</p>
+  <ul>
+    <li><strong>Semantic Encoder</strong>：从预训练的 CLIP/SigLIP 初始化，<strong>保持 unfrozen</strong> 以持续适应 tokenizer 训练</li>
+    <li><strong>Pixel Encoder</strong>：标准的卷积编码器，专注低层视觉特征</li>
+    <li><strong>共享映射</strong>：两个码本使用相同的索引映射，保证同一位置产生一致的 code 索引——这建立了一种<strong>隐式的量化器耦合</strong></li>
+  </ul>
+
+  <h3 class="section-title">SemHiTok：冻结语义编码器 + 层级码本</h3>
+
+  <p>SemHiTok (中山大学 × 华为, ICLR 2026) 则选择了另一条路线——冻结语义编码器，在码本端做层级分解。完整解读见站内文章：<a href="./semhitok-2025.html">SemHiTok：语义引导的层级码本</a>。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/semhitok-2025/fig2-framework.png" alt="SemHiTok 整体架构图" loading="lazy">
+    <div class="cap">SemHiTok 整体架构（来源：SemHiTok, Fig.2）。语义分支使用冻结的 SigLIP，SGHC 为每个语义 code 分配专属的 pixel sub-codebook。</div>
+  </div>
+
+  <p>SemHiTok 的设计要点：</p>
+  <ul>
+    <li><strong>冻结的语义编码器</strong>（SigLIP）：与 TokenFlow 的 unfrozen 策略相反——SemHiTok 认为冻结才能保持语义空间的稳定性</li>
+    <li><strong>SGHC 层级码本</strong>：先确定语义 code，再在对应 sub-codebook 内量化像素——这是 Quantizer 端的一种<strong>显式的层级解耦</strong></li>
+    <li><strong>分阶段训练</strong>：先训练语义码本，冻结后再训练像素 sub-codebooks，避免梯度冲突</li>
+  </ul>
+
+  <h3 class="section-title">DecQ：反其道而行之，从语义模型浅层提取细节</h3>
+
+  <div class="photo">
+    <img src="assets/media/images/comptok-idea/decq-architecture.png" alt="DecQ 整体架构图" loading="lazy">
+    <div class="cap">DecQ 架构（来源：DecQ, Fig.2）。冻结 VFM 编码器（DINOv2），detail-condensing queries 通过 cross-attention 从 VFM 的中间特征中提取细节信息，解码器同时使用深层语义特征和 queries 捕获的浅层细节重建图像。</div>
+  </div>
+
+  <p>与 SemHiTok 冻结语义编码器、只用深层特征的思路不同，<strong>DecQ</strong>（Detail-Condensing Queries）走了完全相反的路线——它同样冻结预训练视觉基础模型（VFM），但通过 <strong>cross-attention</strong> 从 VFM 的 <strong>中间层/浅层</strong> 提取细粒度信息来补充深层语义的缺失。</p>
+
+  <p>DecQ 的核心发现是：</p>
+  <ul>
+    <li>VFM 的<strong>深层</strong>特征包含丰富语义但丢失了颜色、纹理等低层细节</li>
+    <li>VFM 的<strong>浅层</strong>特征保留了图像细节但语义不够抽象</li>
+    <li>通过一组可学习的 detail-condensing queries 对 VFM 各层做 cross-attention，可以同时获取<strong>深层语义 + 浅层细节</strong>，且不修改 VFM 的任何参数</li>
+  </ul>
+
+  <p>具体来说，DecQ 在冻结的 VFM 编码器（如 DINOv2）上引入少量（仅 8 个）可学习的查询向量，通过 cross-attention 从 VFM 的中间特征图中提取细节信息。这些查询的预测被<strong>联合</strong>到生成过程中——不仅用于重建，还参与扩散去噪——从而在不破坏语义空间的条件下同时改善了重建和生成质量：PSNR 从 19.13 dB 提升到 22.76 dB，且生成训练加速 3.3×。</p>
+
+  <div class="callout"><strong>对 CompTok 的启发</strong>：DecQ 表明，<strong>语义和细节信息的分离不一定发生在编码器或量化器层面——也可以发生在特征提取的不同深度层面</strong>。如果 CompTok 采用双编码器设计，其中一个编码器聚焦深层语义（类似 DecQ 的做法），另一个专门从浅层捕获细节，两者通过 cross-attention 建立联系，可能比简单地分割 token 更加灵活。</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 6 · Quantizer 的改进 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">Quantizer 的改进：从查表到隐式码本</div>
+
+  <h3 class="section-title">MagVIT-v2：Lookup-Free Quantization (LFQ)</h3>
+
+  <p>除了 Encoder 和码本耦合策略的差异，最近的工作在 <strong>Quantizer 本身的形式</strong> 上也做出了根本性的改变——从基于查找的 VQ 转向 <strong>lookup-free 的二元量化</strong>。站内文章：<a href="./magvit2-tokenizer.html">MAGVIT-v2：Lookup-Free Quantization 与因果 tokenizer</a>、<a href="./infinity-bitwise-ar.html">Infinity：Bitwise AR 与无限词表</a>。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/magvit2/fig2-causal-arch.png" alt="MAGVIT-v2 三种因果 tokenizer 设计方案" loading="lazy">
+    <div class="cap">MAGVIT-v2 的三种因果 tokenizer 架构对比（来源: Yu et al., 2024, Fig.2）。 (a) C-ViViT：空间 transformer + 因果时序 transformer；(b) 混合方案：3D CNN 窗口 + 因果 transformer；(c) 因果 3D CNN——MAGVIT-v2 的最终选择。实验表明（Table 5a）<strong>因果 3D CNN 效果最佳</strong>，作为最终方案被采用。</div>
+  </div>
+
+  <p><strong>MAGVIT-v2 (LFQ)</strong> 的核心创新是 Lookup-Free Quantization。传统 VQ 需要计算 latent vector 与所有码本的 L2 距离（O(Kd) 复杂度），LFQ 则将码本空间分解为 log₂K 个独立二元变量——每维只取 -1 或 +1。量化的唯一操作是 <code>sign()</code> 函数，复杂度 O(d)。这使得词表可以轻松扩展到 2^18 = 262K 而计算成本几乎不变。</p>
+
+  <h3 class="section-title">Infinity：Binary Spherical Quantization (BSQ)</h3>
+
+  <p>Infinity 在 LFQ 的基础上进一步做了两个重要的扩展：</p>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity-bitwise-2024/framework_new.png" alt="Infinity 整体架构" loading="lazy">
+    <div class="cap">Infinity 的 BSQ 量化器。编码器输出经 L2 归一化后做 sign() 量化，每个维度输出 -1 或 +1。d=64 时词表 V_d = 2^64，且通过 BSC 机制具备自纠错能力。</div>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/infinity-bitwise-2024/bit_classifier_new.png" alt="传统分类器 vs IVC" loading="lazy">
+    <div class="cap">Infinity 的 IVC（Infinite-Vocabulary Classifier）将传统 V_d 路多分类分解为 d 个独立的二分类器。对于 d=32（词表 4.3B），传统分类器需 8.8 万亿参数，IVC 仅需 0.13M——缩减比达 6,770 万倍。</div>
+  </div>
+  <ul>
+    <li><strong>Binary Spherical Quantization (BSQ)</strong>：在 LFQ 的基础上引入 L2 归一化，编码器输出在归一化后做 sign() 量化。d=64 时词表达到 2^64，重建 rFID 首次超越连续 SD VAE</li>
+    <li><strong>Bitwise Self-Correction (BSC)</strong>：训练中随机翻转部分 bits 模拟推理错误，迫使模型学会识别和纠正错误。这个机制天然适合<strong>抗噪压缩</strong>场景——在压缩传输过程中 bits 可能翻转，BSC 学习的正是这种纠错能力</li>
+    <li><strong>直接输出二进制编码</strong>：BSQ 的每个维度输出为 -1 或 +1，等价于二进制 0/1。这意味着压缩后的表示本身就是 bitstream，无需额外的熵编码</li>
+  </ul>
+
+  <div class="callout"><strong>对 CompTok 的启发</strong>：LFQ/BSQ 的 lookup-free 特性将量化从 O(Kd) 的查表操作简化为 O(d) 的符号函数——<strong>不再依赖显式的码本查找</strong>，但码本依然存在（由 d 个二元维度定义的隐式空间）。如果我把这种 Quantizer 应用于 CompTok 的双量化器结构，Image Quantizer 和 Semantic Quantizer 可以各自输出不同长度的二进制编码，通过编码长度（bit 数）天然控制信息容量，而不需要显式的码本容量分配。</div>
+
+  <h3 class="section-title">EF-LIC：无熵编码的固定长度量化</h3>
+
+  <p><a href="./ef-lic-2026.html">EF-LIC</a>（清华团队, 2026）从一个完全不同的角度切入 Quantizer 的设计——它关心的不是量化后的 tokens 如何表示语义或细节，而是<strong>量化后的索引如何变成比特流</strong>。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/ic/ef-lic-2026/framework.png" alt="EF-LIC 整体架构" loading="lazy">
+    <div class="cap">EF-LIC 架构：将 latent 分组后使用不同容量的 RVQ 量化，各组的索引分布趋近均匀，可直接拼接为固定长度比特流，跳过熵编码（来源：<a href="./ef-lic-2026.html">EF-LIC</a>, Fig.1）</div>
+  </div>传统 LIC 依赖熵编码（如 rANS）将非均匀分布的索引映射为紧凑比特流，但熵编码的串行控制流难以并行化，成为延迟瓶颈。EF-LIC 的核心洞察是：<strong>如果量化器本身能产生均匀分布的索引，熵编码就不再必要</strong>。它通过残差向量量化（RVQ）和理论证明（三个定理）说明，固定长度编码可以达到与熵编码几乎相同的压缩性能。</p>
+
+  <p>EF-LIC 的实践方案是：将编码器输出分组，前几组用大码本（1024），后几组用小码本（128），每组使用 RVQ 残差量化。由于每组索引分布趋近均匀，可以直接用固定长度编码拼接成比特流，无需任何熵编码。最终实现 67.86% BD-rate 降低，编码加速 10 倍，解码 67 倍。</p>
+
+  <div class="callout"><strong>对 CompTok 的启发</strong>：EF-LIC 从另一个维度回答了"怎样才能更高效地压缩"——不是关注 token 本身的语义/细节分工，而是关注<strong>量化结果的分布形态</strong>。如果 CompTok 的 Semantic Quantizer 和 Image Quantizer 都能输出近似均匀分布的索引（通过 RVQ 或 LFQ），那么整套系统的比特流可以直接通过固定长度编码或二进制拼接完成，彻底跳过熵编码步骤。</div>
+
+  <p>回顾三个 Part 的核心启示：在 Encoder 端，TokenFlow 的双编码器、SemHiTok 的冻结编码器、DecQ 的跨层特征提取，分别代表了三种不同的解耦策略；在 Quantizer 端，LFQ 和 BSQ 将量化从 O(Kd) 的查表简化为 O(d) 的符号函数，而 EF-LIC 则从编码端证明了固定长度量化的理论可行性。它们共同指向一个方向：<strong>更简单、更可并行化的量化与编码方案，正在逐步取代传统的熵编码 + VQ 组合</strong>。CompTok 可以在这些思路之上，探索语义-细节分离与无熵编码的统一框架。</p>
+
+  <div class="callout"><strong>CompTok 的目标</strong>：借鉴这些解耦思路，用于<strong>图像压缩</strong>——用尽可能少的 bits，保留尽可能多的语义与细节信息，并在两者之间取得平衡。</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 7 · 后续计划 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">后续工作与开放问题</div>
+
+  <h3 class="section-title">待完成的实验</h3>
+
+  <ul>
+    <li><strong>与 SemHiTok / TokenFlow 的系统对比</strong>：在相同分辨率、相同 LLM backbone 下比较 rFID 和理解指标</li>
+    <li><strong>v 的连续控制</strong>：如果 v 可以在推理时调节，CompTok 将成为一个"可伸缩"的统一 tokenizer——理解任务用低 v，生成任务用高 v</li>
+  </ul>
+
+  <h3 class="section-title">开放问题</h3>
+
+  <ul>
+    <li><strong>两个码本的容量分配</strong>：Image Quantizer 和 Semantic Quantizer 各自需要多少码字？码本容量是否能够随 v 动态调整？（如果使用的是 LFQ 的话。</li>
+    <li><strong>共享 Encoder vs 独立 Encoder</strong>：当前设计使用共享 Encoder，让两组 token 通过自注意力交换信息。如果换成独立 Encoder，效果应该会更好？</li>
+    <li><strong>v 与任务的适配</strong>：是否可以在训练中引入一个可学习的门控，让模型自动决定每个 image token 的 mask 策略？</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<!-- 结语 · 反思与方向 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">结语</div>
+  <div class="ch-title">反思与方向</div>
+
+  <p>说实话，虽然做了很久的实验，但是因为一直不知道应该如何去做，所以进展其实基本等于没有。目前 CompTok 的研究还处于一个相当初级的阶段。完成 v 参数扫描实验后，对于接下去怎么走，我其实心里也有些迷茫。</p>
+
+  <h3 class="section-title">Encoder 的选择</h3>
+
+  <p>看了最新的论文（TokenFlow、SemHiTok、DecQ），直觉上 Encoder 可能确实需要拆成两个独立的模块——一个负责语义，一个负责细节。但有一个现实的问题：<strong>图像压缩需要考虑时间成本和计算成本</strong>。双编码器意味着近两倍的编码计算量，对于压缩场景来说能够接受吗？Encoder 的解耦到底值不值得付出这个代价？</p>
+
+  <h3 class="section-title">Quantizer 的选择</h3>
+
+  <p>Quantizer 层面，LFQ 的方向看起来很有吸引力——它不仅消除了查表操作、直接输出二进制编码，而且可以通过编码长度（bit 数）天然控制信息容量。如果把 CompTok 的双量化器结构换成 LFQ，v 的含义可能不再是 token 级别的 mask，而是 <strong>bit 级别的 mask</strong>——对于同一个 token 的不同 bits，可以分别控制哪些 bits 可见、哪些被 mask。这使得压缩率的调节更加细粒度，也更接近率失真优化的本质。</p>
+
+  <h3 class="section-title">一个可能的新方向：抗噪压缩</h3>
+
+  <p>坦率地说，我在目前的研究方向上积累了太多的失败感，而且思路有些固化了，并且我感觉做到现在基本上什么像样的成果也没有。继续沿着原来的思路做，可能也没办法提出真正有效的想法。而且看了这些最新的进展，我感觉一方面我不知道怎么改进，另一方面我现在的进度也完全追不上。我在想，是不是可以转换一下思路，直接放弃目前的思路，转做新的方向。</p>
+
+  <div class="callout"><strong>新方向</strong>：基于 LFQ 的高噪声环境下的图像压缩与传输。LFQ 的 BSC（Bitwise Self-Correction）机制天然适合信道中存在比特翻转的场景——在压缩传输过程中，bits 可能因噪声而翻转，而 BSC 学习的正是这种纠错能力。这在无线传输、低信噪比场景下可能有实际价值。</div>
+
+  <p>这个方向的核心问题变为：如何在编码端以最少的 bits 保留语义和细节信息，使得在传输过程中即使部分 bits 受损，解码端仍能恢复出可用的图像——而不是追求极致的无损重建。这可能是一条更务实、也更有实际应用场景的路线。</p>
+
+  <p>但这只是现阶段的一些不成熟的想法。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- 参考来源 -->
+<!-- ============================================================ -->
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2503.06764" target="_blank">SemHiTok: A Unified Image Tokenizer via Semantic-Guided Hierarchical Codebook (Chen et al., ICLR 2026)</a></li>
+    <li><a href="https://arxiv.org/abs/2412.03069" target="_blank">TokenFlow: Unified Image Tokenizer for Multimodal Understanding and Generation (Qu et al., 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2409.04429" target="_blank">VILA-U: Towards a Unified Foundation Model for Visual Language and Generation (Wu et al., 2024c)</a></li>
+    <li><a href="https://arxiv.org/abs/2404.16061" target="_blank">Janus: Decoupling Visual Encoding for Unified Multimodal Understanding and Generation (Wu et al., 2024a)</a></li>
+    <li><a href="https://arxiv.org/abs/2503.07605" target="_blank">SDE: Semantic-Decoupled Encoder for Unified Image Tokenizer (Xie et al., 2025)</a></li>
+    <li><a href="https://arxiv.org/abs/2112.10741" target="_blank">MaskGIT: Masked Generative Image Transformer (Chang et al., CVPR 2022)</a></li>
+    <li><a href="https://arxiv.org/abs/2401.05072" target="_blank">TiTok: 1D Tokenizer for Efficient Image Generation (Yu et al., 2024)</a></li>
+  </ul>
+</div>
