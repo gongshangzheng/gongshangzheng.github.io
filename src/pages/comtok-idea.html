@@ -108,7 +108,7 @@ graph TB
   <div class="ch-label">Part 3</div>
   <div class="ch-title">ComTok 模型架构</div>
 
-  ComTok 的核心是一个双量化器结构，流程如下：
+  ComTok 的核心是一个双量化器结构——这是我们基于当前想法设计的<strong>最简单的基线架构</strong>：
 
   <ol>
     <li>输入图像经过 <strong>Patchify</strong> 得到 $N$ 个 patches，并额外添加 $M$ 个可学习的 semantic tokens</li>
@@ -119,16 +119,22 @@ graph TB
         <li>$M$ 个 <strong>semantic tokens</strong> → <strong>Semantic Quantizer</strong>（语义级码本）</li>
       </ul>
     </li>
-    <li>两组量化后的 tokens 在通道/序列维度<strong>拼接</strong>，送入 <strong>Decoder</strong> 重建图像</li>
+    <li>两组量化后的 tokens 拼接，送入 <strong>Decoder</strong> 重建图像</li>
   </ol>
 
-  其中，<strong>图像 token 的比例 v</strong> 定义为：
+  <div class="callout"><strong>与 SemHiTok 的区别</strong>：SemHiTok 的 SGHC 是串行层级结构——先确定语义 code，再在其子空间内量化像素。ComTok 的量化是<strong>并行的</strong>——两组 token 各自量化后拼接，通过共享 Encoder 的自注意力建立联系。</div>
 
-  $$v = \frac{N_{\text{image}}}{N_{\text{image}} + N_{\text{semantic}}}$$
+  <h3 class="section-title">v 参数：通过随机 mask 控制压缩率</h3>
 
-  当 $v = 0$ 时，所有 tokens 都通过 Semantic Quantizer，模型退化为纯语义 tokenizer；当 $v = 1$ 时，所有 tokens 都通过 Image Quantizer，模型退化为标准 VQGAN/MaskGIT。通过调节 $v$，ComTok 可以在语义信息和像素信息之间连续插值。
+  在训练和推理过程中，为了能让模型以不同的 <strong>bits per pixel (bpp)</strong> 工作，我们对 image tokens 施加一次随机 mask。参数 <strong>v</strong> 表示 mask 后的 <strong>visible 比例</strong>：
 
-  <div class="callout"><strong>与 SemHiTok 的区别</strong>：SemHiTok 的 SGHC 是串行层级结构——先确定语义 code，再在其子空间内量化像素。ComTok 的量化是<strong>并行的</strong>——两组 token 各自量化后拼接，通过 Encoder 的共享自注意力建立联系。</div>
+  $$v = \frac{N_{\text{visible}}}{N_{\text{total}}}$$
+
+  其中 $N_{\text{total}}$ 是 image tokens 的总数，$N_{\text{visible}}$ 是随机 mask 后保留的 image token 数量。当 $v = 1.00$ 时，所有 image tokens 都可见，重建质量最高但 bpp 最大；当 $v = 0.00$ 时，所有 image tokens 都被 mask 掉，只有 semantic tokens 参与重建，bpp 最小但细节损失最大。
+
+  <div class="callout"><strong>核心思路</strong>：通过调节 v，我们可以<strong>在压缩率和重建质量之间连续调节</strong>。v 越大，可见的 image tokens 越多，bits per pixel 越高，细节信息保留越完整；v 越小，压缩率越高，但模型只能依赖 semantic tokens 恢复图像。</div>
+
+  <p>这是一个最基本的设计——它也暴露了当前架构的<strong>核心问题</strong>：image tokens 和 semantic tokens 在码本层面是独立量化的，但它们之间如何配合、各自应该承担多少信息量，完全由 v 这个超参数硬编码，而不是通过端到端学习来决定的。这引导我们接下来需要探索的问题：如何设计码本及量化策略，让语义信息和细节信息能<strong>自适应地</strong>分配到两个码本中。</p>
 </div>
 
 <!-- ============================================================ -->
@@ -139,24 +145,24 @@ graph TB
   <div class="ch-label">Part 4</div>
   <div class="ch-title">初步验证：v 对重建质量的影响</div>
 
-  为了验证双量化器的可行性，我们首先进行了一组 v 参数扫描实验，固定模型结构，只改变图像 token 的比例。使用 LPIPS 作为重建质量的评估指标。
+  为了验证双量化器的可行性，我们首先进行了一组 v 参数扫描实验，固定模型结构，只改变 image tokens 的随机 mask 比例。使用 LPIPS 作为重建质量的评估指标。
 
   <div class="photo">
     <img src="assets/media/images/comtok-idea/lpips-v-sweep.png" alt="不同 v 值下的 LPIPS 曲线" loading="lazy">
-    <div class="cap">图 1：Image token 比例 v 对 LPIPS 的影响。随着 v 从 0 增大到 1，LPIPS 单调下降，重建质量持续提升。</div>
+    <div class="cap">图 2：Image token mask 后的 visible 比例 v 对 LPIPS 的影响。随着 v 从 0 增大到 1，LPIPS 单调下降，重建质量持续提升。</div>
   </div>
 
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>实验配置</th><th>v（Image Token 比例）</th><th>LPIPS↓</th><th>对比 baseline</th></tr>
+        <tr><th>实验配置</th><th>v（mask 后 visible 比例）</th><th>LPIPS↓</th><th>说明</th></tr>
       </thead>
       <tbody>
         <tr><td><code>maskgit</code></td><td>—</td><td>0.1963</td><td>标准 VQ baseline</td></tr>
-        <tr><td><code>mtok/s1/v~0.00</code></td><td>0.00</td><td>0.3016</td><td>纯语义 token</td></tr>
-        <tr><td><code>mtok/s1/v~0.25</code></td><td>0.25</td><td>0.2436</td><td>25% 图像 token</td></tr>
-        <tr><td><code>mtok/s1/v~0.50</code></td><td>0.50</td><td>0.2163</td><td>50% 图像 token</td></tr>
-        <tr><td><code>mtok/s1/v~1.00</code></td><td>1.00</td><td><strong>0.1926</strong></td><td>100% 图像 token</td></tr>
+        <tr><td><code>mtok/s1/v~0.00</code></td><td>0.00</td><td>0.3016</td><td>所有 image tokens 被 mask，仅语义 token</td></tr>
+        <tr><td><code>mtok/s1/v~0.25</code></td><td>0.25</td><td>0.2436</td><td>25% image tokens 可见</td></tr>
+        <tr><td><code>mtok/s1/v~0.50</code></td><td>0.50</td><td>0.2163</td><td>50% image tokens 可见</td></tr>
+        <tr><td><code>mtok/s1/v~1.00</code></td><td>1.00</td><td><strong>0.1926</strong></td><td>全部 image tokens 可见</td></tr>
         <tr><td><code>titok/s1</code></td><td>—</td><td>0.3433†</td><td>1D Tokenizer（仅 71k 步）</td></tr>
       </tbody>
     </table>
@@ -167,12 +173,12 @@ graph TB
   <h3 class="section-title">关键发现</h3>
 
   <ol>
-    <li><strong>图像 token 越多，重建越好</strong>：v 从 0.00 → 0.25 → 0.50 → 1.00，LPIPS 从 0.3016 单调下降到 0.1926。这一趋势清晰且稳定，说明 image tokens 对重建的贡献是<strong>累加的</strong>。</li>
-    <li><strong>v = 1.00 超越 MaskGIT baseline</strong>：虽然 v = 1.00 相当于全图像 token 配置，但联合训练语义 token 的 Encoder 可能反而促进了图像特征的学习（通过共享自注意力的信息交换）。</li>
-    <li><strong>全语义（v = 0.00）损失最大</strong>：纯语义 tokenizer 的 LPIPS = 0.3016，与 MaskGIT 的 0.1963 差距明显——这证实了语义 token 确实会丢失像素信息，双量化器的存在是必要的。</li>
+    <li><strong>visible 比例越高，重建越好</strong>：v 从 0.00 → 0.25 → 0.50 → 1.00，LPIPS 从 0.3016 单调下降到 0.1926。image tokens 的可见比例直接决定重建质量。</li>
+    <li><strong>v = 1.00 超越 MaskGIT baseline</strong>：在全部 image tokens 可见的配置下，双量化器结构反而超越了标准 maskgit baseline，说明共享 Encoder 中语义 token 和图像 token 的信息交换对图像特征学习有促进作用。</li>
+    <li><strong>完全 mask（v = 0.00）损失最大</strong>：纯语义 tokenizer 的 LPIPS = 0.3016，与 MaskGIT 的 0.1963 差距明显——这证实了语义 token 确实会丢失像素信息，image tokens 的存在是必要的。</li>
   </ol>
 
-  <div class="callout"><strong>结论</strong>：双量化器结构是可行的——增加图像 token 比例 v 能单调提升重建质量。下一步需要验证：<strong>降低 v（即增加语义 token 比例）是否能在保持可接受重建质量的同时提升理解性能</strong>。</div>
+  <div class="callout"><strong>结论</strong>：双量化器 + image tokens 随机 mask 的机制是可行的——增大 v（更多可见 image tokens）能单调提升重建质量。下一步需要验证：<strong>降低 v 实现的更高压缩率，能否在保持可接受重建质量的同时保留足够的语义信息用于理解任务？</strong></div>
 </div>
 
 <!-- ============================================================ -->
@@ -196,7 +202,7 @@ graph TB
   <ul>
     <li><strong>两个码本的容量分配</strong>：Image Quantizer 和 Semantic Quantizer 各自需要多少码字？码本容量是否应该随 v 动态调整？</li>
     <li><strong>共享 Encoder vs 独立 Encoder</strong>：当前设计使用共享 Encoder，让两组 token 通过自注意力交换信息。如果换成独立 Encoder（像 Janus），结果会如何？</li>
-    <li><strong>v 与任务的适配</strong>：是否可以在训练中引入一个可学习的门控，让模型自动决定每个 patch 走哪条路？</li>
+    <li><strong>v 与任务的适配</strong>：是否可以在训练中引入一个可学习的门控，让模型自动决定每个 image token 的 mask 策略？</li>
   </ul>
 </div>
 
