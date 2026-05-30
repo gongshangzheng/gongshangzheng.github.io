@@ -1,287 +1,370 @@
 ---
-title: MUSE-VL：通过语义离散编码建模统一视觉语言模型
-description: 一个简单加法操作，让离散视觉 token 天然携带语义——用 1/58 的数据超越 Chameleon。
+title: MUSE-VL 深度解读：语义离散编码如何统一视觉理解与生成
+description: 从 VQGAN 的语义盲区出发，深入解析 ByteDance 的 SDE Tokenizer 设计——一个加法操作如何让离散视觉 token 天然携带语义，用 1/58 数据量超越 Chameleon。
 date: 2026-05-15T00:00:00
 created_at: 2026-05-15T00:00:00
-updated_at: 2026-05-19T10:23:00
-tags: [MUSE-VL, 视觉语言模型, Tokenizer]
+updated_at: 2026-05-30T20:09:00
+tags: [MUSE-VL, SDE, Visual Tokenizer, Unified VLM, 多模态]
 categories: [AI]
+subcategory: "多模态"
 mathjax: true
 page_style: |
   .hero { height: 55vh; }
 hero_title: MUSE-VL
-hero_sub: Semantic Discrete Encoding · ByteDance · 2024
-hero_tagline: 一个简单加法操作，让离散视觉 token 天然携带语义——用 1/58 的数据超越 Chameleon。
-subcategory: "多模态"
+hero_sub: Semantic Discrete Encoding · ByteDance · ICCV 2025
+hero_tagline: 一个加法操作，让离散视觉 token 天然携带语义——用 1/58 的数据超越 Chameleon。
 ---
-
 
 <div class="stats">
   <div class="stat"><span class="num">24M</span><span class="label">训练图文对</span></div>
   <div class="stat"><span class="num b">1/58</span><span class="label g">Chameleon 数据量</span></div>
-  <div class="stat"><span class="num">63.6%</span><span class="label">AVG (7B)</span></div>
-  <div class="stat"><span class="num b">+4.8%</span><span class="label g">vs Emu3</span></div>
+  <div class="stat"><span class="num">70.1%</span><span class="label">AVG (32B)</span></div>
+  <div class="stat"><span class="num b">+3.7%</span><span class="label g">vs LLaVA-NeXT 34B</span></div>
   <div class="stat"><span class="num">7.73</span><span class="label">MJHQ FID↓</span></div>
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 1: 问题引入 -->
+<!-- Section 1: 引言 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">一、核心问题：视觉 token 为什么缺乏语义？</div>
+<div class="ch">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">统一 VLM 的终极挑战</div>
 
-  <p>让大语言模型同时<strong>理解</strong>和<strong>生成</strong>图像，是统一视觉语言模型的终极目标。理想方案是将图像编码为离散 token，与文本 token 放入同一个自回归框架——但现有方法面临一个根本瓶颈：</p>
+  <p>让大语言模型同时<strong>理解</strong>和<strong>生成</strong>图像，是多模态 AI 的「圣杯」。理想方案看似简单：把图像编码为离散 token，与文本 token 一起丢进自回归 Transformer，统一做 next-token prediction。然而，这个愿景在 2024 年之前始终未能兑现——不是 LLM 不够强，而是<strong>视觉 tokenizer 的表征质量太差</strong>。</p>
 
   <div class="callout">
     <h3>🚧 核心矛盾</h3>
-    <p>传统 VQGAN 类视觉 tokenizer 仅用<strong>图像重建损失</strong>训练。量化后的离散 code 只保留了低级像素信息（颜色、纹理、边缘），<strong>缺乏高级语义</strong>（对象类别、场景理解）。当这些无语义的视觉 token 被送入 LLM 时，模型需要从零学习视觉-语言对齐——代价是海量数据和极差的理解能力。</p>
+    <p>传统 VQGAN 类 tokenizer 仅用<strong>像素重建损失</strong>训练。量化后的离散 code 只保留了低级视觉信息（颜色、纹理、边缘），<strong>完全缺乏高级语义</strong>（对象类别、空间关系、场景理解）。当这些「文盲」视觉 token 被送入 LLM 时，模型需要从零学习视觉-语言对齐——代价是海量数据和极差的理解能力 <a href="https://arxiv.org/abs/2411.17762" target="_blank">[Xie et al., ICCV 2025]</a>。</p>
   </div>
 
-  <p>数据说明一切：</p>
+  <p>数据说明一切。Chameleon <a href="https://arxiv.org/abs/2405.09818" target="_blank">[Team, 2024]</a> 用了 <strong>14 亿</strong>图文对、<strong>34B</strong> 参数，多模态理解 AVG 仅 41.1%——连专用理解模型 LLaVA-NeXT 34B（66.4%）的一半都不到。瓶颈不在 LLM，而在 <strong>tokenizer 的语义缺失</strong>。</p>
+
+  <p>MUSE-VL 的破局之道出人意料地简单：<strong>在量化前，把冻结 SigLIP 的语义特征与图像特征相加</strong>。这个「加法操作」让离散视觉 token 天然携带语义信息，彻底改变了统一 VLM 的数据效率和性能天花板。本文将深入解析这一设计背后的洞察、数学原理与工程选择。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- Section 2: 前置知识 -->
+<!-- ============================================================ -->
+<div class="ch">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">前置知识：VQGAN、CLIP 与统一 VLM</div>
+
+  <p>理解 MUSE-VL 之前，我们需要厘清三个基础概念的关系。</p>
+
+  <h3 class="section-title">2.1 VQGAN：视觉的「字母表」</h3>
+
+  <p>VQGAN <a href="https://arxiv.org/abs/2012.09841" target="_blank">[Esser et al., CVPR 2021]</a> 将图像编码为一组离散 token 的「字母表」。其核心是一个编码器 $\text{Enc}$、一个可学习的 codebook $\mathcal{Z} = \{z_k\}_{k=1}^K \subset \mathbb{R}^d$，以及一个解码器 $\text{Dec}$：</p>
+
+  <div class="def-box">
+    <h3>VQGAN 的核心公式</h3>
+    <p style="text-align:center">$$z = \text{Enc}(x), \quad z_q = \arg\min_{z_k \in \mathcal{Z}} \|z - z_k\|_2, \quad \hat{x} = \text{Dec}(z_q)$$</p>
+    <p>其中 $x \in \mathbb{R}^{H \times W \times 3}$ 是输入图像，$z \in \mathbb{R}^{h \times w \times d}$ 是编码器输出的连续特征，$z_q$ 是量化后的离散特征（从 codebook 中查找最近邻）。</p>
+  </div>
+
+  <p>VQGAN 的训练目标是<strong>图像重建</strong>——让 $\hat{x}$ 尽可能接近 $x$。它引入了感知损失（LPIPS）和对抗损失（GAN discriminator）来提升生成质量，但<strong>从未考虑语义信息</strong>。这导致一个致命问题：codebook 向量 $z_k$ 编码的是「这块区域像什么纹理」，而非「这块区域是什么物体」。</p>
+
+  <h3 class="section-title">2.2 CLIP / SigLIP：视觉-语言的「翻译官」</h3>
+
+  <p>CLIP <a href="https://arxiv.org/abs/2103.00020" target="_blank">[Radford et al., 2021]</a> 和 SigLIP <a href="https://arxiv.org/abs/2303.15343" target="_blank">[Zhai et al., 2023]</a> 在海量图文对上训练了一个视觉编码器和一个文本编码器，使得<strong>配对的图像和文本在特征空间中距离很近</strong>。这意味着：SigLIP 的图像编码器输出<strong>已经包含与语言对齐的语义信息</strong>。</p>
+
+  <div class="callout">
+    <h3>💡 关键事实</h3>
+    <p>SigLIP 的图像编码器不需要额外训练，其输出特征天然知道「这是一只猫」而非「这是一团橙色像素」。MUSE-VL 正是利用了这一性质。</p>
+  </div>
+
+  <h3 class="section-title">2.3 统一 VLM 的两种路线</h3>
+
+  <p>当前统一视觉理解与生成的大语言模型分为两条路线：</p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>方法</th><th>训练数据量</th><th>理解 AVG</th><th>核心问题</th></tr></thead>
+      <thead><tr><th>路线</th><th>代表</th><th>视觉表示</th><th>核心问题</th></tr></thead>
       <tbody>
-        <tr><td>Chameleon-7B</td><td>1.4B 图文对</td><td>33.3%</td><td>无语义信息，理解极差</td></tr>
-        <tr><td>Chameleon-34B</td><td>1.4B 图文对</td><td>41.1%</td><td>34B 参数依然不及 7B 专用模型</td></tr>
-        <tr><td>VILA-U</td><td>720M 图文对</td><td>59.0%（SEED only）</td><td>对比学习与重建损失冲突</td></tr>
+        <tr><td>连续特征</td><td>LLaVA, Qwen-VL</td><td>CLIP 特征（连续向量）</td><td>无法原生生成图像</td></tr>
+        <tr><td>离散 Token</td><td>Chameleon, Emu3</td><td>VQGAN token（离散 ID）</td><td>无语义，理解差</td></tr>
       </tbody>
     </table>
   </div>
 
-  <p>Chameleon 用了 14 亿图文对、34B 参数，多模态理解 AVG 仅 41.1%——连专用理解模型 LLaVA-NeXT 34B（66.4%）的一半都不到。瓶颈不在 LLM，而在 <strong>tokenizer 的表征质量</strong>。</p>
+  <p>MUSE-VL 走的是离散 token 路线，但试图解决其核心痛点——<strong>让离散 token 也能携带语义</strong>。</p>
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 2: Insight -->
+<!-- Section 3: 问题分析 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">二、核心洞察：从预训练模型蒸馏语义</div>
+<div class="ch">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">问题分析：已有方法为什么不行？</div>
 
-  <p>MUSE-VL 的关键发现：</p>
+  <p>在 MUSE-VL 之前，研究者们尝试了多种方案来解决「离散 token 缺乏语义」的问题。理解这些方案的失败原因，是理解 SDE 设计的关键。</p>
 
-  <div class="info-box">
-    <h3>💡 关键洞察</h3>
-    <p>预训练 CLIP/SigLIP 模型的图像编码器输出<strong>已经包含与语言对齐的语义信息</strong>。这意味着：</p>
-    <ul>
-      <li>不需要额外的文本编码器（VILA-U 的做法）</li>
-      <li>不需要对比学习来对齐视觉和语言（VILA-U 的痛点，损失冲突导致收敛困难）</li>
-      <li>只需在量化前将语义特征与图像特征<strong>直接相加</strong>，离散 token 就能天然携带语义</li>
-    </ul>
+  <h3 class="section-title">3.1 VQGAN 基线：完全没有语义</h3>
+
+  <p>Chameleon <a href="https://arxiv.org/abs/2405.09818" target="_blank">[Team, 2024]</a> 和 Show-o <a href="https://arxiv.org/abs/2408.12528" target="_blank">[Xie et al., 2024]</a> 直接采用预训练 VQGAN tokenizer。它们的训练数据量分别是 1.4B 和 35M，但理解 AVG 仅 33.3% 和 25.1%（部分 benchmark）。问题在于：LLM 需要将「#42号 codebook 向量」映射到「猫」这个概念——这相当于要求 LLM 从零学习整个视觉词典，效率极低。</p>
+
+  <h3 class="section-title">3.2 VILA-U：对比学习与重建损失的冲突</h3>
+
+  <p>VILA-U <a href="https://arxiv.org/abs/2409.01373" target="_blank">[Tian et al., 2024]</a> 尝试在 tokenizer 训练中加入对比学习损失：用一个文本编码器提取语义特征，然后让视觉 token 与文本特征对齐。它需要 720M 图文对（COYO-700M），且作者承认<strong>训练收敛困难</strong>——对比损失和重建损失的优化方向冲突，导致训练不稳定。</p>
+
+  <div class="callout">
+    <h3>⚠️ VILA-U 的困境</h3>
+    <p>对比学习要求「相似图文对靠近、不相似对远离」，而重建损失要求「保留所有像素细节」。这两个目标在特征空间中往往互相矛盾——过度关注语义可能丢失纹理细节，反之亦然。</p>
   </div>
 
-  <p>这个思路的本质是：不要从头学语义，从预训练模型<strong>蒸馏</strong>语义。SigLIP 已经在海量图文对上将视觉特征与语言对齐好了，直接用其输出作为语义锚点，比从头学习高效得多。</p>
+  <h3 class="section-title">3.3 TokenFlow：双 Codebook 的复杂度代价</h3>
 
-  <div class="vs">
-    <div class="l">
-      <h3>❌ 旧方法</h3>
-      <p>VQGAN 量化 → 无语义 token → LLM 从零学对齐</p>
-      <p>需要 1.4B 数据，理解 AVG 33.3%</p>
-    </div>
-    <div class="r">
-      <h3>✅ MUSE-VL</h3>
-      <p>SigLIP 语义 + 图像特征 → 量化 → 语义感知 token</p>
-      <p>仅 24M 数据，理解 AVG 63.6%</p>
-    </div>
-  </div>
-</div>
+  <p>TokenFlow <a href="https://arxiv.org/abs/2412.07617" target="_blank">[Chen et al., 2024]</a> 设计了<strong>双 codebook 架构</strong>：一个 codebook 学语义，一个学像素。这确实能解耦两种信息，但代价是架构复杂度翻倍——需要维护两个 codebook、两个量化路径、两套训练目标。论文没有公开训练数据量，但从架构复杂度来看，工程落地门槛显著高于单 codebook 方案。</p>
 
-<!-- ============================================================ -->
-<!-- Section 3: 整体架构 -->
-<!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">三、MUSE-VL 整体架构</div>
+  <h3 class="section-title">3.4 Janus：双编码器的工程妥协</h3>
 
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-fig2-arch.png" alt="MUSE-VL 整体架构图" loading="lazy">
-    <div class="cap">图1：MUSE-VL 整体架构。SDE Visual Tokenizer 将图像编码为语义感知的离散 token，与文本 token 一起送入自回归 Transformer。</div>
-  </div>
+  <p>Janus <a href="https://arxiv.org/abs/2410.13848" target="_blank">[Wang et al., 2024]</a> 干脆放弃「统一表征」的理想，为理解和生成分别设计独立的编码器：理解用连续 CLIP 特征，生成用离散 VQ token。这确实能在两个任务上都达到不错的效果，但<strong>违背统一建模的初衷</strong>——模型需要维护两套视觉表示，推理时也要根据任务切换路径。</p>
 
-  <p>MUSE-VL 由三部分组成：</p>
+  <h3 class="section-title">3.5 问题的本质</h3>
 
-  <div class="card-grid">
-    <div class="card">
-      <h3>🧩 SDE Visual Tokenizer</h3>
-      <p>将图像编码为语义感知的离散 token。核心创新——在量化前将冻结 SigLIP 的语义特征与图像编码器特征相加。</p>
-    </div>
-    <div class="card">
-      <h3>📝 Text Tokenizer</h3>
-      <p>标准文本分词器，与 LLM 原生 tokenizer 一致。</p>
-    </div>
-    <div class="card">
-      <h3>🧠 Autoregressive Transformer</h3>
-      <p>统一处理视觉和语言 token，仅扩展 embedding 层（+32,768 视觉 token ID），不修改 LLM 任何其他结构。</p>
-    </div>
-  </div>
+  <p>上述所有方案的共同假设是：<strong>语义和像素信息需要被显式分离</strong>。VILA-U 用对比学习分离，TokenFlow 用双 codebook 分离，Janus 用双编码器分离。MUSE-VL 提出了一个反直觉的观点——<strong>不需要分离，只需要在正确的地方注入语义</strong>。</p>
 
-  <p>训练目标极其简洁——对所有 token（视觉 + 文本）统一做 <strong>next-token prediction</strong>：</p>
-
-  <div class="formula-block">
-    <div class="formula-label">自回归训练目标</div>
-    $$\mathcal{L} = -\sum_{t=1}^{T} \log p(x_t \mid x_{&lt;t})$$
-  </div>
-
-  <p>训练数据的组织方式区分理解和生成任务：</p>
-
-  <div class="vs">
-    <div class="l">
-      <h3>理解任务</h3>
-      <p><strong>Prompt</strong>: {text} &lt;soi&gt;{vision tokens}&lt;eoi&gt;</p>
-      <p><strong>Target</strong>: {response}</p>
-      <p style="font-size:0.85rem;color:var(--fg-muted)">视觉 token 在 prompt 中，只有回答参与损失</p>
-    </div>
-    <div class="r">
-      <h3>生成任务</h3>
-      <p><strong>Prompt</strong>: {system text} {caption}</p>
-      <p><strong>Target</strong>: &lt;soi&gt;{vision tokens}&lt;eoi&gt;</p>
-      <p style="font-size:0.85rem;color:var(--fg-muted)">顺序反转，视觉 token 在 target 中</p>
-    </div>
-  </div>
-</div>
-
-<!-- ============================================================ -->
-<!-- Section 4: SDE Visual Tokenizer -->
-<!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">四、SDE：语义离散编码详解</div>
-
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-fig3-sde.png" alt="SDE 语义离散编码架构" loading="lazy">
-    <div class="cap">图2：SDE（Semantic Discrete Encoding）架构。在 VQGAN 基础上增加冻结 SigLIP 语义编码器和语义解码器。</div>
-  </div>
-
-  <p>SDE 的核心流程可以概括为四步：</p>
-
-  <div class="method-flow">
-    <div class="step">📥 编码</div>
-    <div class="arrow">→</div>
-    <div class="step">🔗 语义融合</div>
-    <div class="arrow">→</div>
-    <div class="step">🎲 量化</div>
-    <div class="arrow">→</div>
-    <div class="step">📤 双解码</div>
-  </div>
-
-  <h3>1. 编码阶段</h3>
-  <p>对于输入图像 $x \in \mathbb{R}^{H \times W \times 3}$，两条编码路径并行工作：</p>
+  <p>问题的本质可以归结为：如何让量化后的离散 codebook 向量<strong>同时</strong>满足两个条件？</p>
   <ul>
-    <li><strong>图像编码器</strong>：输出图像特征 $z = \text{Enc}(x)$，其中 $z \in \mathbb{R}^{h \times w \times d}$</li>
-    <li><strong>语义编码器</strong>（冻结 SigLIP）：输出语义特征 $T = \text{SigLIP}(x)$</li>
+    <li>条件 A（生成）：能解码回高质量图像（像素级 fidelity）</li>
+    <li>条件 B（理解）：与语言 token 在语义空间中对齐（语义级 alignment）</li>
   </ul>
 
-  <h3>2. 语义融合与量化——整个方法最精妙的一步</h3>
+  <p>传统 VQGAN 只满足 A，VILA-U 试图同时优化 A 和 B 但损失冲突，TokenFlow 用两套向量分别满足 A 和 B。MUSE-VL 的答案是：<strong>用一套向量，但在量化前把语义「写进」特征里</strong>。</p>
+</div>
 
-  <div class="formula-block">
-    <div class="formula-label">语义融合 + 量化</div>
-    $$z_q = \text{Quant}(T + z)$$
+<!-- ============================================================ -->
+<!-- Section 4: 核心洞察 -->
+<!-- ============================================================ -->
+<div class="ch">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">核心洞察：从预训练模型蒸馏语义</div>
+
+  <p>MUSE-VL 的核心发现可以用一句话概括：</p>
+
+  <div class="callout">
+    <h3>💡 核心洞察</h3>
+    <p>预训练 CLIP/SigLIP 模型的图像编码器输出<strong>已经包含与语言对齐的语义信息</strong>。不需要额外的文本编码器，不需要对比学习，只需在量化前将语义特征与图像特征<strong>直接相加</strong>，离散 token 就能天然携带语义。</p>
+  </div>
+
+  <p>这个思路的本质是<strong>知识蒸馏</strong>（Knowledge Distillation）——但不是蒸馏到学生模型，而是蒸馏到 codebook 向量。SigLIP 作为「教师」，其语义特征 $T$ 引导量化过程选择更具语义的 codebook 向量 $z_k$，而图像编码器特征 $z$ 确保重建质量不下降。</p>
+
+  <p>与 VILA-U 的关键差异在于：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>VILA-U</th><th>MUSE-VL (SDE)</th></tr></thead>
+      <tbody>
+        <tr><td>语义来源</td><td>文本编码器 + 对比学习</td><td>冻结 SigLIP 图像编码器</td></tr>
+        <tr><td>对齐方式</td><td>对比损失（拉近/推远）</td><td>特征空间加法</td></tr>
+        <tr><td>训练稳定性</td><td>损失冲突，收敛困难</td><td>无冲突，稳定收敛</td></tr>
+        <tr><td>文本编码器</td><td>需要</td><td>不需要</td></tr>
+        <tr><td>训练数据</td><td>720M (COYO-700M)</td><td>10M (ImageNet + CC12M)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>SDE 避免了对比学习的根本矛盾——它<strong>不试图直接优化「视觉-文本相似度」</strong>，而是利用 SigLIP 已经完成的优化结果。语义信息通过特征加法「隐式注入」，量化后的 codebook 向量自然继承语义属性。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- Section 5: SDE 详解 -->
+<!-- ============================================================ -->
+<div class="ch">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">SDE：语义离散编码的完整设计</div>
+
+  <p>SDE（Semantic Discrete Encoding）是 MUSE-VL 的技术核心。它的设计目标是在<strong>不修改 VQGAN 基本架构</strong>的前提下，让量化后的离散 token 携带语义信息。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/muse-vl/x3.png" alt="SDE 架构图" loading="lazy">
+    <div class="cap">图1：SDE 整体架构（来源：MUSE-VL, Fig. 2）。图像经 SDE Tokenizer 编码为语义感知的离散 token，与文本 token 一起送入自回归 Transformer。</div>
+  </div>
+
+  <h3 class="section-title">5.1 编码阶段：双路径并行</h3>
+
+  <p>对于输入图像 $x \in \mathbb{R}^{H \times W \times 3}$，SDE 同时启动两条编码路径：</p>
+
+  <div class="def-box">
+    <h3>双路径编码</h3>
+    <p style="text-align:center">$$z = \text{Enc}(x) \in \mathbb{R}^{h \times w \times d}$$</p>
+    <p style="text-align:center">$$T = \text{SigLIP}(x) \in \mathbb{R}^{h' \times w' \times d'}$$</p>
+    <p>其中 $\text{Enc}$ 是可训练的图像编码器（ConvNet 或 ViT），$\text{SigLIP}$ 是<strong>冻结</strong>的预训练语义编码器。$z$ 保留低级像素信息，$T$ 包含高级语义信息。</p>
+  </div>
+
+  <p>值得注意的是，$z$ 和 $T$ 的空间分辨率可能不同。论文使用 SigLIP-SO400m-patch14-384 和 SigLIP-Large-patch16-256 两种配置，输入图像分别 resize 到 384×384 和 256×256，量化后得到 16×16 和 27×27 的 token 网格。</p>
+
+  <h3 class="section-title">5.2 语义融合与量化——最关键的一步</h3>
+
+  <p>这是 SDE 与 VQGAN 的根本差异。VQGAN 直接量化 $z$：</p>
+
+  <p style="text-align:center">$$z_q^{\text{VQGAN}} = \arg\min_{z_k \in \mathcal{Z}} \|z - z_k\|_2$$</p>
+
+  <p>而 SDE 在量化前先将语义特征与图像特征融合：</p>
+
+  <div class="def-box">
+    <h3>SDE 语义融合 + 量化</h3>
+    <p style="text-align:center">$$z_{\text{fused}} = T + z$$</p>
+    <p style="text-align:center">$$z_q = \arg\min_{z_k \in \mathcal{Z}} \|z_{\text{fused}} - z_k\|_2$$</p>
+    <p>其中 $T$ 是冻结 SigLIP 提取的语义特征，$z$ 是可训练图像编码器输出的视觉特征。注意：这里假设 $T$ 和 $z$ 已通过投影层对齐到相同维度。</p>
   </div>
 
   <div class="callout">
-    <h3>⚡ 一个加法，为什么如此有效？</h3>
-    <p>语义特征 $T$ 引导量化过程<strong>选择更具语义的 codebook 向量</strong>，而图像特征 $z$ 保留低级像素信息确保重建质量。加法操作避免了 VILA-U 的收敛困难（对比学习和重建损失的冲突），因为不需要额外的对比学习损失——语义信息已经嵌入到特征空间中了。</p>
+    <h3>⚡ 为什么加法如此有效？</h3>
+    <p>语义特征 $T$ 改变了量化时的「最近邻搜索目标」。codebook 向量不再只需要「最接近图像特征 $z$」，而是需要「最接近语义增强后的特征 $T+z$」。这迫使 codebook 学习<strong>同时保留像素信息和语义信息的向量</strong>——那些在语义空间中与 $T$ 方向一致的 codebook 向量会被优先选中。</p>
   </div>
 
-  <h3>3. 双解码器</h3>
+  <p>这个设计的精妙之处在于<strong>没有引入额外的损失函数</strong>。VILA-U 需要对比损失来显式对齐视觉和文本，而 SDE 的语义对齐是通过特征空间的加法「隐式完成」的——codebook 向量的选择被语义特征 $T$ 引导，但训练目标仍然是标准的 VQ 损失和重建损失。</p>
+
+  <h3 class="section-title">5.3 双解码器：确保双向能力</h3>
+
+  <p>量化后的 $z_q$ 需要同时服务于理解和生成两个任务。SDE 设计了两个并行的解码分支：</p>
+
+  <div class="photo">
+    <img src="assets/media/images/muse-vl/x4.png" alt="SDE Tokenizer 结构" loading="lazy">
+    <div class="cap">图2：SDE Tokenizer 详细结构（来源：MUSE-VL, Fig. 3）。包含图像编码器、冻结语义编码器、量化层、语义解码器和图像解码器。</div>
+  </div>
+
   <div class="card-grid">
     <div class="card">
       <h3>🎯 语义解码器 $\text{Dec}_s$</h3>
-      <p>Vision Transformer（同 BEITv2），从 $z_q$ 重建语义特征 $z_s$。目标：确保量化后的 token 保留语义信息。</p>
+      <p>Vision Transformer（架构同 BEITv2 <a href="https://arxiv.org/abs/2208.06366" target="_blank">[Peng et al., 2022]</a>），输入 $z_q$，输出重建的语义特征 $z_s$。</p>
+      <p style="font-size:0.85rem;color:var(--fg-muted)">目标：确保量化后的 token 仍保留语义信息，供 LLM 理解使用。</p>
     </div>
     <div class="card">
-      <h3>🖼️ 图像解码器</h3>
-      <p>ConvNet（同 VQGAN/LlamaGEN），从 $z_q$ 重建图像 $\hat{x}$。目标：确保离散 token 能高质量还原像素。</p>
+      <h3>🖼️ 图像解码器 $\text{Dec}_i$</h3>
+      <p>ConvNet（同 VQGAN/LlamaGEN <a href="https://arxiv.org/abs/2406.11838" target="_blank">[Sun et al., 2024]</a> 解码器），输入 $z_q$，输出重建图像 $\hat{x}$。</p>
+      <p style="font-size:0.85rem;color:var(--fg-muted)">目标：确保离散 token 能高质量还原像素，供图像生成使用。</p>
     </div>
   </div>
 
-  <h3>4. 三重损失函数</h3>
+  <h3 class="section-title">5.4 三重损失函数</h3>
 
-  <div class="formula-block">
-    <div class="formula-label">总损失</div>
-    $$L_{\text{total}} = L_{\text{sem}} + L_{\text{img}} + L_{\text{vq}}$$
+  <p>SDE 的训练目标由三部分组成：</p>
+
+  <div class="def-box">
+    <h3>总损失函数</h3>
+    <p style="text-align:center">$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{sem}} + \mathcal{L}_{\text{img}} + \mathcal{L}_{\text{vq}}$$</p>
   </div>
 
-  <div class="loss-item">
-    <strong>语义损失 $L_{\text{sem}}$</strong>：最大化重建语义特征与原始语义特征的余弦相似度：
-    <div class="formula-block">
-      $$L_{\text{sem}} = 1 - \cos(z_s, T) = 1 - \cos(\text{Dec}_s(z_q), T)$$
-    </div>
-    <p style="font-size:0.85rem;color:var(--fg-muted)">灵感来源于 BEITv2。通过语义解码器间接约束语义，而非直接在 token 空间做对比学习，训练更稳定。</p>
+  <p><strong>语义损失</strong> $\mathcal{L}_{\text{sem}}$ 最大化重建语义特征与原始语义特征的余弦相似度：</p>
+
+  <div class="def-box">
+    <h3>语义损失</h3>
+    <p style="text-align:center">$$\mathcal{L}_{\text{sem}} = 1 - \cos(z_s, T) = 1 - \cos(\text{Dec}_s(z_q), \text{SigLIP}(x))$$</p>
+    <p>这个损失的直觉是：如果 $z_q$ 真的编码了语义信息，那么语义解码器应该能从中恢复出与原始 SigLIP 特征相似的表示。使用余弦相似度而非 MSE，是因为语义特征空间的度量更适合用角度而非欧氏距离衡量。</p>
   </div>
 
-  <div class="loss-item">
-    <strong>图像重建损失 $L_{\text{img}}$</strong>：标准 VQGAN 损失组合：
-    <div class="formula-block">
-      $$L_{\text{img}} = \ell_2(x, \hat{x}) + L_P(x, \hat{x}) + \lambda_G L_G(\hat{x})$$
-    </div>
-    <p style="font-size:0.85rem;color:var(--fg-muted)">包含 L2 像素重建损失、感知损失（LPIPS）和对抗损失（GAN discriminator）。</p>
+  <p><strong>图像重建损失</strong> $\mathcal{L}_{\text{img}}$ 是标准 VQGAN 损失组合：</p>
+
+  <div class="def-box">
+    <h3>图像重建损失</h3>
+    <p style="text-align:center">$$\mathcal{L}_{\text{img}} = \|x - \hat{x}\|_2^2 + \mathcal{L}_{\text{P}}(x, \hat{x}) + \lambda_G \mathcal{L}_G(\hat{x})$$</p>
+    <p>包含三项：(1) L2 像素重建损失，(2) 感知损失（LPIPS，用预训练 VGG 特征衡量感知相似度），(3) 对抗损失（GAN discriminator，$\lambda_G$ 为权重）。</p>
   </div>
 
-  <div class="loss-item">
-    <strong>VQ 损失 $L_{\text{vq}}$</strong>：标准向量量化损失：
-    <div class="formula-block">
-      $$L_{\text{vq}} = \| \text{sg}[z] - z_q \|_2^2 + \beta \| z - \text{sg}[z_q] \|_2^2$$
-    </div>
-    <p style="font-size:0.85rem;color:var(--fg-muted)">第一项拉近 codebook 向量到编码器输出，第二项（commitment loss）防止编码器输出远离 codebook。</p>
+  <p><strong>VQ 损失</strong> $\mathcal{L}_{\text{vq}}$ 是标准向量量化损失（含 stop-gradient）：</p>
+
+  <div class="def-box">
+    <h3>VQ 损失</h3>
+    <p style="text-align:center">$$\mathcal{L}_{\text{vq}} = \|\text{sg}[z_{\text{fused}}] - z_q\|_2^2 + \beta \|z_{\text{fused}} - \text{sg}[z_q]\|_2^2$$</p>
+    <p>第一项（codebook 损失）将选中的 codebook 向量拉向编码器输出；第二项（commitment 损失，权重 $\beta$）防止编码器输出过度偏离 codebook。sg[·] 表示 stop-gradient 操作。</p>
+  </div>
+
+  <h3 class="section-title">5.5 关键超参数</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>超参数</th><th>值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>语义编码器</td><td>SigLIP-SO400m / SigLIP-Large</td><td>全程冻结</td></tr>
+        <tr><td>Codebook 大小 $K$</td><td>32,768</td><td>与 LLaMAGEN 相同</td></tr>
+        <tr><td>Codebook 维度 $d$</td><td>8</td><td>与 LLaMAGEN 相同</td></tr>
+        <tr><td>语义损失权重</td><td>1.0</td><td>与重建损失同等权重</td></tr>
+        <tr><td>Tokenizer 训练数据</td><td>ImageNet-1K + CC12M ≈ 10M</td><td>远小于 VILA-U 的 720M</td></tr>
+        <tr><td>图像分辨率</td><td>384×384 / 256×256</td><td>对应 16×16 / 27×27 token</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 5: 训练 -->
+<!-- Section 6: MUSE-VL 训练 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">五、训练流程</div>
+<div class="ch">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">MUSE-VL：统一自回归 Transformer</div>
 
-  <p>MUSE-VL 的训练分为三个阶段，逐步构建能力：</p>
+  <p>基于 SDE tokenizer，MUSE-VL 构建了一个统一的自回归 Transformer，同时处理视觉和语言 token。</p>
+
+  <h3 class="section-title">6.1 模型架构</h3>
+
+  <p>MUSE-VL 的架构极其简洁：它就是一个标准的自回归 LLM，<strong>只扩展了 embedding 层</strong>（增加 32,768 个视觉 token ID），不修改任何 Transformer 结构。视觉 token 和文本 token 在序列级别完全统一：</p>
+
+  <div class="def-box">
+    <h3>自回归训练目标</h3>
+    <p style="text-align:center">$$\mathcal{L} = -\sum_{t=1}^{T} \log p(x_t \mid x_{&lt;t})$$</p>
+    <p>其中 $x_t$ 可以是文本 token 或视觉 token。对所有 token 统一做交叉熵损失。</p>
+  </div>
+
+  <p>文本使用标准的文本 tokenizer（如 Qwen 或 Yi 的 tokenizer）。图像经 SDE 编码为离散 token 序列，前后分别插入特殊 token $\texttt{<soi>}$（start of image）和 $\texttt{<eoi>}$（end of image）标记边界。</p>
+
+  <h3 class="section-title">6.2 训练三阶段</h3>
+
+  <p>MUSE-VL 的训练分为三个阶段：</p>
 
   <div class="timeline">
     <div class="timeline-item">
       <div class="year">阶段 1</div>
       <div class="event">
         <strong>Tokenizer 预训练</strong>
-        <p>在 ImageNet-1K + CC12M（约 1000 万张图像）上训练 SDE，同时优化语义损失、图像重建损失和 VQ 损失。语义编码器（SigLIP）全程冻结。</p>
+        <p>在 ImageNet-1K + CC12M（约 1000 万张图像）上训练 SDE，同时优化语义损失、图像重建损失和 VQ 损失。语义编码器全程冻结。</p>
       </div>
     </div>
     <div class="timeline-item">
       <div class="year">阶段 2</div>
       <div class="event">
         <strong>LLM 预训练</strong>
-        <p>在 LLaVA-ReCap-CC12M 上，对所有 token 计算 next-token prediction 损失。学习视觉 token embedding 并对齐视觉-语言。</p>
+        <p>在图文对数据（CC12M + 其他 caption 数据）上，对所有 token 计算 next-token prediction 损失。学习视觉 token embedding 并对齐视觉-语言。</p>
       </div>
     </div>
     <div class="timeline-item">
       <div class="year">阶段 3</div>
       <div class="event">
         <strong>指令微调</strong>
-        <p>理解方向：Cambrian7M + LLaVA-OneVision-Data。生成方向：CC12M + 10M 高质量图像。仅 target 部分参与损失。</p>
+        <p>理解方向：Cambrian7M + LLaVA-OneVision-Data。生成方向：CC12M + 10M 高质量图像。<strong>仅 target 部分参与损失</strong>。</p>
       </div>
     </div>
   </div>
 
-  <h3>Tokenizer 关键配置</h3>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>超参数</th><th>值</th></tr></thead>
-      <tbody>
-        <tr><td>语义编码器</td><td>SigLIP-SO400m-patch14-384 / SigLIP-Large-patch16-256</td></tr>
-        <tr><td>语义编码器参数</td><td>❄️ 冻结，不参与训练</td></tr>
-        <tr><td>Codebook 大小 K</td><td>32,768</td></tr>
-        <tr><td>Codebook 维度 d</td><td>8</td></tr>
-        <tr><td>量化后 token 空间</td><td>16×16（384 分辨率）或 27×27（256 分辨率）</td></tr>
-        <tr><td>训练数据</td><td>ImageNet-1K + CC12M ≈ 1000 万张</td></tr>
-      </tbody>
-    </table>
+  <h3 class="section-title">6.3 数据格式：理解与生成</h3>
+
+  <p>训练数据的组织方式区分理解和生成任务：</p>
+
+  <div class="vs">
+    <div class="l">
+      <h3>理解任务</h3>
+      <p><strong>Prompt</strong>: {text} <span class="code">&lt;soi&gt;</span>{vision tokens}<span class="code">&lt;eoi&gt;</span></p>
+      <p><strong>Target</strong>: {response}</p>
+      <p style="font-size:0.85rem;color:var(--fg-muted)">视觉 token 在 prompt 中，只有回答参与损失</p>
+    </div>
+    <div class="r">
+      <h3>生成任务</h3>
+      <p><strong>Prompt</strong>: {system text} {caption}</p>
+      <p><strong>Target</strong>: <span class="code">&lt;soi&gt;</span>{vision tokens}<span class="code">&lt;eoi&gt;</span></p>
+      <p style="font-size:0.85rem;color:var(--fg-muted)">顺序反转，视觉 token 在 target 中</p>
+    </div>
   </div>
 
-  <h3>LLM 关键配置</h3>
+  <h3 class="section-title">6.4 LLM 训练配置</h3>
+
   <div class="table-wrap">
     <table>
       <thead><tr><th>超参数</th><th>值</th></tr></thead>
       <tbody>
-        <tr><td>基础 LLM</td><td>Qwen-2.5-7B / Qwen-2.5-32B / Yi-1.5-9B / Yi-1.5-34B</td></tr>
+        <tr><td>基础 LLM</td><td>Qwen-2.5-7B / 32B, Yi-1.5-9B / 34B</td></tr>
         <tr><td>学习率</td><td>1e-4（Cosine schedule with warmup）</td></tr>
-        <tr><td>优化器</td><td>AdamW (β₁=0.9, β₂=0.95)</td></tr>
-        <tr><td>Embedding 扩展</td><td>+32,768 个视觉 token</td></tr>
+        <tr><td>优化器</td><td>AdamW ($\beta_1=0.9, \beta_2=0.95$)</td></tr>
+        <tr><td>Embedding 扩展</td><td>+32,768 视觉 token</td></tr>
         <tr><td>总训练数据</td><td>24M 图文对</td></tr>
       </tbody>
     </table>
@@ -289,41 +372,43 @@ subcategory: "多模态"
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 6: 实验结果 -->
+<!-- Section 7: 实验分析 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">六、实验结果</div>
+<div class="ch">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">实验分析：数据效率的极限突破</div>
 
-  <h3>1. Tokenizer 对比——SDE 一骑绝尘</h3>
-  <p>所有模型使用相同 LLM (Yi-1.5-9B) 和训练数据：</p>
+  <h3 class="section-title">7.1 Tokenizer 对比：SDE 一骑绝尘</h3>
+
+  <p>所有模型使用相同 LLM (Yi-1.5-9B) 和相同训练数据子集，公平对比 tokenizer 本身的质量：</p>
 
   <div class="table-wrap">
     <table>
       <thead><tr><th>Method</th><th>MMBench</th><th>SEED</th><th>MMStar</th><th>AVG</th></tr></thead>
       <tbody>
         <tr><td>VQGAN</td><td>32.0</td><td>42.7</td><td>29.1</td><td>34.6</td></tr>
-        <tr><td>SEED</td><td>63.1</td><td>57.8</td><td>39.1</td><td>53.3</td></tr>
-        <tr><td>LaVIT</td><td>63.3</td><td>59.5</td><td>40.3</td><td>54.4</td></tr>
+        <tr><td>SEED <a href="https://arxiv.org/abs/2310.01218" target="_blank">[Ge et al., 2023]</a></td><td>63.1</td><td>57.8</td><td>39.1</td><td>53.3</td></tr>
+        <tr><td>LaVIT <a href="https://arxiv.org/abs/2402.08723" target="_blank">[Jin et al., 2024]</a></td><td>63.3</td><td>59.5</td><td>40.3</td><td>54.4</td></tr>
         <tr style="background:var(--card-hover)"><td><strong>SDE (ours)</strong></td><td><strong>70.6</strong></td><td><strong>68.1</strong></td><td><strong>43.8</strong></td><td><strong>60.8</strong></td></tr>
       </tbody>
     </table>
   </div>
 
-  <p>SDE 比 SEED 高 <strong>+7.5%</strong>，比 LaVIT 高 <strong>+6.4%</strong>。同样的 LLM、同样的数据，仅换 tokenizer 就有如此大的提升——再次证明瓶颈在 tokenizer 的表征质量。</p>
-
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-tab1-tokenizer.png" alt="Tokenizer 对比表" loading="lazy">
-    <div class="cap">论文 Table 1：不同 Tokenizer 的多模态理解对比。SDE 在所有指标上均显著优于 VQGAN、SEED 和 LaVIT。</div>
+  <div class="callout">
+    <h3>🏆 关键发现</h3>
+    <p>SDE 比 SEED 高 <strong>+7.5%</strong>，比 LaVIT 高 <strong>+6.4%</strong>。同样的 LLM、同样的数据，仅换 tokenizer 就有如此大的提升——再次证明瓶颈在 tokenizer 的表征质量。</p>
   </div>
 
-  <h3>2. 统一模型理解能力——首次追平连续特征模型</h3>
+  <h3 class="section-title">7.2 统一模型理解能力：里程碑式突破</h3>
+
+  <p>MUSE-VL 最重要的成果是：<strong>离散视觉 token 模型首次在理解任务上超越连续 embedding 模型</strong>。</p>
 
   <div class="table-wrap">
     <table>
       <thead><tr><th>方法</th><th>LLM</th><th>视觉 Token</th><th>MMBench</th><th>MMStar</th><th>SEED</th><th>MMMU</th><th>SQA-I</th><th>MathVista</th><th>AVG</th></tr></thead>
       <tbody>
-        <tr><td>LLaVA-NeXT</td><td>Yi-34B</td><td>连续</td><td>79.3</td><td>51.6</td><td>75.9</td><td>51.1</td><td>81.8</td><td>46.5</td><td>66.4</td></tr>
-        <tr><td>Emu3</td><td>8B scratch</td><td>离散</td><td>58.5</td><td>46.6</td><td>68.2</td><td>31.6</td><td>89.2</td><td>47.6</td><td>58.8</td></tr>
+        <tr><td>LLaVA-NeXT <a href="https://arxiv.org/abs/2310.03744" target="_blank">[Liu et al., 2023]</a></td><td>Yi-34B</td><td>连续</td><td>79.3</td><td>51.6</td><td>75.9</td><td>51.1</td><td>81.8</td><td>46.5</td><td>66.4</td></tr>
+        <tr><td>Emu3 <a href="https://arxiv.org/abs/2409.18869" target="_blank">[Wang et al., 2024]</a></td><td>8B scratch</td><td>离散</td><td>58.5</td><td>46.6</td><td>68.2</td><td>31.6</td><td>89.2</td><td>47.6</td><td>58.8</td></tr>
         <tr><td>Chameleon-7B</td><td>7B scratch</td><td>离散</td><td>31.1</td><td>31.1</td><td>30.6</td><td>25.4</td><td>46.8</td><td>22.3</td><td>33.3</td></tr>
         <tr style="background:var(--card-hover)"><td><strong>MUSE-VL-7B</strong></td><td><strong>Qwen-2.5-7B</strong></td><td><strong>离散 SDE</strong></td><td><strong>72.1</strong></td><td><strong>49.6</strong></td><td><strong>69.1</strong></td><td><strong>39.7</strong></td><td><strong>93.5</strong></td><td><strong>51.3</strong></td><td><strong>63.6</strong></td></tr>
         <tr style="background:var(--card-hover)"><td><strong>MUSE-VL-32B</strong></td><td><strong>Qwen-2.5-32B</strong></td><td><strong>离散 SDE</strong></td><td><strong>81.8</strong></td><td><strong>56.7</strong></td><td><strong>71.0</strong></td><td><strong>50.1</strong></td><td><strong>95.0</strong></td><td><strong>55.9</strong></td><td><strong>70.1</strong></td></tr>
@@ -332,22 +417,34 @@ subcategory: "多模态"
   </div>
 
   <div class="callout">
-    <h3>🏆 里程碑式结果</h3>
-    <p>MUSE-VL-32B AVG <strong>70.1%</strong>，超越专用理解模型 LLaVA-NeXT 34B（66.4%）达 <strong>+3.7%</strong>——这是<strong>离散视觉 token 模型首次在理解任务上超越连续 embedding 模型</strong>。</p>
+    <h3>🚀 里程碑</h3>
+    <p>MUSE-VL-32B AVG <strong>70.1%</strong>，超越专用理解模型 LLaVA-NeXT 34B（66.4%）达 <strong>+3.7%</strong>——这是<strong>离散视觉 token 模型首次在理解任务上全面超越连续 embedding 模型</strong>。</p>
     <p>MUSE-VL-7B 仅用 24M 数据（Chameleon 的 1/58），AVG 63.6%，超越 Emu3（58.8%）达 <strong>+4.8%</strong>。</p>
   </div>
 
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-tab2-benchmark.png" alt="多模态理解 benchmark 对比" loading="lazy">
-    <div class="cap">论文 Table 2：统一模型多模态理解 benchmark 全面对比。MUSE-VL 在离散 token 方法中全面领先。</div>
+  <h3 class="section-title">7.3 视觉生成质量</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>分辨率</th><th>MJHQ-30K FID↓</th><th>GenEval</th></tr></thead>
+      <tbody>
+        <tr><td>SD-XL（专用生成）</td><td>1024</td><td>9.55</td><td>0.55</td></tr>
+        <tr><td>PixArt-α（专用生成）</td><td>512</td><td>6.14</td><td>0.48</td></tr>
+        <tr><td>Janus</td><td>384</td><td>10.10</td><td>0.61</td></tr>
+        <tr><td>Show-o</td><td>256</td><td>15.18</td><td>0.53</td></tr>
+        <tr style="background:var(--card-hover)"><td><strong>MUSE-VL-7B</strong></td><td><strong>256</strong></td><td><strong>7.73</strong></td><td><strong>0.53 / 0.57†</strong></td></tr>
+      </tbody>
+    </table>
   </div>
 
-  <h3>3. 数据效率——用最少的资源做最多的事</h3>
+  <p>MUSE-VL FID 7.73 <strong>超越所有统一模型和 SD-XL</strong>，接近专用生成模型 PixArt-α（6.14）。† 表示使用 DALL-E 3 风格 prompt 重写后的结果。</p>
 
   <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-fig1-results.png" alt="MUSE-VL 效果总览" loading="lazy">
-    <div class="cap">图3：MUSE-VL 同时支持多模态理解和生成，用最少的数据达到最优性能。</div>
+    <img src="assets/media/images/muse-vl/x5.png" alt="MUSE-VL 生成示例" loading="lazy">
+    <div class="cap">图3：MUSE-VL 7B 文生图示例（来源：MUSE-VL, Fig. 4）。256 分辨率下生成质量已超越 SD-XL。</div>
   </div>
+
+  <h3 class="section-title">7.4 数据效率：用最少资源做最多事</h3>
 
   <div class="table-wrap">
     <table>
@@ -363,42 +460,19 @@ subcategory: "多模态"
     </table>
   </div>
 
-  <h3>4. 视觉生成——超越 SD-XL</h3>
-
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>方法</th><th>分辨率</th><th>MJHQ-30K FID↓</th><th>GenEval</th></tr></thead>
-      <tbody>
-        <tr><td>SD-XL（专用生成）</td><td>1024</td><td>9.55</td><td>0.55</td></tr>
-        <tr><td>PixArt-α（专用生成）</td><td>512</td><td>6.14</td><td>0.48</td></tr>
-        <tr><td>Janus</td><td>384</td><td>10.10</td><td>0.61</td></tr>
-        <tr><td>Show-o</td><td>256</td><td>15.18</td><td>0.53</td></tr>
-        <tr style="background:var(--card-hover)"><td><strong>MUSE-VL-7B</strong></td><td><strong>256</strong></td><td><strong>7.73</strong></td><td><strong>0.53 (0.57†)</strong></td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>MUSE-VL FID 7.73 <strong>超越所有统一模型和 SD-XL</strong>，接近专用生成模型 PixArt-α（6.14）。† 表示使用 DALL-E 3 风格 prompt 重写。</p>
-
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-tab5-t2i.png" alt="文生图 benchmark 对比" loading="lazy">
-    <div class="cap">论文 Table 5：文生图 benchmark 对比。MUSE-VL 在 FID 和 GenEval 上均优于其他统一模型。</div>
-  </div>
-
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-fig4-generation.png" alt="MUSE-VL 生成示例" loading="lazy">
-    <div class="cap">图4：MUSE-VL 文生图示例。256 分辨率下生成质量已超越 SD-XL。</div>
-  </div>
+  <p>MUSE-VL 的数据效率来自 SDE tokenizer 的语义质量——当视觉 token 天然携带语义时，LLM 需要的对齐数据量呈数量级下降。</p>
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 7: 消融实验 -->
+<!-- Section 8: 消融实验 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">七、消融实验——为什么每个组件都不可或缺</div>
+<div class="ch">
+  <div class="ch-label">第八章</div>
+  <div class="ch-title">消融实验：每个组件的定量贡献</div>
 
-  <h3>语义分支 vs 图像分支</h3>
-  <p>这是最有说服力的消融实验，直接回答了"语义分支到底有多大用"：</p>
+  <h3 class="section-title">8.1 语义分支 vs 图像分支</h3>
+
+  <p>这是最有说服力的消融实验，直接回答「语义分支到底有多大用」：</p>
 
   <div class="table-wrap">
     <table>
@@ -420,12 +494,9 @@ subcategory: "多模态"
     </ul>
   </div>
 
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-tab6-ablation.png" alt="消融实验结果" loading="lazy">
-    <div class="cap">论文 Table 6：语义分支 vs 图像分支消融实验。完整 SDE 在理解和重建质量上均取得最优平衡。</div>
-  </div>
+  <p>这个结果揭示了一个深刻的事实：<strong>语义信息和像素信息在 tokenizer 中并非竞争关系，而是互补关系</strong>。语义分支负责让 LLM「看懂」图像，图像分支负责让 decoder「画好」图像——两者缺一不可，但各自服务的对象不同。</p>
 
-  <h3>LLM 和分辨率消融</h3>
+  <h3 class="section-title">8.2 LLM 和分辨率消融</h3>
 
   <div class="table-wrap">
     <table>
@@ -441,91 +512,99 @@ subcategory: "多模态"
   </div>
 
   <p>更高分辨率带来全面提升（384 vs 256: <strong>+3.1 AVG</strong>），更大模型一致更好，验证了 scale-up 的有效性。Qwen-2.5 整体优于同参数量 Yi-1.5。</p>
-</div>
 
-<!-- ============================================================ -->
-<!-- Section 8: 语义编码可视化 -->
-<!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">八、语义编码可视化——离散 token 真的学到了语义</div>
+  <h3 class="section-title">8.3 语义编码可视化</h3>
 
   <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-fig5-semantic.png" alt="语义离散编码可视化" loading="lazy">
-    <div class="cap">图5：语义离散编码可视化。相同颜色的矩形框表示具有相同语义 ID 的图像块——SDE 自动将"猫耳朵"、"草莓"等语义概念映射到相同的离散 code。</div>
+    <img src="assets/media/images/muse-vl/x6.png" alt="语义离散编码可视化" loading="lazy">
+    <div class="cap">图4：语义离散编码可视化（来源：MUSE-VL, Fig. 5）。相同颜色的矩形框表示具有相同语义 ID 的图像块——SDE 自动将语义概念映射到相同的离散 code。</div>
   </div>
 
   <p>这是最有说服力的定性证据：SDE 的离散 code 能<strong>自动对应语义概念</strong>。没有显式的语义标签监督，仅通过冻结 SigLIP 的语义特征引导量化过程，离散 token 就能自然地组织成语义一致的簇。</p>
-
-  <div class="photo">
-    <img src="assets/media/images/muse-vl/muse-vl-fig6-reconstruction.png" alt="图像重建质量对比" loading="lazy">
-    <div class="cap">图6：SDE 与其他方法的图像重建质量对比。SDE 在保留语义信息的同时维持了高保真重建。</div>
-  </div>
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 9: 与其他统一模型对比 -->
+<!-- Section 9: 相关工作全景 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">九、统一模型全景对比</div>
+<div class="ch">
+  <div class="ch-label">第九章</div>
+  <div class="ch-title">统一模型全景对比：七大门派的华山论剑</div>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>方法</th><th>视觉表示</th><th>对齐策略</th><th>训练数据</th><th>局限</th></tr></thead>
+      <thead><tr><th>方法</th><th>年份</th><th>视觉表示</th><th>对齐策略</th><th>训练数据</th><th>核心局限</th></tr></thead>
       <tbody>
-        <tr><td>Chameleon</td><td>离散 VQ</td><td>从头训练 LLM</td><td>1.4B</td><td>无语义，理解极差</td></tr>
-        <tr><td>Emu3</td><td>离散 VQ</td><td>从头训练 LLM</td><td>未公开</td><td>需分别微调理解和生成</td></tr>
-        <tr><td>Janus</td><td>离散+连续双编码器</td><td>解耦编码</td><td>65M</td><td>双编码器增加复杂度</td></tr>
-        <tr><td>VILA-U</td><td>离散 VQ</td><td>对比学习+重建</td><td>720M</td><td>损失冲突，收敛困难</td></tr>
-        <tr><td>TokenFlow</td><td>离散双 codebook</td><td>解耦语义与像素</td><td>未公开</td><td>双 codebook 架构复杂</td></tr>
-        <tr><td>Show-o</td><td>离散 VQ</td><td>从头训练</td><td>35M</td><td>小模型理解受限</td></tr>
-        <tr style="background:var(--card-hover)"><td><strong>MUSE-VL</strong></td><td><strong>离散 SDE</strong></td><td><strong>语义特征融合</strong></td><td><strong>24M</strong></td><td><strong>数据效率最高</strong></td></tr>
+        <tr><td>Chameleon</td><td>2024</td><td>离散 VQ</td><td>从头训练 LLM</td><td>1.4B</td><td>无语义，理解极差</td></tr>
+        <tr><td>Emu3</td><td>2024</td><td>离散 VQ</td><td>分别微调 U/G</td><td>未公开</td><td>未真正统一</td></tr>
+        <tr><td>Janus</td><td>2024</td><td>离散+连续双编码</td><td>解耦编码</td><td>65M</td><td>双编码器复杂</td></tr>
+        <tr><td>VILA-U</td><td>2024</td><td>离散 VQ</td><td>对比学习+重建</td><td>720M</td><td>损失冲突</td></tr>
+        <tr><td>TokenFlow</td><td>2024</td><td>离散双 codebook</td><td>解耦语义与像素</td><td>未公开</td><td>架构复杂</td></tr>
+        <tr><td>Show-o</td><td>2024</td><td>离散 VQ</td><td>从头训练</td><td>35M</td><td>小模型理解受限</td></tr>
+        <tr style="background:var(--card-hover)"><td><strong>MUSE-VL</strong></td><td><strong>2025</strong></td><td><strong>离散 SDE</strong></td><td><strong>语义特征融合</strong></td><td><strong>24M</strong></td><td><strong>架构最简，效果最优</strong></td></tr>
       </tbody>
     </table>
   </div>
 
-  <p>MUSE-VL 的独特之处：<strong>不需要双编码器或双 codebook</strong>，也不需要对比学习的文本编码器，仅通过在量化前将冻结 SigLIP 语义特征与图像特征<strong>相加</strong>即可实现语义对齐。架构最简，效果最优。</p>
+  <p>MUSE-VL 的独特之处可以概括为三点：</p>
+
+  <div class="callout">
+    <h3>🎯 MUSE-VL 的三重简洁</h3>
+    <ol>
+      <li><strong>无需双编码器</strong>（vs Janus）：一套编码器同时服务理解和生成</li>
+      <li><strong>无需双 codebook</strong>（vs TokenFlow）：一套 codebook 同时编码语义和像素</li>
+      <li><strong>无需对比学习</strong>（vs VILA-U）：语义对齐通过特征加法隐式完成</li>
+    </ol>
+  </div>
 </div>
 
 <!-- ============================================================ -->
 <!-- Section 10: 局限与未来 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">十、局限性与未来方向</div>
+<div class="ch">
+  <div class="ch-label">第十章</div>
+  <div class="ch-title">局限性与未来方向</div>
 
-  <h3>当前局限</h3>
+  <h3 class="section-title">10.1 当前局限</h3>
+
   <div class="card-grid">
     <div class="card">
       <h3>🖼️ 生成质量未达 SOTA 扩散模型</h3>
-      <p>训练数据规模和生成分辨率受限，FID 7.73 虽超越 SD-XL 但不及 PixArt-α（6.14）。</p>
+      <p>训练数据规模和生成分辨率受限，FID 7.73 虽超越 SD-XL 但不及 PixArt-α（6.14）。256 分辨率对高质量生成仍是瓶颈。</p>
     </div>
     <div class="card">
-      <h3>🔍 高分辨率输入受限</h3>
-      <p>256 分辨率 TextVQA 仅 52.8%，384 为 61.3%，均低于 EMU3 的 64.7（1024 分辨率）。OCR 任务是短板。</p>
+      <h3>🔍 高分辨率 OCR 是短板</h3>
+      <p>256 分辨率 TextVQA 仅 52.8%，384 为 61.3%，均低于 EMU3 的 64.7（1024 分辨率）。细粒度文本理解需要更高分辨率。</p>
     </div>
     <div class="card">
       <h3>📊 计算成本未公开</h3>
       <p>GPU 数量、训练时间、FLOPs 等关键信息原文未明确给出，难以评估实际训练代价。</p>
     </div>
+    <div class="card">
+      <h3>🔒 代码未开源</h3>
+      <p>截至 2025 年，官方未公开代码仓库，复现门槛较高。社区复现版本（如基于 LLaMAGEN 的改造）效果可能存在差距。</p>
+    </div>
   </div>
 
-  <h3>未来方向</h3>
+  <h3 class="section-title">10.2 未来方向</h3>
+
   <ul>
     <li><strong>扩大视觉生成训练数据</strong>——当前 24M 数据主要用于理解，生成数据可能不足</li>
-    <li><strong>更强大的图像编码器</strong>——使用 VAR 的多尺度量化或 InternViT</li>
-    <li><strong>AR 与 Diffusion 原生集成</strong>——结合两种范式的优势</li>
+    <li><strong>更强大的图像编码器</strong>——使用 VAR <a href="https://arxiv.org/abs/2404.02905" target="_blank">[Tian et al., 2024]</a> 的多尺度量化或 InternViT <a href="https://arxiv.org/abs/2312.14238" target="_blank">[Chen et al., 2024]</a></li>
+    <li><strong>AR 与 Diffusion 原生集成</strong>——结合两种范式的优势，如 Transfusion <a href="https://arxiv.org/abs/2408.11039" target="_blank">[Lab, 2024]</a> 的路线</li>
     <li><strong>加入交错图文数据</strong>——提升多图理解和 in-context learning 能力</li>
   </ul>
 </div>
 
 <!-- ============================================================ -->
-<!-- Section 11: 收获与启示 -->
+<!-- Section 11: 收获 -->
 <!-- ============================================================ -->
-<div class="section fade-in">
-  <div class="section-title">十一、收获与可迁移的启示</div>
+<div class="ch">
+  <div class="ch-label">第十一章</div>
+  <div class="ch-title">收获与可迁移的启示</div>
 
   <div class="callout">
     <h3>🧠 SDE 设计思路的可迁移性</h3>
-    <p>核心洞察——<strong>"不要从头学语义，从预训练模型蒸馏"</strong>——具有广泛的可迁移性：</p>
+    <p>核心洞察——<strong>「不要从头学语义，从预训练模型蒸馏」</strong>——具有广泛的可迁移性：</p>
     <ol>
       <li><strong>利用已有对齐空间</strong>：SigLIP 已在海量图文对上将视觉特征与语言对齐，直接用其输出作为语义锚点比从头学习高效得多</li>
       <li><strong>冻结教师 + 简单融合</strong>：冻结 SigLIP + 加法融合，避免对比学习的损失冲突（VILA-U 的痛点）</li>
@@ -538,12 +617,33 @@ subcategory: "多模态"
     <h3>🎯 数据效率的启示</h3>
     <p>MUSE-VL 用 1/58 的数据超越 Chameleon，说明当视觉 token 的表征质量足够高（语义对齐），LLM 对视觉-语言映射的学习效率会<strong>大幅提升</strong>。<strong>瓶颈不在 LLM 的学习能力，而在 tokenizer 的表征质量。</strong></p>
   </div>
+
+  <div class="info-box">
+    <h3>🔬 统一建模的启示</h3>
+    <p>MUSE-VL 证明「统一理解+生成」不一定要靠复杂的双编码器/双 codebook 架构。有时候，<strong>最简单的修改（一个加法）加上正确的洞察（预训练语义模型），比复杂的工程堆叠更有效。</strong>这提示我们在设计统一模型时，应该优先考虑「如何复用已有对齐」而非「如何从头构建对齐」。</p>
+  </div>
 </div>
 
 <div class="divider">⁂ ⁂ ⁂</div>
 
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2411.17762" target="_blank">Xie, R. et al. "MUSE-VL: Modeling Unified VLM through Semantic Discrete Encoding." ICCV 2025.</a></li>
+    <li><a href="https://arxiv.org/abs/2405.09818" target="_blank">Team, C. "Chameleon: Mixed-Modal Early-Fusion Foundation Models." arXiv 2024.</a></li>
+    <li><a href="https://arxiv.org/abs/2012.09841" target="_blank">Esser, P. et al. "Taming Transformers for High-Resolution Image Synthesis." CVPR 2021.</a></li>
+    <li><a href="https://arxiv.org/abs/2103.00020" target="_blank">Radford, A. et al. "Learning Transferable Visual Models From Natural Language Supervision." ICML 2021.</a></li>
+    <li><a href="https://arxiv.org/abs/2303.15343" target="_blank">Zhai, X. et al. "Sigmoid Loss for Language Image Pre-Training." ICCV 2023.</a></li>
+    <li><a href="https://arxiv.org/abs/2409.01373" target="_blank">Tian, Y. et al. "VILA-U: a Unified Foundation Model Integrating Visual Understanding and Generation." arXiv 2024.</a></li>
+    <li><a href="https://arxiv.org/abs/2408.12528" target="_blank">Xie, S. et al. "Show-o: One Single Transformer to Unify Multimodal Understanding and Generation." arXiv 2024.</a></li>
+    <li><a href="https://arxiv.org/abs/2409.18869" target="_blank">Wang, X. et al. "Emu3: Next-Token Prediction is All You Need." arXiv 2024.</a></li>
+    <li><a href="https://arxiv.org/abs/2410.13848" target="_blank">Wang, Y. et al. "Janus: Decoupling Visual Encoding for Unified Multimodal Understanding and Generation." arXiv 2024.</a></li>
+    <li><a href="https://arxiv.org/abs/2406.11838" target="_blank">Sun, T. et al. "Autoregressive Model Beats Diffusion: Llama for Scalable Image Generation." arXiv 2024.</a></li>
+  </ul>
+</div>
+
 <div class="meta">
-  <span>论文：arXiv:2411.17762</span>
+  <span>论文：arXiv:2411.17762v3 · ICCV 2025</span>
   <span>机构：ByteDance</span>
-  <span>笔记日期：2026-05-14</span>
+  <span>更新日期：2026-05-30</span>
 </div>
