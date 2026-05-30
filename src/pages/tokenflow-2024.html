@@ -92,7 +92,7 @@ hero_tagline: "双码本共享映射——首次让离散视觉 token 超越 LLa
 
 <div class="ch fade-in">
   <div class="ch-label">Part 3</div>
-  <div class="ch-title">共享映射：让语义和像素"投票"</div>
+  <div class="ch-title">模型结构与创新：双码本共享映射</div>
 
   TokenFlow 的核心 Insight 可以用一句话概括：
 
@@ -120,15 +120,7 @@ hero_tagline: "双码本共享映射——首次让离散视觉 token 超越 LLa
     <div class="admonition-content"><p>已有方法在"单流统一"与"双系统并联"之间摇摆。TokenFlow 提出了第三条路：<strong>多流提特征，单索引做统一</strong>。统一的对象不是连续特征流，而是离散索引语义。</p></div>
   </div>
 
-</div>
-
-<!-- ============================================================ -->
-<!-- Section 4 · 架构详解 -->
-<!-- ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Part 4</div>
-  <div class="ch-title">TokenFlow 架构详解</div>
+  <h3 class="section-title">架构详解</h3>
 
   TokenFlow 的整体架构可以用五层来概括：<strong>双编码器 → 双码本共享映射 → 多尺度 VQ → 双解码器 → 统一 token 输出</strong>。
 
@@ -203,27 +195,85 @@ hero_tagline: "双码本共享映射——首次让离散视觉 token 超越 LLa
 
   <h3 class="section-title">训练目标</h3>
 
-  使用 straight-through gradient estimator 传递梯度通过量化操作：
-
-  <p style="text-align:center">
-  $$z = \text{sg}[z - \hat{z}] + \hat{z}$$
-  </p>
-
-  VQ 码本学习损失：
-
-  <p style="text-align:center">
-  $$L_{\text{VQ}} = \|\text{sg}[\hat{z}] - z\|_2^2 + \beta \|\hat{z} - \text{sg}[z]\|_2^2$$
-  </p>
-
-  第二项是 commitment loss（$\beta = 0.25$），约束编码器输出承诺到所选码本向量。
-
-  <strong>总损失</strong>：
+  三项损失分别约束语义对齐、码本学习和像素重建，各司其职又通过共享索引耦合在一起（训练细节见下一 Part）：
 
   <p style="text-align:center">
   $$L_{\text{total}} = L_{\text{sem}} + L_{\text{VQ}} + L_{\text{pix}}$$
   </p>
 
-  三项损失分别约束语义对齐、码本学习和像素重建，各司其职又通过共享索引耦合在一起。
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 4 · 训练方法 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练方法</div>
+
+  了解了模型架构，接下来看 TokenFlow 是如何训练的。训练分为三个阶段：Tokenizer 训练、视觉生成训练、多模态理解训练。每个阶段的训练目标、数据和策略都不同。
+
+  <h3 class="section-title">Tokenizer 训练</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>TokenFlow-B</th><th>TokenFlow-L</th><th>TokenFlow-XL</th></tr></thead>
+      <tbody>
+        <tr><td>输入分辨率</td><td>224</td><td>256</td><td>384</td></tr>
+        <tr><td>码本大小</td><td>32,768</td><td>32,768</td><td>32,768</td></tr>
+        <tr><td>Semantic teacher</td><td>CLIP ViT-B/14-224</td><td>ViTamin-XL-256</td><td>SigLIP-SO400M-patch14-384</td></tr>
+        <tr><td>语义码本维度</td><td>32</td><td>32</td><td>32</td></tr>
+        <tr><td>像素码本维度</td><td>8</td><td>8</td><td>8</td></tr>
+        <tr><td>训练步数</td><td>1,000,000</td><td>500,000</td><td>500,000</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <strong>训练数据</strong>：LAION + COYO-700M。为增强人脸生成质量，含人脸图像采样比例提升 2 倍。
+
+  <strong>优化器</strong>：学习率 1e-4，batch size 256，max gradient norm 1.0。
+
+  <strong>损失函数</strong>：使用 straight-through gradient estimator 传递梯度通过量化操作：
+
+  <p style="text-align:center">
+  $$z = \text{sg}[z - \hat{z}] + \hat{z}$$
+  </p>
+
+  VQ 码本学习损失（含 commitment loss，$\beta = 0.25$）：
+
+  <p style="text-align:center">
+  $$L_{\text{VQ}} = \|\text{sg}[\hat{z}] - z\|_2^2 + \beta \|\hat{z} - \text{sg}[z]\|_2^2$$
+  </p>
+
+  损失权重：$w_{\text{dis}} = 1.0$（距离平衡），$\beta = 0.25$（commitment），$\lambda_G = 0.5$（对抗损失）。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      CLIP 初始化的关键
+    </div>
+    <div class="admonition-content"><p>Semantic Encoder 从 CLIP/SigLIP 预训练权重初始化，且训练期间保持 <strong>unfrozen</strong>。消融实验表明这一设计对理解性能至关重要：加入 CLIP 初始化后 MME-P 从 1210 飙升到 1312（+102 分）。冻结语义编码器会严重限制码本获取足够的语义先验。</p></div>
+  </div>
+
+  <h3 class="section-title">视觉生成训练</h3>
+
+  <strong>模型</strong>：基于预训练 LLM（Llama-2-7b），扩展词表加入视觉 token。图像 token 经 MLP 投影后与文本 token 拼接，交叉熵损失仅计算图像 token 部分。
+
+  <strong>训练数据</strong>：6000 万张高质量图像，caption 由 Qwen-VL 生成。训练 2 epochs，以 0.2 概率随机截断 caption 到第一句，增强短提示生成能力。
+
+  <strong>推理</strong>：classifier-free guidance scale = 7.5（训练时以 $p_{\text{drop}} = 0.1$ 概率将条件文本替换为空串）。单张 A100 生成一张 256×256 图像仅需 <strong>2.7 秒</strong>。
+
+  <h3 class="section-title">多模态理解训练</h3>
+
+  <strong>训练流程</strong>：TokenFlow-B/L 使用 LLaVA-Pretrain558K 进行 adapter 预训练，再使用 LLaVA-v1.5-mix-665K 进行指令微调。TokenFlow-XL 使用 Cambrian-Alignment 预训练和 Cambrian-10M 指令微调（因 SigLIP-SO400M 在大数据上收益显著）。
+
+  <strong>语言 backbone</strong>：Vicuna-v1.5-13B 或 Qwen-2.5-14B。
+
+  <div class="callout"><strong>训练效率</strong>：使用 LLaVA 1.5 数据，在 8×A100 上训练 <strong>不到 24 小时</strong> 即可达到 SOTA。这说明 tokenizer 设计得当可以大幅降低下游多模态训练的门槛。</div>
+
+  <h3 class="section-title">增强解码器微调</h3>
+
+  为进一步提升细粒度生成能力，论文将 Pixel Decoder 的残差层数和通道维度均翻倍，仅微调增强后的 decoder 层（冻结其他组件），在保持感知能力的同时提升重建保真度。
 
 </div>
 
@@ -233,7 +283,7 @@ hero_tagline: "双码本共享映射——首次让离散视觉 token 超越 LLa
 
 <div class="ch fade-in">
   <div class="ch-label">Part 5</div>
-  <div class="ch-title">三个维度全面开花</div>
+  <div class="ch-title">实验验证：三个维度全面开花</div>
 
   <h3 class="section-title">图像重建</h3>
 
@@ -270,8 +320,6 @@ hero_tagline: "双码本共享映射——首次让离散视觉 token 超越 LLa
   这是本文最引人注目的结果：<strong>首次</strong>证明了离散视觉输入可以超越连续输入（LLaVA-1.5 + CLIP）。在相同语言 backbone（Vicuna-13B）下，TokenFlow-XL 超过 LLaVA-1.5 达 <strong>1.7%</strong>；换用 Qwen-2.5-14B 后提升到 <strong>7.2%</strong>。
 
   <div class="callout"><strong>一个细节</strong>：TokenFlow 在理解任务上仅使用 final-scale 特征效果最佳。虽然 MSVQ 在训练时利用了多尺度结构，但对理解来说，最高语义相关性的最后尺度才最适合作为视觉提示，额外尺度或残差特征反而引入噪声。</div>
-
-  更令人惊讶的是训练效率：使用 LLaVA 1.5 数据，在 8×A100 上训练<strong>不到 24 小时</strong>即可达到 SOTA。这说明 tokenizer 设计得当可以大幅降低下游多模态训练的门槛。
 
   <h3 class="section-title">视觉生成（自回归 SOTA）</h3>
 
