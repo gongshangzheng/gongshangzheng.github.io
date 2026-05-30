@@ -1,0 +1,743 @@
+// Auto-wrap tables in scrollable containers
+(function() {
+  document.querySelectorAll('.wrap table, .main-content table').forEach(function(tbl) {
+    if (tbl.parentElement && tbl.parentElement.classList.contains('table-wrap')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    tbl.parentNode.insertBefore(wrap, tbl);
+    wrap.appendChild(tbl);
+  });
+})();
+
+// Auto-wrap MathJax formula containers so wide formulas can scroll horizontally
+(function() {
+  function markEl(el) {
+    if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'math-wrap';
+    el.parentNode.insertBefore(wrap, el);
+    wrap.appendChild(el);
+  }
+
+  function wrapFormulas() {
+    // Only wrap block-level MathJax output (mjx-block).
+    // Inline math (mjx-inline) stays in text flow and doesn't need wrapping.
+    // Also skip mjx-container elements whose content is just a short variable/citation key
+    // (contains no math operators: no +, -, =, ^, _, frac, sum, int, greek, etc.)
+    document.querySelectorAll('mjx-block').forEach(function(el) {
+      if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'math-wrap';
+      el.parentNode.insertBefore(wrap, el);
+      wrap.appendChild(el);
+    });
+    // Also catch display math containers that may not have mjx-block class
+    document.querySelectorAll('mjx-container[display="block"]').forEach(function(el) {
+      if (el.parentElement && el.parentElement.classList.contains('math-wrap')) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'math-wrap';
+      el.parentNode.insertBefore(wrap, el);
+      wrap.appendChild(el);
+    });
+  }
+
+  function tryWrap() {
+    wrapFormulas();
+    if (document.querySelectorAll('mjx-container:not(.math-wrap *)').length > 0) {
+      setTimeout(tryWrap, 300);
+    }
+  }
+
+  if (document.readyState === 'complete') {
+    setTimeout(tryWrap, 800);
+  } else {
+    window.addEventListener('load', function() { setTimeout(tryWrap, 800); });
+  }
+})();
+
+// Responsive nav-brand sizing
+(function() {
+  var brand = document.getElementById('nav-brand');
+  var brandSub = document.getElementById('brand-sub');
+  var navInner = document.querySelector('.nav-inner');
+  if (!brand || !brandSub || !navInner) return;
+
+  function adjustBrand() {
+    var navWidth = navInner.offsetWidth;
+    // Calculate right-side buttons width
+    var rightBtns = navInner.querySelector('.nav-right-btns');
+    var rightWidth = rightBtns ? rightBtns.scrollWidth : 0;
+    // Nav-links visible width (on desktop)
+    var navLinks = document.getElementById('nav-links');
+    var linksWidth = 0;
+    if (navLinks && getComputedStyle(navLinks).display !== 'none') {
+      linksWidth = navLinks.scrollWidth;
+    }
+    // Available space for brand = total - links - right buttons - gaps
+    var gapSize = parseFloat(getComputedStyle(navInner).gap) || 0;
+    var paddingH = parseFloat(getComputedStyle(navInner).paddingLeft) * 2 || 0;
+    var available = navWidth - linksWidth - rightWidth - gapSize * 2 - paddingH;
+    // Brand mark (TSZ) needs ~50px, brand-sub needs ~150px
+    if (available < 50) {
+      brand.style.display = 'none';
+    } else if (available < 130) {
+      brand.style.display = '';
+      brandSub.style.display = 'none';
+    } else {
+      brand.style.display = '';
+      brandSub.style.display = '';
+    }
+  }
+
+  adjustBrand();
+  window.addEventListener('resize', adjustBrand);
+})();
+
+// Dark mode toggle — Hugo blog style
+(function() {
+  var html = document.documentElement;
+  var toggleBtn = document.getElementById('theme-toggle');
+  var themeIcon = document.getElementById('theme-icon');
+
+  function updateIcon() {
+    var isDark = html.classList.contains('dark');
+    if (themeIcon) {
+      themeIcon.textContent = isDark ? '☀️' : '🌙';
+    }
+  }
+
+  function toggleTheme() {
+    html.classList.toggle('dark');
+    updateIcon();
+    localStorage.setItem('theme', html.classList.contains('dark') ? 'dark' : 'light');
+  }
+
+  function loadTheme() {
+    var saved = localStorage.getItem('theme');
+    if (saved === 'light') {
+      html.classList.remove('dark');
+    } else if (saved === 'dark') {
+      html.classList.add('dark');
+    }
+    updateIcon();
+  }
+
+  // Load theme immediately
+  loadTheme();
+
+  // Bind toggle button
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', toggleTheme);
+  }
+
+  // Auto-detect system preference on first visit
+  if (!localStorage.getItem('theme')) {
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      html.classList.remove('dark');
+      updateIcon();
+    }
+  }
+
+  // Hamburger menu toggle
+  var hamburger = document.getElementById('nav-hamburger');
+  var navLinks = document.getElementById('nav-links');
+  if (hamburger && navLinks) {
+    hamburger.addEventListener('click', function() {
+      navLinks.classList.toggle('is-open');
+    });
+    // Close on outside click
+    document.addEventListener('click', function(e) {
+      if (!hamburger.contains(e.target) && !navLinks.contains(e.target)) {
+        navLinks.classList.remove('is-open');
+      }
+    });
+    // Close on link click
+    navLinks.addEventListener('click', function(e) {
+      if (e.target.tagName === 'A') navLinks.classList.remove('is-open');
+    });
+  }
+
+  // Back-to-top button
+  var backBtn = document.getElementById('back-to-top');
+  if (backBtn) {
+    window.addEventListener('scroll', function() {
+      if (window.pageYOffset > 400) {
+        backBtn.classList.add('is-visible');
+      } else {
+        backBtn.classList.remove('is-visible');
+      }
+    });
+    backBtn.addEventListener('click', function() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+
+  // Fade-in animation
+  var fadeEls = Array.prototype.slice.call(document.querySelectorAll('.fade-in'));
+  function revealVisibleNow() {
+    fadeEls.forEach(function(el) {
+      if (el.classList.contains('visible')) return;
+      var rect = el.getBoundingClientRect();
+      var vh = window.innerHeight || document.documentElement.clientHeight;
+      var vw = window.innerWidth || document.documentElement.clientWidth;
+      var verticallyVisible = rect.top < vh * 0.98 && rect.bottom > vh * 0.02;
+      var horizontallyVisible = rect.left < vw && rect.right > 0;
+      if (verticallyVisible && horizontallyVisible) el.classList.add('visible');
+    });
+  }
+
+  if ('IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting || entry.intersectionRatio > 0) {
+          entry.target.classList.add('visible');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0, rootMargin: '0px 0px -8% 0px' });
+    fadeEls.forEach(function(el) { observer.observe(el); });
+    revealVisibleNow();
+    window.addEventListener('load', revealVisibleNow, { once: true });
+    window.addEventListener('resize', revealVisibleNow);
+    window.addEventListener('scroll', revealVisibleNow, { passive: true });
+  } else {
+    fadeEls.forEach(function(el) { el.classList.add('visible'); });
+  }
+})();
+// Music toggle — uses #float-music-btn
+(function() {
+  var toggleBtn = document.getElementById('float-music-btn');
+  var bgm = document.getElementById('bgm');
+  if (!toggleBtn || !bgm) return;
+
+  function updateState() {
+    toggleBtn.classList.toggle('playing', !bgm.paused);
+  }
+
+  toggleBtn.addEventListener('click', function() {
+    if (bgm.paused) { bgm.play(); } else { bgm.pause(); }
+  });
+
+  bgm.addEventListener('play', updateState);
+  bgm.addEventListener('pause', updateState);
+  updateState();
+})();
+
+// TOC Sidebar Toggle & Scroll Tracking
+(function() {
+  var sidebar = document.getElementById('toc-sidebar');
+  var toggleBtn = document.getElementById('toc-toggle-btn');
+  var floatTocBtn = document.getElementById('float-toc-btn');
+  var mainWrapper = document.querySelector('.main-wrapper');
+  if (!sidebar || !toggleBtn) return;
+
+  function setSidebarWidth(w) {
+    sidebar.style.minWidth = w + 'px';
+    sidebar.style.maxWidth = w + 'px';
+    sidebar.style.width = w + 'px';
+    toggleBtn.style.left = w + 'px';
+    mainWrapper.style.paddingLeft = w + 'px';
+  }
+  function clearSidebarWidth() {
+    sidebar.style.minWidth = '';
+    sidebar.style.maxWidth = '';
+    sidebar.style.width = '';
+    toggleBtn.style.left = '';
+    mainWrapper.style.paddingLeft = '';
+  }
+
+  function expandSidebar() {
+    sidebar.classList.remove('toc-collapsed');
+    sidebar.classList.add('toc-expanded');
+    var savedWidth = localStorage.getItem('toc-width');
+    var w = savedWidth ? parseInt(savedWidth) : 250;
+    setSidebarWidth(w);
+    localStorage.setItem('toc-collapsed', 'false');
+  }
+
+  function collapseSidebar() {
+    sidebar.classList.remove('toc-expanded');
+    sidebar.classList.add('toc-collapsed');
+    clearSidebarWidth();
+    localStorage.setItem('toc-collapsed', 'true');
+  }
+
+  // Toggle sidebar
+  function toggleSidebar() {
+    var isCollapsed = sidebar.classList.contains('toc-collapsed');
+    if (isCollapsed) expandSidebar();
+    else collapseSidebar();
+  }
+
+  toggleBtn.addEventListener('click', toggleSidebar);
+  if (floatTocBtn) floatTocBtn.addEventListener('click', function(e) {
+    // On mobile (<768px), let the Mobile TOC Drawer IIFE handle it
+    if (window.innerWidth < 768) return;
+    e.stopImmediatePropagation();
+    toggleSidebar();
+  });
+
+  // Restore state. Keep DOM classes and localStorage in sync: width alone can make
+  // the sidebar look open while it still has .toc-collapsed, which breaks drag logic.
+  var storedCollapsed = localStorage.getItem('toc-collapsed');
+  if (storedCollapsed === 'true') {
+    collapseSidebar();
+  } else if (storedCollapsed === 'false') {
+    expandSidebar();
+  } else if (sidebar.classList.contains('toc-collapsed')) {
+    collapseSidebar();
+  } else {
+    expandSidebar();
+  }
+
+  // Resize handle
+  var resizeHandle = document.querySelector('.toc-resize-handle');
+  if (resizeHandle) {
+    resizeHandle.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      if (sidebar.classList.contains('toc-collapsed')) return;
+      var startX = e.clientX;
+      var startWidth = sidebar.offsetWidth;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMove(e) {
+        var newWidth = startWidth + (e.clientX - startX);
+        newWidth = Math.max(180, Math.min(600, newWidth));
+        setSidebarWidth(newWidth);
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        localStorage.setItem('toc-width', sidebar.offsetWidth);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  // Vertical split between article TOC and Categories
+  var tocSection = sidebar.querySelector('.toc-main-section');
+  var categorySection = sidebar.querySelector('.categories-section');
+  var splitHandle = sidebar.querySelector('.toc-split-handle');
+  function setTocSplitRatio(ratio) {
+    if (!tocSection || !categorySection || !splitHandle) return;
+    ratio = Math.max(0.18, Math.min(0.82, ratio));
+    var percent = ratio * 100;
+    tocSection.style.flex = '0 0 calc(' + percent + '% - 4px)';
+    categorySection.style.flex = '0 0 calc(' + (100 - percent) + '% - 4px)';
+  }
+  if (tocSection && categorySection && splitHandle) {
+    var savedRatio = parseFloat(localStorage.getItem('toc-category-split-ratio'));
+    if (!isNaN(savedRatio)) setTocSplitRatio(savedRatio);
+
+    splitHandle.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      if (sidebar.classList.contains('toc-collapsed')) return;
+      var sidebarRect = sidebar.getBoundingClientRect();
+      var headerlessTop = sidebarRect.top;
+      var usableHeight = sidebar.clientHeight - splitHandle.offsetHeight;
+      var minPaneHeight = 120;
+      splitHandle.classList.add('is-dragging');
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMove(ev) {
+        var y = ev.clientY - headerlessTop;
+        var minRatio = Math.min(0.45, minPaneHeight / Math.max(usableHeight, 1));
+        var maxRatio = 1 - minRatio;
+        var ratio = y / Math.max(usableHeight, 1);
+        ratio = Math.max(minRatio, Math.min(maxRatio, ratio));
+        setTocSplitRatio(ratio);
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        splitHandle.classList.remove('is-dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        var tocRect = tocSection.getBoundingClientRect();
+        var catRect = categorySection.getBoundingClientRect();
+        var total = tocRect.height + catRect.height;
+        if (total > 0) localStorage.setItem('toc-category-split-ratio', tocRect.height / total);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      onMove(e);
+    });
+  }
+
+  function escapeHtmlText(text) {
+    return String(text || '').replace(/[&<>"']/g, function(ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+  }
+
+  function findCategoryNode(nodes, path) {
+    var currentNodes = nodes || [];
+    var currentNode = null;
+    for (var i = 0; i < path.length; i++) {
+      currentNode = currentNodes.find(function(node) { return node.type === 'folder' && node.text === path[i]; });
+      if (!currentNode) return null;
+      currentNodes = currentNode.children || [];
+    }
+    return currentNode;
+  }
+
+  function renderCategoryBrowserList(nodes, path) {
+    var html = '<ul>';
+    (nodes || []).forEach(function(node) {
+      var childPath = node.type === 'folder' ? path.concat(node.text) : path;
+      var hasChildren = node.children && node.children.length > 0;
+      var itemClass = node.type === 'post' ? 'category-file' : 'category-folder';
+      if (hasChildren) itemClass += ' toc-parent toc-collapsed';
+      html += '<li class="category-item ' + itemClass + '" data-path="' + escapeHtmlText(JSON.stringify(childPath)) + '">';
+      if (hasChildren) {
+        html += '<button class="toc-toggle category-expand-toggle" aria-label="展开/折叠"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>';
+      } else {
+        html += '<span class="toc-dot"></span>';
+      }
+      if (node.type === 'post') {
+        html += '<a class="category-file-link' + (node.active ? ' active' : '') + '" href="' + escapeHtmlText(node.href) + '">' + escapeHtmlText(node.text) + '</a>';
+      } else {
+        html += '<button class="category-folder-label" type="button">' + escapeHtmlText(node.text) + '</button>';
+      }
+      if (hasChildren) {
+        html += '<ul class="toc-children">' + renderCategoryBrowserList(node.children || [], childPath).replace(/^<ul>|<\/ul>$/g, '') + '</ul>';
+      }
+      html += '</li>';
+    });
+    html += '</ul>';
+    return html;
+  }
+
+  function initCategoryBrowser() {
+    var nav = document.getElementById('category-nav');
+    if (!nav || !nav.classList.contains('category-browser')) return;
+    var list = nav.querySelector('.category-browser-list');
+    var backBtn = nav.querySelector('.category-back');
+    var breadcrumb = nav.querySelector('.category-breadcrumb');
+    if (!list || !backBtn || !breadcrumb) return;
+
+    var tree = [];
+    var currentPath = [];
+    try { tree = JSON.parse(nav.getAttribute('data-tree') || '[]'); } catch (e) { tree = []; }
+    try { currentPath = JSON.parse(nav.getAttribute('data-initial-path') || '[]'); } catch (e) { currentPath = []; }
+
+    function render() {
+      var currentNode = findCategoryNode(tree, currentPath);
+      var nodes = currentNode ? (currentNode.children || []) : tree;
+      list.innerHTML = renderCategoryBrowserList(nodes, currentPath);
+      breadcrumb.textContent = currentPath.length ? currentPath.join(' / ') : 'Categories';
+      backBtn.disabled = currentPath.length === 0;
+    }
+
+    backBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (currentPath.length === 0) return;
+      currentPath = currentPath.slice(0, -1);
+      render();
+    });
+
+    nav.addEventListener('click', function(e) {
+      var folderLabel = e.target.closest('.category-folder-label');
+      if (!folderLabel || !nav.contains(folderLabel)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var li = folderLabel.closest('.category-folder');
+      if (!li) return;
+      try { currentPath = JSON.parse(li.getAttribute('data-path') || '[]'); } catch (err) { currentPath = []; }
+      render();
+    });
+
+    render();
+  }
+  initCategoryBrowser();
+
+  // TOC item collapse toggle (event delegation on sidebar)
+  sidebar.addEventListener('click', function(e) {
+    var toggleEl = e.target.closest('.toc-toggle');
+    if (!toggleEl) return;
+    var li = toggleEl.parentElement;
+    if (li && li.classList.contains('toc-parent')) {
+      li.classList.toggle('toc-collapsed');
+    }
+    e.stopPropagation();
+  });
+
+  // Smooth scroll for TOC links
+  document.querySelectorAll('#toc-nav a').forEach(function(link) {
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+      var targetId = this.getAttribute('href').slice(1);
+      var target = document.getElementById(targetId);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Close mobile nav if open
+        var navLinks = document.getElementById('nav-links');
+        if (navLinks) navLinks.classList.remove('is-open');
+      }
+    });
+  });
+
+  // Scroll tracking: highlight current section
+  var headings = document.querySelectorAll('.wrap h2[id], .wrap h3[id], .wrap h4[id], .wrap h5[id], .wrap h6[id], .wrap div.ch-title[id], .main-content h2[id], .main-content h3[id], .main-content h4[id], .main-content h5[id], .main-content h6[id]');
+  var tocLinks = document.querySelectorAll('#toc-nav a');
+  if (headings.length === 0 || tocLinks.length === 0) return;
+
+  var headingElements = Array.from(headings);
+
+  function updateActiveToc() {
+    var scrollPos = window.pageYOffset + 80;
+    var current = null;
+
+    // Use getBoundingClientRect for absolute document position.
+    // offsetTop is unreliable when a heading's offsetParent is a deeply-nested
+    // container (.ch) rather than the nearest scrollable ancestor (.wrap).
+    for (var i = 0; i < headingElements.length; i++) {
+      var el = headingElements[i];
+      var absTop = el.getBoundingClientRect().top + window.pageYOffset;
+      if (absTop <= scrollPos) {
+        current = el;
+      }
+    }
+
+    tocLinks.forEach(function(link) {
+      link.classList.remove('active');
+      var li = link.parentElement;
+      if (li) li.classList.remove('active');
+    });
+
+    if (current) {
+      var activeLink = document.querySelector('#toc-nav a[href="#' + current.id + '"]');
+      if (activeLink) {
+        activeLink.classList.add('active');
+        var activeLi = activeLink.parentElement;
+        if (activeLi) activeLi.classList.add('active');
+        // Expand parent if this link is inside a collapsed .toc-children
+        var parentChildren = activeLi.closest('.toc-children');
+        if (parentChildren) {
+          var parentLi = parentChildren.parentElement;
+          if (parentLi) parentLi.classList.remove('toc-collapsed');
+        }
+        // Scroll active link into view in TOC
+        activeLink.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+  }
+
+  var ticking = false;
+  window.addEventListener('scroll', function() {
+    if (!ticking) {
+      window.requestAnimationFrame(function() {
+        updateActiveToc();
+        ticking = false;
+      });
+      ticking = true;
+    }
+  });
+
+  // Initial highlight
+  updateActiveToc();
+})();
+
+// Mobile TOC Drawer — uses #float-toc-btn
+(function() {
+  var btn = document.getElementById('float-toc-btn');
+  var drawer = document.getElementById('mobile-toc-drawer');
+  var overlay = document.getElementById('mobile-toc-overlay');
+  var closeBtn = document.getElementById('mobile-toc-close');
+  var mobileNav = document.getElementById('mobile-toc-nav');
+  if (!btn || !drawer || !overlay || !mobileNav) return;
+
+  // Populate mobile TOC from desktop TOC
+  var desktopNav = document.getElementById('toc-nav');
+  if (!desktopNav) { btn.style.display = 'none'; return; }
+
+  // Preserve desktop TOC inline markup, including MathJax-rendered inline formulas
+  var items = desktopNav.querySelectorAll('li');
+  var list = document.createElement('ul');
+  items.forEach(function(li) {
+    var a = li.querySelector(':scope > a');
+    if (!a) return;
+    var level = a.getAttribute('data-level') || '2';
+    var item = document.createElement('li');
+    item.className = 'toc-h' + level;
+
+    var link = document.createElement('a');
+    link.setAttribute('href', a.getAttribute('href'));
+    link.innerHTML = a.innerHTML;
+
+    item.appendChild(link);
+    list.appendChild(item);
+  });
+  mobileNav.innerHTML = '';
+  mobileNav.appendChild(list);
+
+  function openDrawer() {
+    drawer.classList.add('is-open');
+    overlay.classList.add('is-open');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeDrawer() {
+    drawer.classList.remove('is-open');
+    overlay.classList.remove('is-open');
+    document.body.style.overflow = '';
+  }
+
+  btn.addEventListener('click', function(e) {
+    // Only open mobile drawer on small screens; desktop uses sidebar toggle
+    if (window.innerWidth >= 768) return;
+    openDrawer();
+  });
+  closeBtn.addEventListener('click', closeDrawer);
+  overlay.addEventListener('click', closeDrawer);
+
+  // Close on link click & smooth scroll
+  mobileNav.addEventListener('click', function(e) {
+    if (e.target.tagName === 'A') {
+      e.preventDefault();
+      closeDrawer();
+      var target = document.getElementById(e.target.getAttribute('href').slice(1));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+})();
+
+// Trigger Prism.js code highlighting
+if (window.Prism) Prism.highlightAll();
+
+// Search dropdown — inline search for all pages
+(function() {
+  var toggleBtn = document.getElementById('search-toggle');
+  var dropdown = document.getElementById('search-dropdown');
+  var overlay = document.getElementById('search-overlay');
+  var input = document.getElementById('search-input');
+  var results = document.getElementById('search-results');
+  if (!toggleBtn || !dropdown || !overlay || !input || !results) return;
+
+  var index = null;
+  var activeIdx = -1;
+  var resultItems = [];
+
+  function fmtDate(val) {
+    if (!val) return '';
+    return val.substring(0, 10).replace(/-/g, '/');
+  }
+
+  function openSearch() {
+    dropdown.classList.add('is-open');
+    overlay.classList.add('is-open');
+    document.body.style.overflow = 'hidden';
+    input.focus();
+    if (!index) {
+      fetch('./search-index.json').then(function(r) { return r.json(); }).then(function(data) { index = data; });
+    }
+  }
+
+  function closeSearch() {
+    dropdown.classList.remove('is-open');
+    overlay.classList.remove('is-open');
+    document.body.style.overflow = '';
+    input.value = '';
+    activeIdx = -1;
+    resultItems = [];
+    results.innerHTML = '<div class="search-hint">输入关键词搜索文章</div>';
+  }
+
+  function renderResults(matched) {
+    if (matched.length === 0) {
+      results.innerHTML = '<div class="search-hint">没有找到匹配的文章</div>';
+      resultItems = [];
+      activeIdx = -1;
+      return;
+    }
+    var html = '<div class="search-meta">' + matched.length + ' result' + (matched.length > 1 ? 's' : '') + '</div>';
+    matched.forEach(function(p, i) {
+      html += '<a class="search-result-item" href="./' + p.url + '" data-idx="' + i + '">';
+      html += '<span class="result-date">' + fmtDate(p.created_at || p.date) + '</span>';
+      html += '<span class="result-title">' + p.title + '</span>';
+      html += '</a>';
+    });
+    results.innerHTML = html;
+    resultItems = results.querySelectorAll('.search-result-item');
+    activeIdx = -1;
+  }
+
+  function setActive(idx) {
+    if (resultItems.length === 0) return;
+    resultItems.forEach(function(el) { el.classList.remove('is-active'); });
+    if (idx < 0) idx = resultItems.length - 1;
+    if (idx >= resultItems.length) idx = 0;
+    activeIdx = idx;
+    resultItems[idx].classList.add('is-active');
+    resultItems[idx].scrollIntoView({ block: 'nearest' });
+  }
+
+  toggleBtn.addEventListener('click', function() {
+    if (dropdown.classList.contains('is-open')) {
+      closeSearch();
+    } else {
+      openSearch();
+    }
+  });
+
+  overlay.addEventListener('click', closeSearch);
+
+  input.addEventListener('input', function() {
+    var q = this.value.trim().toLowerCase();
+    if (!q || !index) {
+      results.innerHTML = '<div class="search-hint">输入关键词搜索文章</div>';
+      resultItems = [];
+      activeIdx = -1;
+      return;
+    }
+    var keywords = q.split(/\s+/);
+    var matched = index.filter(function(post) {
+      var text = (post.title + ' ' + post.description + ' ' + post.tags.join(' ') + ' ' + post.categories.join(' ') + ' ' + (post.subcategory || '') + ' ' + (post.aliases || []).join(' ')).toLowerCase();
+      return keywords.every(function(kw) { return text.indexOf(kw) >= 0; });
+    });
+    renderResults(matched);
+  });
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeSearch();
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive(activeIdx + 1);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive(activeIdx - 1);
+      return;
+    }
+    if (e.key === 'Enter' && activeIdx >= 0 && resultItems[activeIdx]) {
+      e.preventDefault();
+      resultItems[activeIdx].click();
+    }
+  });
+
+  // Global keyboard shortcut: Ctrl/Cmd + K to open search
+  document.addEventListener('keydown', function(e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      if (dropdown.classList.contains('is-open')) {
+        closeSearch();
+      } else {
+        openSearch();
+      }
+    }
+  });
+
+  // Close on result click
+  results.addEventListener('click', function(e) {
+    var item = e.target.closest('.search-result-item');
+    if (item) closeSearch();
+  });
+})();
