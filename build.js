@@ -10,6 +10,8 @@ const { CONFIG, RECENT_COUNT, PATHS } = require('./lib/config');
 const { parseFrontmatter, parseListField } = require('./lib/parser');
 const { copyDir, walkDir, walkFiles } = require('./lib/utils');
 const { collectFileSignatures, createBuildCache, sha1 } = require('./lib/build-cache');
+const { ensureArticleSlugs, getArticleSlug } = require('./lib/article-slugs');
+const { ensureTaxonomyRegistry } = require('./lib/taxonomy');
 const { buildArticles, buildPostsPage, buildTaxonomyPages, buildSearch, buildIndex, buildRss } = require('./lib/generator');
 
 const CACHE_PATH = path.join(PATHS.root, '.cache', 'build-manifest.json');
@@ -53,6 +55,7 @@ function buildContext(pageData = {}) {
 function collectPosts() {
   const posts = [];
   const pageFiles = walkDir(PATHS.pages);
+  const rawRecords = [];
 
   for (const file of pageFiles) {
     const bn = path.basename(file);
@@ -61,11 +64,13 @@ function collectPosts() {
 
     const raw = fs.readFileSync(file, 'utf8');
     const { data: fm } = parseFrontmatter(raw);
-    const slug = path.basename(file, path.extname(file));
+    const fallbackTitle = path.basename(file, path.extname(file));
+    const sourcePath = path.relative(PATHS.root, file).replace(/\\/g, '/');
 
-    posts.push({
-      slug,
-      title: fm.title || slug,
+    rawRecords.push({
+      file,
+      sourcePath,
+      title: fm.title || fallbackTitle,
       description: fm.description || '',
       tags: parseListField(fm.tags),
       categories: parseListField(fm.categories),
@@ -74,6 +79,16 @@ function collectPosts() {
       aliases: parseListField(fm.aliases),
       created_at: fm.created_at || '',
       updated_at: fm.updated_at || '',
+    });
+  }
+
+  const articleRegistry = ensureArticleSlugs(rawRecords.map(r => ({ sourcePath: r.sourcePath, title: r.title })));
+
+  for (const record of rawRecords) {
+    const slug = getArticleSlug(articleRegistry, record.sourcePath);
+    posts.push({
+      ...record,
+      slug,
       url: `./${slug}.html`,
     });
   }
@@ -136,11 +151,19 @@ function buildGlobalsFingerprint() {
   const configHash = fs.existsSync(path.join(PATHS.root, 'config.json'))
     ? sha1(fs.readFileSync(path.join(PATHS.root, 'config.json'), 'utf8'))
     : '';
+  const taxonomyRegistryHash = fs.existsSync(path.join(PATHS.root, 'data', 'taxonomy-slugs.json'))
+    ? sha1(fs.readFileSync(path.join(PATHS.root, 'data', 'taxonomy-slugs.json'), 'utf8'))
+    : '';
+  const articleRegistryHash = fs.existsSync(path.join(PATHS.root, 'data', 'article-slugs.json'))
+    ? sha1(fs.readFileSync(path.join(PATHS.root, 'data', 'article-slugs.json'), 'utf8'))
+    : '';
   return {
     templatesHash: templatesSig.hash,
     libHash: libSig.hash,
     configHash,
-    combined: sha1([templatesSig.hash, libSig.hash, configHash].join('|')),
+    taxonomyRegistryHash,
+    articleRegistryHash,
+    combined: sha1([templatesSig.hash, libSig.hash, configHash, taxonomyRegistryHash, articleRegistryHash].join('|')),
   };
 }
 
@@ -181,6 +204,7 @@ function build() {
   const cssStats = buildCss();
 
   const allPosts = collectPosts();
+  const taxonomy = ensureTaxonomyRegistry(allPosts);
   const firstBuild = !cache.getGlobal('globalFingerprint');
   const globals = buildGlobalsFingerprint();
   const prevGlobals = cache.getGlobal('globalFingerprint');
@@ -205,7 +229,9 @@ function build() {
     const pageHash = computePageSourceHash(file);
     pageHashes[resolved] = pageHash;
     const prev = cache.getPage(resolved);
-    const outName = path.basename(file, path.extname(file)) + '.html';
+    const sourcePath = path.relative(PATHS.root, file).replace(/\\/g, '/');
+    const outSlug = allPosts.find(p => p.sourcePath === sourcePath)?.slug || path.basename(file, path.extname(file));
+    const outName = outSlug + '.html';
     const outPath = path.join(PATHS.public, outName);
     const changed = globalChanged || BUILD_FORCE || !prev || prev.sourceHash !== pageHash || !fs.existsSync(outPath);
     if (changed) changedPageFiles.push(file);
@@ -213,11 +239,12 @@ function build() {
 
   const articleStats = buildArticles(PATHS, allPosts, buildContext, RECENT_COUNT, {
     onlyFiles: changedPageFiles,
+    taxonomy,
     onBuilt(file) {
       const resolved = path.resolve(file);
       cache.setPage(resolved, {
         sourceHash: pageHashes[resolved],
-        output: path.basename(file, path.extname(file)) + '.html',
+        output: (allPosts.find(p => p.sourcePath === path.relative(PATHS.root, file).replace(/\\/g, '/'))?.slug || path.basename(file, path.extname(file))) + '.html',
       });
     },
   });
@@ -243,7 +270,7 @@ function build() {
     const prev = cache.getGlobal('taxonomyStats') || { tags: 0, categories: 0, subcategories: 0, total: 0 };
     taxonomyStats = { ...prev, built: 0, reused: prev.total };
   } else {
-    const builtTaxonomy = buildTaxonomyPages(PATHS, allPosts, buildContext);
+    const builtTaxonomy = buildTaxonomyPages(PATHS, allPosts, buildContext, taxonomy);
     cache.setGlobal('taxonomyHash', taxonomyHash);
     cache.setGlobal('taxonomyStats', builtTaxonomy);
     taxonomyStats = { ...builtTaxonomy, built: builtTaxonomy.total, reused: 0 };

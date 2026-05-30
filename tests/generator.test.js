@@ -6,7 +6,9 @@
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
-const { transformLatex, buildArticles, taxonomySlug, categoryUrl, subcategoryUrl } = require('../lib/generator');
+const { createTaxonomyResolver } = require('../lib/taxonomy');
+const { ensureArticleSlugs, getArticleSlug } = require('../lib/article-slugs');
+const { transformLatex, buildArticles, taxonomySlug, categoryUrl, subcategoryUrl, renderSortableList } = require('../lib/generator');
 const { walkDir } = require('../lib/utils');
 
 // Mock fs/marked deps for unit testing
@@ -371,18 +373,62 @@ window.MathJax = {
 
   // ===== taxonomy helpers =====
 
-  'taxonomySlug: handles spaces and unsafe chars': () => {
-    assert.equal(taxonomySlug('Visual Tokenizer'), 'Visual-Tokenizer');
-    assert.equal(taxonomySlug('AI/ML'), 'AI-ML');
-    assert.equal(taxonomySlug('Diffusion?Models%2026'), 'Diffusion-Models-2026');
+  'taxonomySlug: chinese names convert to pinyin': () => {
+    assert.equal(taxonomySlug('人工智能', 'category'), 'ren-gong-zhi-neng');
+    assert.equal(taxonomySlug('机器学习'), 'ji-qi-xue-xi');
   },
 
-  'categoryUrl: uses taxonomy slug': () => {
-    assert.equal(categoryUrl('Visual AI'), './categories/Visual-AI/index.html');
+  'categoryUrl: uses taxonomy registry slug': () => {
+    assert.equal(categoryUrl('Visual AI'), './categories/visual-ai/index.html');
   },
 
-  'subcategoryUrl: nests subcategory under category': () => {
-    assert.equal(subcategoryUrl('AI', 'Visual Tokenizer'), './categories/AI/Visual-Tokenizer/index.html');
+  'subcategoryUrl: nests subcategory under category with normalized slug': () => {
+    assert.equal(subcategoryUrl('AI', 'Visual Tokenizer'), './categories/ai/visual-tokenizer/index.html');
+  },
+
+  'taxonomy resolver: same subcategory under different categories can reuse slug': () => {
+    const taxonomy = createTaxonomyResolver({ version: 1, tags: {}, categories: {}, subcategories: {} });
+    assert.equal(taxonomy.getSubcategorySlug('数学', '基础'), 'ji-chu');
+    assert.equal(taxonomy.getSubcategorySlug('计算机', '基础'), 'ji-chu');
+  },
+
+  'taxonomy resolver: same pinyin in one category gets numeric suffix': () => {
+    const taxonomy = createTaxonomyResolver({ version: 1, tags: {}, categories: {}, subcategories: {} });
+    assert.equal(taxonomy.getSubcategorySlug('数学', '视角'), 'shi-jiao');
+    assert.equal(taxonomy.getSubcategorySlug('数学', '市郊'), 'shi-jiao-2');
+  },
+
+  'article slug registry: chinese titles convert to pinyin and persist by source path': () => {
+    const tempDir = '/tmp/article-slug-test-' + Date.now();
+    fs.mkdirSync(tempDir, { recursive: true });
+    const cwd = process.cwd();
+    process.chdir('/Users/zhengxinyu/gongshangzheng.github.io');
+    try {
+      const registry = ensureArticleSlugs([
+        { sourcePath: 'src/pages/a.md', title: '扩散模型概述' },
+        { sourcePath: 'src/pages/b.md', title: '扩散模型概述' }
+      ]);
+      assert.equal(getArticleSlug(registry, 'src/pages/a.md'), 'kuo-san-mo-xing-gai-shu');
+      assert.equal(getArticleSlug(registry, 'src/pages/b.md'), 'kuo-san-mo-xing-gai-shu-2');
+    } finally {
+      process.chdir(cwd);
+    }
+  },
+
+  'renderSortableList: keeps title text while linking with slug': () => {
+    const html = renderSortableList([
+      { title: '扩散模型概述', slug: 'kuo-san-mo-xing-gai-shu', created_at: '2026-01-01', updated_at: '2026-01-02' }
+    ], { linkPrefix: '../' });
+    assert(html.includes('扩散模型概述'), html);
+    assert(html.includes('p.slug'), 'script should still link by slug');
+    assert(html.includes('kuo-san-mo-xing-gai-shu'), html);
+  },
+
+  'xref post map can point title to article registry slug': () => {
+    const allPosts = [{ title: '扩散模型概述', slug: 'kuo-san-mo-xing-gai-shu' }];
+    const postMap = {};
+    allPosts.forEach(function(p) { postMap[p.title] = p.slug; });
+    assert.equal(postMap['扩散模型概述'], 'kuo-san-mo-xing-gai-shu');
   },
 
   // ===== extractFirstDiv: attribute edge cases =====

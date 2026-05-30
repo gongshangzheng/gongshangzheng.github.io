@@ -1,0 +1,540 @@
+---
+title: "ProGIC 深度解读：基于残差向量量化的渐进式轻量生成压缩"
+description: "CVPR 2026 Findings 论文深度解读：用 RVQ 实现从粗到细的渐进式解码，搭配深度可分离卷积实现 10× 加速和边缘设备部署"
+created_at: "2026-05-30T10:58:37"
+updated_at: "2026-05-30T11:05:00"
+tags: ["图像压缩", "残差向量量化", "渐进式解码", "轻量化", "CVPR 2026"]
+categories: ["AI"]
+subcategory: "图像压缩"
+mathjax: true
+hero_title: "ProGIC"
+hero_sub: "CVPR 2026 Findings · Tsinghua"
+hero_tagline: "残差向量量化实现渐进式解码，轻量化设计支持边缘部署"
+---
+
+
+<!-- ============================================================
+  引言：GIC 面临的两大现实挑战
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">引言</div>
+  <div class="ch-title">带宽受限 + 算力受限：GIC 的双重困境</div>
+
+  <p>生成式图像压缩（Generative Image Compression, GIC）这几年进步很快。从 HiFiC 用 GAN 合成细节，到 MS-ILLM 改进判别器提升分布保真度，再到 DiffEIC 和 OSCAR 借助 Stable Diffusion 做扩散先验增强，感知质量不断刷新纪录。但论文作者 Cao 等人指出了一个被多数工作回避的现实：<mark>GIC 的两个核心挑战——带宽受限需要渐进式传输，算力受限需要轻量化部署——至今没有被同时解决</mark>。</p>
+
+  <p>先说带宽问题。GIC 典型应用场景是极低码率传输，比如卫星通信、移动端弱网环境。带宽极其稀缺时，整个码流传完之前客户端什么都看不到。如果支持渐进式解码（progressive decoding），接收前 20% 的码流就能先看到一张粗略但可用的预览图，这是实际需求中非常关键的能力。然而，现有的 GIC 方法全部要求完整码流才能解码，渐进式 GIC 几乎是空白。</p>
+
+  <p>再说算力问题。DiffEIC 依赖 Stable Diffusion 做条件生成，OSCAR 需要单张图 80GB 以上显存，MS-ILLM 的编解码延迟也在百毫秒级别。这些方法根本跑不动在边缘设备上。而低码率场景恰恰最常部署在算力受限的终端——手机、IoT 设备、嵌入式芯片。Fig. 1 的 BD-rate vs. 延迟散点图直观展示了这个矛盾：性能好的方法往往慢得离谱，快的方法又牺牲太多质量。</p>
+
+  <div class="callout"><strong>核心问题</strong>：能否设计一个 GIC 框架，同时实现渐进式解码和边缘设备可部署？</div>
+</div>
+
+
+<!-- ============================================================
+  问题分析：现有 GIC 方法的结构性缺陷
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">问题分析</div>
+  <div class="ch-title">又大又慢，不支持渐进解码</div>
+
+  <p>把现有 GIC 方法按架构分成三条路线，逐个审视它们为什么做不到 ProGIC 想要的事：</p>
+
+  <h3>GAN 路线（HiFiC / MS-ILLM）</h3>
+  <p>用 GAN 判别器驱动生成器合成高频细节，感知质量不错。但解码器是一个庞大的 CNN/Transformer，没有内在的渐进结构。要提速就得砍模型，砍了质量就掉。MS-ILLM 在 Kodak 上单图解码需要 147ms（A100），在手机 CPU 上更是几秒起步。</p>
+
+  <h3>VQ 路线（Control-GIC / DLF）</h3>
+  <p>用向量量化码本把潜在表示映射到离散空间。单码本的表示容量有限，Control-GIC 试图用不同粒度的码本做多码率，但本质上是多个独立模型，不支持同一个码流内的渐进解码。</p>
+
+  <h3>扩散路线（DiffEIC / OSCAR）</h3>
+  <p>用预训练 Stable Diffusion 做解码器，感知质量极致。但代价是推理极慢（DiffEIC 在 CPU 上单图超过 10 秒），显存需求巨大（OSCAR 单图超过 80GB）。渐进式解码？完全不可能——扩散模型需要完整条件才能去噪。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/progic-2026/fig1-bd-rate.png" alt="Fig.1: BD-rate vs Decoding Latency" loading="lazy">
+    <div class="cap">Fig. 1: Kodak 数据集上的 BD-rate（DISTS）vs. 解码延迟。左上角越靠越好。ProGIC 在性能和速度之间取得了最佳平衡。来源：Cao et al., CVPR 2026</div>
+  </div>
+
+  <p>结构性缺陷很清楚：<mark>这些方法的解码器要么是"全有或全无"的黑盒，要么依赖无法拆分的大型预训练模型</mark>。渐进式解码需要一种可以"部分求和"的表示方式，轻量化需要把大模型的计算量砍掉一个数量级。ProGIC 的方案是同时解决这两个问题。</p>
+</div>
+
+
+<!-- ============================================================
+  核心思想：RVQ + 轻量化
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">核心思想</div>
+  <div class="ch-title">RVQ 残差分解 + 深度可分离卷积</div>
+
+  <p>ProGIC 的核心直觉来自语音压缩领域。在神经音频编解码器（如 EnCodec、SoundStream）中，残差向量量化（Residual Vector Quantization, RVQ）已经被证明是一种高效的多级量化方案。Cao 等人把它搬到了图像压缩中，并做了两个关键适配。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/progic-2026/fig2-motivation.png" alt="Fig.2: RVQ Motivation" loading="lazy">
+    <div class="cap">Fig. 2: ProGIC 的动机示意。原始图像向量被分解为一个基础向量加上一系列残差向量，逐级逼近，每一级求和都是一次越来越精细的重建。来源：Cao et al., CVPR 2026</div>
+  </div>
+
+  <p><strong>适配一：用 RVQ 实现渐进式解码。</strong>传统 VQ 用单个码本量化潜在表示 $\mathbf{y}$，得到 $\hat{\mathbf{y}}$。RVQ 的做法是：先用第一个码本量化 $\mathbf{y}$ 得到 $\hat{\mathbf{y}}_1$，然后计算残差 $\mathbf{r}_1 = \mathbf{y} - \hat{\mathbf{y}}_1$，再用第二个码本量化这个残差得到 $\hat{\mathbf{y}}_2$，以此类推。最终的重建是所有级的求和：</p>
+
+  <div class="def-box">
+    <h3>RVQ 重建公式</h3>
+    <p>$$\hat{\mathbf{y}} = \hat{\mathbf{y}}_1 + \hat{\mathbf{y}}_2 + \cdots + \hat{\mathbf{y}}_N$$</p>
+    <p>其中 $\hat{\mathbf{y}}_n = \text{Quantize}_n(\mathbf{y} - \sum_{i=1}^{n-1} \hat{\mathbf{y}}_i)$，每个 $\text{Quantize}_n$ 使用独立的码本 $C_n$。</p>
+  </div>
+
+  <p>渐进式解码自然浮现：接收端只需依次累加已收到的级。收到第 1 级 $\hat{\mathbf{y}}_1$ 就能恢复主要语义，收到第 2 级加上 $\hat{\mathbf{y}}_2$ 细节更丰富，到第 $N$ 级就是完整重建。每一级都是一个完整的、可用的中间结果。</p>
+
+  <p><strong>适配二：用深度可分离卷积实现轻量化。</strong>ProGIC 把传统的 ResNet/Transformer 解码器替换成深度可分离卷积（depthwise-separable convolution）块 + 小注意力模块 + FFN 的组合。深度可分离卷积把标准卷积分解为 depthwise（逐通道）和 pointwise（逐点）两步，计算量从 $O(K^2 \cdot C_{\text{in}} \cdot C_{\text{out}})$ 降到 $O(K^2 \cdot C_{\text{in}} + C_{\text{in}} \cdot C_{\text{out}})$，参数量大幅缩减。</p>
+
+  <div class="callout"><strong>设计哲学</strong>：ProGIC 的目标不是追求极致感知质量，而是追求"足够好的质量 × 足够快的速度 × 足够灵活的传输"这个三角乘积的最大化。</div>
+</div>
+
+
+<!-- ============================================================
+  方法详解
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">方法详解</div>
+  <div class="ch-title">ProGIC 架构全解析</div>
+
+  <div class="photo">
+    <img src="assets/media/images/progic-2026/fig3a-rvq.png" alt="Fig.3a: ProGIC Architecture Overview" loading="lazy">
+    <div class="cap">Fig. 3(a): ProGIC 架构总览。编码器将图像下采样到潜在空间，RVQ 对潜在表示进行多级残差量化，解码器逐级上采样重建。每级使用独立码本。来源：Cao et al., CVPR 2026</div>
+  </div>
+
+  <h3>3.1 编码器与 RVQ 量化</h3>
+
+  <p>编码器 $E$ 将输入图像 $\mathbf{x}$ 缩小 $f=16$ 倍，得到潜在表示 $\mathbf{y} = E(\mathbf{x}) \in \mathbb{R}^{H/f \times W/f \times C}$。然后 RVQ 用 $N$ 个独立码本逐级量化。默认配置下 $N=5$，每个码本包含 $2^L = 2^{10} = 1024$ 个码字（$L=10$ bit per codebook index）。</p>
+
+  <p>码率计算很直接。每个空间位置在每个 stage 需要 $L$ bit，空间降采样因子为 $f$，所以：</p>
+
+  <div class="def-box">
+    <h3>BPP 计算</h3>
+    <p>$$\text{BPP} = \frac{L}{f \times f} \times N$$</p>
+    <p>默认 $L=10, f=16, N=5$ 时，$\text{BPP} = \frac{10}{256} \times 5 = 0.1953$。接收前 $k$ 个 stage 时码率为 $\text{BPP}_k = \frac{L}{f^2} \times k$，对应渐进式解码的 5 个码率点 $\{0.039, 0.078, 0.117, 0.156, 0.195\}$。</p>
+  </div>
+
+  <p><strong>不用熵编码。</strong>这是 ProGIC 一个非常反直觉的设计选择。传统学习压缩（LIC）花费大量精力设计熵模型（hyperprior、channel-wise context 等）来压缩量化索引的统计冗余。ProGIC 发现，RVQ 量化后的 codebook index 分布近似均匀——信息熵 > 9.80 bit/index（满熵 10 bit），熵编码只能带来 0.90% 的 BD-rate 收益。原因很简单：RVQ 多级分解本身就打散了索引之间的统计结构。与其花费计算量做熵编码，不如把这个时间留给更有价值的事。</p>
+
+  <h3>3.2 轻量化解码器</h3>
+
+  <p>解码器的设计体现了 ProGIC 对部署效率的极致追求。整体架构是编码器的镜像：先上采样，然后通过多级卷积块和 FFN 重建细节。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/progic-2026/fig3b-conv.png" alt="Fig.3b: Depthwise Convolution Block" loading="lazy">
+    <div class="cap">Fig. 3(b): 深度可分离卷积块结构。Depth conv 为逐通道卷积，其余为逐点卷积。来源：Cao et al., CVPR 2026</div>
+  </div>
+
+  <p><strong>深度可分离卷积块</strong>是基础构建单元。每个块包含：depthwise convolution（逐通道空间混合）+ pointwise convolution（逐点通道混合）+ ReLU 激活。与标准卷积相比，参数量和 FLOPs 降低约 $K^2$ 倍（$K$ 为卷积核大小）。</p>
+
+  <p><strong>Feature Modulation</strong>是一个轻量但有效的改进。在卷积块中引入条件调制：用当前 stage 的码本嵌入向量对特征进行逐通道缩放和偏移。这个操作的计算开销几乎为零（只是逐元素乘加），但带来了 2.42% 的 BD-rate 提升。直觉上，它告诉解码器"当前在处理第几个 stage 的残差"，让不同 stage 的特征有区分性。</p>
+
+  <p><strong>小注意力模块</strong>借鉴了 LIC-HPCM 的设计思路，使用轻量的 channel attention 而非完整的 self-attention。它捕获跨通道的全局依赖关系，带来 11.41% 的 BD-rate 提升。两个模块合在一起，总共 14.90% 的 BD-rate 收益，编解码延迟几乎不增加。</p>
+
+  <div class="photo">
+    <img src="assets/media/images/progic-2026/fig3c-ffn.png" alt="Fig.3c: FFN Architecture" loading="lazy">
+    <div class="cap">Fig. 3(c): FFN 架构。"Chunk-2" 将张量沿通道维度分成两半，只对其中一半做全连接变换，另一半直接跳过，实现参数量减半。来源：Cao et al., CVPR 2026</div>
+  </div>
+
+  <p><strong>FFN Chunk-2</strong>是对前馈网络的进一步压缩。标准 FFN 的中间维度是通道数的 4 倍（expansion ratio $r=4$）。Chunk-2 策略将输入张量沿通道维度切成两半，只对一半做全连接变换，另一半直接 pass-through。参数量和计算量直接减半，实验表明精度损失可忽略。</p>
+
+  <h3>3.3 渐进式传输机制</h3>
+
+  <p>渐进式传输的工作流程如下：</p>
+
+  {{< mermaid >}}
+graph LR
+    A[编码器] --> B[RVQ Stage 1]
+    B --> C[RVQ Stage 2]
+    C --> D[...]
+    D --> E[RVQ Stage N]
+    B --> |"仅 Stage 1"| F["粗略预览"]
+    B --> C --> |"Stage 1+2"| G["中等质量"]
+    B --> C --> D --> E --> |"全部 N 级"| H["完整重建"]
+{{< /mermaid >}}
+
+  <p>编码端：$N$ 个 stage 的 codebook index 按顺序拼接成码流。解码端：收到前 $k$ 个 stage 的 index，查各自的码本得到 $\hat{\mathbf{y}}_1, \ldots, \hat{\mathbf{y}}_k$，求和后送入解码器。解码器结构不变，只是输入的潜在表示从粗糙到精细逐步改善。</p>
+
+  <p>这个设计的一个微妙之处在于训练策略。直接训练 $N$ 个 stage 会导致早期 stage 被"浪费"——模型可能把所有信息都塞到后面的 stage。ProGIC 的解决方案是两阶段训练：</p>
+  <ul>
+    <li><strong>阶段一</strong>：只训练 $N=1$ 的 base model，让第一个 stage 学会尽可能好的基础重建。</li>
+    <li><strong>阶段二</strong>：联合训练全部 $N$ 个 stage。损失函数对每个 stage 的中间重建都施加监督，用权重 $p$ 控制早期 stage 和最终重建的平衡。</li>
+  </ul>
+
+  <div class="def-box">
+    <h3>多 Stage 联合损失</h3>
+    <p>$$\mathcal{L} = \sum_{k=1}^{N} \Big[ \mathcal{L}_{\text{MSE}}(\hat{\mathbf{x}}_k, \mathbf{x}) + \lambda_{\text{LPIPS}} \mathcal{L}_{\text{LPIPS}}(\hat{\mathbf{x}}_k, \mathbf{x}) + \lambda_{\text{GAN}} \mathcal{L}_{\text{GAN}}(\hat{\mathbf{x}}_k) \Big]$$</p>
+    <p>其中 $\hat{\mathbf{x}}_k$ 是接收前 $k$ 个 stage 后的重建结果。加权系数 $p$ 控制早期 stage 的比重：$p$ 越大，模型越关注低码率下的预览质量；$p$ 越小，越侧重最终重建。默认 $p=0.5$，平衡所有码率点的性能。</p>
+  </div>
+</div>
+
+
+<!-- ============================================================
+  训练细节
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">训练细节</div>
+  <div class="ch-title">两阶段训练与超参数配置</div>
+
+  <p>ProGIC 的训练分两个阶段，这个策略对渐进式解码的质量至关重要。</p>
+
+  <h3>阶段一：Base Model 训练</h3>
+  <p>只保留 $N=1$ 个 stage，用完整的 MSE + LPIPS + GAN 损失训练一个基础编解码器。这一步的目的是让第一个 stage 的码本学会捕获图像最主要的语义和结构信息。如果跳过这一步直接训练 5 个 stage，第一个 stage 往往学不到有意义的表示——它会"偷懒"，把困难的部分推给后面的 stage。</p>
+
+  <h3>阶段二：联合多 Stage 训练</h3>
+  <p>固定阶段一训练好的基础模型，逐步加入剩余 $N-1$ 个 stage，联合优化全部参数。每个 stage 有独立的码本和独立的量化器，但共享同一个解码器。损失函数对每个 stage 的中间重建都计算 MSE、LPIPS 和 GAN 损失，并用权重 $p=0.5$ 加权。</p>
+
+  <p>训练配置：</p>
+  <ul>
+    <li>数据集：ImageNet 全集，每 epoch 采样 1%，随机裁剪 256×256 + 水平翻转</li>
+    <li>优化器：Adam，$\beta_1=0.5$，$\beta_2=0.9$</li>
+    <li>学习率：$10^{-4}$ 前 1.5M iter，之后衰减到 $10^{-5}$</li>
+    <li>总迭代：2M iter，batch size 16</li>
+    <li>硬件：单卡 NVIDIA A100，峰值显存 12.4 GB</li>
+  </ul>
+
+  <p>12.4 GB 的峰值显存非常克制。对比 OSCAR 单图就需要 80GB 以上显存，ProGIC 的轻量设计在这里体现得淋漓尽致。这也意味着它可以在消费级 GPU 上训练，降低了研究门槛。</p>
+</div>
+
+
+<!-- ============================================================
+  实验分析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">实验分析</div>
+  <div class="ch-title">与 MS-ILLM / DiffEIC / OSCAR 的全面对比</div>
+
+  <h3>4.1 Rate-Distortion 性能</h3>
+
+  <p>在 Kodak、Tecnick、DIV2K、CLIC 2020 四个数据集上的 BD-rate 对比（以 MS-ILLM 为基准）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方法</th>
+          <th>Kodak (LPIPS)</th>
+          <th>Tecnick (LPIPS)</th>
+          <th>DIV2K (LPIPS)</th>
+          <th>CLIC 2020 (LPIPS)</th>
+          <th>Enc. (ms)</th>
+          <th>Dec. (ms)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>MS-ILLM</td>
+          <td>0.0% (基准)</td>
+          <td>0.0% (基准)</td>
+          <td>0.0% (基准)</td>
+          <td>0.0% (基准)</td>
+          <td>165.38</td>
+          <td>147.79</td>
+        </tr>
+        <tr>
+          <td>DiffEIC</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>>10s</td>
+          <td>>10s</td>
+        </tr>
+        <tr>
+          <td>OSCAR</td>
+          <td>OOM</td>
+          <td>OOM</td>
+          <td>OOM</td>
+          <td>OOM</td>
+          <td>3429</td>
+          <td>9519</td>
+        </tr>
+        <tr>
+          <td><strong>ProGIC</strong></td>
+          <td><strong>-58.85%</strong></td>
+          <td><strong>-45.35%</strong></td>
+          <td><strong>-51.77%</strong></td>
+          <td><strong>-51.13%</strong></td>
+          <td>7.70</td>
+          <td>10.62</td>
+        </tr>
+        <tr>
+          <td>ProGIC-s</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+          <td><strong>—</strong></td>
+          <td><strong>—</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>几个关键观察：</p>
+
+  <p><strong>OSCAR 在 DIV2K 和 CLIC 2020 上 OOM。</strong>官方设置处理单张图就需要 80GB 以上显存，这直接证明了扩散方法在实际部署中的根本性障碍。</p>
+
+  <p><strong>ProGIC 在所有四个数据集上 BD-rate 收益均超过 45%</strong>，在 Kodak 上达到 58.85%（LPIPS）。这不仅超过了 MS-ILLM 基准，也超过了 DiffEIC 和 OSCAR 等扩散方法。</p>
+
+  <p><strong>编解码速度。</strong>ProGIC 编码 7.70ms、解码 10.62ms（A100），比 MS-ILLM 快 20×以上，比 OSCAR 快 1000×以上。这个速度优势是量级性的，不是百分比级别的改进。</p>
+
+  <h3>4.2 CPU 与手机实测</h3>
+
+  <p>ProGIC-s（小型变体）在笔记本 CPU（AMD Ryzen 7840HS）上的测试：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方法</th>
+          <th>256×256 Enc.</th>
+          <th>256×256 Dec.</th>
+          <th>512×512 Enc.</th>
+          <th>512×512 Dec.</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>VTM-23.10</td>
+          <td>>10s</td>
+          <td>330ms</td>
+          <td>>10s</td>
+          <td>456ms</td>
+        </tr>
+        <tr>
+          <td>DCVC-RT</td>
+          <td>247ms</td>
+          <td>187ms</td>
+          <td>981ms</td>
+          <td>725ms</td>
+        </tr>
+        <tr>
+          <td>MS-ILLM</td>
+          <td>121ms</td>
+          <td>368ms</td>
+          <td>507ms</td>
+          <td>1352ms</td>
+        </tr>
+        <tr>
+          <td>OSCAR</td>
+          <td>805ms</td>
+          <td>2530ms</td>
+          <td>3429ms</td>
+          <td>9519ms</td>
+        </tr>
+        <tr>
+          <td><strong>ProGIC</strong></td>
+          <td><strong>76ms</strong></td>
+          <td><strong>124ms</strong></td>
+          <td><strong>297ms</strong></td>
+          <td><strong>515ms</strong></td>
+        </tr>
+        <tr>
+          <td><strong>ProGIC-s</strong></td>
+          <td><strong>34ms</strong></td>
+          <td><strong>50ms</strong></td>
+          <td><strong>107ms</strong></td>
+          <td><strong>184ms</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>ProGIC-s 在 CPU 上跑 256×256 图像只需 34ms 编码 + 50ms 解码。更惊人的是，它在手机 CPU 上也跑得动：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>CPU</th>
+          <th>256×256 Enc.</th>
+          <th>256×256 Dec.</th>
+          <th>512×512 Enc.</th>
+          <th>512×512 Dec.</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Snapdragon 870</td>
+          <td>0.563s</td>
+          <td>0.675s</td>
+          <td>2.498s</td>
+          <td>3.827s</td>
+        </tr>
+        <tr>
+          <td>MTK Dimensity 8000</td>
+          <td>0.559s</td>
+          <td>0.715s</td>
+          <td>2.346s</td>
+          <td>3.658s</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Snapdragon 870 是 2021 年的芯片，MTK Dimensity 8000 是 2022 年的。这些都已大幅落后于今天的主流处理器，但 ProGIC-s 仍然能在上面实现秒级编解码。这意味着它确实具备边缘部署能力。</p>
+
+  <h3>4.3 消融实验：各组件的贡献</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>配置</th>
+          <th>BD-rate (DISTS)</th>
+          <th>Enc. (ms)</th>
+          <th>Dec. (ms)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>MS-ILLM（基准）</td>
+          <td>0.0%</td>
+          <td>165.38</td>
+          <td>147.79</td>
+        </tr>
+        <tr>
+          <td>Base + ProgDTD (PSNR)</td>
+          <td>+487.18%</td>
+          <td>39.31</td>
+          <td>52.46</td>
+        </tr>
+        <tr>
+          <td>Base + ProgDTD (LPIPS)</td>
+          <td>-10.28%</td>
+          <td>38.37</td>
+          <td>51.38</td>
+        </tr>
+        <tr>
+          <td><strong>Base + RVQ (LPIPS)</strong></td>
+          <td><strong>-48.10%</strong></td>
+          <td>6.23</td>
+          <td>9.33</td>
+        </tr>
+        <tr>
+          <td>+ Attention</td>
+          <td>-56.00%</td>
+          <td>7.70</td>
+          <td>10.61</td>
+        </tr>
+        <tr>
+          <td><strong>+ Attention + Modulation</strong></td>
+          <td><strong>-57.57%</strong></td>
+          <td>7.70</td>
+          <td>10.62</td>
+        </tr>
+        <tr>
+          <td>+ Entropy Coding</td>
+          <td>-49.0%</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>消融实验揭示了几个重要事实：</p>
+
+  <p><strong>RVQ vs. ProgDTD</strong>：ProgDTD 是非生成式的渐进压缩方法。即使把 ProgDTD 用 LPIPS 目标重新训练（Base + ProgDTD (LPIPS)），BD-rate 也只有 -10.28%。换成 RVQ 后跳到 -48.10%，提升 37.82 个百分点，同时速度还快了 5×。这证明 RVQ 不仅提供了渐进能力，还因为其残差分解结构天然适合生成式目标。</p>
+
+  <p><strong>注意力 + 调制</strong>：两个轻量模块共贡献 14.90% 的 BD-rate 提升，但编码延迟只从 6.23ms 增加到 7.70ms（+23%），解码延迟从 9.33ms 到 10.62ms（+14%）。这个投入产出比非常高。</p>
+
+  <p><strong>熵编码几乎没用</strong>：加上 range coding 后 BD-rate 从 -57.57% 退回到 -49.0%。这不是 bug——论文解释是因为熵模型的训练目标（估计 index 分布）和主模型的感知目标之间存在冲突，导致主模型被干扰。对于 RVQ 来说，index 分布本身就近均匀，熵编码没有可压缩的冗余。</p>
+
+  <div class="callout"><strong>关键洞察</strong>：RVQ 的 index 分布近似均匀（信息熵 > 9.80/10 bit），这意味着传统的熵编码在这个框架下几乎失效。这是 VQ 压缩中一个被长期忽视的现象。</div>
+</div>
+
+
+<!-- ============================================================
+  与 RDVQ 的对比
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">对比视角</div>
+  <div class="ch-title">ProGIC vs. RDVQ：VQ 压缩的两条路线</div>
+
+  <p>几乎同一时期，另一篇 CVPR 2026 Oral 论文 RDVQ 也在探索 VQ 在生成压缩中的潜力。两篇论文代表了 VQ 图像压缩的两条截然不同的技术路线：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>维度</th>
+          <th>ProGIC</th>
+          <th>RDVQ</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>核心思路</strong></td>
+          <td>RVQ 多级残差分解</td>
+          <td>可微松弛端到端 RD 优化</td>
+        </tr>
+        <tr>
+          <td><strong>熵编码</strong></td>
+          <td>不用（index 近均匀）</td>
+          <td>自回归熵模型</td>
+        </tr>
+        <tr>
+          <td><strong>渐进式</strong></td>
+          <td>原生支持</td>
+          <td>不支持</td>
+        </tr>
+        <tr>
+          <td><strong>目标导向</strong></td>
+          <td>工程部署优先</td>
+          <td>理论 RD 最优</td>
+        </tr>
+        <tr>
+          <td><strong>轻量化</strong></td>
+          <td>深度可分离卷积 + FFN Chunk</td>
+          <td>未特别关注</td>
+        </tr>
+        <tr>
+          <td><strong>部署场景</strong></td>
+          <td>GPU + CPU + 手机</td>
+          <td>GPU</td>
+        </tr>
+        <tr>
+          <td><strong>会议级别</strong></td>
+          <td>Findings</td>
+          <td>Oral</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>RDVQ 的核心贡献是解决 VQ 不可微的问题——通过引入可微松弛（differentiable relaxation），让码本更新能端到端地优化 RD 目标。这是理论上的重要突破，但它的解码器仍然是重量级的，不支持渐进式传输，也无法在边缘设备上运行。</p>
+
+  <p>ProGIC 反其道而行：不追求理论上的 RD 最优，而是追求实用场景下的综合最优。它坦然接受"不用熵编码"可能带来的微小码率损失，换来的是架构上的极度简洁和部署上的极度灵活。</p>
+
+  <p>两者几乎同时出现，说明 VQ 路线在图像压缩领域正在走向成熟，但成熟的方式不止一种。如果你的目标是理论分析和算法创新，RDVQ 是更好的参照；如果你的目标是做产品、上边缘、快速落地，ProGIC 的思路更值得借鉴。</p>
+</div>
+
+
+<!-- ============================================================
+  总结与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">实用性优先的设计哲学</div>
+
+  <p>ProGIC 这篇论文值得反复读，不是因为它用了多复杂的技术，恰恰相反——它用的每一个组件都是成熟的、简单的、可解释的。RVQ 来自语音压缩，深度可分离卷积来自 MobileNet，小注意力来自 LIC，FFN Chunk 只是一个简单的分切操作。论文的价值不在于发明新组件，而在于把正确的组件组合到正确的位置，解决一个被忽视但非常重要的实际问题。</p>
+
+  <p>三个值得带走的设计原则：</p>
+
+  <p><strong>第一，渐进式不是锦上添花，而是刚需。</strong>在弱网环境、卫星通信、边缘推理中，"先看个大概"比"等完整结果"重要得多。RVQ 天然提供这种能力，不需要任何额外设计。</p>
+
+  <p><strong>第二，熵编码不是万能药。</strong>当 index 分布本身就接近均匀时，熵模型不但帮不上忙，反而可能因为训练目标冲突拖累主模型。做压缩研究的人往往条件反射地加熵模型，ProGIC 提醒我们：先看数据，再决定用不用工具。</p>
+
+  <p><strong>第三，轻量化和高性能不矛盾。</strong>ProGIC-s 在手机 CPU 上秒级解码，同时 BD-rate 仍然优于所有对比方法。深度可分离卷积 + 小注意力 + FFN Chunk 这套组合拳已经被证明是高效的。</p>
+
+  <div class="callout"><strong>一句话总结</strong>：ProGIC 证明了一件事——生成式图像压缩不需要大模型和复杂管线也能做好，关键是找到对的表示方式和对的部署策略。</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li><a href="https://arxiv.org/abs/2603.02897" target="_blank">ProGIC: Progressive and Lightweight Generative Image Compression with Residual Vector Quantization (arXiv:2603.02897)</a></li>
+      <li><a href="https://arxiv.org/html/2603.02897v2" target="_blank">ProGIC 论文 HTML 全文</a></li>
+      <li><a href="https://arxiv.org/abs/2604.10546" target="_blank">RDVQ: Differentiable Vector Quantization for Rate-Distortion Optimization of GIC (arXiv:2604.10546)</a></li>
+      <li><a href="https://cvpr.thecvf.com/virtual/2026/oral/40298" target="_blank">CVPR 2026 Oral: RDVQ</a></li>
+    </ul>
+  </div>
+</div>

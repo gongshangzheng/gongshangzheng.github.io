@@ -4,6 +4,7 @@
  */
 
 const assert = require('assert');
+const { createTaxonomyResolver } = require('../lib/taxonomy');
 const { processHeadings, buildTocHtml, buildTocSidebar } = require('../lib/toc');
 
 const tests = {
@@ -80,12 +81,20 @@ const tests = {
     assert.equal(idCount, 1, 'Should have exactly one id attribute, got: ' + out);
   },
 
-  'processHeadings: .ch-title elements processed as h2': () => {
+  'processHeadings: .ch-title elements processed as level 2': () => {
     const html = `<div class="ch-title">Chapter One</div>`;
     const { html: out, headings } = processHeadings(html);
     assert(out.includes('id="Chapter-One"'), `Expected id="Chapter-One", got: ${out.substring(0, 100)}`);
     assert.equal(headings[0].level, 2);
     assert.equal(headings[0].text, 'Chapter One');
+  },
+
+  'processHeadings: .section-title elements processed as level 3': () => {
+    const html = `<div class="section-title">Section One</div>`;
+    const { html: out, headings } = processHeadings(html);
+    assert(out.includes('id="Section-One"'), `Expected id="Section-One", got: ${out.substring(0, 100)}`);
+    assert.equal(headings[0].level, 3);
+    assert.equal(headings[0].text, 'Section One');
   },
 
   // ===== buildTocHtml =====
@@ -185,6 +194,7 @@ const tests = {
     const { html: out, headings } = processHeadings(html);
     assert.equal(headings.length, 1);
     assert.equal(headings[0].text, 'The Title');
+    assert.equal(headings[0].level, 2);
     assert(out.includes('id="The-Title"'));
   },
 
@@ -229,23 +239,43 @@ const tests = {
 
   // ===== mixed .ch-title and h2 =====
 
-  'processHeadings: mixed .ch-title and h2 headings in document order': () => {
+  'processHeadings: mixed chapter, section-title and headings preserve document order': () => {
     // Combined regex processes all heading types in document order
-    const html = `<h2>Section Title</h2><div class="ch-title">Chapter Title</div><h3>Subsection</h3>`;
-    const { headings } = processHeadings(html);
-    assert.equal(headings.length, 3);
-    // Document order: h2, ch-title, h3
-    assert.equal(headings[0].text, 'Section Title');
+    const html = `<h2>Chapter H2</h2><div class="ch-title">Chapter Title</div><div class="section-title">Section Title</div><h3>Subsection</h3><h4>Detail</h4>`;
+    const { headings, html: out } = processHeadings(html);
+    assert.equal(headings.length, 5);
+    assert.equal(headings[0].text, 'Chapter H2');
     assert.equal(headings[0].level, 2);
     assert.equal(headings[1].text, 'Chapter Title');
-    assert.equal(headings[1].level, 2);  // .ch-title → level 2
-    assert.equal(headings[2].text, 'Subsection');
+    assert.equal(headings[1].level, 2);
+    assert.equal(headings[2].text, 'Section Title');
     assert.equal(headings[2].level, 3);
+    assert.equal(headings[3].text, 'Subsection');
+    assert.equal(headings[3].level, 3);
+    assert.equal(headings[4].text, 'Detail');
+    assert.equal(headings[4].level, 4);
+    assert(out.includes('class="section-title"'));
+    assert(out.includes('class="ch-section"'));
   },
 
   'buildTocSidebar: sidebar contains closing aside tag': () => {
     const { sidebar } = buildTocSidebar([{ level: 2, text: 'Test', id: 'Test' }]);
     assert(sidebar.includes('</aside>'), 'sidebar should be properly closed');
+  },
+
+  'buildTocSidebar: category browser tree uses taxonomy slugs in data tree': () => {
+    const taxonomy = createTaxonomyResolver({ version: 1, tags: {}, categories: {}, subcategories: {} });
+    const posts = [{
+      slug: 'demo',
+      title: 'Demo',
+      url: './demo.html',
+      categories: ['人工智能'],
+      subcategory: '基础',
+      created_at: '2026-01-01'
+    }];
+    const { sidebar } = buildTocSidebar([], posts, posts[0], taxonomy);
+    assert(sidebar.includes('ren-gong-zhi-neng'), sidebar);
+    assert(sidebar.includes('ji-chu'), sidebar);
   },
 
   // ===== tree structure =====

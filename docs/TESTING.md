@@ -37,14 +37,14 @@ module.exports = { tests, name: 'mymodule' };
 
 | File | Tests |
 |------|-------|
-| generator | 70 |
+| generator | 75 |
 | parser | 28 |
-| plot-assets | 5 |
 | replace | 45 |
-| toc | 27 |
+| taxonomy-alias-redirect | 1 |
+| toc | 29 |
 
 ## Coverage
 
-**Total:** 175 tests across 5 modules.
+**Total:** 178 tests across 5 modules.
 
 See `docs/coverage.md` for per-module breakdown.

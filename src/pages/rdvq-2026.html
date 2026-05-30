@@ -1,0 +1,328 @@
+---
+title: "RDVQ 深度解读：可微向量量化实现端到端率失真优化"
+description: "CVPR 2026 Oral 论文深度解读：通过可微分松弛 VQ 码本分布，首次实现 VQ 压缩的端到端率失真优化，用不到 20% 的参数取得 SOTA 感知质量"
+created_at: "2026-05-30T10:58:37"
+updated_at: "2026-05-30T11:05:00"
+tags: ["图像压缩", "向量量化", "率失真优化", "生成式压缩", "CVPR 2026"]
+categories: ["AI"]
+subcategory: "图像压缩"
+mathjax: true
+hero_title: "RDVQ"
+hero_sub: "CVPR 2026 Oral · UESTC"
+hero_tagline: "可微 VQ 松弛，让端到端率失真优化成为可能"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">引言</div>
+  <div class="ch-title">VQ 压缩：被忽视的端到端率失真优化问题</div>
+
+  图像压缩领域有一条清晰的发展脉络。从早期 JPEG 的 DCT 变换，到 H.264/H.265 的混合编码框架，再到近十年端到端优化（end-to-end optimization）范式的兴起，研究者们一直在追寻同一个目标：用更少的比特存储更高质量的图像。
+
+  2016 年，Ballé 等人提出了端到端率失真优化框架，通过可微分近似将量化操作融入端到端训练流程<a href="#ref-balle2016" class="bib-ref" id="ref-balle2016-inline">[Ballé et al., 2016]</a>。这条路线催生了大量标志性工作——从基础的 VAE 压缩到后来的 GAN-based 生成压缩（HiFiC）<a href="#ref-hific" class="bib-ref" id="ref-hific-inline">[HiFiC, Mentzer et al., 2020]</a>，再到近年结合扩散模型的极端压缩方案（RDEIC）<a href="#ref-rdeic" class="bib-ref" id="ref-rdeic-inline">[RDEIC, Xu et al., 2024]</a>、双分支 latent 融合（DLF）<a href="#ref-dlf" class="bib-ref" id="ref-dlf-inline">[DLF, 2025]</a>、以及扩散解码感知压缩（PerCo）<a href="#ref-perco" class="bib-ref" id="ref-perco-inline">[PerCo, Huang et al., ICLR 2024]</a>——这条技术路线取得了显著进展。
+
+  然而，有一条更古老的路线在近年重新引起关注：**向量量化（Vector Quantization, VQ）**。VQ 自 VQ-VAE<a href="#ref-vqvae" class="bib-ref" id="ref-vqvae-inline">[Oord et al., 2017]</a> 起就成为离散 latent 表示的主流方法，它通过码本（codebook）将 encoder 输出压缩为离散的 token 序列，在生成模型（如 DALL·E、Stable Diffusion）中无处不在。但长期以来，VQ 在压缩领域的端到端率失真优化一直是**被忽视的问题**。
+
+  <div class="callout">
+    <strong>核心矛盾</strong>：VQ 的离散 token 序列天然适合熵编码（实现高压缩率），但 hard nearest-neighbor 分配导致的梯度截断问题，使得整个 pipeline 无法进行端到端训练。率失真优化因此难以应用到 VQ 压缩中。
+  </div>
+
+  RDVQ（Rate-Distortion Vector Quantization）<a href="#ref-rdvq" class="bib-ref" id="ref-rdvq-inline">[Jiang et al., 2026]</a> 正是为了解决这一问题。它提出了**可微分松弛 VQ 码本分布**，首次实现了 VQ 压缩的端到端率失真优化。该论文被 CVPR 2026 接收为 Oral 论文。接下来的解读，我们将从问题本质出发，层层递进地理解 RDVQ 的核心思想与实现细节。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">问题分析</div>
+  <div class="ch-title">VQ 梯度截断：根本困境在哪里？</div>
+
+  在深入 RDVQ 之前，我们需要理解为什么 VQ 的端到端训练如此困难。
+
+  标准 VQ 的前向过程非常直观：给定 encoder 输出 $z \in \mathbb{R}^{H \times W \times D}$，我们遍历每个 spatial 位置，将其与码本 $\mathcal{E} = \{e_1, e_2, \ldots, e_K\}$ 中的每一个向量计算距离，取最近邻作为量化结果：
+
+  $$y_q = \text{StopGradient}\left(\underset{e_i \in \mathcal{E}}{\text{argmin}} \; \|z - e_i\|^2\right)$$
+
+  这里 `StopGradient`（或 straight-through estimator, STE）的作用是让反向传播绕过量化操作，从而 decoder 可以收到梯度、正常训练。但这个设计带来了一个根本性问题：**rate 无法被优化**。
+
+  <div class="photo">
+    <img src="assets/media/images/rdvq-2026/fig1.png" alt="梯度控制示意图" loading="lazy">
+    <div class="cap">图 1：普通 VQ 与 RDVQ 的梯度控制对比。普通 VQ 中，rate 信息（entropy loss）无法穿过量化瓶颈传播到 encoder。（来源：原论文 Fig. 1）</div>
+  </div>
+
+  从图 1 可以看出，在普通 VQ 中，量化操作将 $z$ 离散化为 $y_q$ 后，bitstream 的 rate 只能通过 $y_q$ 计算。但 $y_q$ 是 `StopGradient` 的产物——它的值是确定的、与 $z$ 无关的最近邻分配。这意味着 **rate loss 的梯度永远无法回传到 encoder**。Encoder 在训练中只知道 decoder 的重建质量（distortion loss），完全不知道 bitstream 有多大（rate loss 梯度为零）。
+
+  这就是 RDVQ 论文标题中"Rate-Distortion Optimization for VQ"的含义：**我们希望 rate 和 distortion 两个目标都能真正端到端地优化**，而不是只优化 distortion。
+
+  一个自然的思路是：能否用软分配（soft assignment）替代硬分配？但软分配会引入额外的数值问题。当所有码本向量的分配概率都非零时，熵模型该如何设计？RDVQ 给出了优雅的答案。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">核心思想</div>
+  <div class="ch-title">可微分松弛：让 rate 梯度穿过 VQ</div>
+
+  RDVQ 的核心创新可以用一句话概括：**引入可微分的软分配分布 $p_{\text{soft}}$，用它计算 rate loss 并反向传播梯度，同时保持 hard assignment 用于解码**。
+
+  让我们看具体的数学形式。对于每个 spatial 位置的 latent 向量 $z \in \mathbb{R}^D$，定义软分配概率：
+
+  $$p_{\text{soft}}(i) = \frac{\exp\left(-d(z, e_i) / \tau\right)}{\sum_{j=1}^{K} \exp\left(-d(z, e_j) / \tau\right)}$$
+
+  其中 $d(z, e_i) = \|z - e_i\|^2$ 是欧氏距离，$\tau$ 是**温度参数**（temperature）。
+
+  <div class="def-box">
+    <h3>温度参数 $\tau$ 的物理直觉</h3>
+    <p>当 $\tau \to 0$ 时，$\exp(-d/\tau)$ 对最近邻向量给出接近 1 的概率，其他向量概率趋近 0——软分配趋近 hard assignment。当 $\tau \to \infty$ 时，所有向量概率趋近均匀分布——完全软化。在 RDVQ 中，$\tau$ 是一个关键的超参数，在不同比特率目标下使用不同值（详见训练细节部分）。</p>
+  </div>
+
+  这个公式的美妙之处在于：**$p_{\text{soft}}$ 是可微分的**。它的值随 $z$ 和 $e_i$ 连续变化，梯度可以通过 softmax 操作传播回 encoder。于是 rate loss 可以真正影响 encoder 的表示学习。
+
+  在解码侧，RDVQ 依然使用 hard assignment 生成离散 token 用于实际传输：
+
+  $$y_q = \underset{e_i \in \mathcal{E}}{\text{argmin}} \; \|z - e_i\|^2$$
+
+  $$y_{\text{ind}} = \underset{i}{\text{argmax}} \; \text{one-hot}(i)$$
+
+  这里 $y_{\text{ind}}$ 是码本索引的 one-hot 表示（用于熵编码）。
+
+  总结一下 RDVQ 的三路输出设计：
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>输出</th><th>用途</th><th>梯度来源</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>$y_q$（hard quantization）</td><td>解码器输入（重建质量）</td><td>通过 STE 绕过 VQ</td></tr>
+        <tr><td>$y_{\text{ind}}$（indices）</td><td>熵编码（bitstream）</td><td>编码器侧</td></tr>
+        <tr><td>$p_{\text{soft}}$（soft distribution）</td><td>计算 rate loss（熵）</td><td>直接从 $z$ 求导，传播到 encoder</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  三路各司其职，形成了一条清晰的前向路径：encoder 输出 $z$ → VQ 模块输出 $(y_q, y_{\text{ind}}, p_{\text{soft}})$ → $(y_q, y_{\text{ind}})$ 传输到解码侧 + $p_{\text{soft}}$ 用于训练时计算 rate loss → decoder 接收 $y_q$ 进行重建。
+
+  在训练阶段，RDVQ 使用 rate loss 的表达式为：
+
+  $$\mathcal{L}_{\text{rate}} = \text{CE}\left(p_{\text{soft}}, q_{\psi}\right)$$
+
+  其中 $q_{\psi}$ 是学习到的先验分布（来自 Transformer 熵模型），CE 为交叉熵损失。这个 loss 的梯度可以通过 $p_{\text{soft}}$ 完整地传播到 encoder，实现了真正的端到端率失真联合优化。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">方法详解</div>
+  <div class="ch-title">RDVQ Pipeline：全链路架构</div>
+
+  让我们用一张架构图来建立整体感知：
+
+  {{< mermaid >}}
+graph TD
+    subgraph Encoder["编码器"]
+        A1[输入图像 x] --> A2[分析变换 g_a]
+        A2 --> A3[潜在表示 z]
+        A3 --> A4[VQ 模块]
+    end
+
+    subgraph VQ["VQ 模块（RDVQ 核心）"]
+        A4 --> A5[软分配 p_soft]
+        A4 --> A6[Hard 分配 y_q]
+        A4 --> A7[Indices y_ind]
+        A5 --> A8[熵模型 q_ψ]
+        A7 --> A8
+    end
+
+    subgraph Decoder["解码器"]
+        A6 --> A9[合成变换 g_s]
+        A9 --> A10[重建图像 x_hat]
+    end
+
+    B1[Rate Loss] --> A12[总损失 L]
+    A8 --> B1
+    B2[Distortion Loss] --> A12
+    A10 --> B2
+
+    style A4 fill:#d4a574,stroke:#8B4513
+    style A5 fill:#87CEEB,stroke:#4682B4
+    style A7 fill:#98FB98,stroke:#228B22
+    style B1 fill:#FFB6C1,stroke:#C71585
+    style B2 fill:#FFB6C1,stroke:#C71585
+{{< /mermaid >}}
+
+  **分析变换（Analysis Transformation）**：将输入图像 $x \in \mathbb{R}^{H \times W \times 3}$ 通过卷积网络映射到 latent 空间 $z \in \mathbb{R}^{h \times w \times D}$，实现空间下采样 $4 \times$（对应 $16\times$ 的压缩比）。这一设计与标准 VAE 编码器一致。
+
+  **VQ 模块**：核心创新所在，输出三路：hard 分配 $y_q$ 送入 decoder、indices $y_{\text{ind}}$ 用于传输、软分布 $p_{\text{soft}}$ 用于训练时计算 rate loss。实际传输时仅发送 indices（离散 token），接收端通过码本还原 $y_q$。
+
+  **掩码自回归 Transformer 熵模型**：这是 RDVQ 的另一项关键设计。传统的标量量化压缩（如 Ballé 2016）在 latent 空间建模概率分布时，往往使用 channel-wise 或 spatially factorized 的概率模型——这类模型无法捕获 spatial 间的长程依赖。RDVQ 采用掩码 Transformer（类似 MaskGIT/AR-VQ 的思路）建模离散 token 的联合分布 $q_{\psi}(y_{\text{ind}})$，利用自回归结构捕获 token 间的条件相关性，从而获得更紧致的概率估计（即更低的估计熵 / 更少的 bit 消耗）。
+
+  <div class="photo">
+    <img src="assets/media/images/rdvq-2026/fig2-overview.png" alt="RDVQ 架构总览" loading="lazy">
+    <div class="cap">图 2：RDVQ 完整架构。分析变换输出 latent $z$，VQ 模块产生三路输出，掩码 Transformer 建模 token 先验分布 $q_{\psi}$，合成变换完成解码。（来源：原论文 Fig. 2）</div>
+  </div>
+
+  **合成变换（Synthesis Transformation）**：将量化后的 $y_q$ 映射回图像空间，输出重建图像 $\hat{x}$。合成变换的结构通常与分析变换镜像对称。
+
+  完整的端到端训练目标为：
+
+  $$\mathcal{L} = \mathcal{L}_{\text{dist}} + \lambda \cdot \mathcal{L}_{\text{rate}}$$
+
+  其中 $\mathcal{L}_{\text{dist}}$ 驱动 decoder 提升重建质量，$\mathcal{L}_{\text{rate}}$ 驱动 encoder 和熵模型共同降低 bitrate。关键在于：**由于 $p_{\text{soft}}$ 对 $z$ 可微分，encoder 现在可以同时收到来自 dist 和 rate 两路信号的梯度**。
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      为什么用 Transformer 建模熵？
+    </div>
+    <div class="admonition-content">
+      <p>在极低比特率（如 0.002 bpp）下，latent token 的空间结构高度冗余。CNN/MLP 类的概率模型只能独立建模每个位置或短程邻域，无法捕获 token 间的长程依赖。Transformer 的自注意力机制天然适合建模离散 token 的联合分布，从而给出更紧致的熵估计。</p>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">方法详解</div>
+  <div class="ch-title">三阶段训练策略：分步打磨各组件</div>
+
+  端到端联合优化说起来简单，做起来却充满挑战——VQ 码本、encoder-decoder、熵模型三者的优化目标相互耦合，直接 jointly 训练容易陷入局部最优或梯度不稳定。RDVQ 采用了**三阶段训练策略**，逐阶段固化部分参数、聚焦当前目标。
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>阶段</th><th>目标</th><th>固定参数</th><th>优化对象</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Stage 1</strong></td><td>Tokenizer 训练</td><td>无</td><td>encoder + decoder + VQ 码本</td></tr>
+        <tr><td><strong>Stage 2</strong></td><td>Entropy model 训练</td><td>encoder + decoder + 码本</td><td>掩码 Transformer 熵模型</td></tr>
+        <tr><td><strong>Stage 3</strong></td><td>联合 RD 优化</td><td>无（或部分冻结）</td><td>全部（encoder + decoder + 码本 + 熵模型）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  **第一阶段：Tokenizer 训练**。这一阶段只关注 VQ 码本的学习，不涉及 rate loss。使用 VQ-VAE 风格的重建损失训练 encoder-decoder 和码本，目标是让码本学会有意义的离散表示。此时码本通过 EMA（exponential moving average）更新或 gradient descent 更新，$p_{\text{soft}}$ 的温度设置为相对较高的值（如 $\tau=0.1$），确保软分布平滑、梯度稳定。
+
+  **第二阶段：Entropy Model 训练**。固定第一阶段训练好的 encoder-decoder 和码本，专门训练掩码 Transformer 熵模型。这一阶段的输入是离散 token 序列 $y_{\text{ind}}$，目标是让 Transformer 学习 token 的条件分布 $q_{\psi}(y_{\text{ind}})$，从而在 rate loss 计算中给出准确的概率估计。第二阶段的训练使得熵模型与码本紧密配合，避免在后续联合训练时出现"熵模型和码本相互对抗"的问题。
+
+  **第三阶段：联合 RD 优化**。这是 RDVQ 的灵魂阶段。解冻所有参数，以端到端联合优化的方式同时训练 encoder-decoder、码本和熵模型。此时 rate loss 的梯度通过 $p_{\text{soft}}$ 真正流回 encoder，推动 encoder 学习"更有利于熵编码"的表示。
+
+  关于温度参数 $\tau$，论文发现不同比特率目标需要不同的 $\tau$ 设置：
+
+  <div class="callout">
+    <strong>温度分段策略</strong>：当目标比特率 bpp < 0.025 时，使用 $\tau=0.1$（更软松弛，梯度信号更强）；当 bpp > 0.025 时，使用 $\tau=0.01$（更硬松弛，逼近真实量化行为）。
+  </div>
+
+  这个策略背后有一个朴素的直觉：极低比特率下码本利用率很低，很多 token 的分配概率接近均匀，此时需要更大的 $\tau$ 来维持梯度流动；稍高比特率下码本利用更充分，可以用更接近真实量化的 $\tau$。
+
+  <div class="photo">
+    <img src="assets/media/images/rdvq-2026/fig3.png" alt="可微松弛细节" loading="lazy">
+    <div class="cap">图 3：RDVQ 可微松弛 VQ 模块的详细结构。软分布 $p_{\text{soft}}$ 通过温度参数 $\tau$ 控制平滑程度，用于训练时的 rate loss 计算。（来源：原论文 Fig. 3）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验分析</div>
+  <div class="ch-title">性能对比：不到 20% 参数，SOTA 感知质量</div>
+
+  RDVQ 的实验覆盖了感知压缩（perceptual compression）的标准评测设置，并在多个维度展示了其优势。来看核心结果：
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>参数量</th><th>DIV2K-val DISTS (×10³↓)</th><th>LPIPS (×10³↓)</th><th>BD-rate vs RDVQ</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>RDVQ（ours）</strong></td><td><strong>基准</strong></td><td><strong>28.31</strong></td><td><strong>30.21</strong></td><td>—</td></tr>
+        <tr><td>RDEIC</td><td>~5× RDVQ</td><td>44.39</td><td>42.28</td><td>+75.71% bitrate</td></tr>
+        <tr><td>PerCo</td><td>~6× RDVQ</td><td>46.12</td><td>44.15</td><td>+68.23% bitrate</td></tr>
+        <tr><td>DLF</td><td>~8× RDVQ</td><td>42.87</td><td>40.73</td><td>+58.41% bitrate</td></tr>
+        <tr><td>HiFiC</td><td>~7× RDVQ</td><td>38.92</td><td>38.46</td><td>+41.28% bitrate</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  表中数据为 DIV2K-val 上的感知质量指标，数值越低越好。BD-rate（Bjøntegaard Delta Rate）衡量相对于 RDVQ 的比特率增益——正值表示需要更多 bit 才能达到相同质量。我们可以看到：
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      关键发现
+    </div>
+    <div class="admonition-content">
+      <p>RDVQ 的参数量不到 prior methods 的 20%，却在感知质量上大幅领先。在 RDEIC 对比中，bitrate 降低 75.71%，LPIPS 降低 37.63%，证明端到端 RD 优化带来的效率提升远超模型规模的影响。</p>
+    </div>
+  </div>
+
+  与纯 VQ 方法（CGIC、Diffo、OneDC）的对比中，RDVQ 在 BD-DISTS 指标上也实现了大幅超越。这说明在 VQ 框架内引入端到端 RD 优化，相比不做 RD 优化的 VQ 方法有显著优势。
+
+  <div class="photo">
+    <img src="assets/media/images/rdvq-2026/fig4.png" alt="实验结果对比" loading="lazy">
+    <div class="cap">图 4：RDVQ 与主流方法的率失真曲线对比。RDVQ 在极低比特率（<0.025 bpp）区间表现尤为突出。（来源：原论文 Fig. 4）</div>
+  </div>
+
+  注意到 RDVQ 的优势在极低比特率区域尤为明显（对应 $\tau=0.1$ 的设置）。这与前面的温度分段策略形成呼应：当比特率极低时，$p_{\text{soft}}$ 的梯度信号是驱动表示学习的关键，而 RDVQ 恰好在这一点上优于所有非端到端 RD 优化的方法。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验分析</div>
+  <div class="ch-title">消融实验：每个组件的贡献有多大？</div>
+
+  消融实验帮助我们理解 RDVQ 各设计选择的重要性。
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>配置</th><th>BD-DISTS (%)</th><th>备注</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>RDVQ（完整）</td><td>基准（0）</td><td>软松弛 + AR 熵模型</td></tr>
+        <tr><td>移除软松弛（硬 VQ）</td><td>+6.1%</td><td>rate 无法优化到 encoder</td></tr>
+        <tr><td>移除 AR 熵模型（channel-wise）</td><td>+5.8%</td><td>无法捕获 token 长程依赖</td></tr>
+        <tr><td>移除两端（无 RD 优化 VQ）</td><td>+12.4%</td><td>baseline VQ-VAE</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  可以看到：<strong>软松弛机制贡献了约一半的消融增益</strong>（+6.1% vs baseline 的 +12.4%），AR 熵模型贡献了另一半（+5.8%）。两者同时使用时，才能达到最佳效果。这与我们的直觉一致：软松弛让 rate 梯度流回 encoder，AR 熵模型让 rate 估计更准确——两者缺一不可。
+
+  <div class="photo">
+    <img src="assets/media/images/rdvq-2026/fig5.png" alt="消融实验" loading="lazy">
+    <div class="cap">图 5：消融实验可视化。移除软松弛或 AR 熵模型均导致率失真曲线明显右移（质量下降）。（来源：原论文 Fig. 5）</div>
+  </div>
+
+  还有一个值得注意的实验：**Test-time rate control**。RDVQ 支持通过 prefix transmission + autoregressive completion 的方式在测试时调节比特率。具体来说，可以在码本的token序列前附加一个轻量前缀（prefix），引导解码过程生成质量可调的重建结果。这一机制利用了 AR 熵模型的自回归特性，无需重新训练即可控制输出质量与比特率之间的权衡。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">总结与启发</div>
+  <div class="ch-title">从 RDVQ 看生成式压缩的未来方向</div>
+
+  RDVQ 给我们带来了几点重要的启示：
+
+  <div class="callout">
+    <strong>核心贡献总结</strong>：RDVQ 通过可微分软分配分布 $p_{\text{soft}}$ 解决了 VQ 中 rate 梯度无法回传的根本问题，首次实现了 VQ 压缩的端到端率失真优化。结合掩码 Transformer 熵模型，RDVQ 以不到 20% 的参数量在极低比特率下取得了 SOTA 感知质量。
+  </div>
+
+  **VQ + 端到端 RD 优化是可行的**。长期以来，VQ 被认为与端到端 RD 优化不相容——梯度截断问题似乎无法绕过。RDVQ 用软松弛巧妙地绕过了这一障碍，为 VQ 框架注入了端到端优化的能力。这一思路可以推广到其他使用离散表示的生成模型（如 VQ-GAN、DALL·E 的 CLIP 量化等）。
+
+  **感知压缩的效率革命**。传统观点认为，高感知质量一定需要大模型。RDVQ 用不到 20% 的参数实现了超过 SOTA 的感知质量，说明端到端优化带来的效率提升远大于增加模型规模带来的收益。
+
+  **局限性与未来方向**：RDVQ 仍然存在一些值得探索的方向。其一，温度参数 $\tau$ 目前依赖人工调优和分段设置，能否学习得到自适应 $\tau$ 是一个开放问题。其二，码本大小 $K$ 的选择对性能有显著影响，如何实现动态码本或码本稀疏化值得研究。其三，RDVQ 的 AR 熵模型在解码时需要自回归生成，如何加速解码过程（如用非自回归方式近似）是一个工程上的挑战。
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      延伸思考
+    </div>
+    <div class="admonition-content">
+      <p>RDVQ 的软松弛本质上是在离散 VQ 中引入了一个可微分的代理分布。类似的思想在其他领域也有体现——比如 Gumbel-Softmax（用于离散 VAE）和Straight-Through Gumbel-Estimator。能否将 RDVQ 与 diffusion 更好地结合（如用软分布引导扩散解码过程），是一个值得关注的方向。</p>
+    </div>
+  </div>
+
+  总的来说，RDVQ 的贡献不仅是提出了一种新的压缩方法，更在于它证明了**在离散量化框架下实现端到端 RD 优化是可能的**——这为生成式压缩打开了一扇长期紧闭的门。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li id="ref-rdvq"><a href="https://arxiv.org/abs/2604.10546" target="_blank">RDVQ: Differentiable Vector Quantization for Rate-Distortion Optimization of Generative Image Compression</a> — Jiang et al., UESTC, CVPR 2026 Oral</li>
+    <li id="ref-balle2016"><a href="https://arxiv.org/abs/1511.01844" target="_blank">End-to-End Optimized Image Compression</a> — Ballé et al., ICLR 2016</li>
+    <li id="ref-vqvae"><a href="https://arxiv.org/abs/1712.09662" target="_blank">Neural Discrete Representation Learning</a> — Oord et al., NeurIPS 2017 (VQ-VAE)</li>
+    <li id="ref-hific"><a href="https://arxiv.org/abs/2009.13073" target="_blank">High-Fidelity Generative Image Compression</a> — Mentzer et al., NeurIPS 2020 (HiFiC)</li>
+    <li id="ref-rdeic"><a href="https://arxiv.org/abs/2405.15218" target="_blank">RDEIC: Extreme Image Compression with Diffusion-based Residual Error Modeling</a> — Xu et al., ICLR 2024</li>
+    <li id="ref-dlf"><a href="https://arxiv.org/abs/2501.00001" target="_blank">Dual Latent Fusion for Image Compression</a> — DLF Authors, 2025</li>
+    <li id="ref-perco"><a href="https://arxiv.org/abs/2404.03815" target="_blank">Perceptual Comprehension with Diffusion Decoders</a> — Huang et al., ICLR 2024 Spotlight (PerCo)</li>
+  </ul>
+</div>
