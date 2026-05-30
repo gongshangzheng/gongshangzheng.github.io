@@ -2,7 +2,7 @@
 title: "FSQ: VQ-VAE Made Simple — 用标量量化代替向量量化"
 description: "FSQ (Finite Scalar Quantization) 以极简方案替代 VQ-VAE 中的向量量化——投影到 <10 维后每一维独立 round 到固定整数。无需码本、无需辅助损失、天然 100% 码本利用率。在 MaskGIT 图像生成和 UViM 密集预测上达到与 VQ 相当的性能。"
 created_at: 2026-05-30T23:58:54
-updated_at: 2026-05-31T00:15:00
+updated_at: 2026-05-31T00:30:00
 tags: [FSQ, VQ-VAE, 视觉分词器, MaskGIT, 标量量化]
 categories: ["AI"]
 subcategory: "视觉分词器"
@@ -71,17 +71,49 @@ hero_tagline: "用 30 行代码替换 VQ，消除码本坍缩，零辅助损失"
 
   <pre><code>输入图像 x
     ↓
-Encoder: E(x) → z_e ∈ ℝ^(H×W×D_enc)     [常规 VAE 编码器]
+Encoder: E(x) → z_e ∈ ℝ^(H×W×D_enc)         [常规 VAE 编码器]
     ↓
-Projection: P(z_e) → z ∈ ℝ^(H×W×d)       [线性投影 / 1×1 卷积, d &lt; 10]
+Projection: P(z_e) → z ∈ ℝ^(H×W×d)           [线性投影 / 1×1 卷积, d &lt; 10]
     ↓
-Bound + Round: q = round(tanh(z) · ⌊L/2⌋)  [每维独立量化]
+Bound + Round: q = round(bound(z))            [每维独立量化, 含 tanh + shift/offset]
     ↓
 codes_to_indexes: q ∈ ℤ^(H×W×d) → idx ∈ ℤ^(H×W)  [混合进制编码为整数索引]
     ↓
-Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pre>
+Decoder: D(idx) → x̂                            [常规 VAE 解码器]</code></pre>
 
-  <p>整个流程中，<strong>只有 Bound → Round 这一步是 FSQ 引入的"新"东西</strong>。编码器和解码器完全复用已有的 VQ-VAE / VQ-GAN 结构。这使得 FSQ 可以作为一个 <strong>drop-in replacement</strong>——直接把项目中的 VectorQuantizer 替换成 FSQ 层即可，其他逻辑不动。</p>
+  <p>整个流程中，<strong>只有 Bound → Round → codes_to_indexes 这一步是 FSQ 引入的"新"东西</strong>。编码器和解码器完全复用已有的 VQ-VAE / VQ-GAN 结构。这使得 FSQ 可以作为一个 <strong>drop-in replacement</strong>——直接把项目中的 VectorQuantizer 替换成 FSQ 层即可，其他逻辑不动。</p>
+
+    <p>FSQ 完整流程的 mermaid 架构图：</p>
+
+  {{< mermaid >}}
+graph TD
+    subgraph 输入
+        X[图像 x]
+    end
+    subgraph Encoder
+        E[编码器 E] --> P[投影到 d&lt;10 维]
+    end
+    subgraph FSQ 量化
+        B[Bound: tanh + shift/offset] --> R[Round: 四舍五入到整数]
+    end
+    subgraph 索引映射
+        CI[codes_to_indexes: 混合进制编码] --> IDX[整数索引 token]
+    end
+    subgraph Decoder
+        D[解码器] --> XHAT[重建图像 x̂]
+    end
+    X --> E
+    P --> B
+    R --> CI
+    IDX --> D
+
+    style F fill:#e1f0fa,stroke:#4a90d9,stroke-width:2px
+    style B fill:#fff3cd,stroke:#f0ad4e,stroke-width:2px
+    style R fill:#fff3cd,stroke:#f0ad4e,stroke-width:2px
+    style CI fill:#e1f0fa,stroke:#4a90d9,stroke-width:2px
+{{< /mermaid >}}
+
+  <p>与 VQ 不同，FSQ 在量化阶段没有可学习参数、没有最近邻查找、没有辅助损失。Bound + Round 是纯确定性操作。</p>
 
   <h3 class="section-title">Bound 函数：tanh × 缩放 × 对称性处理</h3>
 
@@ -129,6 +161,11 @@ Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pr
 
   <p>注意论文还做了一个重要实验：当 $L_i < 5$ 时，FSQ 的性能显著下降（Sampling FID 恶化）。所以推荐配置中每个维度的级数都 ≥ 5。这一发现也解释了为什么 FSQ 需要至少 2-6 维——每维至少 5 级，乘积才能达到合理码本大小。</p>
 
+  <div class="photo">
+    <img src="assets/media/images/fsq-2023/bound.png" alt="Bound 函数示意图" loading="lazy">
+    <div class="cap">图 2：Bound 函数示意图。tanh 将输入压缩到 (-1,1)，乘 half_l 后 round 到 L=5 个整数值。VQ 需要维护 learning codebook，FSQ 则用固定格点避免码本学习的所有问题。（来源：Mentzer et al., 2023, Fig.2）</div>
+  </div>
+
   <h3 class="section-title">FSQ 是怎么解决 VQ 的三个缺陷的？</h3>
 
   <div class="table-wrap">
@@ -171,7 +208,7 @@ Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pr
 
   <div class="photo">
     <img src="assets/media/images/fsq-2023/maskgit_cfg_sweep.png" alt="MaskGIT CFG sweep 结果" loading="lazy">
-    <div class="cap">图 2：MaskGIT 在 ImageNet 256×256 上的 CFG 参数扫描。FSQ（蓝色）和 VQ（橙色）的 FID、Precision、Recall 曲线几乎完全重合。底部的 Precision-Recall 曲线同样高度一致。（来源：Mentzer et al., 2023, Fig.5）</div>
+    <div class="cap">图 3：MaskGIT 在 ImageNet 256×256 上的 CFG 参数扫描。FSQ（蓝色）和 VQ（橙色）的 FID、Precision、Recall 曲线几乎完全重合。底部的 Precision-Recall 曲线同样高度一致。（来源：Mentzer et al., 2023, Fig.5）</div>
   </div>
 
   <p>这里有一个有趣的发现：FSQ 的 Precision-Recall 曲线与 VQ 几乎完全重合。很多人可能会认为 VQ 的可学习码本能够学到「语义上有意义」的表示——一个码字对应一个视觉概念。但论文通过一系列分析实验（见附录），发现无论 VQ 还是 FSQ，单个码字都没有学到固定的视觉概念。视觉质量来自「码字组合 + 解码器权重」的合力，而不是码字本身的语义性 $@Mentzer et al., 2023$。</p>
@@ -196,7 +233,7 @@ Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pr
 
   <div class="photo">
     <img src="assets/media/images/fsq-2023/uvim_depth.png" alt="UViM 深度估计结果" loading="lazy">
-    <div class="cap">图 3：UViM 深度估计的样本对比。FSQ（中间列）与 VQ（左二列）产生质量相当的深度图。最右列是 VQ 去掉 codebook splitting 后的结果——码本利用率降至 0.78%，深度图出现明显的锯齿状边缘（jagged edges）。（来源：Mentzer et al., 2023, Fig.6）</div>
+    <div class="cap">图 4：UViM 深度估计的样本对比。FSQ（中间列）与 VQ（左二列）产生质量相当的深度图。最右列是 VQ 去掉 codebook splitting 后的结果——码本利用率降至 0.78%，深度图出现明显的锯齿状边缘（jagged edges）。（来源：Mentzer et al., 2023, Fig.6）</div>
   </div>
 
   <div class="callout"><strong>最触目惊心的消融实验：</strong>VQ 去掉 codebook splitting 后，码本利用率从 99% 掉到 <strong>0.78%</strong>，RMSE 恶化 4.7%，深度图出现大量锯齿。FSQ 无需任何辅助算法就能维持 99% 以上的码本利用率。换句话说——<strong>VQ 并不是"学习"了一个好的码本，而是靠 codebook splitting 这个工程技巧硬撑着的</strong>。</div>
@@ -209,8 +246,13 @@ Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pr
   <p>除了性能验证，FSQ 论文还做了一个系统性的 tradeoff 研究——在 ImageNet 128×128 上以不同码本大小训练 MaskGIT，绘制了一条从 $2^4$（16 个码字）到 $2^{16}$（65536 个码字）的完整曲线。结果揭示了一个<strong>反直觉的规律</strong>：</p>
 
   <div class="photo">
+    <img src="assets/media/images/fsq-2023/maskgit_visuals.png" alt="MaskGIT 视觉样本对比" loading="lazy">
+    <div class="cap">图 5：MaskGIT 生成的视觉样本。FSQ（下排）与 VQ（上排）的生成结果在视觉上几乎无法区分。（来源：Mentzer et al., 2023, Fig.4）</div>
+  </div>
+
+  <div class="photo">
     <img src="assets/media/images/fsq-2023/dim_sizes.png" alt="码本大小 tradeoff" loading="lazy">
-    <div class="cap">图 4：不同 levels 配置下的 Sampling FID。颜色表示该配置中最小的 $L_i$ 值。当所有维度 $L_i \geq 5$ 时（蓝色/绿色点），FSQ 表现出稳定的性能；当某维 $L_i < 5$ 时（红色/橙色点），性能显著下降。（来源：Mentzer et al., 2023, Fig.10）</div>
+    <div class="cap">图 6：不同 levels 配置下的 Sampling FID。颜色表示该配置中最小的 $L_i$ 值。当所有维度 $L_i \geq 5$ 时（蓝色/绿色点），FSQ 表现出稳定的性能；当某维 $L_i < 5$ 时（红色/橙色点），性能显著下降。（来源：Mentzer et al., 2023, Fig.10）</div>
   </div>
 
   <h3 class="section-title">三个关键发现</h3>
@@ -304,7 +346,7 @@ Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pr
 
   <p>FSQ 用一个再简单不过的方案——tanh + round + 低维投影 —— 解决了困扰 VQ-VAE 社区多年的码本学习难题。它证明了：<strong>在最有效的简化方案面前，所有复杂的工程技巧都是多余的</strong>。</p>
 
-  <p>对于 Zack 的研究方向——基于扩散模型的生成式图像压缩——FSQ 的启示是双重的：一是离散 tokenizer 的简化对端到端管线稳定的价值；二是「从已有技术（神经压缩的标量量化）跨界应用到新领域（生成模型）」这一思路本身的启发。</p>
+  <p>对于 Zack 的研究方向——基于扩散模型的生成式图像压缩——FSQ 的启示是双重的：一是离散 tokenizer 的简化对端到端管线稳定的价值；二是「从已有技术（神经压缩的标量量化）跨界应用到新领域（生成模型）」这一思路本身的启发。FSQ 的官方代码（<a href="https://github.com/google-research/google-research/tree/master/fsq" target="_blank">JAX</a>）和 Colab Notebook 均完全开源，PyTorch 移植版也已由社区提供。</p>
 
   <p>FSQ 的核心代码不到 50 行，无需调参就能在多个任务上达到与精心设计的 VQ 系统相当的性能。这种「少即是多」的设计哲学，本身就值得每一位做生成式 AI 的研究者品味。</p>
 
