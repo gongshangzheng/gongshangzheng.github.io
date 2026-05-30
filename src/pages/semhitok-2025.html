@@ -1,0 +1,345 @@
+---
+title: "SemHiTok：语义引导的层级码本，统一多模态理解与生成"
+description: "SemHiTok 通过 Semantic-Guided Hierarchical Codebook (SGHC)，在预训练语义码本之上为每个语义 code 构建专属 pixel sub-codebook，实现了语义与像素的结构解耦和分阶段训练，在 ICLR 2026 发表。"
+date: 2026-05-30T20:58:42
+created_at: 2026-05-30T20:58:42
+updated_at: 2026-05-30T21:05:00
+tags: ["SemHiTok", "VQ", "Tokenizer", "多模态理解", "图像生成", "ICLR 2026"]
+categories: ["AI"]
+subcategory: "视觉分词器"
+mathjax: true
+---
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">0.66</span><span class="label">rFID (384)</span></div>
+  <div class="stat"><span class="num b">1512.8</span><span class="label g">MME-P (384)</span></div>
+  <div class="stat"><span class="num">5.40</span><span class="label">gFID MJHQ</span></div>
+  <div class="stat"><span class="num b">93.7%</span><span class="label l">Codebook Usage</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 1 · 引言 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">统一 Tokenizer 的困境</div>
+
+  自回归模型在 NLP 上的成功，让研究者们开始思考：能否用一套统一的 next-token prediction 框架同时做多模态理解和生成？关键瓶颈在于图像 tokenizer——理解任务需要语义特征（"这是什么"），生成任务需要像素特征（"长什么样"），而两者几乎天然矛盾。
+
+  之前的方案可以分成几类：VILA-U 把语义对齐损失和像素重建损失混在一起联合优化，但两个目标互相打架，总是妥协到次优解；TokenFlow 用双码本加共享映射做并行投票，仍然摆脱不了联合训练的魔咒；Janus 干脆用两套独立编码器各干各的，但混合任务处理起来很别扭。
+
+  <div class="callout"><strong>论文链接</strong>：<a href="https://arxiv.org/abs/2503.06764">arXiv:2503.06764</a>（ICLR 2026，中山大学 × 华为诺亚方舟实验室）</div>
+
+  SemHiTok 提出了截然不同的思路：<strong>不是让两个目标妥协，而是先做好一个，再在它的基础上追加另一个</strong>。具体来说，先训练一个纯语义 codebook，然后利用一个关键观察——同一语义 code 对应的图像块在像素层面也很相似——为每个语义 code 专门构建一个 pixel sub-codebook，实现语义引导的层次化分解。
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 2 · 问题剖析 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">联合训练为什么总是次优？</div>
+
+  先看一组对比实验（论文 Table 6），揭示问题的本质：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>实验</th><th>结构</th><th>训练</th><th>GQA↑</th><th>MME-P↑</th><th>SEED↑</th><th>rFID↓</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td>Exp 1 (SDE)</td><td>耦合</td><td>联合</td><td>58.0</td><td>1240.0</td><td>56.7</td><td>3.78</td><td>92.9%</td></tr>
+        <tr><td>Exp 2</td><td>解耦</td><td>联合</td><td>57.8</td><td>1357.4</td><td>55.3</td><td>3.22</td><td>45.9%</td></tr>
+        <tr><td>Exp 3 (拼接)</td><td>独立</td><td>分阶段</td><td>58.7</td><td>1210.9</td><td>56.1</td><td>2.19</td><td>97.0%</td></tr>
+        <tr><td><strong>Exp 4 (SemHiTok)</strong></td><td><strong>层级</strong></td><td><strong>分阶段</strong></td><td><strong>60.3</strong></td><td><strong>1355.8</strong></td><td><strong>62.9</strong></td><td><strong>1.42</strong></td><td><strong>93.7%</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这组实验说明几个关键事实：
+
+  <ol>
+    <li><strong>联合训练 + 耦合结构 = 最差</strong>（Exp 1）：SDE 的做法，两个方向都做得不好</li>
+    <li><strong>解耦结构救不了联合训练</strong>（Exp 2）：虽然结构分开了，但联合训练导致 codebook usage 崩塌到 45.9%，说明语义和像素目标在梯度层面互相干扰</li>
+    <li><strong>简单拼接 ≠ 统一</strong>（Exp 3）：两个独立预训练的 tokenizer 拼起来，重建好但理解性能明显下降（MME-P 从 1355.8 跌到 1210.9），因为原始像素特征干扰了语义对齐</li>
+    <li><strong>层级 + 分阶段 = 最优</strong>（Exp 4）：在所有维度上取得最佳平衡</li>
+  </ol>
+
+  <div class="callout"><strong>核心洞察</strong>：问题不在于结构是否解耦，而在于<strong>训练策略</strong>是否解耦。SemHiTok 的层级结构天然支持分阶段训练——先冻结语义码本学像素，互不干扰。</div>
+
+  那为什么层级结构能做到这一点？这源于一个更底层的观察。
+
+  <div class="photo">
+    <img src="assets/media/images/semhitok-2025/sem_pixel.png" alt="语义 code 与像素特征的关联" loading="lazy">
+    <div class="cap">图 1：语义 code 对应的图像块在像素层面高度相似（来源：SemHiTok, Fig.4）。语义 code v14312 对应的全是鸡冠，v3108 对应的全是鼻子——同一语义 code 下的像素块不仅语义一致，颜色和纹理也高度相似。</div>
+  </div>
+
+  同一语义 code 下的像素块具有内在的像素相似性。这意味着：如果已知一个 patch 属于哪个语义 code，那么它的像素特征大概率分布在一个<strong>很窄的子空间</strong>内，而不是全局像素空间中的任意位置。SemHiTok 利用这一点，为每个语义 code 构建一个专属的 pixel sub-codebook，把全局量化问题分解成 K 个更简单的局部量化问题。
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 3 · 模型结构与创新 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构与创新：Semantic-Guided Hierarchical Codebook</div>
+
+  SemHiTok 的架构可以用三层来概括：<strong>语义分支 → SGHC 层级量化 → 像素解码器</strong>。
+
+  <div class="photo">
+    <img src="assets/media/images/semhitok-2025/framework.png" alt="SemHiTok 整体架构图" loading="lazy">
+    <div class="cap">图 2：SemHiTok 整体架构（来源：SemHiTok, Fig.2）。语义分支（蓝色）提取并量化语义特征，SGHC（灰色大框）根据语义 code 索引选择对应的 pixel sub-codebook，量化后的语义和像素特征沿通道维度拼接后输入像素解码器。右下角展示了 flatten 后接入 LLM 的方式。</div>
+  </div>
+
+  <h3 class="section-title">语义分支</h3>
+
+  输入图像 $X \in \mathbb{R}^{H \times W \times 3}$ 经过<strong>冻结</strong>的文本对齐图像编码器（SigLIP），提取连续语义特征：
+
+  <p style="text-align:center">
+  $$Z_{\text{sem}} = \mathcal{E}_{\text{sem}}(X) \in \mathbb{R}^{h \times w \times d_{\text{sem}}}$$
+  </p>
+
+  通过 EMA VQ 量化到语义码本 $\mathcal{C}_{\text{sem}} = \{c_1, \ldots, c_K\}$：
+
+  <p style="text-align:center">
+  $$Z_{q_{\text{sem}}}, I_{q_{\text{sem}}} = \arg\min_{k \in \{1,\ldots,K\}} \|Z_{\text{sem}} - \mathcal{C}_{\text{sem}}[k]\|$$
+  </p>
+
+  语义解码器将量化后的特征映射回语义空间，通过语义蒸馏损失训练：
+
+  <p style="text-align:center">
+  $$\mathcal{L}_{\text{sem}} = 1 - \cos(Z_{q_{\text{sem}}}, \hat{Z}_{\text{sem}}) + |Z_{q_{\text{sem}}} - \hat{Z}_{\text{sem}}|$$
+  </p>
+
+  Cosine 损失对齐方向，L1 损失约束距离，两者配合让语义码本精确捕捉 SigLIP 的语义空间。
+
+  <h3 class="section-title">SGHC：语义引导的层级码本</h3>
+
+  这是 SemHiTok 的核心创新。SGHC 的结构很简单：
+
+  <ol>
+    <li>语义码本有 $K$ 个码字（默认 $K = 16384$）</li>
+    <li>为<strong>每个语义码字</strong>分配一个专属的 pixel sub-codebook，各含 $m$ 个码字（默认 $m = 12$）</li>
+    <li>当某个 patch 的语义 code 确定为 $k$ 时，像素量化只在第 $k$ 个 sub-codebook 内进行</li>
+  </ol>
+
+  <div class="callout"><strong>为什么是层级而非并行？</strong>TokenFlow 的双码本是并行的——语义和像素各自有一个码本，通过加权距离投票选同一索引。SemHiTok 则是<strong>串行的层级</strong>——先确定语义 code，再在语义 code 指定的子空间内量化像素。这使得像素量化天然受语义约束，不需要额外的对齐机制。</div>
+
+  量化后的语义特征和像素特征沿<strong>通道维度</strong>拼接（不是序列长度维度），形成统一的离散表示，输入像素解码器重建图像。消融实验表明通道拼接优于序列拼接（rFID 1.42 vs 1.45），因为通道拼接保持了空间结构的完整性。
+
+  <h3 class="section-title">像素分支</h3>
+
+  像素编码器提取像素级特征，在 SGHC 选定的 sub-codebook 内量化后，与语义特征拼接。像素重建损失包括：
+
+  <p style="text-align:center">
+  $$\mathcal{L}_{\text{pix}} = \ell_2(x, \hat{x}) + \text{LPIPS}(x, \hat{x}) + \lambda_G \cdot \mathcal{L}_{\text{GAN}}(\hat{x})$$
+  </p>
+
+  VQ 码本更新使用 commitment loss：
+
+  <p style="text-align:center">
+  $$\mathcal{L}_{\text{VQ}} = \|\text{sg}[\hat{z}] - z\|_2^2 + \beta\|\hat{z} - \text{sg}[z]\|_2^2$$
+  </p>
+
+  <h3 class="section-title">辅助模块</h3>
+
+  <ul>
+    <li><strong>Dual MLP</strong>：增强多层次特征建模，让理解任务能同时利用语义和像素两个层级的信息。消融实验显示加入 Dual MLP 后理解性能甚至<strong>超过</strong>纯语义码本。</li>
+    <li><strong>Enhanced Decoder</strong>：将像素解码器扩大到 ViT-Large，进一步提升重建保真度。</li>
+  </ul>
+
+  <h3 class="section-title">接入统一 MLLM</h3>
+
+  SGHC 通过简单的 <strong>flatten 操作</strong>接入 next-token 范式：将 $K$ 个 sub-codebook 的 $m$ 个码字按序展开为单一 vocabulary（总大小约 $K \times m \approx 196\text{k}$），在 LLM vocabulary 中添加特殊 token $\langle \text{IMG}_i \rangle$ 表示每个图像 code。理解时用语义特征（通过 adapter），生成时用完整 token 序列。
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 4 · 训练方法 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练方法：分阶段，不联合</div>
+
+  SemHiTok 的训练策略和它的架构一样，遵循<strong>分阶段、解耦</strong>的哲学。整个训练分为三个阶段：语义码本训练 → 像素分支训练 → 统一 MLLM 训练。
+
+  <h3 class="section-title">阶段一：语义码本训练</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>值</th></tr></thead>
+      <tbody>
+        <tr><td>语义编码器</td><td>SigLIP（冻结）</td></tr>
+        <tr><td>码本大小 $K$</td><td>16384</td></tr>
+        <tr><td>码本维度</td><td>32</td></tr>
+        <tr><td>训练数据</td><td>COYO-700M 的 50M 子集</td></tr>
+        <tr><td>训练轮次</td><td>1 epoch</td></tr>
+        <tr><td>学习率</td><td>1e-4，batch size 256</td></tr>
+        <tr><td>码本更新</td><td>EMA VQ（非梯度更新）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这一步的目标很简单：让语义码本精确复现 SigLIP 的语义空间。编码器冻结不动，只训练码本和解码器。EMA VQ 的好处是更新更稳定，不会出现梯度更新中常见的码本坍塌问题。
+
+  <h3 class="section-title">阶段二：像素分支训练</h3>
+
+  <strong>像素编码器预训练</strong>：先在 ImageNet 上训练 ViT-Base，再在 50M COYO 上微调（遵循 LlamaGen 设置），获得良好的像素特征提取能力。
+
+  <strong>SGHC 训练</strong>：冻结语义码本，训练像素分支和所有 sub-codebook。关键点——<strong>语义码本完全不动</strong>，新增的像素信息不会污染已经学好的语义空间。
+
+  <strong>增强解码器微调</strong>：将像素解码器扩大到 ViT-Large，在 20M COYO + 20M MidJourney 风格合成数据上微调，进一步提升重建保真度。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      分阶段的核心优势
+    </div>
+    <div class="admonition-content"><p>对比实验（Table 6）中，Exp 2（相同 SemHiTok 结构但联合训练）的 codebook usage 崩塌到 45.9%，而 Exp 4（分阶段训练）保持 93.7%。联合训练时语义和像素目标在梯度层面互相干扰，导致大量码字不被使用；分阶段训练彻底避免了这个问题。</p></div>
+  </div>
+
+  <h3 class="section-title">阶段三：统一 MLLM 训练</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>值</th></tr></thead>
+      <tbody>
+        <tr><td>语言 backbone</td><td>Qwen2.5-7B-Instruct</td></tr>
+        <tr><td>预训练数据</td><td>3.5M 语言 + 10M 图文对 + 15M MidJourney 合成</td></tr>
+        <tr><td>微调数据</td><td>1M 语言 + 4M 生成 + 4M 理解（Emova + LLaVA-SFT）</td></tr>
+        <tr><td>训练成本</td><td>32×A800 × 7 天（MLLM），32×V100 × 3 天（tokenizer）</td></tr>
+        <tr><td>生成推理</td><td>classifier-free guidance scale = 2.5</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  训练数据中一个值得注意的设计：MidJourney 风格合成数据同时出现在 tokenizer 阶段和 MLLM 阶段，占比不小。这说明高质量的风格化数据对提升生成多样性至关重要。
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 5 · 实验验证 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验验证：重建、理解、生成三线 SOTA</div>
+
+  <h3 class="section-title">图像重建</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>分辨率</th><th>压缩比</th><th>Vocab 大小</th><th>rFID↓</th><th>Usage</th></tr></thead>
+      <tbody>
+        <tr><td>LlamaGen</td><td>256</td><td>16×</td><td>16384</td><td>2.19</td><td>97%</td></tr>
+        <tr><td>VAR</td><td>256</td><td>16×</td><td>—</td><td>1.00</td><td>—</td></tr>
+        <tr><td>VILA-U</td><td>256</td><td>16×</td><td>16384</td><td>2.47</td><td>—</td></tr>
+        <tr><td>SDE</td><td>256</td><td>16×</td><td>16384</td><td>2.87</td><td>—</td></tr>
+        <tr><td>TokenFlow</td><td>256</td><td>16×</td><td>32768</td><td>1.37</td><td>—</td></tr>
+        <tr><td><strong>SemHiTok</strong></td><td><strong>256</strong></td><td><strong>16×</strong></td><td><strong>~196k</strong></td><td><strong>1.16</strong></td><td><strong>93.7%</strong></td></tr>
+        <tr><td>TokenFlow</td><td>384</td><td>14.2×</td><td>32768</td><td>0.63</td><td>—</td></tr>
+        <tr><td><strong>SemHiTok</strong></td><td><strong>384</strong></td><td><strong>14.2×</strong></td><td><strong>~196k</strong></td><td><strong>0.66</strong></td><td><strong>—</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  384 分辨率下 rFID 0.66，与 TokenFlow 的 0.63 基本持平。256 分辨率下 1.16，在统一 tokenizer 中领先。需要注意的是 SemHiTok 的 vocabulary 规模约 196k（$K \times m = 16384 \times 12$），虽然看似很大，但层次化结构意味着实际搜索空间是线性的（先 $K$ 路语义选择，再 $m$ 路像素选择），比 VILA-U (RQ) 的组合搜索空间 $N^D$ 要小。
+
+  <h3 class="section-title">多模态理解（LLaVA-v1.5，离散 SOTA）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>分辨率</th><th>SEED↑</th><th>MMB↑</th><th>MME-P↑</th><th>MMMU↑</th></tr></thead>
+      <tbody>
+        <tr><td>LLaVA-1.5（连续）</td><td>336</td><td>58.6</td><td>64.4</td><td>—</td><td>—</td></tr>
+        <tr><td>EMU3（离散）</td><td>512</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>VILA-U（离散）</td><td>256</td><td>59.2</td><td>—</td><td>1267.8</td><td>—</td></tr>
+        <tr><td>TokenFlow-XL（离散）</td><td>384</td><td>79.8</td><td>75.2</td><td>1512.8</td><td>—</td></tr>
+        <tr><td><strong>SemHiTok (256)</strong></td><td><strong>256</strong></td><td><strong>69.7</strong></td><td><strong>72.3</strong></td><td><strong>1449.0</strong></td><td><strong>—</strong></td></tr>
+        <tr><td><strong>SemHiTok (384)</strong></td><td><strong>384</strong></td><td><strong>79.8</strong></td><td><strong>75.2</strong></td><td><strong>1512.8</strong></td><td><strong>41.0</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  在离散 tokenizer 中达到 SOTA。384 分辨率下 SemHiTok 和 TokenFlow-XL 在 SEED 和 MMB 上打平（79.8 / 75.2），MME-P 也持平（1512.8）。关键区别在于训练策略——SemHiTok 不需要联合训练就能达到同等水平。
+
+  <div class="callout"><strong>一个细节</strong>：理解任务仅使用语义分支的 final-scale 特征效果最佳。像素特征作为"补充"角色存在——它提升了重建能力，但理解时不需要直接使用像素 token。这与 Dual MLP 的设计一脉相承：多层次特征建模让 LLM 能选择性地利用不同层级的信息。</div>
+
+  <h3 class="section-title">统一 MLLM（理解 + 生成）</h3>
+
+  集成到统一 MLLM 后，SemHiTok 在两个方向上都展现了强性能：
+
+  <ul>
+    <li><strong>理解</strong>：在 Und&Gen. Discrete 类别中大多数指标 SOTA，MMMU 上比 ShareGPT4V 高 3.8 分</li>
+    <li><strong>生成</strong>：MJHQ-30K gFID 5.40（256 分辨率），创下自回归图像生成的新 SOTA，甚至超越部分扩散专家模型（SDXL、SD v2.1）</li>
+    <li>GenAI-Bench：Basic 0.83、Advanced 0.64，与 Liquid 等专门化生成模型相当</li>
+  </ul>
+
+  <h3 class="section-title">消融实验</h3>
+
+  消融实验揭示了各模块的具体贡献：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>rFID 变化</th><th>理解影响</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>语义码本（基线）</td><td>—</td><td>—</td><td>仅语义，无像素重建能力</td></tr>
+        <tr><td>+ SGHC</td><td>3.17→1.42</td><td>几乎无影响</td><td>SGHC 带来巨大重建提升，不损害语义</td></tr>
+        <tr><td>+ Dual MLP</td><td>—</td><td>超过纯语义码本</td><td>多层次特征建模提升理解</td></tr>
+        <tr><td>+ Enhanced Decoder</td><td>进一步提升</td><td>—</td><td>更大解码器 → 更好重建</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  最重要的发现：**引入 SGHC 后 rFID 降低了 1.75，但理解性能几乎不受影响**。这验证了层级设计的核心假设——在冻结的语义码本之上添加像素信息，不会破坏已建立的语义空间。
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 6 · 讨论与启发 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">SemHiTok 在地图上的位置</div>
+
+  <h3 class="section-title">层级 vs 并行：两种统一哲学</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>TokenFlow</th><th>SemHiTok</th></tr></thead>
+      <tbody>
+        <tr><td>码本结构</td><td>双码本并行</td><td>层级码本（语义→像素）</td></tr>
+        <tr><td>统一方式</td><td>加权距离投票选同一索引</td><td>语义 code 索引 sub-codebook + 通道拼接</td></tr>
+        <tr><td>训练策略</td><td>联合训练</td><td>分阶段训练</td></tr>
+        <tr><td>vocabulary 大小</td><td>K（共享索引）</td><td>~K×m（flatten）</td></tr>
+        <tr><td>核心哲学</td><td>"统一索引，不统一特征"</td><td>"语义引导，层次分解"</td></tr>
+        <tr><td>384 rFID</td><td>0.63</td><td>0.66</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  TokenFlow 更优雅——单索引即可同时获取两种特征，vocabulary 更紧凑。SemHiTok 更解耦——分阶段训练避免了目标冲突，但代价是更大的 vocabulary。两者性能接近，但在不同的设计约束下做出了不同的选择。
+
+  <h3 class="section-title">局限性</h3>
+
+  <ul>
+    <li><strong>生成效率低</strong>：256 分辨率需要 256 个 token，效率低、计算成本高。这是所有基于空间 grid 量化方法的共同瓶颈，也是 1D Tokenizer 研究方向的直接动机</li>
+    <li><strong>未探索 CoT 等后训练技术</strong>：在多模态推理任务中还有提升空间</li>
+    <li><strong>Vocabulary 规模</strong>：196k 的 flatten vocabulary 虽然搜索是线性的，但对 LLM 的词表大小和 embedding 层参数有影响</li>
+  </ul>
+
+  <h3 class="section-title">个人启发</h3>
+
+  <ol>
+    <li><strong>"先冻结再追加"的训练哲学</strong>：分阶段训练在多目标场景下的优势不仅体现在 SemHiTok——它是一个通用的工程原则。当你有多个可能冲突的优化目标时，先确保一个做到位，再冻结它，然后在它的基础上追加另一个。这比联合优化更稳定。</li>
+    <li><strong>从观察到设计的完整链条</strong>：作者的可视化观察（同一语义 code → 相似像素块）→ VRR 量化验证 → SGHC 设计，是一个"从现象到机制到工程"的完整研究链条，值得在论文写作中模仿。</li>
+    <li><strong>与 1D Tokenizer 的关系</strong>：论文未来方向明确提到"一维序列化图像 tokenizer"。SemHiTok 的层级设计天然适配 1D 序列化——语义 token 作为"前缀"引导后续像素 token 的生成。这是一个值得关注的研究方向。</li>
+  </ol>
+
+</div>
