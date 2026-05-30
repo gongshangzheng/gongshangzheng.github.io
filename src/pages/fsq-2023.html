@@ -1,0 +1,343 @@
+---
+title: "FSQ: VQ-VAE Made Simple — 用标量量化代替向量量化"
+description: "FSQ (Finite Scalar Quantization) 以极简方案替代 VQ-VAE 中的向量量化——投影到 <10 维后每一维独立 round 到固定整数。无需码本、无需辅助损失、天然 100% 码本利用率。在 MaskGIT 图像生成和 UViM 密集预测上达到与 VQ 相当的性能。"
+created_at: 2026-05-30T23:58:54
+updated_at: 2026-05-31T00:15:00
+tags: [FSQ, VQ-VAE, 视觉分词器, MaskGIT, 标量量化]
+categories: ["AI"]
+subcategory: "视觉分词器"
+mathjax: true
+hero_title: "FSQ: VQ-VAE Made Simple"
+hero_sub: "ICLR 2024 · Google Research / DeepMind"
+hero_tagline: "用 30 行代码替换 VQ，消除码本坍缩，零辅助损失"
+---
+<!-- ============================================================
+  FSQ: Finite Scalar Quantization — VQ-VAE Made Simple
+  深度解读
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-title">引言：VQ-VAE 为什么需要「简化」</div>
+
+  <p>如果你接触过图像生成模型，大概率遇到过 VQ-VAE 或 VQ-GAN 这两个名字。它们是连接连续图像信号与离散 token 空间的关键桥梁——编码器把图像压成一堆特征向量，<strong>向量量化（VQ）</strong> 把这些连续向量映射到最近的可学习"码本"向量上，输出离散 token 序列，供 MaskGIT、Muse 等生成模型使用。</p>
+
+  <p>但这个流程里藏着一个困扰社区多年的痛点：<strong>码本学习太难了</strong>。为了让码本向量和编码器输出「互相靠近」，VQ-VAE 需要 commitment loss、codebook loss、EMA 更新、码本重初始化、码本 splitting 等一系列辅助机制。而且即使加了这么多技巧，当码本变大时（比如从 256 扩到 16384），大部分码字仍然会「死去」——从未被使用。这就是著名的<strong>码本坍缩（Codebook Collapse）</strong>问题 $@van den Oord et al., 2017$。</p>
+
+  <p>2023 年，Google Research 的 Fabian Mentzer 团队提出了一个反直觉的方案：<strong>干脆不要码本了</strong>。他们把编码器的输出降维到不到 10 维，然后每个维度简单地 round 到固定整数——就这么简单。他们把这个方法叫做 <strong>Finite Scalar Quantization (FSQ)</strong> $@Mentzer et al., 2023$。没有辅助损失、没有码本参数、码本利用率接近 100%，在 MaskGIT 图像生成和 UViM 密集预测上达到了与 VQ 相当的性能。</p>
+
+  <div class="callout"><strong>一句话记住 FSQ：</strong>「把向量查找换成标量 round + 低维投影，VQ-VAE 变简单了，反而更好训练了。」</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">VQ 的三个核心缺陷</div>
+
+  <p>要理解 FSQ 的价值，先得看清 VQ 到底「难」在哪里。VQ-VAE 的核心机制是这样的：编码器输出 $z_e(x) \in \mathbb{R}^{H \times W \times D}$（一个特征图），对于其中每个位置的特征向量 $z \in \mathbb{R}^{D}$，通过最近邻查找找到码本 $\mathcal{C} = \{e_1, \dots, e_K\}$ 中最接近的码字：</p>
+
+  <p style="text-align:center">\[ \hat{z} = \arg\min_{c \in \mathcal{C}} \| z - c \|_2 \]</p>
+
+  <p>这个 argmin 操作不可微，VQ 用 straight-through estimator（STE）绕过——前向传播做量化，反向传播梯度直接穿透。码本向量本身没有梯度信号，所以 VQ 额外引入了两组辅助损失：</p>
+
+  <p style="text-align:center">\[ \mathcal{L}_{\text{commit}} = \| z_e - \text{sg}[e] \|_2^2, \quad \mathcal{L}_{\text{codebook}} = \| \text{sg}[z_e] - e \|_2^2 \]</p>
+
+  <p>再加上 MaskGIT 中的熵正则化，一套 VQ 的总损失函数可以多达 5-6 项。作者明确列举了这些"tricks"——commitment loss、EMA on codebook、codebook splitting、projections 等等，每一项都是工程实践中的痛点 $@Mentzer et al., 2023$。</p>
+
+  <div class="def-box">
+    <h3>VQ 的三个根本问题</h3>
+    <ol>
+      <li><strong>码本坍缩（Codebook Collapse）</strong> — 随着码本大小增大，大量码字从未被激活。FSQ 论文中报告了一个触目惊心的数据：在 UViM 深度估计任务中，去掉 codebook splitting 后，VQ 的码本利用率从 99% 骤降至 <strong>0.78%</strong>，生成的深度图出现锯齿状边缘（jagged edges）。</li>
+      <li><strong>辅助损失耦合</strong> — Commitment loss、codebook loss、entropy penalty 不仅增加了调参负担（每项的权重需要精细调节），而且在梯度层面可能相互冲突。FSQ 的几位作者——也是 HiFiC 生成式压缩的开创者——长期与这些工程技巧打交道，深知其痛苦。</li>
+      <li><strong>大码本可扩展性差</strong> — 当码本从 $2^8=256$ 扩大到 $2^{14}=16384$ 时，VQ 的重建 FID 不仅没有改善，反而开始恶化。码本利用率从接近 100% 骤降到约 5%。根本原因在于高维空间（$D \geq 512$）中最近邻查找的区分度随码本增加而下降。</li>
+    </ol>
+  </div>
+
+  <p>这三板斧下来，VQ 的"学习码本"这个核心设计——最初看起来最优雅的部分——反而成了整个框架中最脆弱、最需要调参的环节。FSQ 的简化思路由此诞生：<strong>如果码本学习本身就是问题根源，那就不用学习了。</strong></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">FSQ 核心思想：标量量化 × 低维投影</div>
+
+  <p>FSQ 的设计灵感来自端到端神经压缩领域——Ballé 等人 2017 年的开创性工作就已经在图像压缩中成熟使用标量量化（scalar quantization）了 $@Ballé et al., 2017$。FSQ 的关键洞察是：<strong>如果要把连续向量映射到离散空间，标量量化就足够了——关键在于把维度降得足够低。</strong></p>
+
+  <div class="photo">
+    <img src="assets/media/images/fsq-2023/overview_v2_a.png" alt="FSQ 架构示意图" loading="lazy">
+    <div class="cap">图 1：FSQ 架构（左）与 VQ 架构（右）的对比。FSQ 将编码器输出投影到 d=3 维，每维 bound 到 L=3 个值后 round，得到一个 27 个格点的隐式码本。VQ 则将编码器输出投影到高维（d=7）后通过最近邻查找匹配码本中的向量。（来源：Mentzer et al., 2023, Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">FSQ 的完整 Pipeline</h3>
+
+  <p>FSQ 的完整流程非常直观，从输入到输出只有 4 步：</p>
+
+  <pre><code>输入图像 x
+    ↓
+Encoder: E(x) → z_e ∈ ℝ^(H×W×D_enc)     [常规 VAE 编码器]
+    ↓
+Projection: P(z_e) → z ∈ ℝ^(H×W×d)       [线性投影 / 1×1 卷积, d &lt; 10]
+    ↓
+Bound + Round: q = round(tanh(z) · ⌊L/2⌋)  [每维独立量化]
+    ↓
+codes_to_indexes: q ∈ ℤ^(H×W×d) → idx ∈ ℤ^(H×W)  [混合进制编码为整数索引]
+    ↓
+Decoder: D(idx) → x̂                        [常规 VAE 解码器]</code></pre>
+
+  <p>整个流程中，<strong>只有 Bound → Round 这一步是 FSQ 引入的"新"东西</strong>。编码器和解码器完全复用已有的 VQ-VAE / VQ-GAN 结构。这使得 FSQ 可以作为一个 <strong>drop-in replacement</strong>——直接把项目中的 VectorQuantizer 替换成 FSQ 层即可，其他逻辑不动。</p>
+
+  <h3 class="section-title">Bound 函数：tanh × 缩放 × 对称性处理</h3>
+
+  <p>Bound 函数是 FSQ 最精巧的设计。它的任务是把编码器输出的任意实数 $z_i$ 映射到有限个整数值上。给定每维的目标量化级数 $L_i$：</p>
+
+  <p style="text-align:center">\[ \text{bound}(z_i) = \tanh(z_i + \text{shift}_i) \times \text{half\_l}_i - \text{offset}_i \]</p>
+
+  <p>其中 $\text{half\_l}_i = (L_i - 1) \times (1 - \epsilon) / 2$，$\epsilon = 10^{-3}$ 用于数值稳定。$\text{offset}_i$ 处理偶奇数的区别：奇数级数时 offset=0，偶数时 offset=0.5。这是因为 round 操作的 0.5 截断规则需要调整以保证量化中心对称。</p>
+
+  <div class="callout"><strong>为什么要用 tanh？</strong> 深度网络的激活值可能任意大，直接缩放无法保证所有值都被合理量化。tanh 提供了<strong>与输入量级无关的有界压缩</strong>——无论编码器输出多大，先压缩到 $(-1, 1)$，再缩放到量化区间。这是一个经典的压缩技巧：先归一化再量化。</div>
+
+  <p>round 操作本身不可微，FSQ 直接用 STE（Straight-Through Estimator）处理：</p>
+
+  <p style="text-align:center">\[ q_i = \text{round}(f(z_i)), \quad \frac{\partial L}{\partial z_i} := \frac{\partial L}{\partial q_i} \]</p>
+
+  <p>这和 VQ 处理 argmin 的方式完全一致——梯度绕过量化步骤直接传回编码器。两者的核心数学结构其实是对称的：<strong>VQ 的记忆在可学习码本中，FSQ 的"记忆"在 tanh + round + 投影矩阵的组合中</strong>。</p>
+
+  <h3 class="section-title">Implicit Codebook：混合进制编码与索引映射</h3>
+
+  <p>FSQ 的隐式码本 = 各维离散值的笛卡尔积。对于配置 $[L_1, L_2, \dots, L_d]$，码本大小为 $\prod_i L_i$。每个 $d$ 维量化码 $\hat{z} \in \mathbb{Z}^d$ 对应一个格点。</p>
+
+  <p>为了与下游的 transformer 兼容（它们需要单一的整数索引作为 token），FSQ 用<strong>混合进制编码</strong>将 $d$ 维码映射为一维索引：</p>
+
+  <p style="text-align:center">\[ \text{basis} = [1, \, L_1, \, L_1 L_2, \, \dots, \, \prod_{i=1}^{d-1} L_i] \]</p>
+
+  <p style="text-align:center">\[ \text{index} = \sum_{i=1}^d \bar{z}_i \times \text{basis}_i \]</p>
+
+  <p>逆映射（indexes_to_codes）通过整除和取模操作实现。整个过程不需要任何可学习参数——FSQ 没有码本参数，没有码本 EMA，没有 commit loss。附录中的完整 JAX 实现只有约 30 行核心代码 $@Mentzer et al., 2023$。</p>
+
+  <div class="table-wrap">
+    <table>
+      <caption>推荐的 FSQ Levels 配置（Table 1）</caption>
+      <thead>
+        <tr><th>码本大小</th><th>推荐 $\mathcal{L}$</th><th>维度 $d$</th><th>举例说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>$2^4 = 16$</td><td>$[5, 3]$</td><td>2</td><td>第 1 维 5 级 × 第 2 维 3 级</td></tr>
+        <tr><td>$2^8 = 256$</td><td>$[8, 6, 5]$</td><td>3</td><td>8×6×5 = 240（≈ 256）</td></tr>
+        <tr><td>$2^{10} = 1024$</td><td>$[8, 5, 5, 5]$</td><td>4</td><td>8×5×5×5 = 1000（≈ 1024）</td></tr>
+        <tr><td>$2^{12} = 4096$</td><td>$[7, 5, 5, 5, 5]$</td><td>5</td><td>7×5⁴ = 4375（≈ 4096）</td></tr>
+        <tr><td>$2^{16} = 65536$</td><td>$[8, 8, 8, 5, 5, 5]$</td><td>6</td><td>8³×5³ = 64000（≈ 65536）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>注意论文还做了一个重要实验：当 $L_i < 5$ 时，FSQ 的性能显著下降（Sampling FID 恶化）。所以推荐配置中每个维度的级数都 ≥ 5。这一发现也解释了为什么 FSQ 需要至少 2-6 维——每维至少 5 级，乘积才能达到合理码本大小。</p>
+
+  <h3 class="section-title">FSQ 是怎么解决 VQ 的三个缺陷的？</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>VQ 缺陷</th><th>FSQ 解法</th><th>为什么能工作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>码本坍缩</td>
+          <td>没有可学习的码本向量</td>
+          <td>码本是固定的格点集，由 tanh + round 定义，<strong>不存在「未被激活的码字」</strong>——任何合法输入必然产生一个有效格点</td>
+        </tr>
+        <tr>
+          <td>辅助损失耦合</td>
+          <td>只用重建损失 + GAN 损失</td>
+          <td>FSQ 不需要 commitment loss：让编码器输出「靠近某个格点」的任务已经由 round 操作 + STE 完成了——解码器的梯度通过 STE 直接指导编码器学习把信息压入格点中</td>
+        </tr>
+        <tr>
+          <td>大码本失效</td>
+          <td>低维空间（d &lt; 10）</td>
+          <td>VQ 的最近邻查找在高维空间中区分度下降；FSQ 只需对少于 10 个标量做 round，<strong>低维格点的区分度天然高</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">实验验证：MaskGIT 图像生成 + UViM 密集预测</div>
+
+  <p>FSQ 在两类迥异的模型族上做了验证——基于掩码生成的 Transformer（MaskGIT）和统一密集预测框架（UViM）。前者是卷积 VAE + 多层 Transformer 的生成范式，后者是 encoder-decoder Transformer + 自回归模型的密集预测范式。覆盖了离散 tokenization 的主要应用场景。</p>
+
+  <h3 class="section-title">MaskGIT：图像生成上的公平对比</h3>
+
+  <p>在 ImageNet 256×256 类条件图像生成上，FSQ 替换 VQ 后的 MaskGIT 在所有指标上与 VQ 版本可比：</p>
+
+  <p style="text-align:center">\[ \text{FID}_{\text{VQ}} \approx \text{FID}_{\text{FSQ}}, \quad \text{Precision}_{\text{VQ}} \approx \text{Precision}_{\text{FSQ}}, \quad \text{Recall}_{\text{VQ}} \approx \text{Recall}_{\text{FSQ}} \]</p>
+
+  <div class="photo">
+    <img src="assets/media/images/fsq-2023/maskgit_cfg_sweep.png" alt="MaskGIT CFG sweep 结果" loading="lazy">
+    <div class="cap">图 2：MaskGIT 在 ImageNet 256×256 上的 CFG 参数扫描。FSQ（蓝色）和 VQ（橙色）的 FID、Precision、Recall 曲线几乎完全重合。底部的 Precision-Recall 曲线同样高度一致。（来源：Mentzer et al., 2023, Fig.5）</div>
+  </div>
+
+  <p>这里有一个有趣的发现：FSQ 的 Precision-Recall 曲线与 VQ 几乎完全重合。很多人可能会认为 VQ 的可学习码本能够学到「语义上有意义」的表示——一个码字对应一个视觉概念。但论文通过一系列分析实验（见附录），发现无论 VQ 还是 FSQ，单个码字都没有学到固定的视觉概念。视觉质量来自「码字组合 + 解码器权重」的合力，而不是码字本身的语义性 $@Mentzer et al., 2023$。</p>
+
+  <h3 class="section-title">UViM：密集预测任务</h3>
+
+  <p>UViM 的实验进一步验证了 FSQ 的通用性。三个任务——深度估计、全景分割、图像着色——覆盖了完全不同的输出模态和目标函数。</p>
+
+  <div class="table-wrap">
+    <table>
+      <caption>UViM 实验结果（Table 2）</caption>
+      <thead>
+        <tr><th>任务</th><th>指标</th><th>VQ</th><th>FSQ</th><th>差距</th><th>FSQ 亮点</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>NYU Depth</td><td>RMSE↓</td><td>0.468</td><td>0.473</td><td>+1.1%</td><td>去掉 VQ splitting 后 RMSE 恶化 4.7%，FSQ 无此问题</td></tr>
+        <tr><td>COCO Panoptic</td><td>PQ↑</td><td>43.4</td><td>43.2</td><td>-0.5%</td><td>去掉 context 后 FSQ（40.2）比 VQ（39.0）退化更少</td></tr>
+        <tr><td>ImageNet Colorization</td><td>FID-5k↓</td><td>16.90</td><td>17.55</td><td>+3.8%</td><td>与 VQ 高度可比</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="assets/media/images/fsq-2023/uvim_depth.png" alt="UViM 深度估计结果" loading="lazy">
+    <div class="cap">图 3：UViM 深度估计的样本对比。FSQ（中间列）与 VQ（左二列）产生质量相当的深度图。最右列是 VQ 去掉 codebook splitting 后的结果——码本利用率降至 0.78%，深度图出现明显的锯齿状边缘（jagged edges）。（来源：Mentzer et al., 2023, Fig.6）</div>
+  </div>
+
+  <div class="callout"><strong>最触目惊心的消融实验：</strong>VQ 去掉 codebook splitting 后，码本利用率从 99% 掉到 <strong>0.78%</strong>，RMSE 恶化 4.7%，深度图出现大量锯齿。FSQ 无需任何辅助算法就能维持 99% 以上的码本利用率。换句话说——<strong>VQ 并不是"学习"了一个好的码本，而是靠 codebook splitting 这个工程技巧硬撑着的</strong>。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">深入分析：码本大小与利用率的全景 Tradeoff</div>
+
+  <p>除了性能验证，FSQ 论文还做了一个系统性的 tradeoff 研究——在 ImageNet 128×128 上以不同码本大小训练 MaskGIT，绘制了一条从 $2^4$（16 个码字）到 $2^{16}$（65536 个码字）的完整曲线。结果揭示了一个<strong>反直觉的规律</strong>：</p>
+
+  <div class="photo">
+    <img src="assets/media/images/fsq-2023/dim_sizes.png" alt="码本大小 tradeoff" loading="lazy">
+    <div class="cap">图 4：不同 levels 配置下的 Sampling FID。颜色表示该配置中最小的 $L_i$ 值。当所有维度 $L_i \geq 5$ 时（蓝色/绿色点），FSQ 表现出稳定的性能；当某维 $L_i < 5$ 时（红色/橙色点），性能显著下降。（来源：Mentzer et al., 2023, Fig.10）</div>
+  </div>
+
+  <h3 class="section-title">三个关键发现</h3>
+
+  <div class="def-box">
+    <h3>发现 1：FSQ 码本利用率始终 ~100%，VQ 在大码本下崩溃</h3>
+    <ul>
+      <li><strong>VQ</strong>：在 $2^{10}$（1024）时利用率 ~100% → $2^{11}$ 时 ~50% → $2^{14}$ 时仅 ~5%。趋势是<strong>指数级下降</strong>。</li>
+      <li><strong>FSQ</strong>：在所有码本大小下保持接近 100% 利用率。即使到 $2^{16}$（65536），利用率仍超过 75%。</li>
+    </ul>
+  </div>
+
+  <div class="def-box">
+    <h3>发现 2：FSQ 随码本增大性能持续改善，VQ 先好后坏</h3>
+    <ul>
+      <li><strong>FSQ</strong>：Reconstruction FID 和 Sampling FID 随着码本增大持续改善，在 $2^{12}$ 附近开始饱和。</li>
+      <li><strong>VQ</strong>：Reconstruction FID 在 $2^{11}$ 时达到最佳，之后反而恶化。论文将其归因于码本利用率下降和最近邻查找区分度下降的共同作用。</li>
+    </ul>
+  </div>
+
+  <div class="def-box">
+    <h3>发现 3：大码本下 FSQ 的 "compression cost" 更高</h3>
+    <p>有趣的是，FSQ 虽然重建更好，但其离散分布在同样码本大小下的 <strong>compression cost</strong>（压缩后的 bits/sequence）比 VQ 更高——FSQ 的码字分布更均匀，熵更高。这意味着在相同码本大小下，FSQ 的 token 分布更难让 transformer 建模。但由于 FSQ 可以扩展到更大码本而不坍缩，总体上还是能获得更好的生成质量。</p>
+  </div>
+
+  <p>这个 tradeoff 研究给后来的研究者一个清晰的指引：<strong>如果码本大小在 512 以下，VQ 和 FSQ 区别不大；如果需要 1024 以上的码本，FSQ 是更好的选择——因为它能真正利用大码本的容量。</strong></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">讨论与启发：FSQ 在地图上的位置</div>
+
+  <h3 class="section-title">FSQ vs. LFQ vs. SQ-VAE：同期工作的全景对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>VQ-VAE</th><th>SQ-VAE</th><th>LFQ (MAGVIT-v2)</th><th>FSQ</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>量化方式</strong></td><td>可学习码本 + argmin</td><td>随机码本 + 自退火</td><td>每维 {−1,1}</td><td>每维 round 到 L 个值</td></tr>
+        <tr><td><strong>维度 d</strong></td><td>≥ 512</td><td>≥ 512</td><td>N（如 12）</td><td>&lt; 10</td></tr>
+        <tr><td><strong>码本参数</strong></td><td>K × D</td><td>K × D</td><td>无</td><td>无</td></tr>
+        <tr><td><strong>辅助损失</strong></td><td>commit + codebook + entropy</td><td>ELBO</td><td>无</td><td>无</td></tr>
+        <tr><td><strong>码本利用率</strong></td><td>大码本下 ~5%</td><td>高</td><td>100%</td><td>100%</td></tr>
+        <tr><td><strong>FSQ 等价关系</strong></td><td>—</td><td>并行路径</td><td><strong>特例</strong>: levels=[2,...,2]</td><td>本文</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>一个有趣的社区观察：FSQ 和 MAGVIT-v2 的 LFQ 同期发表于 ICLR 2024，<strong>共享至少一位作者（Michael Tschannen）</strong>，但两篇论文互相未引用。社区在 Reddit 上对此有过讨论。从技术上看，LFQ 是 FSQ 的一个特例——当每维级数为 2 时，FSQ 退化为二值量化，与 LFQ 等价。FSQ 的优势在于支持更灵活的码本大小设置（不需要是 2 的幂的倍数），LFQ 的优势在于二值量化在视频 tokenizer 中的成熟验证。</p>
+
+  <h3 class="section-title">后续改进工作</h3>
+
+  <p>FSQ 自发表后催生了多个改进方向：</p>
+
+  <ul>
+    <li><strong>iFSQ</strong>（Tencent/清华, 2025）——发现 FSQ 的等间距量化导致信息效率损失：编码器输出的激活值分布不均匀，但 FSQ 的量化格点却是均匀的。提出分布感知的激活映射（distribution-aware activation mapping），一行代码改进，弥合了离散 token 与连续扩散模型的差距。已开源（Tencent-Hunyuan/iFSQ）。</li>
+    <li><strong>RFSQ</strong>（2025）——将 FSQ 扩展到残差多级量化场景，解决后续级信号衰减问题。在音频重建（DNSMOS 3.646）和图像重建（L1 0.102）上超越 RVQ。</li>
+    <li><strong>FSQ for Robust Transmission</strong>（2025）——利用 FSQ 的天然冗余性实现鲁棒传输，已进入 3GPP 6G 标准化讨论。</li>
+  </ul>
+
+  <h3 class="section-title">对生成式图像压缩的启示</h3>
+
+  <p>FSQ 对生成式图像/视频压缩——Zack 的研究方向——有几点直接启示：</p>
+
+  <div class="info-box">
+    <h3>对生成式压缩的启示</h3>
+    <ol>
+      <li><strong>简化压缩前端</strong>：生成式压缩中的 VQ-VAE 第一阶是训练最困难的部分。FSQ 提供了稳定、零调优的替代。</li>
+      <li><strong>消除码本边信息</strong>：在压缩任务中，VQ 码本本身是需要传输或编码的边信息（side information）。FSQ 消除了这一开销——码本是隐式的，收发双方都知道量化网格的定义。</li>
+      <li><strong>FSQ × 扩散模型</strong>：iFSQ 已经探索了 FSQ tokenizer + 扩散模型的组合。对于基于 Stable Diffusion 的压缩方案，FSQ 可以作为更稳定的离散潜空间 tokenizer。</li>
+      <li><strong>乘积码本的熵编码</strong>：FSQ 的乘积码本结构与 HyperPrior 或 RDO 熵编码的关系值得探索——每个维度的独立量化是否可以配合自适应算术编码？</li>
+    </ol>
+  </div>
+
+  <h3 class="section-title">局限性</h3>
+
+  <p>FSQ 并非万能，论文也诚实地指出了几点局限：</p>
+
+  <ul>
+    <li><strong>码本大小不够灵活</strong>：FSQ 的码本大小必须是 $\prod_i L_i$ 的形式。不能像 VQ 那样任意设定码本大小为 8192 或 16384。但通过巧妙选择组合，可以逼近大多数目标值。</li>
+    <li><strong>大码本下收益递减</strong>：当码本超过 $2^{12}$ 后，FSQ 的 Sampling FID 改善趋于饱和。更大的码本带来更高的建模难度。</li>
+    <li><strong>等间距量化 → 信息效率损失</strong>：这是 iFSQ 的改进动机。激活值分布不均匀时，均匀的量化格点不是最优的。</li>
+    <li><strong>$L_i < 5$ 时表现不佳</strong>：每维至少需要 5 个级别才能有效区分信息。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">总结</div>
+
+  <p>FSQ 用一个再简单不过的方案——tanh + round + 低维投影 —— 解决了困扰 VQ-VAE 社区多年的码本学习难题。它证明了：<strong>在最有效的简化方案面前，所有复杂的工程技巧都是多余的</strong>。</p>
+
+  <p>对于 Zack 的研究方向——基于扩散模型的生成式图像压缩——FSQ 的启示是双重的：一是离散 tokenizer 的简化对端到端管线稳定的价值；二是「从已有技术（神经压缩的标量量化）跨界应用到新领域（生成模型）」这一思路本身的启发。</p>
+
+  <p>FSQ 的核心代码不到 50 行，无需调参就能在多个任务上达到与精心设计的 VQ 系统相当的性能。这种「少即是多」的设计哲学，本身就值得每一位做生成式 AI 的研究者品味。</p>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Mentzer-et-al.-2023">
+        <a href="https://arxiv.org/abs/2309.15505" target="_blank">Mentzer, F. et al. "Finite Scalar Quantization: VQ-VAE Made Simple." <em>ICLR</em>, 2024.</a>
+      </li>
+      <li data-cite-key="van-den-Oord-et-al.-2017">
+        <a href="https://arxiv.org/abs/1711.00937" target="_blank">van den Oord, A. et al. "Neural Discrete Representation Learning." <em>NeurIPS</em>, 2017.</a>
+      </li>
+      <li data-cite-key="Ballé-et-al.-2017">
+        <a href="https://arxiv.org/abs/1611.01704" target="_blank">Ballé, J. et al. "End-to-end Optimized Image Compression." <em>ICLR</em>, 2017.</a>
+      </li>
+      <li data-cite-key="Esser-et-al.-2021">
+        <a href="https://arxiv.org/abs/2012.09841" target="_blank">Esser, P. et al. "Taming Transformers for High-Resolution Image Synthesis." <em>CVPR</em>, 2021.</a>
+      </li>
+      <li data-cite-key="Chang-et-al.-2022">
+        <a href="https://arxiv.org/abs/2202.04200" target="_blank">Chang, H. et al. "MaskGIT: Masked Generative Image Transformer." <em>CVPR</em>, 2022.</a>
+      </li>
+      <li data-cite-key="Kolesnikov-et-al.-2022">
+        <a href="https://arxiv.org/abs/2205.10337" target="_blank">Kolesnikov, A. et al. "UViM: A Unified Modeling Approach for Vision with Learned Guiding Codes." <em>NeurIPS</em>, 2022.</a>
+      </li>
+      <li data-cite-key="Takida-et-al.-2022">
+        <a href="https://arxiv.org/abs/2205.07547" target="_blank">Takida, Y. et al. "SQ-VAE: Variational Bayes on Discrete Representation with Self-annealed Stochastic Quantization." <em>ICML</em>, 2022.</a>
+      </li>
+      <li data-cite-key="Chang-et-al.-2023">
+        <a href="https://arxiv.org/abs/2301.00704" target="_blank">Chang, H. et al. "Muse: Text-To-Image Generation via Masked Generative Transformers." <em>NeurIPS</em>, 2023.</a>
+      </li>
+      <li data-cite-key="Yu-et-al.-2024">
+        <a href="https://arxiv.org/abs/2311.11807" target="_blank">Yu, L. et al. "MAGVIT-v2: Language Model Beats Diffusion — Tokenizer is Key to Visual Generation." <em>ICLR</em>, 2024.</a>
+      </li>
+    </ul>
+  </div>
+</div>
