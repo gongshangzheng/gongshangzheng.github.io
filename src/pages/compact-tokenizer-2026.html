@@ -1,0 +1,384 @@
+---
+title: "8 个 Token 搞定规划——CompACT：面向世界模型的极致压缩离散 Tokenizer"
+description: "CompACT 将每帧图像压缩至 8-16 个离散 Token（约128 bits），在世界模型规划中实现 40 倍加速，CVPR 2026 论文深度解读。"
+created_at: 2026-05-30T23:38:25
+updated_at: 2026-05-30T23:38:25
+tags: [Tokenizer, World Model, 离散表征, 视觉分词器, CVPR2026]
+categories: ["AI"]
+subcategory: "视觉分词器"
+sub_id: 1
+mathjax: true
+notify: true
+hero_title: "8 个 Token 搞定规划"
+hero_sub: "CVPR 2026 · POSTECH"
+hero_tagline: "极端压缩不是损失——是迫使模型学习更抽象的决策表示"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">8</span><span class="label">最少 Token/帧</span></div>
+  <div class="stat"><span class="num b">40×</span><span class="label g">规划加速</span></div>
+  <div class="stat"><span class="num">16</span><span class="label">bits/Token</span></div>
+  <div class="stat"><span class="num b">128</span><span class="label l">bits/图像</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：世界模型的效率困境</div>
+
+  想象一下，你走进一个陌生的商场，想去某个店铺。你不会在脑中逐像素地记住每一块地砖和每一盏灯的位置——你记住的是"向左转、经过中庭、第二个通道右转"。这种抽象的空间表征，就是人类在复杂环境中高效导航的秘密 $@Kim et al., 2026$。
+
+  在人工智能领域，这种能力被称为<strong>世界模型（World Model）</strong>——一个能够模拟环境动态的神经网络。它在强化学习中扮演着关键角色：通过"想象"未来状态，智能体可以在不与真实环境交互的情况下进行规划和决策 $@Ha et al., 2018$。
+
+  然而，现有的世界模型面临一个尖锐的矛盾：<strong>感知保真度 vs 规划效率</strong>。
+
+  <!-- Stats -->
+  当前的视觉生成模型（如 Stable Diffusion 的 SD-VAE）会将每帧图像编码为 <strong>784 个 token</strong>。一个最先进的导航世界模型 NWM（Navigation World Model），使用这些 token 进行单次轨迹优化需要 <strong>3 分钟</strong>的计算时间 $@Bar et al., 2025$。当规划需要实时响应时，3 分钟是不可接受的。
+
+  <div class="callout"><strong>核心矛盾</strong>：生成式模型追求像素级重建，需要保存纹理、光照、阴影等大量感知细节。但规划真正需要的，是物体类别、空间位置、运动趋势这些<strong>低频语义特征</strong>。两者之间的目标错配，导致 token 数量级上的巨大浪费。</div>
+
+  CompACT（Compact Action-Conditioned Tokenizer）的答案直接而有力：<strong>既然规划不需要像素级精度，那就把压缩推到极致</strong>。它将每帧图像压缩到仅仅 8-16 个离散 token（约 128-256 bits），同时在世界模型规划中达到与 784-token 基线相当的精度——<strong>40 倍的加速</strong>。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      反直觉的洞察
+    </div>
+    <div class="admonition-content"><p>极端压缩不是一种损失——它迫使世界模型学习更抽象、与动作直接相关的表示。当模型无法依赖像素级细节时，它必须学会理解"发生了什么"而非"看到了什么"。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：为什么 784 个 Token 是规划瓶颈</div>
+
+  <h3 class="section-title">Token 数量的平方代价</h3>
+
+  世界模型通常基于注意力架构（如 DiT、Transformer），其计算复杂度随 token 数量 $N$ <strong>呈二次方增长</strong> $@Peebles et al., 2023$。这意味着：
+
+  $$O(N^2) \quad \text{vs} \quad O(8^2)$$
+
+  784 个 token 的平方是 614,656，而 8 个 token 的平方只有 64——差了四个数量级。在每次 rollout 需要处理数百帧的规划场景中，这种差距被急剧放大。
+
+  <h3 class="section-title">感知-规划目标错配</h3>
+
+  传统的图像 tokenizer 设计目标很明确：<strong>最小化重建误差</strong>。SD-VAE $@Rombach et al., 2022$、VQGAN $@Chang et al., 2022$ 都力求输出与输入尽可能一致——纹理、光照、阴影、反射，一个都不能少。
+
+  但规划需要的是什么呢？物体在哪、空间布局如何、什么在移动。这些信息量远小于完整的图像熵。
+
+  <div class="callout"><strong>信息论视角</strong>：规划所需的信息量远小于完整图像的熵——动作空间通常是低维的（3-5 DOF），而图像是高维的（百万像素级）。这从信息论角度说明了极端压缩的理论可行性。CompACT 用 128-256 bits 编码一帧，远小于完整图像的信息量，但已足够支撑有效规划。</div>
+
+  <h3 class="section-title">NWM 的 3 分钟困境</h3>
+
+  论文 $@Kim et al., 2026$ 给出了一个具体的基准：NWM 使用 SD-VAE（784 tokens）进行规划时，单次轨迹优化耗时 <strong>178.78 秒</strong>（约 3 分钟）。而补充材料中的延迟分解显示，其中 <strong>99.2% 的时间</strong>消耗在模型 rollout 上——即不断前向传播预测未来状态的过程。
+
+  这 3 分钟里，真正花在优化算法上的时间微乎其微。瓶颈赤裸裸地指向 token 数量。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tokenizer</th><th>Token 数</th><th>规划延迟</th><th>相对 NWM</th></tr></thead>
+      <tbody>
+        <tr><td>SD-VAE</td><td>784</td><td>178.78 s</td><td>1×</td></tr>
+        <tr><td>FlexTok</td><td>64</td><td>16.68 s</td><td>10.7×</td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>16</strong></td><td><strong>5.78 s</strong></td><td><strong>30.9×</strong></td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>8</strong></td><td><strong>4.83 s</strong></td><td><strong>37.0×</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">CompACT Tokenizer 架构详解</div>
+
+  CompACT 的整体架构分为三个阶段，如下图所示。
+
+  <!-- Use user screenshot for Fig 1 (most trustworthy per user) -->
+  <div class="photo">
+    <img src="assets/media/images/compact-tokenizer-2026/fig1_user.png" alt="CompACT 整体架构 — Tokenizer 训练、潜空间世界模型训练、决策时规划" loading="lazy">
+    <div class="cap">图 1：CompACT 的整体架构。（a）Tokenizer 训练：图像编码为紧凑 token，再解码重建；（b）潜空间世界模型训练：在压缩后的潜空间中学习状态转移；（c）决策时规划：通过优化动作序列使预测状态接近目标（来源：$@Kim et al., 2026$, Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">3.1 语义编码器 <strong>E</strong><sub>compact</sub></h3>
+
+  编码器的核心设计哲学：<strong>用冻结的语义特征，而非端到端训练的重建特征</strong>。
+
+  <div class="def-box">
+    <h3>编码器架构</h3>
+    <p>输入图像 $\mathbf{o}$ → DINOv3-B（冻结）→ 语义 patch 特征 → Latent Resampler（交叉注意力）→ FSQ 量化 → 离散 token $\mathbf{z}$</p>
+  </div>
+
+  <strong>冻结 DINOv3</strong> $@Simeoni et al., 2025$：CompACT 使用预训练的 DINOv3-B 作为视觉编码器，并且<strong>冻结其权重</strong>。这是一个违背直觉但至关重要的设计选择。传统的 tokenizer 会微调编码器以更好地适配重建任务，但 CompACT 的消融实验清楚地表明：微调 DINOv3 会使重建质量从 rFID 2.40 退化到 5.22。
+
+  <div class="callout"><strong>为什么冻结反而更好？</strong>微调会使编码器的表示向<strong>重建目标偏移</strong>——注意力从高层语义转向低频纹理。冻结 DINOv3 强制编码器"忘记"像素细节，只输出丰富的语义特征。这些特征正是规划所需的。</div>
+
+  <strong>Latent Resampler</strong>：这是一个基于 Transformer Decoder 的交叉注意力模块。$N$ 个可学习的 query token（$N \le 16$）通过交叉注意力从 DINOv3 的 patch 特征中"蒸馏"信息。每个 query token 自然地关注语义一致的图像区域——一个专注于物体 A，另一个关注物体 B，无需显式监督。
+
+  <strong>FSQ（Finite Scalar Quantization）</strong>$@Mentzer et al., 2023$：一种无需码本的量化方法。配置 levels 为 $[8,8,8,5,5,5]$，每个 token 约 16 bits。FSQ 相比传统 VQ 的优势在于：<strong>基于 level 的 radix 表示保留了几何结构</strong>，使得在离散空间中可以直接计算语义距离——这对规划中的 cost function 至关重要。
+
+  <h3 class="section-title">3.2 生成式解码器 <strong>D</strong><sub>compact</sub></h3>
+
+  从 8-16 个 token 直接重建像素是一个<strong>病态问题</strong>——信息瓶颈使确定性解压不可能。CompACT 的应对是：<strong>不解压，而是生成</strong>。
+
+  <div class="photo">
+    <img src="assets/media/images/compact-tokenizer-2026/fig2_user.png" alt="CompACT Tokenizer 架构细节" loading="lazy">
+    <div class="cap">图 2：Tokenizer 架构细节。训练时只更新 Latent Resampler 和 D<sub>compact</sub>；E<sub>ψ</sub>（VQGAN）产生掩码目标 token，D<sub>ψ</sub> 仅在推理时用于像素重建（来源：$@Kim et al., 2026$, Fig.2）</div>
+  </div>
+
+  生成式解码的策略是引入一个<strong>中间表示</strong>——使用 MaskGIT-VQGAN $@Chang et al., 2022$ 的 latent tokens（$N_\psi = 196$ tokens）作为目标。具体来说：
+
+  <ol>
+    <li><strong>编码</strong>：MaskGIT-VQGAN 的编码器 $\mathcal{E}_\psi$ 将图像编码为 196 个 token $\mathbf{z}^\psi$，这些 token 包含了紧凑 token 丢弃的高频细节</li>
+    <li><strong>掩码生成</strong>：解码器 $\mathcal{D}_\text{compact}$ 以紧凑 token $\mathbf{z}$ 为条件，学习从掩码状态恢复 $\mathbf{z}^\psi$</li>
+    <li><strong>像素重建</strong>：MaskGIT-VQGAN 的解码器 $\mathcal{D}_\psi$ 将重建的 196 个 token 解码为像素图像</li>
+  </ol>
+
+  训练目标是最小化掩码 token 的负对数似然：
+
+  $$\mathcal{L}_\text{tok} = -\mathbb{E}_{\mathbf{z}^\psi} \big[ \log p(\mathbf{z}^\psi | \mathbf{z}, M(\mathbf{z}^\psi)) \big]$$
+
+  其中 $M(\cdot)$ 表示随机掩码操作。注意：<strong>Tokenizer 的训练不涉及像素级重建损失</strong>——完全在潜空间中进行。
+
+  推理时，$\mathcal{D}_\text{compact}$ 从全部掩码开始，按置信度迭代 unmask（16 步采样），最终通过 $\mathcal{D}_\psi$ 重建像素。总参数量为 775M。
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      范式转变
+    </div>
+    <div class="admonition-content"><p>从"精确重建"到"条件生成"的转变，是 CompACT 突破信息瓶颈的关键。紧凑 token 只"提示"场景的语义骨架，解码器"想象"出合理的高频细节。这类似于人类从简笔画理解场景——不需要所有像素，就能想象出完整的画面。</p></div>
+  </div>
+
+  <h3 class="section-title">3.3 离散化的几何意义</h3>
+
+  FSQ 的 level 配置 $[8,8,8,5,5,5]$ 产生了约 $2^{16}$ 的码本大小。这不仅是量化精度的选择，更巧妙的是：<strong>FSQ 的 radix 表示保留了嵌入空间的几何结构</strong>。这意味着在离散空间中计算两个 token 的 L1 距离是有意义的——它反映了语义差异的连续度量。
+
+  这一性质在规划中的 cost function 里得到了充分利用：在潜空间中直接计算距离（跳过解码）可实现近 <strong>80 倍的规划加速</strong>。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">世界模型：在紧凑潜空间中训练与规划</div>
+
+  有了 CompACT Tokenizer，接下来的问题就是：如何在 8-16 个 token 的离散潜空间中训练世界模型？
+
+  <h3 class="section-title">4.1 潜空间世界模型形式化</h3>
+
+  世界模型在观测空间中的定义是：
+
+  $$f_\theta: (\mathbf{o}_t, \mathbf{a}_t) \mapsto p_\theta(\mathbf{o}_{t+1} | \mathbf{o}_t, \mathbf{a}_t)$$
+
+  将其映射到潜空间后，得到：
+
+  $$f_\phi: (\mathbf{z}_t, \mathbf{a}_t) \mapsto p_\phi(\mathbf{z}_{t+1} | \mathbf{z}_t, \mathbf{a}_t)$$
+
+  其中 $\mathbf{z}_t = \mathcal{E}_\text{compact}(\mathbf{o}_t)$。这里的 token 数量 $N$ 直接决定了计算成本——$N \le 16$ 意味着每步 rollout 的计算量仅为 784-token 基线的 $1/2400$。
+
+  <h3 class="section-title">4.2 世界模型训练</h3>
+
+  训练目标同样采用掩码生成建模：
+
+  $$\mathcal{L}_\text{world} = -\mathbb{E}_{\mathbf{z}_t, \mathbf{a}_t, \mathbf{z}_{t+1}} \big[ \log p(\mathbf{z}_{t+1} | \mathbf{z}_t, \mathbf{a}_t, M(\mathbf{z}_{t+1})) \big]$$
+
+  论文探索了两种世界模型架构，分别适配不同的任务：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>任务</th><th>架构</th><th>参数量</th><th>特点</th></tr></thead>
+      <tbody>
+        <tr><td>导航（RECON）</td><td>自回归 DiT（CDiT）</td><td>243M</td><td>12 层, 768 维, 固定历史窗口 $\tau=4$</td></tr>
+        <tr><td>机器人操作（RoboNet）</td><td>Block-Causal Transformer</td><td>270M</td><td>16 层, 1024 维, 并行预测 14 帧</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      History Masking：从 Diffusion Forcing 的启发
+    </div>
+    <div class="admonition-content"><p>训练时随机 mask 历史窗口中的 token，借鉴了 Diffusion Forcing 的思想 $@Chen et al., 2024$。这使得模型在不同噪声水平下都能进行鲁棒的时序依赖建模。推理时使用 20% 的 mask 率，消融实验证明 history masking 将规划精度从 ATE 1.480 提升到 1.330。</p></div>
+  </div>
+
+  <h3 class="section-title">4.3 决策时规划</h3>
+
+  训练完成后，世界模型通过 <strong>MPC with CEM（交叉熵方法）</strong>进行规划：
+
+  <ol>
+    <li>从当前观测 $\mathbf{o}_0$ 编码得到 $\mathbf{z}_0$</li>
+    <li>初始化候选动作序列 $\mathbf{a} = [\mathbf{a}_0, \ldots, \mathbf{a}_{H-1}]$</li>
+    <li>使用世界模型 rollout 预测未来潜状态序列 $\mathbf{z}_1, \ldots, \mathbf{z}_H$</li>
+    <li>计算 cost：$C(\mathbf{a}) = d(\hat{\mathbf{o}}_H, \mathbf{o}_\text{goal})$</li>
+    <li>优化 $\mathbf{a}^* = \arg\min_\mathbf{a} C(\mathbf{a})$</li>
+  </ol>
+
+  <strong>Cost Function 的选择</strong>：
+  <ul>
+    <li><strong>Pixel 空间</strong>：LPIPS 距离（需要解码，精度略高）</li>
+    <li><strong>Latent 空间</strong>：FSQ 反量化后的 L1 距离（跳过解码，速度提升近 80×）</li>
+  </ul>
+
+  潜空间 cost function 虽精度小幅下降（ATE 1.330 vs 1.379），但它将单次规划延迟从 5.78s 降至 <strong>2.15s</strong>——相比 SD-VAE 的 178.78s 是 <strong>约 83 倍的加速</strong>，这是一个在实际部署中极具吸引力的权衡。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验验证：效率与精度的全面胜利</div>
+
+  <h3 class="section-title">5.1 重建性能：16× 更少 token，接近的重建质量</h3>
+
+  在 ImageNet 验证集上的重建实验，展示了 CompACT 的压缩能力：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Token 数</th><th>rFID ↓</th><th>IS ↑</th></tr></thead>
+      <tbody>
+        <tr><td>SD-VAE</td><td>1024</td><td>0.64</td><td>223.8</td></tr>
+        <tr><td>MaskGIT-VQGAN</td><td>256</td><td>1.83</td><td>186.7</td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>16</strong></td><td><strong>2.40</strong></td><td><strong>209.0</strong></td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>8</strong></td><td><strong>3.21</strong></td><td><strong>207.5</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：16-token 的 CompACT 以 16× 更少的 token 数达到接近 MaskGIT-VQGAN 的重建质量（rFID 2.40 vs 1.83）。压缩至 8 token 时 Inception Score 几乎不变（207.5 vs 209.0），说明极端压缩主要影响的是重建细节而非语义内容。</div>
+
+  <h3 class="section-title">5.2 导航规划：40 倍加速，精度可比</h3>
+
+  这是论文最核心的实验——在 RECON 基准上的目标条件视觉导航：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tokenizer</th><th>Token 数</th><th>ATE ↓</th><th>RPE ↓</th><th>延迟 ↓</th></tr></thead>
+      <tbody>
+        <tr><td>SD-VAE</td><td>784</td><td>1.262</td><td>0.354</td><td>178.78 s</td></tr>
+        <tr><td>FlexTok</td><td>64</td><td>1.484</td><td>0.400</td><td>16.68 s</td></tr>
+        <tr><td>FlexTok</td><td>16</td><td>1.625</td><td>0.446</td><td>14.48 s</td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>16</strong></td><td><strong>1.330</strong></td><td><strong>0.390</strong></td><td><strong>5.78 s</strong></td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>8</strong></td><td><strong>1.373</strong></td><td><strong>0.401</strong></td><td><strong>4.83 s</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这个表格承载了论文的核心论点，值得深入解读：
+
+  <ul>
+    <li><strong>CompACT 16-token vs SD-VAE 784-token</strong>：ATE 差距仅 5.4%（1.330 vs 1.262），但延迟从 178.78s 降至 5.78s——<strong>约 31 倍的加速</strong></li>
+    <li><strong>CompACT 8-token vs FlexTok 64-token</strong>：用 8 倍更少的 token 取得了更好的规划精度（ATE 1.373 vs 1.484），延迟仅为后者的 1/3</li>
+    <li><strong>SCAND 数据集上的一致表现</strong>：ATE 1.391 vs 1.578（FlexTok-64），验证了方法的泛化能力</li>
+  </ul>
+
+  <div class="admonition success">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      核心结论
+    </div>
+    <div class="admonition-content"><p>极端压缩在精心设计的架构下不仅能保持规划性能，<strong>还可以超越使用更多 token 的方法</strong>。压缩不是妥协，而是一种精炼。</p></div>
+  </div>
+
+  <h3 class="section-title">5.3 动作条件视频预测：3 倍更好的动作建模</h3>
+
+  在 RoboNet 机器人操作数据集上，论文验证了 CompACT token 的动作相关信息保留能力：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tokenizer</th><th>Token 数</th><th>APE ↓</th><th>延迟</th></tr></thead>
+      <tbody>
+        <tr><td>MaskGIT-VQGAN</td><td>256</td><td>0.3383</td><td>3.826 s</td></tr>
+        <tr><td><strong>CompACT</strong></td><td><strong>16</strong></td><td><strong>0.1122</strong></td><td><strong>0.740 s</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  APE（Action Prediction Error）是一个特别巧妙的指标：它使用逆动力学模型（IDM）来评估生成的视频帧中包含多少动作相关信息。如果模型生成的帧能准确反映驱动它的动作，说明 token 保留了规划必要的动态信息。
+
+  CompACT 的 APE 仅为 MaskGIT-VQGAN 的 <strong>1/3</strong>，同时生成速度提升 <strong>5.2 倍</strong>。这说明 CompACT 的模块化 token 更自然地捕捉了动态物体（末端执行器、操作目标）的状态变化——这是规划真正需要的信息。
+
+  <h3 class="section-title">5.4 消融实验：剥离每一层设计</h3>
+
+  <strong>编码器设计</strong>：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>rFID</th><th>影响</th></tr></thead>
+      <tbody>
+        <tr><td>完整模型（冻结 DINOv3）</td><td><strong>2.40</strong></td><td>基线</td></tr>
+        <tr><td>微调 DINOv3</td><td>5.22</td><td>← 冻结特征提取器至关重要</td></tr>
+        <tr><td>从头训练 ViT</td><td>7.28</td><td>← 缺少预训练语义先验</td></tr>
+        <tr><td>移除生成式解码</td><td>28.80</td><td>← 生成式解码不可或缺</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <strong>其他关键消融</strong>：
+  <ul>
+    <li><strong>History masking</strong>：ATE 从 1.480 改善到 1.330（提升 10.1%）</li>
+    <li><strong>Latent space cost function</strong>：相比 pixel 空间，精度小幅下降但速度提升近 80×</li>
+    <li><strong>不同骨干网络</strong>：SigLIP-2、MAE、DINOv3 均可获得良好性能，方法不依赖特定预训练模型</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">讨论与启发：压缩即抽象</div>
+
+  <h3 class="section-title">6.1 在地图上的位置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Token 类型</th><th>Token 数</th><th>规划适用</th><th>延迟</th></tr></thead>
+      <tbody>
+        <tr><td>SD-VAE $@Rombach et al., 2022$</td><td>连续</td><td>784</td><td>✅</td><td>178.78 s</td></tr>
+        <tr><td>MaskGIT-VQGAN $@Chang et al., 2022$</td><td>离散</td><td>256</td><td>⚠️</td><td>3.83 s</td></tr>
+        <tr><td>FlexTok $@Bachmann et al., 2025$</td><td>离散</td><td>64</td><td>✅</td><td>16.68 s</td></tr>
+        <tr><td><strong>CompACT</strong> $@Kim et al., 2026$</td><td><strong>离散</strong></td><td><strong>8-16</strong></td><td><strong>✅</strong></td><td><strong>4.83 s</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  CompACT 位于 Token 压缩和规划效率的帕累托前沿上——它用最少的 token 换来了最好的规划精度和延迟组合。
+
+  <h3 class="section-title">6.2 局限性</h3>
+
+  <ul>
+    <li><strong>重建质量不足</strong>：极端压缩导致纹理细节"幻觉化"，不适合需要像素级精度的任务</li>
+    <li><strong>任务范围有限</strong>：主要在导航（RECON）和简单操作（RoboNet）上验证，复杂机器人操作尚未测试</li>
+    <li><strong>固定 token 预算</strong>：8 和 16 是预定义值，没有根据场景复杂度动态调整的机制</li>
+  </ul>
+
+  <h3 class="section-title">6.3 个人启发</h3>
+
+  <div class="callout"><strong>压缩即抽象</strong>：CompACT 告诉我们，信息瓶颈不只是工程上的无奈，更是一种设计原则。当你被迫丢弃 99% 的信息时，你才真正学会什么是重要的。</div>
+
+  <ol>
+    <li><strong>表征学习的核心在于任务适配</strong>：Tokenizer 的设计不应该仅以重建质量为目标，下游任务的目标函数应该反向传播到表征设计中去。CompACT 为"规划专用 tokenizer"树立了一个范本。</li>
+    <li><strong>预训练模型的复用哲学</strong>：冻结 DINOv3 的使用揭示了预训练基础模型的双重价值——不仅提供特征，其已学习的语义抽象本身就是"规划友好"表征的强先验。这种"借用而非重新学习"的范式值得借鉴。</li>
+    <li><strong>离散表征 + 并行解码的工程优势</strong>：CompACT 采用离散 token + 掩码生成建模，在速度上显著优于连续潜空间 + 扩散模型的方案。在实时性要求高的场景中，这是一个值得优先考虑的工程选择。</li>
+    <li><strong>模块化 token 的涌现性质</strong>：注意力可视化显示每个 compact token 自然关注语义一致的物体/区域——这种"无监督的物体分解"是冻结 DINO 特征与交叉注意力结构的涌现性质，为场景理解提供了新的视角。</li>
+  </ol>
+
+  <h3 class="section-title">6.4 开放问题</h3>
+
+  读完后，我认为以下几个方向特别值得跟踪和探索：
+
+  <ul>
+    <li><strong>自适应 token 预算</strong>：能否根据场景复杂度动态调整 token 数量？简单走廊用 4 token，复杂场景用 16 token？</li>
+    <li><strong>3D-aware 的极端压缩</strong>：如果 tokenizer 能理解 3D 结构（而非 2D 像素），压缩效率和规划精度能否再上一个台阶？</li>
+    <li><strong>理论边界</strong>：从信息瓶颈角度，能否形式化证明"规划最优压缩率"的存在？8 是魔法数字还是可以更少？</li>
+  </ul>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Kim-et-al.-2026">Kim, D. et al. (2026). Planning in 8 Tokens: A Compact Discrete Tokenizer for Latent World Model. <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2603.05438" target="_blank">arXiv:2603.05438</a></li>
+      <li data-cite-key="Bar-et-al.-2025">Bar, A. et al. (2025). Navigation World Models. <em>ICLR 2025</em>.</li>
+      <li data-cite-key="Chang-et-al.-2022">Chang, H. et al. (2022). MaskGIT: Masked Generative Image Transformer. <em>CVPR 2022</em>.</li>
+      <li data-cite-key="Rombach-et-al.-2022">Rombach, R. et al. (2022). High-Resolution Image Synthesis with Latent Diffusion Models. <em>CVPR 2022</em>.</li>
+      <li data-cite-key="Bachmann-et-al.-2025">Bachmann, R. et al. (2025). FlexTok: Flexible Token Lengths for Image Generation. <em>arXiv:2502.08897</em>.</li>
+      <li data-cite-key="Simeoni-et-al.-2025">Simeoni, O. et al. (2025). DINOv3: Self-Supervised Vision Transformers at Scale. <em>ICLR 2025</em>.</li>
+      <li data-cite-key="Mentzer-et-al.-2023">Mentzer, F. et al. (2023). Finite Scalar Quantization: VQ-VAE Made Simple. <em>ICLR 2023</em>.</li>
+      <li data-cite-key="Peebles-et-al.-2023">Peebles, W. et al. (2023). Scalable Diffusion Models with Transformers. <em>ICCV 2023</em>.</li>
+      <li data-cite-key="Ha-et-al.-2018">Ha, D. et al. (2018). World Models. <em>NeurIPS 2018</em>.</li>
+      <li data-cite-key="Chen-et-al.-2024">Chen, B. et al. (2024). Diffusion Forcing: Next-token Prediction Meets Full-Sequence Diffusion. <em>NeurIPS 2024</em>.</li>
+    </ul>
+  </div>
+</div>
