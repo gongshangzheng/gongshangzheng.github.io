@@ -6,6 +6,7 @@
 
 ---
 
+
 ## 引用语法 `$@key$`
 
 引用使用 `$@key$` 语法（注意 `@` 前缀），构建时转换为 `<cite>@key</cite>`。
@@ -16,6 +17,62 @@ $@KL Divergence$
 ```
 
 **与行内公式的区分：** 行内公式用 `$...$`（无 `@`），引用用 `$@...$`（有 `@`）。
+
+### 引用联动机制（citation.js）
+
+`citation.js`（`public/assets/js/citation.js`）为 `<cite>` 添加交互行为，实现正文引用与底部参考来源的**双向联动**：hover 弹出预览 + 链接 → 点击跳转到底部对应条目。
+
+**只加 `$@key$` 还不够。底部 `.sources` 列表必须同时配置 `data-cite-key`，否则弹出框显示"未找到原始链接"。**
+
+#### 联动流程
+
+```
+正文: $@Chen et al., 2025$   →  构建: <cite>@Chen et al., 2025</cite>
+                                        ↓
+                                citation.js: slugifyKey → "Chen-et-al.-2025"
+                                        ↓
+                                在 .sources li 中查找 data-cite-key="Chen-et-al.-2025"
+                                        ↓
+                                匹配 → 提取 <a href> → hover 弹出"打开原始链接"
+                                不匹配 → hover 弹出"未找到原始链接"
+```
+
+#### slugifyKey 规则
+
+citation.js 的 `slugifyKey()` 将 `<cite>` 文本转为匹配用的 key（保留大小写和点号，空格转连字符）：
+
+| 输入文本 | slugifyKey 结果 |
+|---------|----------------|
+| `Chen et al., 2025` | `Chen-et-al.-2025` |
+| `Wu et al., 2024c` | `Wu-et-al.-2024c` |
+| `Qu et al., 2024` | `Qu-et-al.-2024` |
+| `VQGAN` | `VQGAN` |
+| `KL Divergence` | `KL-Divergence` |
+
+#### `.sources` 列表配置
+
+1. 正文使用 `$@Author et al., Year$` 时，底部 `.sources li` 必须添加 `data-cite-key` 属性，值为 slugify 后的 key
+2. 每个 `<li>` 内必须包含一个 `<a href="..." target="_blank">` 链接，citation.js 提取它作为弹出框里的"打开原始链接"
+3. key 必须与 `slugifyKey()` 精确匹配（大小写敏感）
+
+```html
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Chen-et-al.-2025">
+      Chen, Z. et al. (2025). 论文标题. <em>会议名</em>.
+      <a href="https://arxiv.org/abs/2503.06764" target="_blank">arXiv:2503.06764</a>
+    </li>
+    <li data-cite-key="Qu-et-al.-2024">
+      Qu, Q. et al. (2024). 论文标题.
+      <a href="https://arxiv.org/abs/2412.03069" target="_blank">arXiv:2412.03069</a>
+    </li>
+  </ul>
+</div>
+```
+
+**禁止**使用裸 `<ul><li>URL</li></ul>` 无 `data-cite-key` 的格式——这会破坏 citation.js 的联动机制。
+
 
 ---
 

@@ -1,0 +1,151 @@
+---
+title: "ComTok：通过双量化器解耦语义与像素特征"
+description: "ComTok 的核心设想：在统一 tokenizer 中引入双量化器结构，通过控制图像 token 的比例 v，在语义理解和像素重建之间连续插值。初步实验表明，增加图像 token 的比例能单调提升重建质量（LPIPS），且 v=1.00 超越 MaskGIT baseline。"
+created_at: 2026-05-30T22:01:09
+updated_at: 2026-05-30T22:01:09
+tags: ["ComTok", "视觉分词器", "双量化器", "研究笔记"]
+categories: ["AI"]
+subcategory: "视觉分词器"
+mathjax: true
+notify: true
+hero_title: "ComTok：通过双量化器解耦语义与像素特征"
+hero_sub: "研究思路 · 2026年5月"
+hero_tagline: "用一个 v 参数在语义理解和像素重建之间平滑过渡"
+---
+
+<!-- ============================================================ -->
+<!-- Part 1 · 引言 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么需要双量化器？</div>
+
+  统一图像 tokenizer 面临着本质性的矛盾：理解任务需要高层语义特征（"这张图片里有什么"），生成任务需要低层像素特征（"这张图片长什么样"）。现有的解决方案可以分为两条路线：
+
+  <ul>
+    <li><strong>联合训练路线</strong>（VILA-U, SDE, TokenFlow）：在单一码本内同时优化语义对齐损失和像素重建损失，但两个目标在梯度层面互相干扰</li>
+    <li><strong>解耦码本路线</strong>（SemHiTok）：先用纯语义码本做量化，再为每个语义 code 构建独立的 pixel sub-codebook，实现层级分解</li>
+  </ul>
+
+  ComTok 的思路介于两者之间——<strong>不追求完全解耦，而是引入一个可调节的比率 v，让模型能够在这两种极端之间连续插值</strong>。
+
+  <div class="callout"><strong>核心问题</strong>：能不能找到一个统一 tokenizer，用一个参数 v 控制"多少比例的特征给像素、多少给语义"，从而根据任务需求自由调节？</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 2 · 模型架构 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">模型架构</div>
+
+  ComTok 的核心是一个双量化器结构，流程如下：
+
+  <ol>
+    <li>输入图像经过 <strong>Patchify</strong> 得到 $N$ 个 patches，并额外添加 $M$ 个可学习的 semantic tokens</li>
+    <li>所有 $N + M$ 个 tokens 一起通过 <strong>共享 Encoder</strong>，利用自注意力让语义 token 与图像 token 相互交换信息</li>
+    <li>Encoder 输出的 tokens 分为两路：
+      <ul>
+        <li>$N$ 个 <strong>image tokens</strong> → <strong>Image Quantizer</strong>（像素级码本）</li>
+        <li>$M$ 个 <strong>semantic tokens</strong> → <strong>Semantic Quantizer</strong>（语义级码本）</li>
+      </ul>
+    </li>
+    <li>两组量化后的 tokens 在通道/序列维度<strong>拼接</strong>，送入 <strong>Decoder</strong> 重建图像</li>
+  </ol>
+
+  其中，<strong>图像 token 的比例 v</strong> 定义为：
+
+  $$v = \frac{N_{\text{image}}}{N_{\text{image}} + N_{\text{semantic}}}$$
+
+  当 $v = 0$ 时，所有 tokens 都通过 Semantic Quantizer，模型退化为纯语义 tokenizer；当 $v = 1$ 时，所有 tokens 都通过 Image Quantizer，模型退化为标准 VQGAN/MaskGIT。通过调节 $v$，ComTok 可以在语义理解和像素重建之间连续插值。
+
+  <div class="callout"><strong>与 SemHiTok 的区别</strong>：SemHiTok 的 SGHC 是串行层级结构——先确定语义 code，再在其子空间内量化像素。ComTok 的量化是<strong>并行的</strong>——两组 token 各自量化后拼接，通过 Encoder 的共享自注意力建立联系。</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 3 · 实验验证 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">初步验证：v 对重建质量的影响</div>
+
+  为了验证双量化器的可行性，我们首先进行了一组 v 参数扫描实验，固定模型结构，只改变图像 token 的比例。使用 LPIPS 作为重建质量的评估指标。
+
+  <div class="photo">
+    <img src="assets/media/images/comtok-idea/lpips-v-sweep.png" alt="不同 v 值下的 LPIPS 曲线" loading="lazy">
+    <div class="cap">图 1：Image token 比例 v 对 LPIPS 的影响。随着 v 从 0 增大到 1，LPIPS 单调下降，重建质量持续提升。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>实验配置</th><th>v（Image Token 比例）</th><th>LPIPS↓</th><th>对比 baseline</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>maskgit</code></td><td>—</td><td>0.1963</td><td>标准 VQ baseline</td></tr>
+        <tr><td><code>mtok/s1/v~0.00</code></td><td>0.00</td><td>0.3016</td><td>纯语义 token</td></tr>
+        <tr><td><code>mtok/s1/v~0.25</code></td><td>0.25</td><td>0.2436</td><td>25% 图像 token</td></tr>
+        <tr><td><code>mtok/s1/v~0.50</code></td><td>0.50</td><td>0.2163</td><td>50% 图像 token</td></tr>
+        <tr><td><code>mtok/s1/v~1.00</code></td><td>1.00</td><td><strong>0.1926</strong></td><td>100% 图像 token</td></tr>
+        <tr><td><code>titok/s1</code></td><td>—</td><td>0.3433†</td><td>1D Tokenizer（仅 71k 步）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="font-size:0.9em; color:var(--text-muted);">† <code>titok/s1</code> 仅训练到 71k 步，未完全收敛。</p>
+
+  <h3 class="section-title">关键发现</h3>
+
+  <ol>
+    <li><strong>图像 token 越多，重建越好</strong>：v 从 0.00 → 0.25 → 0.50 → 1.00，LPIPS 从 0.3016 单调下降到 0.1926。这一趋势清晰且稳定，说明 image tokens 对重建的贡献是<strong>累加的</strong>。</li>
+    <li><strong>v = 1.00 超越 MaskGIT baseline</strong>：虽然 v = 1.00 相当于全图像 token 配置，但联合训练语义 token 的 Encoder 可能反而促进了图像特征的学习（通过共享自注意力的信息交换）。</li>
+    <li><strong>全语义（v = 0.00）损失最大</strong>：纯语义 tokenizer 的 LPIPS = 0.3016，与 MaskGIT 的 0.1963 差距明显——这证实了语义 token 确实会丢失像素信息，双量化器的存在是必要的。</li>
+  </ol>
+
+  <div class="callout"><strong>结论</strong>：双量化器结构是可行的——增加图像 token 比例 v 能单调提升重建质量。下一步需要验证：<strong>降低 v（即增加语义 token 比例）是否能在保持可接受重建质量的同时提升理解性能</strong>。</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 4 · 后续计划 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">后续工作与开放问题</div>
+
+  <h3 class="section-title">待完成的实验</h3>
+
+  <ul>
+    <li><strong>理解任务评估</strong>：在 v=0.25/0.50 的中间配置下，评估多模态理解性能（MME-P, SEED-Bench, MMBench）。核心问题是：多大的 v 可以"免费"获得重建能力而不损害理解？</li>
+    <li><strong>与 SemHiTok / TokenFlow 的系统对比</strong>：在相同分辨率、相同 LLM backbone 下比较 rFID 和理解指标</li>
+    <li><strong>v 的连续控制</strong>：如果 v 可以在推理时调节，ComTok 将成为一个"可伸缩"的统一 tokenizer——理解任务用低 v，生成任务用高 v</li>
+  </ul>
+
+  <h3 class="section-title">开放问题</h3>
+
+  <ul>
+    <li><strong>两个码本的容量分配</strong>：Image Quantizer 和 Semantic Quantizer 各自需要多少码字？码本容量是否应该随 v 动态调整？</li>
+    <li><strong>共享 Encoder vs 独立 Encoder</strong>：当前设计使用共享 Encoder，让两组 token 通过自注意力交换信息。如果换成独立 Encoder（像 Janus），结果会如何？</li>
+    <li><strong>v 与任务的适配</strong>：是否可以在训练中引入一个可学习的门控，让模型自动决定每个 patch 走哪条路？</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<!-- 参考来源 -->
+<!-- ============================================================ -->
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://arxiv.org/abs/2503.06764" target="_blank">SemHiTok: A Unified Image Tokenizer via Semantic-Guided Hierarchical Codebook (Chen et al., ICLR 2026)</a></li>
+    <li><a href="https://arxiv.org/abs/2412.03069" target="_blank">TokenFlow: Unified Image Tokenizer for Multimodal Understanding and Generation (Qu et al., 2024)</a></li>
+    <li><a href="https://arxiv.org/abs/2409.04429" target="_blank">VILA-U: Towards a Unified Foundation Model for Visual Language and Generation (Wu et al., 2024c)</a></li>
+    <li><a href="https://arxiv.org/abs/2404.16061" target="_blank">Janus: Decoupling Visual Encoding for Unified Multimodal Understanding and Generation (Wu et al., 2024a)</a></li>
+    <li><a href="https://arxiv.org/abs/2503.07605" target="_blank">SDE: Semantic-Decoupled Encoder for Unified Image Tokenizer (Xie et al., 2025)</a></li>
+    <li><a href="https://arxiv.org/abs/2112.10741" target="_blank">MaskGIT: Masked Generative Image Transformer (Chang et al., CVPR 2022)</a></li>
+    <li><a href="https://arxiv.org/abs/2401.05072" target="_blank">TiTok: 1D Tokenizer for Efficient Image Generation (Yu et al., 2024)</a></li>
+  </ul>
+</div>

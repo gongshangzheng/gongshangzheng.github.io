@@ -219,6 +219,14 @@ function build() {
   const cachedPages = cache.data.pages || {};
   Object.keys(cachedPages).forEach(key => {
     if (!currentPageSet.has(key)) {
+      // Delete stale output file before removing cache entry
+      const staleEntry = cache.getPage(key);
+      if (staleEntry && staleEntry.output) {
+        const stalePath = path.join(PATHS.public, staleEntry.output);
+        if (fs.existsSync(stalePath)) {
+          fs.unlinkSync(stalePath);
+        }
+      }
       removedPages.push(key);
       cache.deletePage(key);
     }
