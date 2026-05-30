@@ -405,11 +405,11 @@ window.MathJax = {
     process.chdir(path.resolve(__dirname, '..'));
     try {
       const registry = ensureArticleSlugs([
-        { sourcePath: 'src/pages/a.md', title: '扩散模型概述' },
-        { sourcePath: 'src/pages/b.md', title: '扩散模型概述' }
+        { sourcePath: 'src/pages/扩散模型概述.md', title: '扩散模型概述' },
+        { sourcePath: 'src/pages/other/扩散模型概述.md', title: '扩散模型概述' }
       ]);
-      assert.equal(getArticleSlug(registry, 'src/pages/a.md'), 'kuo-san-mo-xing-gai-shu');
-      assert.equal(getArticleSlug(registry, 'src/pages/b.md'), 'kuo-san-mo-xing-gai-shu-2');
+      assert.equal(getArticleSlug(registry, 'src/pages/扩散模型概述.md'), 'kuo-san-mo-xing-gai-shu');
+      assert.equal(getArticleSlug(registry, 'src/pages/other/扩散模型概述.md'), 'kuo-san-mo-xing-gai-shu-2');
     } finally {
       process.chdir(cwd);
     }
