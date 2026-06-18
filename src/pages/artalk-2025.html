@@ -27,13 +27,13 @@ notify: true
 
 当我们谈论 LLM 驱动的数字人对话系统时，一个关键瓶颈始终存在：语音到 3D 面部运动的生成速度跟不上实时对话的节奏。用户在电话那头说了一句话，系统需要在毫秒级别内生成对应的 3D 头像动画——==而不是等上几秒让 diffusion model 慢慢去噪==。
 
-这个领域（speech-driven 3D facial animation）的目标很明确：从任意语音音频自动生成逼真的 3D 人脸运动，包括唇形同步（lip sync）、面部表情、头部姿态和眨眼。输出通常是 FLAME $@Li et al., 2017$ 参数化模型的 expression $\psi$ 和 pose $\theta$ 参数，采样率 25fps，可以直接导入游戏引擎或实时渲染管线。
+这个领域（speech-driven 3D facial animation）的目标很明确：从任意语音音频自动生成逼真的 3D 人脸运动，包括唇形同步（lip sync）、面部表情、头部姿态和眨眼。输出通常是 FLAME #Li et al., 2017# 参数化模型的 expression $\psi$ 和 pose $\theta$ 参数，采样率 25fps，可以直接导入游戏引擎或实时渲染管线。
 
 截至 2025 年，这个领域有三条主要技术路线，但每条都有自己的硬伤：
 
-- **Diffusion 路线**（DiffPoseTalk $@Sun et al., 2024$, FaceDiffuser $@Stan et al., 2023$）：生成质量高，能产生自然的运动和风格化表达，但推理需要数十步去噪迭代，==无法满足实时需求==
-- **Autoregressive 路线**（FaceFormer $@Fan et al., 2022$, CodeTalker $@Xing et al., 2023$, MultiTalk $@Sung-Bin et al., 2024$）：天然支持流式生成，但早期方法存在 ==over-smoothing== 问题——非唇部区域细节不足，头部姿态缺失
-- **Real-time 声称**（SelfTalk $@Peng et al., 2023$）：声称实时但未公开具体数据，且不支持 style adaptation 和 head pose
+- **Diffusion 路线**（DiffPoseTalk #Sun et al., 2024#, FaceDiffuser #Stan et al., 2023#）：生成质量高，能产生自然的运动和风格化表达，但推理需要数十步去噪迭代，==无法满足实时需求==
+- **Autoregressive 路线**（FaceFormer #Fan et al., 2022#, CodeTalker #Xing et al., 2023#, MultiTalk #Sung-Bin et al., 2024#）：天然支持流式生成，但早期方法存在 ==over-smoothing== 问题——非唇部区域细节不足，头部姿态缺失
+- **Real-time 声称**（SelfTalk #Peng et al., 2023#）：声称实时但未公开具体数据，且不支持 style adaptation 和 head pose
 
 ARTalk 的核心立场很清晰：==首次打破"质量 vs 速度"的 trade-off==。通过 temporal multi-scale VQ autoencoder + two-level autoregressive model，在超越 DiffPoseTalk 质量的同时，实现 A100 上 0.01s/s 的推理速度——==100 倍实时==。
 
@@ -49,14 +49,14 @@ ARTalk 的核心立场很清晰：==首次打破"质量 vs 速度"的 trade-off=
   <div class="ch-label">Part 2</div>
   <div class="ch-title">质量 vs 速度：一个 trade-off 的终结</div>
 
-在 ARTalk 之前，这个领域最好的方法是 DiffPoseTalk $@Sun et al., 2024$（SIGGRAPH 2024）。它是首个同时支持 expression + head pose + style 的 diffusion-based 方法，在 TFHP 数据集上取得了 LVE=10.39 / FFD=20.15 / MOD=2.07 的优秀指标。但 diffusion 的代价是推理速度：需要多步去噪迭代，生成 1 秒运动可能需要数秒时间，完全无法用于实时对话场景。
+在 ARTalk 之前，这个领域最好的方法是 DiffPoseTalk #Sun et al., 2024#（SIGGRAPH 2024）。它是首个同时支持 expression + head pose + style 的 diffusion-based 方法，在 TFHP 数据集上取得了 LVE=10.39 / FFD=20.15 / MOD=2.07 的优秀指标。但 diffusion 的代价是推理速度：需要多步去噪迭代，生成 1 秒运动可能需要数秒时间，完全无法用于实时对话场景。
 
-另一方面，autoregressive 路线的代表 CodeTalker $@Xing et al., 2023$（CVPR 2023）首次将 VQ-VAE tokenization 引入该任务，用离散码字替代连续空间回归，理论上支持流式生成。但它有两个关键缺陷：
+另一方面，autoregressive 路线的代表 CodeTalker #Xing et al., 2023#（CVPR 2023）首次将 VQ-VAE tokenization 引入该任务，用离散码字替代连续空间回归，理论上支持流式生成。但它有两个关键缺陷：
 
 1. **单尺度 VQ 的 over-smoothing**：CodeTalker 使用单尺度 VQ-VAE（codebook 1024 entries × 256 dim），无法捕获从粗到细的运动层次，导致非唇部区域过于平滑（FFD=20.39）
 2. **缺乏时序因果建模**：没有跨窗口的依赖机制，长序列生成容易出现时序不连续
 
-<div class="callout"><strong>ARTalk 的洞察：</strong>将 VAR $@Tian et al., 2024$（NeurIPS 2024）的 next-scale prediction 思想从静态图像扩展到时序运动序列。VAR 在空间维度做多尺度（分辨率递增），ARTalk 将其迁移到==时间维度==（temporal resolution 递增：[1, 5, 25, 50, 100] frames）。粗尺度捕获全局运动趋势，细尺度补充逐帧细节。$@Chu et al., 2025$</div>
+<div class="callout"><strong>ARTalk 的洞察：</strong>将 VAR #Tian et al., 2024#（NeurIPS 2024）的 next-scale prediction 思想从静态图像扩展到时序运动序列。VAR 在空间维度做多尺度（分辨率递增），ARTalk 将其迁移到==时间维度==（temporal resolution 递增：[1, 5, 25, 50, 100] frames）。粗尺度捕获全局运动趋势，细尺度补充逐帧细节。#Chu et al., 2025#</div>
 
 这个看似简单的迁移带来了两个关键突破：(1) multi-scale residual VQ 解决了 over-smoothing（FFD 从 20.39 降至 18.15）；(2) temporal causal masking + cross-window AR 保证了长序列的时序一致性。最终结果：ARTalk 在 TFHP 上取得 LVE=9.34 / FFD=18.15 / MOD=1.81，==全面超越 DiffPoseTalk==，同时推理速度达 0.01s/s（A100），是 diffusion 方法的数十倍。
 
@@ -67,7 +67,7 @@ ARTalk 的核心立场很清晰：==首次打破"质量 vs 速度"的 trade-off=
   <div class="ch-label">Part 3</div>
   <div class="ch-title">两阶段架构：Temporal Multi-scale VQ + Two-level AR</div>
 
-ARTalk 的方法由两个核心模块组成，分工明确。在深入架构之前，需要先理解 ARTalk 的运动表示基础——FLAME 参数化模型 $@Li et al., 2017$。
+ARTalk 的方法由两个核心模块组成，分工明确。在深入架构之前，需要先理解 ARTalk 的运动表示基础——FLAME 参数化模型 #Li et al., 2017#。
 
 <h3 class="section-title">前置：FLAME 参数化模型</h3>
 
@@ -75,7 +75,7 @@ FLAME 将 5,023 顶点的高维 3D 人脸网格压缩为低维混合形状参数
 
 $$V(\beta, \psi, \theta) = \bar{T} + BS(\beta; S) + BP(\theta; P) + BE(\psi; E)$$
 
-其中 $\bar{T}$ 为模板网格，$BS(\beta; S)$ 为身份形状混合形状，$BP(\theta; P)$ 为关节姿态修正（下颌和颈部），$BE(\psi; E)$ 为表情混合形状（闭眼、微笑等）。ARTalk 固定 $\beta$（目标身份已知），仅生成 expression $\psi$ 和 pose $\theta$，将问题维度从完整的 3D 重建降低到约 150+ 维的参数预测。$@Chu et al., 2025$
+其中 $\bar{T}$ 为模板网格，$BS(\beta; S)$ 为身份形状混合形状，$BP(\theta; P)$ 为关节姿态修正（下颌和颈部），$BE(\psi; E)$ 为表情混合形状（闭眼、微笑等）。ARTalk 固定 $\beta$（目标身份已知），仅生成 expression $\psi$ 和 pose $\theta$，将问题维度从完整的 3D 重建降低到约 150+ 维的参数预测。#Chu et al., 2025#
 
 <div class="photo">
   <img src="media/images/artalk-2025/method-1.webp" alt="ARTalk 方法架构图" loading="lazy">
@@ -102,7 +102,7 @@ $$r^{(l)} = r^{(l-1)} - \hat{h}^{(l)}$$
 2. **共享码本**：所有尺度共用同一个 256×64 的码本，保证不同粒度的运动信息在同一语义空间中表达，使得后续 AR 模型可以在统一的 token 词汇表上跨尺度预测。
 3. **Temporal causal masking**：自编码器同时处理两个连续时间窗口 $T-1$ 和 $T$，通过因果掩码确保 $T$ 的编码仅依赖 $T-1$，不泄露未来信息。这为推理时的跨窗口预测提供了训练-推理一致性——推理时 $z_{T-1}^{(L)}$ 已经生成完毕可供使用，但 $z_{T+1}$ 尚不存在，因果掩码将编码器的注意力矩阵约束为下三角分块结构，消除了 exposure bias 的一个来源。
 
-**为什么共享码本而非独立码本？** 如果每个尺度使用独立码本，不同尺度的码字将存在于不同的语义空间中，跨尺度的自回归预测将面临语义不对齐的问题。共享码本强制所有尺度的运动信息在同一离散空间中表示，使得 AR 模型可以在统一的 token 词汇表上进行跨尺度预测。从信息论角度看，共享码本相当于对所有尺度的运动模式施加了一个共同的离散先验，有助于正则化并防止过拟合。$@Chu et al., 2025$
+**为什么共享码本而非独立码本？** 如果每个尺度使用独立码本，不同尺度的码字将存在于不同的语义空间中，跨尺度的自回归预测将面临语义不对齐的问题。共享码本强制所有尺度的运动信息在同一离散空间中表示，使得 AR 模型可以在统一的 token 词汇表上进行跨尺度预测。从信息论角度看，共享码本相当于对所有尺度的运动模式施加了一个共同的离散先验，有助于正则化并防止过拟合。#Chu et al., 2025#
 
 VQ 自编码器的训练目标包含四项损失：
 
@@ -111,12 +111,12 @@ VQ 自编码器的训练目标包含四项损失：
 
 $$\mathcal{L}_{VQ} = \mathcal{L}_{recon} + \lambda_{vel} \cdot \mathcal{L}_{vel} + \lambda_{smooth} \cdot \mathcal{L}_{smooth} + \mathcal{L}_{cb}$$
 
-  <p>其中重建损失 $\mathcal{L}_{recon} = \|\hat{M} - M\|_1 + w_{lips}\|\hat{V}_{lips} - V_{lips}\|^2 + \|\hat{V} - V\|^2$（参数 L1 + 唇部加权 L2 + 全顶点 L2）；速度损失 $\mathcal{L}_{vel}$ 约束相邻帧差分一致性；平滑度损失 $\mathcal{L}_{smooth} = \|\hat{V}_{2:} - 2\hat{V}_{1:-1} + \hat{V}_{:-2}\|^2$ 惩罚加速度突变；$\mathcal{L}_{cb}$ 为标准 VQ commitment + codebook loss。$@Chu et al., 2025$</p>
+  <p>其中重建损失 $\mathcal{L}_{recon} = \|\hat{M} - M\|_1 + w_{lips}\|\hat{V}_{lips} - V_{lips}\|^2 + \|\hat{V} - V\|^2$（参数 L1 + 唇部加权 L2 + 全顶点 L2）；速度损失 $\mathcal{L}_{vel}$ 约束相邻帧差分一致性；平滑度损失 $\mathcal{L}_{smooth} = \|\hat{V}_{2:} - 2\hat{V}_{1:-1} + \hat{V}_{:-2}\|^2$ 惩罚加速度突变；$\mathcal{L}_{cb}$ 为标准 VQ commitment + codebook loss。#Chu et al., 2025#</p>
 </div>
 
 <h3 class="section-title">Part B: Speech-to-Motion AR Model</h3>
 
-AR 模型以冻结的 HuBERT $@Hsu et al., 2021$ 语音编码器提取的语音特征 $a_T$ 为条件，通过重采样对齐到每个尺度 $k_l$ 的时间分辨率。风格信息通过 Transformer style encoder 从示例运动片段中提取风格 token $s$，实现对任意说话风格的适配（无需在训练集中见过该身份）。
+AR 模型以冻结的 HuBERT #Hsu et al., 2021# 语音编码器提取的语音特征 $a_T$ 为条件，通过重采样对齐到每个尺度 $k_l$ 的时间分辨率。风格信息通过 Transformer style encoder 从示例运动片段中提取风格 token $s$，实现对任意说话风格的适配（无需在训练集中见过该身份）。
 
 核心生成策略是 **two-level autoregression**：
 
@@ -125,7 +125,7 @@ AR 模型以冻结的 HuBERT $@Hsu et al., 2021$ 语音编码器提取的语音�
 
 $$p(\{z_T^{(l)}\} | z_{T-1}^{(L)}, a_T, s) = \prod_{l=1}^{L} p(z_T^{(l)} | z_T^{(<l)}, z_{T-1}^{(L)}, a_T, s)$$
 
-  <p>第一级是跨尺度 AR：从最粗尺度 $l=1$ 到最细尺度 $l=L$ 依次生成。第二级是跨窗口 AR：当前窗口 $T$ 以上一窗口 $T-1$ 的最细尺度码字 $z_{T-1}^{(L)}$ 为条件。在每个尺度内部，所有 token 采用块级并行预测（blockwise parallel），大幅提升推理效率。语音条件通过 AdaIN $@Huang & Belongie, 2017$ 注入 Transformer 各层。$@Chu et al., 2025$</p>
+  <p>第一级是跨尺度 AR：从最粗尺度 $l=1$ 到最细尺度 $l=L$ 依次生成。第二级是跨窗口 AR：当前窗口 $T$ 以上一窗口 $T-1$ 的最细尺度码字 $z_{T-1}^{(L)}$ 为条件。在每个尺度内部，所有 token 采用块级并行预测（blockwise parallel），大幅提升推理效率。语音条件通过 AdaIN #Huang & Belongie, 2017# 注入 Transformer 各层。#Chu et al., 2025#</p>
 </div>
 
 AR 模型的训练使用标准交叉熵损失：
@@ -134,7 +134,7 @@ $$\mathcal{L}_{AR} = -\sum_T \sum_{l=1}^{L} \log p(z_T^{(l)}(gt) | z_T^{(<l)}(gt
 
 训练时使用 ground truth 码字作为 teacher forcing。AR Transformer 配置为 12 层 12 头 hidden dim 768，输出经 FC 映射到 256 维 + softmax 计算码本概率分布。
 
-<div class="callout"><strong>纯自回归的优势：</strong>ARTalk 完全不使用 GAN 对抗损失或扩散损失。整个训练流程纯粹基于离散 token 上的交叉熵，训练稳定、收敛快速，推理时无需迭代采样——单次前向传播即可产出一整段运动。这与 DiffPoseTalk 需要数十步去噪形成鲜明对比。$@Chu et al., 2025$</div>
+<div class="callout"><strong>纯自回归的优势：</strong>ARTalk 完全不使用 GAN 对抗损失或扩散损失。整个训练流程纯粹基于离散 token 上的交叉熵，训练稳定、收敛快速，推理时无需迭代采样——单次前向传播即可产出一整段运动。这与 DiffPoseTalk 需要数十步去噪形成鲜明对比。#Chu et al., 2025#</div>
 
 </div>
 
@@ -147,17 +147,17 @@ ARTalk 的训练分为两个独立阶段，每阶段各自训练 50K iterations�
 
 <h3 class="section-title">Stage 1: VQ Autoencoder（~5 hours on 1× A100）</h3>
 
-目标是学习高质量的 temporal multi-scale motion codebook。训练数据为 TFHP 数据集 $@Sun et al., 2024$（1,052 video clips, 588 subjects, ~26.5 hours, 25fps, ~2.38M action frames）。
+目标是学习高质量的 temporal multi-scale motion codebook。训练数据为 TFHP 数据集 #Sun et al., 2024#（1,052 video clips, 588 subjects, ~26.5 hours, 25fps, ~2.38M action frames）。
 
 <h3 class="section-title">Stage 2: AR Model（~8 hours on 1× A100）</h3>
 
-冻结 VQ autoencoder，训练 speech-to-motion autoregressive generation。使用 frozen HuBERT 作为语音编码器。语音条件通过 Adaptive Instance Normalization (AdaIN) $@Huang & Belongie, 2017$ 注入 Transformer 各层——这一机制允许音频特征动态调节生成过程的均值和方差，实现细粒度的条件控制。
+冻结 VQ autoencoder，训练 speech-to-motion autoregressive generation。使用 frozen HuBERT 作为语音编码器。语音条件通过 Adaptive Instance Normalization (AdaIN) #Huang & Belongie, 2017# 注入 Transformer 各层——这一机制允许音频特征动态调节生成过程的均值和方差，实现细粒度的条件控制。
 
 <h3 class="section-title">VQ 损失的物理含义</h3>
 
-Stage 1 的四项损失各有明确的物理动机：$\mathcal{L}_{recon}$ 中的参数 L1 损失保证 FLAME 参数空间的基本对齐，唇部加权 L2 体现对 lip-sync 精度的特别关注（唇部是语音驱动最敏感的区域），全顶点 L2 则约束整体几何保真度。$\mathcal{L}_{vel}$ 约束相邻帧速度一致性，防止生成结果出现不自然的抖动。$\mathcal{L}_{smooth}$ 使用二阶差分（加速度）惩罚运动突变，保证物理合理性——真实的面部运动不会在瞬间改变加速度。$\mathcal{L}_{cb}$ 为标准 VQ commitment + codebook loss，确保编码器输出与码本条目紧密对齐。$@Chu et al., 2025$
+Stage 1 的四项损失各有明确的物理动机：$\mathcal{L}_{recon}$ 中的参数 L1 损失保证 FLAME 参数空间的基本对齐，唇部加权 L2 体现对 lip-sync 精度的特别关注（唇部是语音驱动最敏感的区域），全顶点 L2 则约束整体几何保真度。$\mathcal{L}_{vel}$ 约束相邻帧速度一致性，防止生成结果出现不自然的抖动。$\mathcal{L}_{smooth}$ 使用二阶差分（加速度）惩罚运动突变，保证物理合理性——真实的面部运动不会在瞬间改变加速度。$\mathcal{L}_{cb}$ 为标准 VQ commitment + codebook loss，确保编码器输出与码本条目紧密对齐。#Chu et al., 2025#
 
-<div class="callout"><strong>纯交叉熵训练的效率优势：</strong>ARTalk 的 AR 模型完全不使用 GAN 对抗损失或扩散损失。整个训练纯粹基于离散 token 上的交叉熵，这带来三个关键优势：(1) 训练稳定，无模式崩塌风险；(2) 收敛快速，50K iterations 即可达到最优性能；(3) 推理时单次前向传播即可产出一整段运动，无需迭代采样。这与 DiffPoseTalk 需要数十步去噪形成鲜明对比，是 ARTalk 实现 100× 实时的根本原因。$@Chu et al., 2025$</div>
+<div class="callout"><strong>纯交叉熵训练的效率优势：</strong>ARTalk 的 AR 模型完全不使用 GAN 对抗损失或扩散损失。整个训练纯粹基于离散 token 上的交叉熵，这带来三个关键优势：(1) 训练稳定，无模式崩塌风险；(2) 收敛快速，50K iterations 即可达到最优性能；(3) 推理时单次前向传播即可产出一整段运动，无需迭代采样。这与 DiffPoseTalk 需要数十步去噪形成鲜明对比，是 ARTalk 实现 100× 实时的根本原因。#Chu et al., 2025#</div>
 
 <h3 class="section-title">训练配置披露</h3>
 
@@ -185,7 +185,7 @@ Stage 1 的四项损失各有明确的物理动机：$\mathcal{L}_{recon}$ 中�
   </table>
 </div>
 
-<div class="callout"><strong>训练成本极低：</strong>总计 ~13 GPU hours on 1× A100，单卡一天内完成。这远低于大型 diffusion 模型的训练需求，使小团队和个人研究者也能复现和改进。$@Chu et al., 2025$</div>
+<div class="callout"><strong>训练成本极低：</strong>总计 ~13 GPU hours on 1× A100，单卡一天内完成。这远低于大型 diffusion 模型的训练需求，使小团队和个人研究者也能复现和改进。#Chu et al., 2025#</div>
 
 </div>
 
@@ -226,9 +226,9 @@ ARTalk 的一个设计权衡是时间窗口长度。Ablation 显示更长的窗�
 
 <h3 class="section-title">VQ Autoencoder：性能的隐形天花板</h3>
 
-一个容易被忽视的洞察是：VQ autoencoder 的重建质量构成了最终模型的性能上界。论文报告 VQ AE 在不同 clip length 下的重建 LVE 仅为 ~2.0（8 帧: 1.96, 100 帧: 2.08），而完整 AR 模型的 LVE 为 9.34——两者之间约 7 个点的差距全部来自 AR 生成阶段的误差累积。这意味着未来提升空间主要在 AR 模型侧，而非 VQ 编码质量。有趣的是，clip length 对 VQ AE 性能的影响很小（LVE 在 1.96-2.19 之间波动），但对 AR 模型影响巨大（LVE 从 11.73 到 9.34），进一步证实了 AR 生成是瓶颈所在。$@Chu et al., 2025$
+一个容易被忽视的洞察是：VQ autoencoder 的重建质量构成了最终模型的性能上界。论文报告 VQ AE 在不同 clip length 下的重建 LVE 仅为 ~2.0（8 帧: 1.96, 100 帧: 2.08），而完整 AR 模型的 LVE 为 9.34——两者之间约 7 个点的差距全部来自 AR 生成阶段的误差累积。这意味着未来提升空间主要在 AR 模型侧，而非 VQ 编码质量。有趣的是，clip length 对 VQ AE 性能的影响很小（LVE 在 1.96-2.19 之间波动），但对 AR 模型影响巨大（LVE 从 11.73 到 9.34），进一步证实了 AR 生成是瓶颈所在。#Chu et al., 2025#
 
-另一个有趣的发现是 audio encoder 的选择与窗口长度相关：MIMI（Moshi 的 audio tokenizer $@Defossez et al., 2024$）在短窗口（8 frames = 320ms）下优于 HuBERT（LVE 11.01 vs 11.73），因为 MIMI 专为流式短音频设计；但 HuBERT 在长窗口（≥25 frames）下全面胜出。$@Chu et al., 2025$
+另一个有趣的发现是 audio encoder 的选择与窗口长度相关：MIMI（Moshi 的 audio tokenizer #Defossez et al., 2024#）在短窗口（8 frames = 320ms）下优于 HuBERT（LVE 11.01 vs 11.73），因为 MIMI 专为流式短音频设计；但 HuBERT 在长窗口（≥25 frames）下全面胜出。#Chu et al., 2025#
 
 </div>
 
@@ -243,20 +243,20 @@ ARTalk 的一个设计权衡是时间窗口长度。Ablation 显示更长的窗�
   <table>
     <thead><tr><th>Method</th><th>LVE ↓</th><th>FFD ↓</th><th>MOD ↓</th><th>Style</th><th>Pose</th><th>Real-time</th></tr></thead>
     <tbody>
-      <tr><td>FaceFormer $@Fan et al., 2022$</td><td>12.72</td><td>22.06</td><td>2.73</td><td>❌</td><td>❌</td><td>❌</td></tr>
-      <tr><td>CodeTalker $@Xing et al., 2023$</td><td>11.78</td><td>20.39</td><td>2.43</td><td>❌</td><td>❌</td><td>❌</td></tr>
-      <tr><td>SelfTalk $@Peng et al., 2023$</td><td>12.07</td><td>23.74</td><td>2.57</td><td>❌</td><td>❌</td><td>✅</td></tr>
-      <tr><td>FaceDiffuser $@Stan et al., 2023$</td><td>11.92</td><td>22.17</td><td>2.55</td><td>❌</td><td>❌</td><td>❌</td></tr>
-      <tr><td>MultiTalk* $@Sung-Bin et al., 2024$</td><td>12.23</td><td>24.42</td><td>2.48</td><td>✅</td><td>❌</td><td>❌</td></tr>
-      <tr><td>ScanTalk* $@Nocentini et al., 2024$</td><td>12.14</td><td>21.02</td><td>3.20</td><td>❌</td><td>❌</td><td>❌</td></tr>
-      <tr><td>UniTalker* $@Fan et al., 2024$</td><td>11.61</td><td>29.31</td><td>2.07</td><td>✅</td><td>❌</td><td>❌</td></tr>
-      <tr><td>DiffPoseTalk $@Sun et al., 2024$</td><td>10.39</td><td>20.15</td><td>2.07</td><td>✅</td><td>✅</td><td>❌</td></tr>
+      <tr><td>FaceFormer #Fan et al., 2022#</td><td>12.72</td><td>22.06</td><td>2.73</td><td>❌</td><td>❌</td><td>❌</td></tr>
+      <tr><td>CodeTalker #Xing et al., 2023#</td><td>11.78</td><td>20.39</td><td>2.43</td><td>❌</td><td>❌</td><td>❌</td></tr>
+      <tr><td>SelfTalk #Peng et al., 2023#</td><td>12.07</td><td>23.74</td><td>2.57</td><td>❌</td><td>❌</td><td>✅</td></tr>
+      <tr><td>FaceDiffuser #Stan et al., 2023#</td><td>11.92</td><td>22.17</td><td>2.55</td><td>❌</td><td>❌</td><td>❌</td></tr>
+      <tr><td>MultiTalk* #Sung-Bin et al., 2024#</td><td>12.23</td><td>24.42</td><td>2.48</td><td>✅</td><td>❌</td><td>❌</td></tr>
+      <tr><td>ScanTalk* #Nocentini et al., 2024#</td><td>12.14</td><td>21.02</td><td>3.20</td><td>❌</td><td>❌</td><td>❌</td></tr>
+      <tr><td>UniTalker* #Fan et al., 2024#</td><td>11.61</td><td>29.31</td><td>2.07</td><td>✅</td><td>❌</td><td>❌</td></tr>
+      <tr><td>DiffPoseTalk #Sun et al., 2024#</td><td>10.39</td><td>20.15</td><td>2.07</td><td>✅</td><td>✅</td><td>❌</td></tr>
       <tr><td><strong>ARTalk (Ours)</strong></td><td><strong>9.34</strong></td><td><strong>18.15</strong></td><td><strong>1.81</strong></td><td>✅</td><td>✅</td><td>✅</td></tr>
     </tbody>
   </table>
 </div>
 
-<div class="callout"><strong>TFHP 关键发现：</strong>ARTalk 在三个指标上全面超越所有 baseline。LVE（唇同步精度）比 DiffPoseTalk 低 10.1%（9.34 vs 10.39），FFD（上脸动态一致性）低 9.9%（18.15 vs 20.15），MOD（嘴张开距离）低 12.6%（1.81 vs 2.07）。同时是唯一支持 style + pose + real-time 的方法。$@Chu et al., 2025$</div>
+<div class="callout"><strong>TFHP 关键发现：</strong>ARTalk 在三个指标上全面超越所有 baseline。LVE（唇同步精度）比 DiffPoseTalk 低 10.1%（9.34 vs 10.39），FFD（上脸动态一致性）低 9.9%（18.15 vs 20.15），MOD（嘴张开距离）低 12.6%（1.81 vs 2.07）。同时是唯一支持 style + pose + real-time 的方法。#Chu et al., 2025#</div>
 
 <div class="photo">
   <img src="media/images/artalk-2025/main_results-1.webp" alt="定性对比" loading="lazy">
@@ -285,7 +285,7 @@ ARTalk ==未在 VOCASET 上训练或微调==，但在该数据集的零样本评
   </table>
 </div>
 
-百分比表示偏好 ARTalk 的用户比例（>50% 即表示 ARTalk 胜出）。28 名受访者，每人回答 96 题（84 对 pairwise comparison），总计 2,688 次对比。N-Pose 仅对 DiffPoseTalk 评估（唯一支持 head pose 的 baseline）。$@Chu et al., 2025$
+百分比表示偏好 ARTalk 的用户比例（>50% 即表示 ARTalk 胜出）。28 名受访者，每人回答 96 题（84 对 pairwise comparison），总计 2,688 次对比。N-Pose 仅对 DiffPoseTalk 评估（唯一支持 head pose 的 baseline）。#Chu et al., 2025#
 
 <h3 class="section-title">Ablation Study：每个组件都不可或缺</h3>
 
@@ -305,7 +305,7 @@ ARTalk ==未在 VOCASET 上训练或微调==，但在该数据集的零样本评
   </table>
 </div>
 
-<div class="callout"><strong>Ablation 关键发现：</strong>Multi-scale AR 是最关键的组件——去掉后 LVE 从 9.34 飙升至 14.14（+51.4%），验证了 VAR 的 next-scale prediction 在时序领域的有效性。Style embedding 是第二大贡献者（去掉后 LVE +26.3%）。$@Chu et al., 2025$</div>
+<div class="callout"><strong>Ablation 关键发现：</strong>Multi-scale AR 是最关键的组件——去掉后 LVE 从 9.34 飙升至 14.14（+51.4%），验证了 VAR 的 next-scale prediction 在时序领域的有效性。Style embedding 是第二大贡献者（去掉后 LVE +26.3%）。#Chu et al., 2025#</div>
 
 <h3 class="section-title">Multi-scale 层数探索</h3>
 
@@ -322,7 +322,7 @@ ARTalk ==未在 VOCASET 上训练或微调==，但在该数据集的零样本评
   </table>
 </div>
 
-层数对性能的影响不是特别显著——只有当层数显著减少（如从 5 层降到 3 层）时才出现明显退化。相比之下，窗口长度的正面效应更为清晰：clip 150 + 5 layers 在所有指标上全面优于 clip 100（LVE 7.98 vs 9.34），但过长的窗口对流式应用不实用。$@Chu et al., 2025$
+层数对性能的影响不是特别显著——只有当层数显著减少（如从 5 层降到 3 层）时才出现明显退化。相比之下，窗口长度的正面效应更为清晰：clip 150 + 5 layers 在所有指标上全面优于 clip 100（LVE 7.98 vs 9.34），但过长的窗口对流式应用不实用。#Chu et al., 2025#
 
 <h3 class="section-title">跨数据集零样本泛化</h3>
 
@@ -341,13 +341,13 @@ ARTalk 在多个未训练数据集上的零样本评估进一步验证了泛化�
   </table>
 </div>
 
-<div class="callout"><strong>零样本泛化的关键意义：</strong>ARTalk 在 VFHQ、MEAD、MultiTalk 三个未训练数据集上均取得 LVE 最优，超越了在这些数据集上专门训练过的 baseline。这表明 multi-scale VQ + temporal AR 的组合学到的不仅是数据集特定的模式，而是语音到面部运动的通用映射。$@Chu et al., 2025$</div>
+<div class="callout"><strong>零样本泛化的关键意义：</strong>ARTalk 在 VFHQ、MEAD、MultiTalk 三个未训练数据集上均取得 LVE 最优，超越了在这些数据集上专门训练过的 baseline。这表明 multi-scale VQ + temporal AR 的组合学到的不仅是数据集特定的模式，而是语音到面部运动的通用映射。#Chu et al., 2025#</div>
 
 <h3 class="section-title">下游集成：GAGAvatar</h3>
 
 <div class="photo">
   <img src="media/images/artalk-2025/supp_downstream-1.webp" alt="GAGAvatar 下游集成" loading="lazy">
-  <div class="cap">图 5：ARTalk 与 GAGAvatar $@Chu & Harada, 2024$（NeurIPS 2024）集成，将 GAGAvatar 转变为语音驱动的 one-shot dynamic avatar 重建方法。（来源：ARTalk, Supp Fig.）</div>
+  <div class="cap">图 5：ARTalk 与 GAGAvatar #Chu & Harada, 2024#（NeurIPS 2024）集成，将 GAGAvatar 转变为语音驱动的 one-shot dynamic avatar 重建方法。（来源：ARTalk, Supp Fig.）</div>
 </div>
 
 </div>
@@ -395,7 +395,7 @@ ARTalk 一作 Xuangeng Chu 的下一篇工作 UniLS（CVPR 2026）已将 ARTalk 
 
 <h3 class="section-title">作者团队与研究脉络</h3>
 
-<div class="callout"><strong>一作 Xuangeng Chu 的四篇递进工作链：</strong>GPAvatar (ICLR 2024, 344⭐) → GAGAvatar (NeurIPS 2024, 583⭐) → ARTalk (SIGGRAPH Asia 2025, 134⭐) → UniLS (CVPR 2026, 40⭐)。构成了完整的"重建→驱动→交互"技术栈。导师 Tatsuya Harada 是 UTokyo/RIKEN AIP 知名学者，实验室开源率高、代码持续维护。$@Chu et al., 2025$</div>
+<div class="callout"><strong>一作 Xuangeng Chu 的四篇递进工作链：</strong>GPAvatar (ICLR 2024, 344⭐) → GAGAvatar (NeurIPS 2024, 583⭐) → ARTalk (SIGGRAPH Asia 2025, 134⭐) → UniLS (CVPR 2026, 40⭐)。构成了完整的"重建→驱动→交互"技术栈。导师 Tatsuya Harada 是 UTokyo/RIKEN AIP 知名学者，实验室开源率高、代码持续维护。#Chu et al., 2025#</div>
 
 </div>
 
