@@ -297,6 +297,77 @@ function convertMediaImagesToWebP() {
   return stats;
 }
 
+/**
+ * Auto-convert non-AV1 videos in media/videos/ to AV1 (libsvtav1).
+ * - Checks codec via ffprobe, skips if already AV1
+ * - Converts in-place: original .mp4 is replaced by AV1-compressed version
+ * - CRF 32, preset 6, Opus audio 128k
+ * - Skips gracefully if ffmpeg/ffprobe not installed
+ */
+function convertMediaVideosToAV1() {
+  const videosDir = path.join(PATHS.media, 'videos');
+  if (!fs.existsSync(videosDir)) return { converted: 0, skipped: 0 };
+
+  const stats = { converted: 0, skipped: 0 };
+  const CONVERTIBLE = /\.(mp4|mov|avi|mkv)$/i;
+
+  // Check if ffmpeg/ffprobe available
+  try {
+    execSync('which ffmpeg', { stdio: 'pipe' });
+    execSync('which ffprobe', { stdio: 'pipe' });
+  } catch {
+    return stats; // ffmpeg not installed, skip silently
+  }
+
+  const files = walkFiles(videosDir, (fullPath) => CONVERTIBLE.test(fullPath));
+
+  for (const srcFile of files) {
+    // Check if already AV1
+    try {
+      const codec = execSync(
+        `ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "${srcFile}"`,
+        { stdio: 'pipe' }
+      ).toString().trim();
+
+      if (codec === 'av1') {
+        stats.skipped++;
+        continue;
+      }
+    } catch {
+      continue; // ffprobe failed, skip this file
+    }
+
+    const tmpFile = srcFile + '.av1.tmp.mp4';
+
+    try {
+      execSync(
+        `ffmpeg -i "${srcFile}" -c:v libsvtav1 -preset 6 -crf 32 -c:a libopus -b:a 128k -y "${tmpFile}"`,
+        { stdio: 'pipe', timeout: 600000 }
+      );
+
+      if (fs.existsSync(tmpFile)) {
+        const origSize = fs.statSync(srcFile).size;
+        const newSize = fs.statSync(tmpFile).size;
+
+        // Only replace if new file is smaller
+        if (newSize < origSize) {
+          fs.renameSync(tmpFile, srcFile);
+          stats.converted++;
+        } else {
+          fs.unlinkSync(tmpFile);
+          stats.skipped++;
+        }
+      }
+    } catch (e) {
+      // Conversion failed — keep original
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      console.log(`  ⚠ Failed to convert: ${path.relative(PATHS.root, srcFile)}`);
+    }
+  }
+
+  return stats;
+}
+
 function build() {
   console.log('🔨 Building gongshangzheng.github.io...\n');
 
@@ -316,6 +387,10 @@ function build() {
   const webpStats = convertMediaImagesToWebP();
   if (webpStats.converted > 0 || webpStats.updated > 0) {
     console.log(`✓ webp: ${webpStats.converted} converted, ${webpStats.updated} article refs updated`);
+  }
+  const av1Stats = convertMediaVideosToAV1();
+  if (av1Stats.converted > 0 || av1Stats.skipped > 0) {
+    console.log(`✓ av1: ${av1Stats.converted} converted, ${av1Stats.skipped} skipped (already AV1)`);
   }
   const mediaStats = copyDir(PATHS.media, path.join(PATHS.public, 'media'));
   const audioStats = copyDir(PATHS.media, path.join(PATHS.public, 'audio'), (srcPath) => /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(srcPath));
