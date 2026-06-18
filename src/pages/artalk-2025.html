@@ -67,7 +67,15 @@ ARTalk 的核心立场很清晰：==首次打破"质量 vs 速度"的 trade-off=
   <div class="ch-label">Part 3</div>
   <div class="ch-title">两阶段架构：Temporal Multi-scale VQ + Two-level AR</div>
 
-ARTalk 的方法由两个核心模块组成，分工明确。
+ARTalk 的方法由两个核心模块组成，分工明确。在深入架构之前，需要先理解 ARTalk 的运动表示基础——FLAME 参数化模型 $@Li et al., 2017$。
+
+<h3 class="section-title">前置：FLAME 参数化模型</h3>
+
+FLAME 将 5,023 顶点的高维 3D 人脸网格压缩为低维混合形状参数：
+
+$$V(\beta, \psi, \theta) = \bar{T} + BS(\beta; S) + BP(\theta; P) + BE(\psi; E)$$
+
+其中 $\bar{T}$ 为模板网格，$BS(\beta; S)$ 为身份形状混合形状，$BP(\theta; P)$ 为关节姿态修正（下颌和颈部），$BE(\psi; E)$ 为表情混合形状（闭眼、微笑等）。ARTalk 固定 $\beta$（目标身份已知），仅生成 expression $\psi$ 和 pose $\theta$，将问题维度从完整的 3D 重建降低到约 150+ 维的参数预测。$@Chu et al., 2025$
 
 <div class="photo">
   <img src="media/images/artalk-2025/method-1.webp" alt="ARTalk 方法架构图" loading="lazy">
@@ -92,7 +100,9 @@ $$r^{(l)} = r^{(l-1)} - \hat{h}^{(l)}$$
 
 1. **残差累积实现频率分层**：粗尺度（$k_1=1$）用单个码字捕获整个窗口的全局运动均值；中等尺度（$k_3=25$）捕获段落级别的运动变化；细尺度（$k_5=100$）捕获逐帧细节。类似小波分解，低频先编码，高频在残差中逐步提取。
 2. **共享码本**：所有尺度共用同一个 256×64 的码本，保证不同粒度的运动信息在同一语义空间中表达，使得后续 AR 模型可以在统一的 token 词汇表上跨尺度预测。
-3. **Temporal causal masking**：自编码器同时处理两个连续时间窗口 $T-1$ 和 $T$，通过因果掩码确保 $T$ 的编码仅依赖 $T-1$，不泄露未来信息。这为推理时的跨窗口预测提供了训练-推理一致性。
+3. **Temporal causal masking**：自编码器同时处理两个连续时间窗口 $T-1$ 和 $T$，通过因果掩码确保 $T$ 的编码仅依赖 $T-1$，不泄露未来信息。这为推理时的跨窗口预测提供了训练-推理一致性——推理时 $z_{T-1}^{(L)}$ 已经生成完毕可供使用，但 $z_{T+1}$ 尚不存在，因果掩码将编码器的注意力矩阵约束为下三角分块结构，消除了 exposure bias 的一个来源。
+
+**为什么共享码本而非独立码本？** 如果每个尺度使用独立码本，不同尺度的码字将存在于不同的语义空间中，跨尺度的自回归预测将面临语义不对齐的问题。共享码本强制所有尺度的运动信息在同一离散空间中表示，使得 AR 模型可以在统一的 token 词汇表上进行跨尺度预测。从信息论角度看，共享码本相当于对所有尺度的运动模式施加了一个共同的离散先验，有助于正则化并防止过拟合。$@Chu et al., 2025$
 
 VQ 自编码器的训练目标包含四项损失：
 
@@ -141,7 +151,13 @@ ARTalk 的训练分为两个独立阶段，每阶段各自训练 50K iterations�
 
 <h3 class="section-title">Stage 2: AR Model（~8 hours on 1× A100）</h3>
 
-冻结 VQ autoencoder，训练 speech-to-motion autoregressive generation。使用 frozen HuBERT 作为语音编码器。
+冻结 VQ autoencoder，训练 speech-to-motion autoregressive generation。使用 frozen HuBERT 作为语音编码器。语音条件通过 Adaptive Instance Normalization (AdaIN) $@Huang & Belongie, 2017$ 注入 Transformer 各层——这一机制允许音频特征动态调节生成过程的均值和方差，实现细粒度的条件控制。
+
+<h3 class="section-title">VQ 损失的物理含义</h3>
+
+Stage 1 的四项损失各有明确的物理动机：$\mathcal{L}_{recon}$ 中的参数 L1 损失保证 FLAME 参数空间的基本对齐，唇部加权 L2 体现对 lip-sync 精度的特别关注（唇部是语音驱动最敏感的区域），全顶点 L2 则约束整体几何保真度。$\mathcal{L}_{vel}$ 约束相邻帧速度一致性，防止生成结果出现不自然的抖动。$\mathcal{L}_{smooth}$ 使用二阶差分（加速度）惩罚运动突变，保证物理合理性——真实的面部运动不会在瞬间改变加速度。$\mathcal{L}_{cb}$ 为标准 VQ commitment + codebook loss，确保编码器输出与码本条目紧密对齐。$@Chu et al., 2025$
+
+<div class="callout"><strong>纯交叉熵训练的效率优势：</strong>ARTalk 的 AR 模型完全不使用 GAN 对抗损失或扩散损失。整个训练纯粹基于离散 token 上的交叉熵，这带来三个关键优势：(1) 训练稳定，无模式崩塌风险；(2) 收敛快速，50K iterations 即可达到最优性能；(3) 推理时单次前向传播即可产出一整段运动，无需迭代采样。这与 DiffPoseTalk 需要数十步去噪形成鲜明对比，是 ARTalk 实现 100× 实时的根本原因。$@Chu et al., 2025$</div>
 
 <h3 class="section-title">训练配置披露</h3>
 
