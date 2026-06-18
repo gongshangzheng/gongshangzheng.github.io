@@ -1,279 +1,590 @@
 ---
-title: "rpcassm-2026"
-description: ""
+title: "红外图像压缩论文精读（六）：RPCASSM，鲁棒 PCA 状态空间模型的红外小目标检测"
+description: "深度解读 RPCASSM 如何将鲁棒 PCA 的低秩-稀疏分解范式与双分支状态空间模型融合，在仅 0.45M 参数下实现红外小目标检测 SOTA"
 date: 2026-06-18T13:49:10
 created_at: 2026-06-18T13:49:10
 updated_at: 2026-06-18T13:49:10
-tags: []
-categories: []
+tags: [红外, 目标检测, RPCA, 状态空间模型, SSM]
+categories: ["论文精读"]
+subcategory: "图像压缩"
+sub_id: 3550
+hub: "infrared-compression-hub"
+mathjax: true
 ---
-<!-- ============================================================
-  本模板展示所有构建系统支持的语法。
-  详细规范参见 ~/.hanako/skills/html-blog/references/
-  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
-  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
-  ============================================================ -->
 
-<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
 <div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+  <div class="stat"><span class="num">0.45M</span><span class="label">参数量</span></div>
+  <div class="stat"><span class="num b">95.98%</span><span class="label g">mIoU</span></div>
+  <div class="stat"><span class="num">98.62%</span><span class="label">检测率 Pd</span></div>
+  <div class="stat"><span class="num b">2.22×10⁻⁶</span><span class="label g">虚警率 Fa</span></div>
 </div>
 
 <!-- ============================================================
-  章节容器
+  Part 1: 引言
   ============================================================ -->
-
-<!-- 章节叙事（.ch）— .ch-title 自动加入 TOC -->
-<!-- <p> 标签可选：裸文本行在构建时自动补 <p> -->
 <div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么需要红外小目标检测</div>
 
-  正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。
+  红外小目标检测（ISTD）是军事侦察、海上搜救、边境监控等场景中的核心技术。它的任务是：在红外图像中找出仅占数个像素、缺乏形状纹理特征的远距离弱小目标。
 
-  这是一段包含 ==高亮文字== 的正文。
-
-  <!-- Markdown 加粗/斜体也支持（HTML 源文件中） -->
-  <!-- **加粗** → <strong> / *斜体* → <em> -->
-
-  <!-- 图片 — 放在所讲解段落之后，不要堆在文件末尾 -->
   <div class="photo">
-    <img src="media/images/sengoku-japan/nobunaga.jpg" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
+    <img src="media/images/rpcassm-2026/PCASSM.motivate.drawio.webp" alt="RPCASSM 动机图" loading="lazy">
+    <div class="cap">图 1：RPCASSM 动机图。左栏展示红外小目标检测的挑战（目标微小、信噪比低），中栏分析现有方法瓶颈，右栏提出本文思路（来源：RPCASSM, Fig.1）</div>
   </div>
 
-  <div class="callout"><strong>提示</strong>：提示框内容。</div>
+  <h3 class="section-title">三重核心挑战</h3>
+
+  <strong>极低信噪比（Low SNR）</strong>：远距离红外成像条件下，目标信号强度与背景噪声接近，目标像素灰度值可能仅比周围背景高出数个量化级别。
+
+  <strong>背景杂波干扰</strong>：云层边缘、地表热辐射不均匀区域等背景结构在空间频率和局部对比度上与真实目标高度相似，产生大量类目标虚警源。
+
+  <strong>目标信息极度匮乏</strong>：目标仅占数个像素（典型 2×2 到 9×9），任何下采样操作都可能导致目标信号被完全抹除或与背景平均化；同时缺乏纹理、形状等高级语义线索。
+
+  <h3 class="section-title">本文核心主张</h3>
+
+  RPCASSM 的核心洞察是：<strong>红外图像的物理成像特性天然满足鲁棒主成分分析（RPCA）分解假设——背景低秩、目标稀疏</strong>。这一先验不应仅作为正则化项，而应成为网络架构本身的归纳偏置。
+
+  基于此，RPCASSM 提出了双分支状态空间模型：BSSM 建模背景的全局低秩结构，TSSM 聚焦目标的稀疏结构。以仅 0.45M 参数在 NUDT-SIRST 上达到 mIoU 95.98%、Pd 98.62%、Fa 2.22×10⁻⁶，全面超越 10 个 SOTA 方法。
+
+</div>
+
+<!-- ============================================================
+  Part 2: 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">为什么主流 VSSM 不适合 ISTD</div>
+
+  当前主流的视觉状态空间模型（如 VMamba、Vim）在设计上存在与 ISTD 任务的三重架构失配。
+
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/PCASSM.webp" alt="RPCASSM 整体架构" loading="lazy">
+    <div class="cap">图 2：RPCASSM 整体架构。采用 k-stage 迭代框架，每个 stage 包含 BEM（背景提取）和 TEM（目标提取）两个核心模块（来源：RPCASSM, Fig.2）</div>
+  </div>
+
+  <h3 class="section-title">失配 1：下采样致命</h3>
+
+  现有 VSSM 通常在 stem 阶段通过步长大于 1 的卷积进行激进下采样以降低序列长度。这对通用视觉任务是合理的效率权衡，但对 ISTD 是致命的——几个像素的目标在下采样后要么完全消失，要么其关键的像素级对比度模式被周围背景平均掉。
+
+  <h3 class="section-title">失配 2：扫描模式不匹配</h3>
+
+  现有 VSSM 的扫描模式（如 VMamba 的 cross-scan）是为捕获语义级和结构级长程依赖而优化的，其序列化粒度与扫描顺序针对自然图像的物体边界和区域一致性设计，而非保留像素级极值信号。
+
+  <h3 class="section-title">失配 3：因果约束阻碍边缘重建</h3>
+
+  SSM 的因果约束意味着序列中后续位置无法影响先前位置的隐藏状态。当目标信号在序列化过程中被分散到不同时间步时，这种单向性进一步阻碍了完整目标边缘的重建。
 
   <div class="info-box">
-    <h3>信息框标题</h3>
-    信息框内容。标题不加入 TOC。
+    <h3>RPCA 与红外图像的天然联系</h3>
+    红外背景在空间上呈现高度的平滑性和冗余性——相邻像素之间存在强相关性，整个背景矩阵可以用低秩结构良好近似；而红外小目标在空间上表现为孤立的、稀疏的高亮异常点，恰好对应 RPCA 框架中的稀疏分量。因此，将红外图像分解为低秩背景 $B$ 和稀疏目标 $T$（即 $D = B + T$）不仅是一个数学上的便利假设，而是有坚实物理基础的建模选择。
   </div>
+
+</div>
+
+<!-- ============================================================
+  Part 3: 模型架构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">RPCASSM 架构详解</div>
+
+  RPCASSM 的整体架构是对鲁棒主成分分析（RPCA）交替优化算法的深度展开（Deep Unfolding）。在经典 RPCA 框架中，红外图像 $D$ 被分解为低秩背景 $B$ 和稀疏目标 $T$，通过反复交替更新两个分量来逼近最优解。RPCASSM 将这一迭代过程直接映射为网络的层级结构：每个 stage 对应一次完整的 B-T 更新循环，$k$ 个相同结构的 stage 串联构成完整网络（最优 $k=3$）。
+
+  <h3 class="section-title">交替迭代公式</h3>
+
+  这个公式是整个 RPCASSM 的数学骨架，定义了每个 stage 如何从上一阶段的估计出发，产生更精确的背景和目标表示。
+
+  $$\mathbf{B}^k = \mathbf{B}^{k-1} - \mathbf{T}^{k-1} + \varphi^{k}\mathcal{R}^{k}(\mathbf{B}^{k-1} - \mathbf{T}^{k-1})$$
+
+  $$\mathbf{T}^k = \mathbf{T}^{k-1} - \mathbf{B}^{k} + \psi^{k}\mathcal{S}^{k}(\mathbf{T}^{k-1} - \mathbf{B}^{k})$$
 
   <div class="def-box">
-    <h3>定义框</h3>
-    放定义、符号、直觉解释。
-  </div>
-  <div class="theorem-box">
-    <h3>定理框</h3>
-    放命题、定理、推论和判定条件。
-  </div>
-  <div class="example-box">
-    <h3>例题框</h3>
-    <strong>题目：</strong>示例题目。
-    <strong>答案：</strong>示例答案。
-    <div class="callout"><strong>易错点</strong>：示例提醒。</div>
-  </div>
-  <div class="review-box">
-    <h3>复习速查</h3>
+    <h3>符号解释</h3>
     <ul>
-      <li><strong>定义</strong>：一行回忆核心概念。</li>
-      <li><strong>公式</strong>：列最重要的结论。</li>
+      <li>$\mathbf{B}^k, \mathbf{T}^k \in \mathbb{R}^{H \times W}$：第 $k$ 个 stage 输出的背景和目标估计</li>
+      <li>$\varphi^k, \psi^k$：可学习标量参数，控制每步更新的幅度（类似自适应学习率），初始化为 0.1</li>
+      <li>$\mathcal{R}^k(\cdot)$：BEM 的整体映射（ResBlock + BSSM），提取输入中的低秩背景结构</li>
+      <li>$\mathcal{S}^k(\cdot)$：TEM 的整体映射（ResBlock + DifBlock + TSSM），提取输入中的稀疏目标结构</li>
     </ul>
   </div>
-  <div class="chapter-nav">
-    <a class="nav-card" href="prev.html"><span class="nav-label">上一章</span><span class="nav-title">上一章标题</span></a>
-    <a class="nav-card current" href="hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">枢纽页标题</span></a>
-    <a class="nav-card" href="next.html"><span class="nav-label">下一章</span><span class="nav-title">下一章标题</span></a>
+
+  <div class="callout"><strong>直觉理解</strong>：以背景更新为例，$\mathbf{B}^{k-1} - \mathbf{T}^{k-1}$ 是"去除当前目标估计后的纯背景残差"。$\mathcal{R}^k$ 对这个残差做低秩建模，提取其中的全局平滑结构。$\varphi^k$ 控制这一步的"信任度"：值越大，越依赖 BEM 的新发现；值越小，越保守地保留旧估计。注意目标更新使用的是本阶段刚更新的 $\mathbf{B}^k$ 而非旧的 $\mathbf{B}^{k-1}$，这是 Gauss-Seidel 型交替优化的特征，相比 Jacobi 型通常收敛更快。</div>
+
+  <h3 class="section-title">BSSM/SPCM：空间探针扫描机制</h3>
+
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/PCASSM.SPCM.webp" alt="SPCM 结构图" loading="lazy">
+    <div class="cap">图 3：SPCM（Spatial Probe Convolution Module）结构。通过空间探针扫描机制，利用可学习的探针对特征图进行局部感知（来源：RPCASSM, Fig.3）</div>
   </div>
 
-  <blockquote>
-    引用内容。
-    <em>— 来源</em>
-  </blockquote>
+  BSSM 的核心是空间探针扫描机制（SPCM），其设计动机是利用红外背景在空间轴上的异质性来定位和建模背景区域。SPCM 不直接在二维特征图上运行 SSM，而是将二维特征投影到一维空间轴上分别建模，再重新组合。
+
+  <strong>Step 1：空间轴投影</strong>
+
+  $$\mathbf{M}_{H/W} = Conv1d(Avg_{H/W}(\mathbf{I}))$$
+
+  对输入背景特征分别沿高度轴和宽度轴做全局平均池化，得到两条一维空间表示。平均池化保留了空间轴上的全局统计分布（如某一行整体偏亮或偏暗），这正是背景低秩特性的体现；而目标由于极度稀疏，在平均后被大幅稀释，从而实现了隐式的背景-目标分离。
+
+  <strong>Step 2：KAN 参数生成</strong>
+
+  $$B, C, \Delta = Kan(\mathbf{M}_{H/W})$$
+
+  使用 Kolmogorov-Arnold Network（KAN）从空间轴表示中生成 SSM 的三个关键参数：$B$（输入矩阵）、$C$（输出矩阵）、$\Delta$（离散化步长）。KAN 相比传统 MLP 具有更强的函数逼近能力和参数效率。
+
+  <strong>Step 3：双向 SSM 扫描</strong>
+
+  $$\mathbf{O}_{H/W} = \mathbb{S}_{B,C,\Delta}^{for}(\mathbf{M}_{H/W}) + \mathbb{S}_{B,C,\Delta}^{back}(\mathbf{M}_{H/W})$$
+
+  对每条空间轴表示分别进行正向和反向 SSM 扫描并相加，消除 SSM 因果约束带来的方向偏差。
+
+  <strong>Step 4：轴特征重组</strong>
+
+  $$\mathbf{O}_{H}, \mathbf{O}_{W} = \mathbf{O}_{H/W}$$
+
+  $$\mathbf{O}_{B} = \mathbf{O}_{H} \cdot \mathbf{O}_{W}$$
+
+  将两条轴的输出特征通过逐元素相乘重组为二维背景特征。这种分解-重组策略的计算复杂度远低于直接在 $H \times W$ 序列上运行 SSM，同时天然契合背景的低秩假设。
+
+  <h3 class="section-title">TSSM/DPCM：可变形提示扫描机制</h3>
+
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/PCASSM.DPCM.webp" alt="DPCM 结构图" loading="lazy">
+    <div class="cap">图 4：DPCM（Deformable Prompt Convolution Module）结构。引入可变形提示扫描机制，通过自适应调整采样位置来捕获不同尺度和形状的小目标特征（来源：RPCASSM, Fig.4）</div>
+  </div>
+
+  TSSM 的核心是可变形提示扫描机制（DPCM），其设计理念是利用目标的稀疏性和局部高亮特性，将计算资源集中到可能的目标区域，避免在全图均匀分配 SSM 算力造成的浪费和边缘模糊。
+
+  <strong>Step 1：密度图聚类与阈值分割</strong>
+
+  $$\mathbf{P}_{T}, \mathbf{P}_{B} = Split(G_{cluster}(Avg(\mathbf{I})), G_{offsets}(\mathbf{I}))$$
+
+  对输入特征做平均池化得到密度热力图，通过自适应阈值将其二值化为目标区域掩码：
+
+  $$M_{mask} = \mathbbm{1}(M_{density} > T_s)$$
+
+  $$\gamma = \min[\gamma \in \mathbb{N} \mid \mathbbm{1}(M_{density} > T_s) > 0]$$
+
+  $$T_s = T_{init} - \gamma \cdot \Delta T$$
+
+  阈值从初始值 $T_{init}=0.7$ 开始，以步长 $\Delta T$ 递减，直到至少产生一个前景区域。这一自适应机制确保了即使在不同场景下目标亮度差异很大，也能可靠地提取出候选目标区域。
+
+  <strong>Step 2：可变形偏移学习</strong>
+
+  引入可变形卷积的偏移学习机制 $G_{offsets}(\cdot)$，对目标区域的边界进行精细化调整，使网络能够学习到目标实际形状与初始矩形提示之间的几何偏差。
+
+  <strong>Step 3：协同控制矩阵</strong>
+
+  $$\mathbf{D}_B = Linear_{w_B}(\tau), \quad \mathbf{D}_T = Linear_{w_T}(\tau)$$
+
+  协同控制矩阵 $\tau$ 作为共享的信息枢纽，同时调节目标和背景的前馈矩阵，防止目标区域因像素极少而在梯度更新中被背景区域淹没。
+
+  <strong>Step 4-5：分区差异化处理</strong>
+
+  背景区域采用简单 Linear 映射：$\mathbf{Y}_B = \mathbf{D}_B \cdot \mathbf{P}_B$
+
+  目标区域使用带 Cross-Scan Module（CSM）的 SSM：$\mathbf{Y}_T = \mathbb{S}_{\mathbf{D}_T}^{CSM}(\mathbf{P}_T)$
+
+  <strong>Step 6：特征拼接</strong>
+
+  $$\mathbf{M}_{O} = Cat(\mathbf{Y}_{B}, \mathbf{Y}_{T})$$
+
+  将两个区域的输出在空间维度上拼接回完整的特征图。
+
+  <h3 class="section-title">DifBlock：差分卷积增强</h3>
+
+  DifBlock 位于 TEM 中 ResBlock 之后、TSSM 之前，通过空间差分运算初步增强目标的显著性。
+
+  $$\phi(\cdot) = \sum_{i=1}^{N}\sum_{j=1}^{N}w_{ij} \cdot \left(N^{2}f_{ij} - \sum_{k=-N/2}^{N/2}\sum_{l=-N/2}^{N/2}f_{i+k,j+l}\right)$$
+
+  括号内的表达式 $N^2 f_{ij} - \sum f_{i+k,j+l}$ 本质上是中心像素值的 $N^2$ 倍减去其 $N \times N$ 邻域内所有像素值之和，等价于 $(N^2-1) f_{ij} - \sum_{(k,l) \neq (0,0)} f_{i+k,j+l}$，即中心像素与邻域均值的加权差。对于均匀背景区域，该差值趋近于零；对于孤立的高亮目标像素，该差值显著为正。因此 DifBlock 起到了空间高通滤波器的作用。
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>表头1</th><th>表头2</th><th>表头3</th></tr></thead>
+      <thead><tr><th>维度</th><th>RPCANet</th><th>LSDSSMs</th><th>VMamba</th><th><strong>RPCASSM</strong></th></tr></thead>
       <tbody>
-        <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+        <tr><td>核心表示</td><td>RPCA + CNN 正则化</td><td>低秩稀疏 + 单向 SSM</td><td>通用 VSSM</td><td>RPCA + 双分支 SSM</td></tr>
+        <tr><td>背景建模</td><td>核范数（CNN 实现）</td><td>SSM 隐式建模</td><td>无显式背景建模</td><td>BSSM/SPCM 轴投影+双向SSM</td></tr>
+        <tr><td>目标建模</td><td>L1（CNN 实现）</td><td>单向 SSM</td><td>通用 token</td><td>TSSM/DPCM 可变形提示+CSM</td></tr>
+        <tr><td>RPCA 集成深度</td><td>浅层（仅正则化）</td><td>中层（架构灵感）</td><td>无</td><td><strong>深层（迭代=网络stage）</strong></td></tr>
+        <tr><td>扫描策略</td><td>无（纯 CNN）</td><td>单向扫描</td><td>Cross-scan（4方向）</td><td><strong>分区差异化：目标CSM+背景Linear</strong></td></tr>
+        <tr><td>空间分辨率</td><td>全分辨率</td><td>全分辨率</td><td>下采样后处理</td><td><strong>全分辨率（无下采样stem）</strong></td></tr>
+        <tr><td>参数量</td><td>0.67M</td><td>0.37M</td><td>~30M</td><td><strong>0.45M</strong></td></tr>
+        <tr><td>NUDT mIoU</td><td>91.30%</td><td>94.59%</td><td>—</td><td><strong>95.98%</strong></td></tr>
+        <tr><td>NUDT Fa ($10^{-6}$)</td><td>17.99</td><td>3.77</td><td>—</td><td><strong>2.22</strong></td></tr>
+        <tr><td>IRSTD-1K mIoU</td><td>60.53%</td><td>68.14%</td><td>—</td><td><strong>68.44%</strong></td></tr>
       </tbody>
     </table>
   </div>
+  <p><em>表 1：RPCASSM 与主要竞争方法的技术对比。</em></p>
+
+</div>
+
+<!-- ============================================================
+  Part 4: 训练管线
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练管线：渐进式优化</div>
+
+  <h3 class="section-title">渐进式 IoU Loss</h3>
+
+  RPCASSM 由 k 个相同结构的 stage 串联而成，每个 stage 都会输出一个中间稀疏目标估计 $\mathbf{T}^i$。为了确保梯度在多层迭代结构中有效传播，论文采用了渐进式 IoU Loss 作为训练目标：
+
+  $$\mathcal{L}_{total} = \mathcal{L}_{IoU}(\mathbf{T}^{k}, \mathbf{Y}) + \sum_{i=1}^{k-1}\alpha \cdot \mathcal{L}_{IoU}(\mathbf{T}^{i}, \mathbf{Y})$$
+
+  其中 $\mathcal{L}_{IoU}$ 是标准的 soft IoU loss，衡量预测目标 $\mathbf{T}$ 与真实标签 $\mathbf{Y}$ 的重叠度。
+
+  <div class="def-box">
+    <h3>深层监督的必要性</h3>
+    如果仅对最终输出 $\mathbf{T}^k$ 施加监督信号，中间阶段的 BEM 和 TEM 模块可能学到无意义的表示，导致梯度在经过多个 stage 的反向传播后逐渐消失。渐进式 loss 为每个中间阶段提供了辅助梯度通路，确保每一级迭代都能产出有意义的目标估计，形成从粗到精的渐进细化过程。
+  </div>
+
+  <div class="callout"><strong>alpha=0.01 的选择理由</strong>：最终阶段 $\mathbf{T}^k$ 的损失权重为 1.0，而中间阶段 $\mathbf{T}^i$ (i&lt;k) 的权重仅为 $\alpha=0.01$。当 k=3 时，中间阶段的总损失权重为 2 × 0.01 = 0.02，仅占最终阶段权重的 2%。超参数实验验证了这一选择：当 $\alpha$ 增大到 0.03 时，Fa 从 2.22 恶化至 6.66（上升 200%），说明过强的中间约束反而干扰了最终阶段的精细优化。</div>
+
+  <h3 class="section-title">训练配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>值</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>NUDT-SIRST, IRSTD-1K</td><td>论文披露</td></tr>
+        <tr><td>数据划分</td><td>1:1 随机分割</td><td>论文披露</td></tr>
+        <tr><td>输入分辨率</td><td>256×256（双线性插值）</td><td>论文披露</td></tr>
+        <tr><td>GPU</td><td>单张 NVIDIA GeForce RTX 4070 Ti SUPER</td><td>论文披露</td></tr>
+        <tr><td>深度学习框架</td><td>PyTorch</td><td>论文披露</td></tr>
+        <tr><td>优化器</td><td>Adam</td><td>论文披露</td></tr>
+        <tr><td>初始学习率</td><td>5×10⁻⁴</td><td>论文披露</td></tr>
+        <tr><td>学习率调度</td><td>decay schedule</td><td>未完整披露</td></tr>
+        <tr><td>Batch size</td><td>8</td><td>论文披露</td></tr>
+        <tr><td>Epochs</td><td>800</td><td>论文披露</td></tr>
+        <tr><td>数据增强</td><td>random flipping, rotation</td><td>论文披露</td></tr>
+        <tr><td>可学习参数初始化 $\varphi^k, \psi^k$</td><td>0.1</td><td>论文披露</td></tr>
+        <tr><td>Stage 数 k</td><td>3</td><td>论文披露（消融实验）</td></tr>
+        <tr><td>损失权重 $\alpha$</td><td>0.01</td><td>论文披露（消融实验）</td></tr>
+        <tr><td>阈值初始化 $T_{init}$</td><td>0.7</td><td>论文披露（消融实验）</td></tr>
+        <tr><td>阈值递减步长 $\Delta T$</td><td>自适应</td><td>未完整披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 2：RPCASSM 训练配置及论文披露状态。</em></p>
+
+  <h3 class="section-title">训练成本</h3>
+
+  <ul>
+    <li><strong>硬件</strong>：单卡 NVIDIA GeForce RTX 4070 Ti SUPER（16GB VRAM）</li>
+    <li><strong>训练时间</strong>：未披露。论文仅说明了 800 epochs 和 batch size=8，但未报告总训练时长</li>
+    <li><strong>FLOPs</strong>：未披露。Table 2 的 caption 明确提及"Flops(G)"作为评估指标之一，但实际表格中并未包含</li>
+    <li><strong>参数效率</strong>：RPCASSM 以 0.45M 参数实现了 SOTA 性能，在所有对比方法中排名第三低（仅次于 LSDSSMs 的 0.37M 和 ALCNet 的 0.42M）</li>
+  </ul>
+
+</div>
+
+<!-- ============================================================
+  Part 5: 推理流程
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">推理流程：k 次迭代交替优化</div>
+
+  RPCASSM 的推理过程是其训练过程的确定性前向传播，无需额外的后处理或测试时增强。
+
+  <h3 class="section-title">推理步骤</h3>
 
   <ol>
-    <li>第一项</li>
-    <li>第二项</li>
+    <li><strong>初始化</strong>：给定输入红外图像 $I$，设置背景初始估计 $\mathbf{B}^0 = I$，目标初始估计 $\mathbf{T}^0 = 0$（零矩阵）。这对应 RPCA 分解的起点：假设整幅图像都是背景，尚无目标被检测到。</li>
+
+    <li><strong>迭代 k=3 次（Stage i = 1, 2, 3）</strong>：每个 stage 执行 Gauss-Seidel 型交替更新：
+      <ul>
+        <li><strong>BEM 更新（背景提取）</strong>：计算残差 $\mathbf{R}_B = \mathbf{B}^{i-1} - \mathbf{T}^{i-1}$，将其送入 ResBlock 进行局部特征提取，再经 BSSM/SPCM 进行全局低秩建模，得到更新后的背景估计 $\mathbf{B}^i = \mathbf{B}^{i-1} - \mathbf{T}^{i-1} + \varphi^i \cdot \mathcal{R}^i(\mathbf{R}_B)$。</li>
+        <li><strong>TEM 更新（目标提取）</strong>：使用本阶段已更新的 $\mathbf{B}^i$（而非上一阶段的 $\mathbf{B}^{i-1}$），计算残差 $\mathbf{R}_T = \mathbf{T}^{i-1} - \mathbf{B}^i$，依次经过 ResBlock（局部特征）、DifBlock（差分增强）和 TSSM/DPCM（稀疏建模），得到更新后的目标估计 $\mathbf{T}^i = \mathbf{T}^{i-1} - \mathbf{B}^i + \psi^i \cdot \mathcal{S}^i(\mathbf{R}_T)$。</li>
+      </ul>
+    </li>
+
+    <li><strong>输出</strong>：第 k=3 个 stage 的目标估计 $\mathbf{T}^3$ 即为最终检测结果。该结果是一个与输入同尺寸的概率图，高值区域对应检测到的红外小目标。</li>
   </ol>
-  <ul>
-    <li>列表项</li>
-  </ul>
+
+  <div class="callout"><strong>自适应阈值机制</strong>：推理过程中 DPCM 的自适应阈值机制会在每个 stage 自动运行：从 $T_{init}=0.7$ 开始，以步长 $\Delta T$ 逐步降低阈值，直到密度图中至少找到一个前景区域。这确保了在不同场景下都能自适应地定位目标候选区域，无需人工干预。</div>
+
+  <h3 class="section-title">推理成本</h3>
 
   <ul>
-    <li><strong>术语一</strong> :: 这是定义说明</li>
-    <li><em>带强调的术语</em> :: 定义内容</li>
+    <li><strong>参数量</strong>：0.45M。在所有 11 个对比方法中排名第三低，仅高于 LSDSSMs（0.37M）和 ALCNet（0.42M）</li>
+    <li><strong>迭代次数</strong>：固定 3 次（k=3）。这是通过超参数实验确定的最优值，对应 RPCA 交替优化的典型收敛步数</li>
+    <li><strong>推理时间</strong>：未披露。论文未报告 FPS、单张图片推理延迟或吞吐量等任何推理速度指标</li>
+    <li><strong>内存占用</strong>：未披露。由于采用全分辨率（256×256）处理且无下采样 stem，SSM 的序列长度为 256×256=65536</li>
   </ul>
 
-  <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-  </code></pre>
 </div>
 
 <!-- ============================================================
-  数学公式 — 需要 frontmatter mathjax: true
+  Part 6: 实验验证
   ============================================================ -->
-<!--
-  行内：$...$ 或 \(...\) → <span class="math-inline">...</span>
-  独立：优先用 $$...$$ 独占多行；也支持 \[...\]
-  引用：#key# → <cite>#key</cite>
-  必须：frontmatter 设置 mathjax: true
-  注意：不要把 display math 放进 <p>、<span>、<a>、表格属性或图片 alt 里；需要居中时让 MathJax 默认居中即可
-  注意：公式内 < 和 > 会被构建器转义；复杂括号优先用 \Bigl( ... \Bigr)，少用会与普通文本冲突的裸 HTML 符号
--->
-
 <div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：SOTA 性能</div>
 
-  行内公式 $O(T\epsilon^2)$ 或 \(x\in\mathbb{R}^{d}\)，必须嵌入普通正文段落中。
+  <h3 class="section-title">主实验结果</h3>
 
-$$
-\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)
-$$
-
-  也可以使用 display math：
-
-\[
-\mathcal{L}(\theta)=\mathbb{E}_{x\sim p_{\text{data}}}\bigl[-\log p_\theta(x)\bigr]
-\]
-</div>
-
-<!-- ============================================================
-  引用语法
-  ============================================================ -->
-<!--
-  #key# → <cite>#key</cite>
-  key 含空格 → 引用；无空格 → 行内公式
--->
-
-<div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
-
-  根据 #Hinton et al., 2015# 的开创性工作，知识蒸馏用软标签把教师模型的暗知识传给学生模型。#Hinton et al., 2015#
-
-  <div class="sources">
-    <h3>参考来源</h3>
-    <ul>
-      <li data-cite-key="Hinton-et-al.-2015">Hinton, G. et al. (2015). Distilling the Knowledge in a Neural Network. <a href="https://arxiv.org/abs/1503.02531" target="_blank">arXiv:1503.02531</a></li>
-    </ul>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>Params(M)</th><th>NUDT mIoU</th><th>NUDT Pd</th><th>NUDT Fa(10⁻⁶)</th><th>NUDT F</th><th>IRSTD mIoU</th><th>IRSTD Pd</th><th>IRSTD Fa(10⁻⁶)</th><th>IRSTD F</th></tr></thead>
+      <tbody>
+        <tr><td>ACM (WACV2021)</td><td>0.52</td><td>66.80</td><td>95.24</td><td>22.52</td><td>80.09</td><td>52.70</td><td>84.54</td><td>65.86</td><td>69.03</td></tr>
+        <tr><td>ALCNet (TGRS2021)</td><td>0.42</td><td>71.08</td><td>95.24</td><td>19.32</td><td>83.10</td><td>57.82</td><td>89.00</td><td>52.47</td><td>73.27</td></tr>
+        <tr><td>DNANet (TIP2022)</td><td>4.69</td><td>92.14</td><td>97.64</td><td>9.39</td><td>95.91</td><td>62.87</td><td>91.13</td><td>55.63</td><td>77.20</td></tr>
+        <tr><td>AGPCNet (TAES2023)</td><td>12.36</td><td>83.72</td><td>97.14</td><td>17.67</td><td>91.14</td><td>61.41</td><td>89.69</td><td>26.62</td><td>76.09</td></tr>
+        <tr><td>UIUNet (TIP2023)</td><td>50.54</td><td>90.52</td><td>97.80</td><td>8.34</td><td>95.02</td><td>65.69</td><td>91.24</td><td>23.47</td><td>79.31</td></tr>
+        <tr><td>MSHNet (CVPR2024)</td><td>4.06</td><td>91.64</td><td>97.78</td><td>3.58</td><td>95.64</td><td>56.06</td><td>88.66</td><td>29.75</td><td>71.84</td></tr>
+        <tr><td>RPCANet (WACV2024)</td><td>0.67</td><td>91.30</td><td>97.46</td><td>17.99</td><td>95.45</td><td>60.53</td><td>88.66</td><td>37.80</td><td>75.41</td></tr>
+        <tr><td>SCTransNet (TGRS2024)</td><td>11.19</td><td>94.58</td><td>97.13</td><td>3.70</td><td>97.21</td><td>66.46</td><td>90.03</td><td>27.86</td><td>79.85</td></tr>
+        <tr><td>LSDSSMs (TGRS2025)</td><td>0.37</td><td>94.59</td><td>97.52</td><td>3.77</td><td>97.22</td><td>68.14</td><td>86.60</td><td>24.80</td><td>81.05</td></tr>
+        <tr><td>DRPCA-Net (TGRS2025)</td><td>1.16</td><td>94.19</td><td>97.41</td><td>13.71</td><td>97.01</td><td>65.23</td><td>90.72</td><td>23.09</td><td>78.95</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>RPCASSM (Ours)</strong></td><td><strong>0.45</strong></td><td><strong>95.98</strong></td><td><strong>98.62</strong></td><td><strong>2.22</strong></td><td><strong>97.95</strong></td><td><strong>68.44</strong></td><td><strong>92.44</strong></td><td><strong>22.31</strong></td><td><strong>81.26</strong></td></tr>
+      </tbody>
+    </table>
   </div>
-</div>
+  <p><em>表 3：RPCASSM 与 10 个 SOTA 方法在 NUDT-SIRST 和 IRSTD-1K 上的定量对比。</em></p>
 
-<!-- ============================================================
-  Shortcode 语法 {{< ... >}}
-  ============================================================ -->
+  <h4 class="ch-section">NUDT-SIRST 数据集解读</h4>
 
-<div class="ch fade-in">
-  <div class="ch-label">Shortcode</div>
-  <div class="ch-title">Shortcode 语法</div>
+  RPCASSM 在 NUDT-SIRST 上实现了四项指标的全面领先：
+  <ul>
+    <li><strong>mIoU 95.98%</strong>：超越第二名 LSDSSMs（94.59%）1.39 个百分点，超越第三名 SCTransNet（94.58%）1.40 个百分点</li>
+    <li><strong>Pd 98.62%</strong>：所有方法中最高，意味着几乎不漏检任何目标像素</li>
+    <li><strong>Fa 2.22×10⁻⁶</strong>：所有方法中最低的虚警率，相比前代最佳 MSHNet（3.58×10⁻⁶）降低了 38%</li>
+    <li><strong>F-measure 97.95%</strong>：综合表现最优</li>
+  </ul>
 
-  普通高亮：==默认高亮文字==。
+  从参数效率角度看，RPCASSM 以仅 0.45M 参数取得上述成绩。UIUNet 使用 50.54M 参数（RPCASSM 的 112 倍），mIoU 仅为 90.52%，说明单纯堆砌参数对 ISTD 任务收效甚微。与传统 RPCA 方法 RPCANet 相比，RPCASSM 的 mIoU 提升了 4.68 个百分点（91.30 → 95.98），Fa 从 17.99 降至 2.22（降低 87.7%）。
 
-  彩色高亮：{{< bg yellow >}}黄色高亮{{< /bg >}}、{{< bg red >}}红色高亮{{< /bg >}}、{{< bg blue >}}蓝色高亮{{< /bg >}}、{{< bg green >}}绿色高亮{{< /bg >}}、{{< bg purple >}}紫色高亮{{< /bg >}}。
+  <h4 class="ch-section">IRSTD-1K 数据集解读</h4>
 
-  {{< details summary="点击展开" openByDefault=true >}}
-  隐藏内容。details shortcode 必须成对出现，不要拆到多个 <p> 标签里。
-  {{< /details >}}
+  IRSTD-1K 场景更多样、难度更高，所有方法的绝对性能均有下降。RPCASSM 在该数据集上同样取得四项指标第一：mIoU=68.44%（超越 LSDSSMs 的 68.14%），Pd=92.44%（大幅超越 LSDSSMs 的 86.60%，提升 5.84 个百分点），Fa=22.31×10⁻⁶（最低），F-measure=81.26%（超越 LSDSSMs 的 81.05%）。
 
-  {{< bilibili BV1xxooXX1Xx >}}
-  {{< youtube dQw4w9WgXcQ "说明" >}}
-  {{< video "media/images/video/sample.mp4" >}}
-  {{< googleslides "https://docs.google.com/presentation/d/..." >}}
-</div>
-
-<!-- ============================================================
-  Code Tabs：同一内容的多种视图
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Code Tabs</div>
-  <div class="ch-title">流程图与算法伪代码</div>
-
-  <p>当 Mermaid 流程图和 Algorithm 伪代码描述同一过程时，优先放进同一个 <code>code-tabs</code> 区块，避免正文纵向堆叠过长。</p>
-
-  <div class="code-tabs">
-    <div class="code-tabs-header">
-      <button class="code-tab-btn active" data-tab="example-flow">流程图</button>
-      <button class="code-tab-btn" data-tab="example-algorithm">算法</button>
-    </div>
-    <div class="code-tab-content active" data-panel="example-flow">
-      {{< mermaid >}}
-      flowchart TD
-        A[输入] --> B[处理]
-        B --> C[输出]
-      {{< /mermaid >}}
-    </div>
-    <div class="code-tab-content" data-panel="example-algorithm">
-      <pre><code class="language-text">Algorithm: Example
-Input: x
-repeat
-  y = step(x)
-until convergence
-Output: y</code></pre>
-    </div>
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/ROC_on_NUDT-SIRST.webp" alt="NUDT-SIRST ROC 曲线" loading="lazy">
+    <div class="cap">图 5：NUDT-SIRST 数据集上的 ROC 曲线对比。RPCASSM 在多个评价指标下优于现有方法（来源：RPCASSM, Fig.5a）</div>
   </div>
-</div>
 
-<!-- ============================================================
-  Wiki 链接 [[...]]
-  ============================================================ -->
+  <h3 class="section-title">消融实验</h3>
 
-<div class="ch fade-in">
-  <div class="ch-label">Wiki 链接</div>
-  <div class="ch-title">外链与站内引用</div>
-
-  <p>外部百科 / 论文 / 仓库链接：[[wiki.zh 日本历史]]、[[wiki Albert Einstein | 爱因斯坦]]、[[arxiv 2301.00001 abs | 论文]]、[[github pytorch/pytorch | PyTorch]]、[[google transformer architecture]]。</p>
-
-  <p>站内文章引用优先用标题：[[@ELF: Embedded Language Flows | ELF 论文]]；需要锚点跳转时用路径：[[posts.html | 返回文章列表]]。</p>
-</div>
-
-<!-- ============================================================
-  Mermaid 图表 — 完整类型见 blog-syntax/references/mermaid.md
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Mermaid</div>
-  <div class="ch-title">图表类型一览</div>
-
-  <p>本站支持流程图、思维导图、象限图、时间线、状态图、时序图、分支图等。<strong>硬性规则：节点/边标签含括号、斜杠、冒号、中英文混排时必须加引号</strong>，否则 Mermaid v11 运行时解析失败导致整图不渲染。完整类型与示例见 <code>blog-syntax/references/mermaid.md</code>。</p>
-
-  {{< mermaid >}}
-flowchart LR
-  A["输入"] --> B["处理"]
-  B --> C{"判断"}
-  C -->|"是"| D["输出"]
-  C -->|"否"| A
-  {{< /mermaid >}}
-
-  {{< mermaid >}}
-mindmap
-  root(("主题"))
-    分支一
-      "子节点 A"
-      "子节点 B"
-    分支二
-      "子节点 C"
-  {{< /mermaid >}}
-</div>
-
-<!-- 文章末尾：参考来源（如有引用必须带 data-cite-key） -->
-<div class="ch fade-in">
-  <div class="ch-label">References</div>
-  <div class="ch-title">写作规范小结</div>
-
-  <div class="review-box">
-    <h3>收尾检查清单</h3>
-    <ul>
-      <li><strong>图片路径</strong>：用 <code>media/images/&lt;slug&gt;/&lt;file&gt;</code>，禁止 <code>assets/media</code>。</li>
-      <li><strong>display math</strong>：不要包进 <code>&lt;p&gt;</code>，让 MathJax 默认居中。</li>
-      <li><strong>小节标题</strong>：正文小标题用 <code>&lt;h3 class="section-title"&gt;</code>。</li>
-      <li><strong>sources</strong>：每条参考来源必须带 <code>data-cite-key</code>。</li>
-      <li><strong>Mermaid</strong>：特殊字符标签加引号，shortcode 必须成对闭合。</li>
-    </ul>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>DifBlock</th><th>TSSM</th><th>BSSM</th><th>mIoU</th><th>Pd</th><th>Fa(10⁻⁶)</th><th>F-measure</th></tr></thead>
+      <tbody>
+        <tr><td>Baseline</td><td>-</td><td>-</td><td>-</td><td>91.60</td><td>97.41</td><td>18.49</td><td>95.61</td></tr>
+        <tr><td>+DifBlock</td><td>+</td><td>-</td><td>-</td><td>91.75</td><td>97.78</td><td>16.10</td><td>95.70</td></tr>
+        <tr><td>+DifBlock+TSSM</td><td>+</td><td>+</td><td>-</td><td>93.67</td><td>97.65</td><td>5.05</td><td>96.73</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>Full (Ours)</strong></td><td>+</td><td>+</td><td>+</td><td><strong>95.98</strong></td><td><strong>98.62</strong></td><td><strong>2.22</strong></td><td><strong>97.95</strong></td></tr>
+      </tbody>
+    </table>
   </div>
+  <p><em>表 4：逐步添加组件的消融实验结果（NUDT-SIRST）。</em></p>
+
+  <ul>
+    <li><strong>DifBlock</strong>：单独加入后，mIoU 从 91.60 提升至 91.75（+0.15%），Fa 从 18.49 降至 16.10（-2.39）。贡献幅度最小，但方向一致且稳定</li>
+    <li><strong>TSSM</strong>：在 DifBlock 基础上加入后，mIoU 从 91.75 跃升至 93.67（+1.92%），Fa 从 16.10 骤降至 5.05（-11.05，降幅 68.6%）。这是对 Fa 抑制效果最显著的一步</li>
+    <li><strong>BSSM</strong>：最后加入后，mIoU 从 93.67 跃升至 95.98（+2.31%），Pd 从 97.65 提升至 98.62（+0.97%），Fa 从 5.05 降至 2.22（-2.83，降幅 56%）。这是对整体性能贡献最大的组件</li>
+  </ul>
+
+  <div class="callout"><strong>总结</strong>：三个组件的贡献排序为 BSSM > TSSM > DifBlock，但三者缺一不可。三者的协同作用使 RPCASSM 从 baseline 的 91.60% mIoU / 18.49 Fa 提升至 95.98% mIoU / 2.22 Fa，总提升幅度为 mIoU +4.38%、Fa -16.27（降幅 88%）。</div>
+
+  <h3 class="section-title">超参数敏感性</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>k</th><th>mIoU</th><th>Pd</th><th>Fa(10⁻⁶)</th><th>F-measure</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>94.09</td><td>97.67</td><td>5.49</td><td>96.96</td></tr>
+        <tr><td>2</td><td>95.01</td><td>98.20</td><td>4.62</td><td>97.44</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>3</strong></td><td><strong>95.98</strong></td><td><strong>98.62</strong></td><td><strong>2.22</strong></td><td><strong>97.95</strong></td></tr>
+        <tr><td>4</td><td>95.42</td><td>98.52</td><td>2.94</td><td>97.66</td></tr>
+        <tr><td>5</td><td>95.85</td><td>98.61</td><td>2.71</td><td>97.80</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 5：Stage 数 k 的影响。k=3 为性能峰值。</em></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>α</th><th>mIoU</th><th>Pd</th><th>Fa(10⁻⁶)</th><th>F-measure</th></tr></thead>
+      <tbody>
+        <tr style="background:#f0f0f0"><td><strong>0.01</strong></td><td><strong>95.98</strong></td><td><strong>98.62</strong></td><td><strong>2.22</strong></td><td><strong>97.95</strong></td></tr>
+        <tr><td>0.03</td><td>95.33</td><td>98.33</td><td>6.66</td><td>97.61</td></tr>
+        <tr><td>0.05</td><td>95.18</td><td>98.10</td><td>3.78</td><td>97.53</td></tr>
+        <tr><td>0.07</td><td>95.45</td><td>98.41</td><td>3.11</td><td>97.67</td></tr>
+        <tr><td>0.10</td><td>95.02</td><td>98.21</td><td>2.88</td><td>97.45</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 6：损失权重 α 的影响。α=0.01 为最优值。</em></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>$T_{init}$</th><th>mIoU</th><th>Pd</th><th>Fa(10⁻⁶)</th><th>F-measure</th></tr></thead>
+      <tbody>
+        <tr><td>0.1</td><td>95.70</td><td>98.10</td><td><strong>2.13</strong></td><td>97.80</td></tr>
+        <tr><td>0.3</td><td>95.46</td><td>98.54</td><td>3.36</td><td>97.68</td></tr>
+        <tr><td>0.5</td><td>95.39</td><td>98.46</td><td>4.64</td><td>97.64</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>0.7</strong></td><td><strong>95.98</strong></td><td><strong>98.62</strong></td><td>2.22</td><td><strong>97.95</strong></td></tr>
+        <tr><td>1.0</td><td>95.50</td><td>98.31</td><td>2.55</td><td>97.70</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 7：阈值初始化 $T_{init}$ 的影响。$T_{init}=0.7$ 为综合最优。</em></p>
+
+  <h3 class="section-title">AUC 结果</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Dataset</th><th>Index</th><th>RPCASSM</th><th>最优竞争者</th><th>排名</th></tr></thead>
+      <tbody>
+        <tr><td>NUDT-SIRST</td><td>AUC_FPR=0.5</td><td><strong>0.9340</strong></td><td>LSDSSMs: 0.9196</td><td>第 1</td></tr>
+        <tr><td>NUDT-SIRST</td><td>AUC_FPR=1.0</td><td><strong>0.9529</strong></td><td>LSDSSMs: 0.9432</td><td>第 1</td></tr>
+        <tr><td>IRSTD-1K</td><td>AUC_FPR=0.5</td><td>0.5371</td><td>MSHNet: <strong>0.5683</strong></td><td>第 2</td></tr>
+        <tr><td>IRSTD-1K</td><td>AUC_FPR=1.0</td><td><strong>0.6916</strong></td><td>MSHNet: 0.6872</td><td>第 1</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 8：不同假警率区间下的 ROC 曲线下面积（AUC）。</em></p>
+
+  <div class="callout"><strong>解读</strong>：在 NUDT-SIRST 上，RPCASSM 的两项 AUC 指标均为最优。在 IRSTD-1K 上，RPCASSM 在 AUC_FPR=1.0 上排名第一，但在 AUC_FPR=0.5 上排名第二（0.5371 vs MSHNet 的 0.5683），这是 RPCASSM 唯一明显落后于某个对比方法的指标。</div>
+
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/PCASSM.VISIMG.drawio.webp" alt="可视化检测结果对比" loading="lazy">
+    <div class="cap">图 6：可视化检测结果对比。展示了 RPCASSM 与其他代表性方法在多组红外场景下的检测输出，RPCASSM 能更准确地定位小目标并有效抑制背景杂波（来源：RPCASSM, Fig.6）</div>
+  </div>
+
+  <h3 class="section-title">失败案例与局限</h3>
+
+  <ol>
+    <li><strong>BSSM 移除后 Fa 恶化 127%</strong>：去掉 BSSM 后 Fa 从 2.22 上升至 5.05（增幅 127%），mIoU 下降 2.31 个百分点。这说明 RPCASSM 的背景抑制能力高度依赖 BSSM 模块</li>
+
+    <li><strong>IRSTD-1K AUC_FPR=0.5 不如 MSHNet</strong>：在极低假警率区间，RPCASSM 的 AUC 为 0.5371，落后于 MSHNet 的 0.5683，差距达 5.5%</li>
+
+    <li><strong>代码未开源</strong>：论文摘要中承诺"Our code will be made public at https://github.com/PepperCS/RPCASSM"，但截至撰写时该仓库仅有 README 文件，未包含实际代码</li>
+
+    <li><strong>仅在两个数据集上验证</strong>：实验仅覆盖 NUDT-SIRST 和 IRSTD-1K 两个基准数据集。缺少对不同传感器类型、不同气候条件、不同时序数据的测试</li>
+
+    <li><strong>推理速度未报告</strong>：论文未提供任何推理速度指标（FPS、延迟、吞吐量）</li>
+
+    <li><strong>FLOPs 数据缺失</strong>：Table 2 的 caption 明确列出"Flops(G)"作为评估指标，但实际表格中未包含该列</li>
+  </ol>
+
+</div>
+
+<!-- ============================================================
+  Part 7: 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发</div>
+
+  <h3 class="section-title">论文结论</h3>
+
+  RPCASSM 的核心贡献在于首次从红外图像的空间域异质性出发，设计了基于 RPCA 范式的双分支状态空间模型。
+
+  <ul>
+    <li><strong>架构层面</strong>：针对主流 VSSM 与 ISTD 任务之间的三重架构失配，RPCASSM 提出了两条互补的解决路径。BSSM/SPCM 通过空间轴投影和双向 SSM 建模背景的全局低秩结构；TSSM/DPCM 通过密度聚类定位候选区域、可变形偏移贴合目标边界、分区差异化处理将 SSM 算力集中到目标区域</li>
+
+    <li><strong>性能层面</strong>：以仅 0.45M 参数在 NUDT-SIRST 上达到 mIoU 95.98%、Pd 98.62%、Fa 2.22×10⁻⁶，在 IRSTD-1K 上达到 mIoU 68.44%、Pd 92.44%、Fa 22.31×10⁻⁶，四项指标在两个基准上均取得最优</li>
+
+    <li><strong>方法论层面</strong>：验证了"将物理先验作为网络架构的归纳偏置而非仅作为正则化项"这一设计哲学的有效性</li>
+  </ul>
+
+  <h3 class="section-title">局限性分析</h3>
+
+  <strong>局限 1：代码未开源</strong>
+
+  <div class="info-box">
+    <h3>为什么会</h3>
+    论文 README 声明"接收后一个月内公开实验代码"，但截至 2026-06-18 已超过该时限，仓库仍仅有 README 文件。最可能的原因是工程整理未完成——研究代码通常包含大量硬编码路径、临时调试脚本、未文档化的依赖版本锁定等，清理到可复现状态需要投入数周甚至数月的额外工作量。
+
+    <h3>需要什么</h3>
+    作者需要投入专门时间进行代码清理、编写安装和使用文档、提供预训练权重和推理脚本、明确标注所有依赖版本。社区也可以主动联系作者询问进展。
+  </div>
+
+  <strong>局限 2：仅两个数据集验证</strong>
+
+  <div class="info-box">
+    <h3>为什么会</h3>
+    ISTD 领域的高质量标注数据集极度稀缺。NUDT-SIRST 和 IRSTD-1K 是目前使用最广泛的两个基准，其他数据集要么规模过小、要么标注质量参差不齐、要么获取受限。
+
+    <h3>需要什么</h3>
+    更全面的评估应覆盖不同传感器类型（制冷型 vs 非制冷型焦平面阵列）、不同气象条件（晴天、薄雾、雨雾、沙尘）、不同背景类型（天空、海面、地面复杂背景、城市环境）以及更大规模的数据集。
+  </div>
+
+  <strong>局限 3：推理速度未报告</strong>
+
+  <div class="info-box">
+    <h3>为什么会</h3>
+    论文的评估重心完全放在精度指标上，未涉及任何效率指标。这可能反映了作者的研究定位——本文的目标是探索 ISTD 精度的上限，而非面向实时部署的工程优化。
+
+    <h3>需要什么</h3>
+    至少应报告单张图片推理延迟（ms）、吞吐量（FPS）、GPU 显存占用峰值。理想情况下还应在嵌入式平台（如 Jetson Orin）上测试部署可行性。
+  </div>
+
+  <h3 class="section-title">具体可操作的启发</h3>
+
+  <strong>启发 1：RPCA 先验在视觉任务中的普适性</strong>
+
+  <div class="callout"><strong>具体场景</strong>：任何具有"低秩背景 + 稀疏前景"物理特性的视觉任务。除了 ISTD，还包括医学影像中的病灶检测、遥感图像中的变化检测、视频监控中的前景分割、工业质检中的缺陷检测等。</div>
+
+  <strong>为什么有效</strong>：RPCA 提供了一个强归纳偏置，将问题的解空间从任意矩阵约束到低秩+稀疏的子空间中。这意味着网络不需要从零学习"什么是背景、什么是前景"，而是只需要学习"如何更好地执行这个已知结构的分解"。这种先验大幅减少了所需的学习容量，解释了为什么 RPCASSM 仅用 0.45M 参数就能超越 50M 参数的 UIU-Net。
+
+  <strong>迁移示例</strong>：在医学图像肿瘤检测中，可以将 RPCANet/RPCASSM 的深度展开框架直接复用。正常组织在空间上高度相关（低秩），肿瘤区域是孤立的异常信号（稀疏）。BSSM 的全局低秩建模可以帮助抑制正常组织的纹理干扰，TSSM 的聚焦式处理可以精确勾勒肿瘤边界。
+
+  <strong>启发 2：分区差异化处理的计算效率思想</strong>
+
+  <div class="callout"><strong>具体场景</strong>：目标区域小但重要的检测/分割任务，包括小目标检测、异常检测、注意力机制设计、以及任何需要在高分辨率下处理但感兴趣区域仅占画面一小部分的任务。</div>
+
+  <strong>为什么有效</strong>：DPCM 的核心思想是"不是所有像素都值得同等对待"。通过低成本的预筛选（密度图聚类 + 自适应阈值）快速定位候选区域，然后对候选区域启用高精度处理（CSM+SSM），对其余区域使用低成本处理（Linear）。这种"先粗筛再精修"的策略将有限的计算资源集中到最有价值的区域，在不增加总计算量的前提下提升了关键区域的建模质量。
+
+  <strong>启发 3：渐进式深层监督在多阶段架构中的稳定性</strong>
+
+  <div class="callout"><strong>具体场景</strong>：任何迭代式或多阶段的网络架构，包括级联检测器（Cascade R-CNN）、迭代超分辨率（Iterative Super-Resolution）、多阶段生成模型（Progressive GAN）、深度展开优化网络（ADMM-Net、ISTA-Net）。</div>
+
+  <strong>为什么有效</strong>：$\alpha=0.01$ 的极低权重揭示了一个重要设计原则：<strong>中间阶段的监督应该是"软引导"而非"硬约束"</strong>。过强的中间监督（$\alpha \geq 0.03$）会导致 Fa 恶化 200%，因为中间阶段被迫追求与其当前完善程度不匹配的精度，引入了噪声梯度。$\alpha=0.01$ 恰好处于"足以防止梯度消失、又不至于干扰最终优化"的甜蜜点。
+
+  <strong>启发 4：复现注意事项</strong>
+
+  <ul>
+    <li><strong>学习率调度策略未完整披露</strong>：论文仅提及"learning rate decay schedule was implemented"，但未说明具体是 step decay、cosine annealing 还是 exponential decay。建议尝试 cosine annealing with warmup</li>
+    <li><strong>$\Delta T$ 的具体值未给出</strong>：DPCM 的自适应阈值公式 $T_s = T_{init} - \gamma \cdot \Delta T$ 中，$T_{init}=0.7$ 已知，但 $\Delta T$ 缺失。建议通过消融实验在 {0.05, 0.1, 0.15, 0.2} 范围内搜索</li>
+    <li><strong>KAN 的配置细节不明</strong>：BSSM 中使用 KAN 替代 Linear 生成 SSM 参数，但 KAN 的具体配置（网格点数、样条阶数、隐藏层宽度）未披露。建议参考 pykan 库的默认配置</li>
+    <li><strong>SSM 变体选择</strong>：论文使用的是 Mamba 的选择性 SSM（S6），建议优先参考 VMamba 的开源实现，因为 RPCASSM 的 TSSM 直接使用了 VMamba 的 CSM 模块</li>
+  </ul>
+
+  <strong>启发 5：在 ISTD 研究图谱中的位置</strong>
+
+  <div class="def-box">
+    <h3>上游传承</h3>
+    经典 RPCA（IPI Model, Gao 2013）→ RPCANet（RPCA + CNN 深度展开, Wu WACV 2024）→ LSDSSMs（RPCA + 单向 SSM, Lu TGRS 2025）→ RPCASSM（RPCA + 双分支 SSM, 2026）。这条线的演进逻辑是：保持 RPCA 分解范式不变，持续升级子网络的表达能力（CNN → 单向 SSM → 双分支 SSM），同时不断深化 RPCA 与网络架构的集成程度（正则化 → 架构灵感 → 迭代=stage）。
+  </div>
+
+  <h3 class="section-title">延伸阅读</h3>
+
+  <ol>
+    <li><strong>RPCANet: Deep Unfolding RPCA Based Infrared Small Target Detection</strong> (Wu et al., WACV 2024) — RPCA 深度展开范式的开创性工作。如果你想理解 RPCASSM 的"骨架"从何而来，这是必读文献。代码已开源（fengyiwu98/RPCANet），适合动手实践</li>
+
+    <li><strong>LSDSSMs: Infrared Small Target Detection Network Based on Low-Rank Sparse Decomposition State Space Models</strong> (Lu et al., TGRS 2025) — RPCASSM 同组的前序工作，也是最直接的 baseline。读完你会理解 RPCASSM 为什么要从单向 SSM 升级到双分支设计</li>
+
+    <li><strong>VMamba: Visual State Space Model</strong> (Liu et al., NeurIPS 2024) — 定义了"Visual SSM"标准范式的工作。RPCASSM 既借用了它的 CSM 模块，又批判了它的整体架构哲学</li>
+
+    <li><strong>Mamba: Linear-Time Sequence Modeling with Selective State Spaces</strong> (Gu & Dao, COLM 2024) — 整个 SSM 视觉应用浪潮的理论基石。如果你对 SSM 还不熟悉，这是最好的入门文献</li>
+
+    <li><strong>DRPCA-Net: Dynamic RPCA with Residual Grouping for Infrared Small Target Detection</strong> (Xiong et al., TGRS 2025) — 另一条改进 RPCANet 的技术路线，侧重于动态参数生成而非扫描机制设计。代码已开源（GrokCV/DRPCA-Net）</li>
+  </ol>
+
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/PCASSM.VIS3D.drawio.webp" alt="3D 显著性图对比" loading="lazy">
+    <div class="cap">图 7：3D 显著性图对比。以三维视角展示各方法对目标的响应强度，RPCASSM 在目标区域产生更尖锐的峰值响应，同时背景区域响应更低（来源：RPCASSM, Fig.7）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/rpcassm-2026/PCASSM.VISProcedure.drawio.webp" alt="阶段热力图" loading="lazy">
+    <div class="cap">图 8：阶段热力图。展示 RPCASSM 在不同迭代阶段中特征图的演化过程，随着阶段推进，目标信号逐步增强而背景噪声被持续抑制（来源：RPCASSM, Fig.8）</div>
+  </div>
+
 </div>
