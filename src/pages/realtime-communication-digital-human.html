@@ -1,0 +1,110 @@
+---
+title: "实时通信（五）：数字人应用，ASR/LLM/TTS/Avatar 如何接进 RTC"
+description: "面向实时数字人的 RTC 工程讲解：WebRTC 如何与 ASR、LLM、TTS、Avatar、打断、低延迟播放、口型同步和生产监控串联。"
+date: 2026-06-11T17:54:18
+created_at: 2026-06-11T17:54:18
+updated_at: 2026-06-12T10:11:16
+tags: [数字人, RTC, WebRTC, ASR, LLM, TTS, Avatar, LiveKit]
+categories: [编程]
+subcategory: "实时通信"
+sub_id: 50
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">ASR</span><span class="label">听懂用户</span></div>
+  <div class="stat"><span class="num b">LLM</span><span class="label g">生成回复</span></div>
+  <div class="stat"><span class="num">TTS</span><span class="label">合成语音</span></div>
+  <div class="stat"><span class="num b">Avatar</span><span class="label g">驱动形象</span></div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="realtime-communication-server-architecture.html"><span class="nav-label">上一篇</span><span class="nav-title">服务端架构</span></a>
+  <a class="nav-card current" href="realtime-communication-digital-human.html"><span class="nav-label">第 5 篇</span><span class="nav-title">数字人应用</span></a>
+  <a class="nav-card" href="realtime-communication-hub.html"><span class="nav-label">系列目录</span><span class="nav-title">实时通信工程总览</span></a>
+</div>
+
+<div class="def-box">
+  <h3>本篇先解决哪些词</h3>
+  <p><strong>RTC</strong> 是承载实时音视频的通信底座；<strong>SFU</strong> 是负责转发媒体流的实时通信服务器；<strong>ASR</strong> 把用户语音转成文字；<strong>LLM</strong> 根据上下文生成回复；<strong>TTS</strong> 把文字合成语音；<strong>Avatar</strong> 生成或驱动数字人形象；<strong>VAD</strong> 判断用户是否正在说话；<strong>barge-in</strong> 是用户插话打断系统回复。数字人实时通信就是把这些模块接进 RTC 的低延迟闭环。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">数字人不是视频生成模型，而是实时闭环系统</div>
+
+一个能对话的数字人系统，至少包含用户上行音频、ASR、LLM、TTS、Avatar、下行音视频播放和打断控制。<strong>ASR</strong> 是自动语音识别，把声音转文字；<strong>LLM</strong> 是大语言模型，负责理解上下文并生成回复；<strong>TTS</strong> 是语音合成，把文字变成声音；<strong>Avatar</strong> 是数字人形象生成或驱动模块。RTC 在这里不是外围模块，而是整条体验链路的时钟：用户什么时候说话、系统什么时候开始听、什么时候出首 token、什么时候出首音频、什么时候出首帧，都会反映到互动感上。
+
+{{< mermaid >}}
+sequenceDiagram
+    participant U as User Browser
+    participant R as RTC/SFU
+    participant A as ASR
+    participant L as LLM
+    participant T as TTS
+    participant V as Avatar
+    U->>R: WebRTC uplink audio
+    R->>A: audio chunks
+    A->>L: partial/final transcript
+    L->>T: streaming tokens
+    T->>V: audio chunks
+    V->>R: video frames + audio
+    R->>U: WebRTC downlink media
+    U-->>R: interrupt / barge-in
+{{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">延迟预算要分段算</div>
+
+数字人延迟不是一个总数字。更有用的拆法是：<strong>VAD</strong>（Voice Activity Detection，语音活动检测）检测到用户停顿的时间、ASR partial 首字时间、LLM 首 token、TTS 首音频 chunk、Avatar 首视频帧、编码和 WebRTC 播放缓冲。这里的 <strong>token</strong> 是大模型生成文本的基本片段，<strong>chunk</strong> 是流式系统分批吐出的音频或文本小块，<strong>TTFA</strong> 是 Time To First Audio，表示从请求 TTS 到听到第一段音频的时间。只有逐段记录，才知道该优化模型还是优化 RTC。
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>阶段</th><th>关键指标</th><th>优化方向</th></tr></thead>
+<tbody>
+<tr><td>上行 RTC</td><td>audio RTT、uplink loss、jitter buffer</td><td>音频优先、TURN 兜底、近端 SFU</td></tr>
+<tr><td>ASR</td><td>partial latency、final latency</td><td>流式识别、端点检测、热词</td></tr>
+<tr><td>LLM</td><td>first token、tokens/s</td><td>小模型路由、缓存、流式输出</td></tr>
+<tr><td>TTS</td><td>TTFA、chunk cadence</td><td>流式 TTS、短句切分、音色缓存</td></tr>
+<tr><td>Avatar</td><td>first frame、FPS、A/V drift</td><td>轻量模型、滑窗、GPU 队列隔离</td></tr>
+<tr><td>下行 RTC</td><td>downlink bitrate、freeze、render delay</td><td>分层编码、降级策略、jitter buffer 控制</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">打断是实时数字人的分水岭</div>
+
+用户在数字人说话时插话，系统必须快速停止旧回复、清空或淡出 TTS/Avatar 队列、把新上行音频送入 ASR，并确保下行媒体不会继续播放旧内容。这叫 barge-in 或 interrupt。没有打断，数字人更像播片；有打断，才像对话。
+
+<div class="admonition warning">
+  <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>打断不是只停 LLM</div>
+  <div class="admonition-content"><p>如果只取消 LLM 请求，但 TTS 缓冲、Avatar 帧队列、SFU 下行 buffer 还在继续，用户仍会听到旧话。打断必须跨 ASR、LLM、TTS、Avatar 和 RTC 播放队列统一传播。</p></div>
+</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">工程落地：先保声音，再保嘴型，最后保画质</div>
+
+数字人弱网降级要有优先级。声音是对话的最低可用层，必须优先保证；嘴型同步决定“像不像在说话”；画质、分辨率、背景和身体动作可以后降级。生产系统常见策略包括只降视频不降音频、Avatar 降 FPS、低清层订阅、暂停复杂背景、切纯语音模式。
+
+<div class="callout"><strong>最终目标</strong>：实时数字人的 RTC 设计，不是追求永远高清，而是在弱网、模型抖动和并发压力下，仍然让用户觉得“它听见了、回应了、没有失控”。</div>
+</div>
+
+<div class="sources">
+  <h2>Sources</h2>
+  <ol>
+    <li data-cite-key="WebRTC-Official">WebRTC project. <a href="https://webrtc.org/" target="_blank">Real-time communication for the web</a>.</li>
+    <li data-cite-key="RFC8445-ICE">RFC 8445. <a href="https://datatracker.ietf.org/doc/html/rfc8445" target="_blank">Interactive Connectivity Establishment (ICE)</a>.</li>
+    <li data-cite-key="RFC8839-JSEP">RFC 8839. <a href="https://datatracker.ietf.org/doc/html/rfc8839" target="_blank">JavaScript Session Establishment Protocol</a>.</li>
+    <li data-cite-key="RFC3550-RTP">RFC 3550. <a href="https://datatracker.ietf.org/doc/html/rfc3550" target="_blank">RTP: A Transport Protocol for Real-Time Applications</a>.</li>
+    <li data-cite-key="RFC3711-SRTP">RFC 3711. <a href="https://datatracker.ietf.org/doc/html/rfc3711" target="_blank">The Secure Real-time Transport Protocol</a>.</li>
+    <li data-cite-key="LiveKit-SFU">LiveKit Docs. <a href="https://docs.livekit.io/reference/internals/livekit-sfu/" target="_blank">LiveKit SFU internals</a>.</li>
+    <li data-cite-key="mediasoup-docs">mediasoup documentation. <a href="https://mediasoup.org/documentation/v3/" target="_blank">mediasoup v3 docs</a>.</li>
+    <li data-cite-key="Janus-docs">Janus WebRTC Server. <a href="https://janus.conf.meetecho.com/docs/" target="_blank">Official documentation</a>.</li>
+  </ol>
+</div>

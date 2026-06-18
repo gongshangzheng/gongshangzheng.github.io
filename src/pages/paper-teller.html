@@ -1,0 +1,226 @@
+---
+title: "数字人论文精读（十六）：Teller，用自回归运动 token 做实时流式肖像动画"
+description: "精读 CVPR 2025 Teller：用 RVQ 离散运动 token、AR Transformer 和 Efficient Temporal Module，把音频驱动肖像动画推进到 200ms chunk 的实时流式生成。"
+date: 2026-06-09T11:25:00
+created_at: 2026-06-09T11:25:00
+updated_at: 2026-06-09T11:58:00
+tags: [数字人, Teller, Streaming, Portrait Animation, 论文精读, Talking Head, Autoregressive]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1150
+mathjax: true
+notify: false
+hero_title: "Teller"
+hero_sub: "CVPR 2025 · Real-Time Streaming Portrait Animation"
+hero_tagline: "把 talking head 的运动先 token 化，再像语言模型一样逐块生成"
+---
+
+<div class="callout"><strong>系列说明</strong>：本文属于 AI / 数字人系列论文精读。Teller 讨论的不是“离线生成一段好看的 talking head”，而是更苛刻的交互式问题：语音流不断进来，数字人视频必须边听边动、低延迟输出。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">问题意识：为什么 talking head 需要自回归运动生成？</div>
+
+  <p>Teller 的目标是实时流式 audio-driven portrait animation。论文把挑战拆成两层：第一，扩散式 talking-head 模型虽然能生成高质量视频，但逐帧或多步去噪推理太慢；第二，许多快模型能动嘴和转头，却容易忽略脖子、耳环、衣领等细小部位与语音节奏之间的自然联动 #Zhen-et-al.-2025#。</p>
+
+  <p>论文给出的核心速度对比很直接：生成 1 秒 25 fps 视频时，Hallo 需要 20.93s，而 Teller 需要 0.92s；在 4 张 NVIDIA H800 的设置下，Teller 以 200ms 音频块为条件，报告达到最高 25 FPS 的实时流式性能 #Zhen-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/teller-2025/teller-teaser-framework.webp" alt="Teller teaser framework and latency breakdown" loading="lazy">
+    <div class="cap">图 1：Teller 的两阶段框架与延迟拆解。论文报告 200ms audio chunk 下 Whisper 编码 7ms、Stage 1 106ms、Stage 2 71ms，总推理时间低于 200ms（来源：Zhen et al., 2025, Fig.1）。</div>
+  </div>
+
+  <div class="callout"><strong>一句话概括</strong>：Teller 把人脸运动从连续隐式关键点空间压缩成离散 motion tokens，再用 AR Transformer 按音频块预测未来运动，最后用 ETM 补齐身体小部位的时序细节。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">核心表征：从连续 motion latent 到离散 motion token</div>
+
+  <h3 class="section-title">Residual VQ：把运动变成可自回归预测的符号</h3>
+
+  <p>Teller 仍然站在 implicit-keypoint-based animation 的基础上：先从隐式关键点模型中抽取 facial motion latent，再用 Residual Vector Quantization 把连续运动压成离散 token。论文最终采用 4 帧作为一个 motion unit，每帧包含 25 个三维 latent keypoints，即 \(4\times25\times3\) 的运动信息，并压缩为 32 个 RVQ motion tokens #Zhen-et-al.-2025#。</p>
+
+  <div class="def-box">
+    <h3>Motion token</h3>
+    <p>这里的 token 不是文本 token，而是被 RVQ 离散化的人脸运动片段。它把连续关键点运动变成有限码本索引，使音频到运动可以被写成 next-token prediction 问题。</p>
+  </div>
+
+  <p>论文把 RVQ 的训练目标写成重建误差与 commitment loss 的组合。直观说，encoder 要把连续运动映射到码本附近，decoder 要能从量化后的 token 还原运动，commitment loss 则避免编码结果在码本之间飘动 #Zhen-et-al.-2025#。</p>
+
+$$\mathcal{L}_{vq}=\sum_{t=1}^{T}\left[\|m-\mathrm{FFN}_{dec}(z_t+\mathrm{sg}[\hat z_t-z_t])\|_2^2+\|z_t-\mathrm{sg}[\hat z_t]\|_2^2\right]$$
+
+  <h3 class="section-title">AR Transformer：用音频条件预测运动 token</h3>
+
+  <p>有了离散 token，Teller 把运动生成改写成条件自回归建模：给定音频条件 \(c\) 和过去的 motion tokens，预测下一个 token 的分布 \(P(t_i\mid c,t_{&lt;i})\)。音频由 Whisper encoder 提取；为了满足实时流式，音频和视频都按 200ms 分块处理，每个音频块变成 \([10\times512]\) embedding，每个视频块对应 32 个 RVQ tokens #Zhen-et-al.-2025#。</p>
+
+  <p>为了加速 token 生成，Teller 不是一次预测一个 token，而是让输入由 token pair 构成，并用两个 LM head 预测一对输出 token。论文还加入两个 head loss 的平衡正则项，使两个 head 的学习不要明显失衡 #Zhen-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/teller-2025/teller-overall-framework.webp" alt="Teller overall framework" loading="lazy">
+    <div class="cap">图 2：Teller 总体框架。Stage 1 生成离散 motion tokens 并由 AR Transformer 预测；Stage 2 使用 Efficient Temporal Module 对细小身体和饰品运动做时序细化（来源：Zhen et al., 2025, Fig.2）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">Training Pipeline：先学运动 token，再学细节时序修复</div>
+
+  <h3 class="section-title">Stage 1：FMLG 训练</h3>
+
+  <p>Stage 1 的任务是学习 Facial Motion Latent Generation。训练数据包含 AV Speech 过滤后的 662 小时和 VFHQ 过滤后的 2 小时用于预训练，另有 32 小时互联网 talking-head 视频用于 supervised fine-tuning；验证与对比使用 HDTF 过滤后的 0.83 小时、RAVDESS 过滤后的 0.55 小时，以及 0.49 小时互联网数据 #Zhen-et-al.-2025#。</p>
+
+  <p>实现细节披露较完整：预训练采用类似 Qwen1.5-4B 的架构但随机初始化，在 8×8 NVIDIA A800 机器上训练，batch size 1024，AdamW 优化器，cosine learning rate 从 \(10^{-4}\) 衰减到 \(10^{-6}\)，训练 40 epochs；SFT 仍使用 8×8 A800，batch size 512，学习率从 \(10^{-5}\) 到 \(10^{-6}\)，训练 10 epochs #Zhen-et-al.-2025#。</p>
+
+  <h3 class="section-title">Stage 2：ETM 训练</h3>
+
+  <p>Stage 1 解决“实时生成脸部运动”的主问题，但论文认为 neck muscles、earrings 等细节仍会显得僵硬。Teller 因此引入 Efficient Temporal Module：先用 VAE encoder 编码视频帧，再用 3D U-Net 抽取时空特征，把特征 reshape 到沿时间维 self-attention 的形态，最后通过 residual connection 合回空间特征 #Zhen-et-al.-2025#。</p>
+
+  <p>ETM 训练时使用真实序列的前 5 帧和后续 5 帧的重建结果，既做整体重建损失，也做 region-specific mask 重建损失。mask 由 MediaPipe landmark 生成，重点覆盖脖子、耳环等与真实感强相关的小区域 #Zhen-et-al.-2025#。</p>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>项目</th><th>披露状态</th><th>论文信息</th><th>影响</th></tr></thead>
+      <tbody>
+        <tr><td>预训练数据</td><td>已披露</td><td>AV Speech 662h + VFHQ 2h</td><td>为音频-视觉运动建模提供大规模基础</td></tr>
+        <tr><td>SFT 数据</td><td>已披露</td><td>互联网 talking-head 视频 32h</td><td>适配目标 talking-head 任务</td></tr>
+        <tr><td>Stage 1 预训练硬件</td><td>已披露</td><td>8×8 NVIDIA A800</td><td>训练成本非常高</td></tr>
+        <tr><td>Stage 1 batch / optimizer</td><td>已披露</td><td>batch 1024，AdamW</td><td>可复现性较好</td></tr>
+        <tr><td>Stage 1 学习率</td><td>已披露</td><td>1e-4 → 1e-6，40 epochs</td><td>预训练 schedule 明确</td></tr>
+        <tr><td>Stage 1 SFT</td><td>已披露</td><td>batch 512，1e-5 → 1e-6，10 epochs</td><td>微调 schedule 明确</td></tr>
+        <tr><td>Stage 2</td><td>已披露</td><td>8×8 A800，batch 1024，1e-4 → 1e-6，30 epochs</td><td>ETM 训练配置明确</td></tr>
+        <tr><td>推理硬件</td><td>已披露</td><td>4 NVIDIA H800</td><td>实时指标依赖高端多卡环境</td></tr>
+        <tr><td>官方代码</td><td>未识别</td><td>CVF 元数据未给出代码仓库</td><td>源码级复现仍需等待公开实现</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">Inference Pipeline：200ms chunk 下的两阶段流式输出</div>
+
+  <p>Teller 的普通推理链路可以拆成四步。第一步，Whisper encoder 将当前 200ms 音频块编码为 \([10\times512]\) audio embedding。第二步，AR Transformer 根据历史 motion tokens 和当前音频条件预测新的 RVQ motion tokens。第三步，motion decoder 把 tokens 还原为连续 motion latent，并驱动隐式关键点动画模型生成初步视频帧。第四步，ETM 对连续帧进行时序细化，修复脖子、耳环和细小身体运动 #Zhen-et-al.-2025#。</p>
+
+  {{< mermaid >}}
+flowchart TD
+  A["200ms audio chunk"] --> B["Whisper encoder: 10×512 embedding"]
+  B --> C["AR Transformer"]
+  D["previous motion tokens"] --> C
+  C --> E["RVQ motion tokens"]
+  E --> F["motion decoder"]
+  F --> G["implicit-keypoint animation"]
+  G --> H["Stage 1 frames"]
+  H --> I["ETM temporal refinement"]
+  I --> J["streaming portrait video"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">Streaming Inference Pipeline</h3>
+
+  <p>流式场景的关键是每个 chunk 的处理时间必须低于 chunk 自身长度。论文报告在 4 NVIDIA H800 上，200ms 音频输入的 Whisper 编码平均 7ms；Stage 1 平均 106ms，其中 AR Transformer 每 16 tokens 平均 6ms，motion decoder 平均 10ms；Stage 2 平均 71ms，其中 VAE encoder/decoder 平均 25ms，Temporal Module 平均 21ms。三部分相加低于 200ms，因此系统可以按 200ms 粒度持续输出 #Zhen-et-al.-2025#。</p>
+
+  <div class="callout"><strong>工程解释</strong>：Teller 的实时性不是靠“少生成几帧”，而是把扩散模型的多步采样换成一次 token 预测 + 一次时序修复。代价是模型必须预先把人脸运动压进足够好的离散码本，并且推理指标绑定高端 GPU 环境。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">实验：速度领先，但质量不是单指标碾压</div>
+
+  <p>HDTF 表格中，Teller 的 FVD 为 173.463，低于 Hallo 的 174.191、SadTalker 的 233.673、EchoMimic 的 290.190 和 AniPortrait 的 235.099；Sync-C 为 7.696、Sync-D 为 7.536，也优于表中其它生成方法；但 FID 21.352 略差于 Hallo 的 20.639 #Zhen-et-al.-2025#。</p>
+
+  <p>RAVDESS 表格中，Teller 报告 FID 20.352、FVD 429.288、Sync-C 4.496、Sync-D 7.936。它在 FVD 与 Sync-C 上领先，FID 略差于 Hallo 的 19.826，Sync-D 则略差于 SadTalker 的 7.621 #Zhen-et-al.-2025#。这说明 Teller 的优势更集中在“速度 + 时序一致性 + 同步综合表现”，而不是每个静态质量指标都第一。</p>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>HDTF</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th><th>Time</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>25.257</td><td>233.673</td><td>6.297</td><td>8.263</td><td>26.08s</td></tr>
+        <tr><td>EchoMimic</td><td>25.678</td><td>290.190</td><td>6.746</td><td>8.107</td><td>37.77s</td></tr>
+        <tr><td>AniPortrait</td><td>28.161</td><td>235.099</td><td>4.547</td><td>10.657</td><td>29.36s</td></tr>
+        <tr><td>Hallo</td><td><strong>20.639</strong></td><td>174.191</td><td>7.497</td><td>7.741</td><td>20.93s</td></tr>
+        <tr><td>Teller</td><td>21.352</td><td><strong>173.463</strong></td><td><strong>7.696</strong></td><td><strong>7.536</strong></td><td><strong>0.92s</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>RAVDESS</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>32.343</td><td>487.924</td><td>4.304</td><td><strong>7.621</strong></td></tr>
+        <tr><td>EchoMimic</td><td>21.058</td><td>668.675</td><td>3.292</td><td>9.096</td></tr>
+        <tr><td>AniPortrait</td><td>30.696</td><td>476.197</td><td>2.321</td><td>11.542</td></tr>
+        <tr><td>Hallo</td><td><strong>19.826</strong></td><td>537.478</td><td>4.062</td><td>8.552</td></tr>
+        <tr><td>Teller</td><td>20.352</td><td><strong>429.288</strong></td><td><strong>4.496</strong></td><td>7.936</td></tr>
+      </tbody>
+    </table>
+    <div class="cap">表 1：HDTF 与 RAVDESS 定量结果。Teller 在 1 秒 25fps 视频生成时间上为 0.92s，显著快于扩散式对比方法（来源：Zhen et al., 2025, Table 1-2）。</div>
+  </div>
+
+  <h3 class="section-title">消融：Whisper 条件和多头预测的取舍</h3>
+
+  <p>音频条件编码器消融显示，Whisper 的 Sync-C / Sync-D 为 7.696 / 7.536，而 funcodec 为 4.286 / 10.373。论文据此认为 ASR 模型捕捉语音细节的能力更适合精确唇形同步 #Zhen-et-al.-2025#。</p>
+
+  <p>单头与多头架构消融更微妙：single-head 的 FID、FVD、Sync-C、Sync-D 分别为 22.110、172.553、7.790、7.474；multi-head 为 21.352、173.463、7.696、7.536。single-head 同步略好，但 multi-head 提供更强实时潜力，论文最终选择多头 token-pair 预测 #Zhen-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/teller-2025/teller-module-ablation.webp" alt="Teller stage ablation" loading="lazy">
+    <div class="cap">图 3：Stage ablation。Stage 2 的 Efficient Temporal Module 主要修复脖子、耳环等小部位的时序运动（来源：Zhen et al., 2025, Fig.10）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/teller-2025/teller-vq-ablation.webp" alt="Teller RVQ token frame tradeoff" loading="lazy">
+    <div class="cap">图 4：RVQ token/frame tradeoff。论文选择 4 frames / 32 tokens 作为质量和速度折中（来源：Zhen et al., 2025, Fig.11）。</div>
+  </div>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>Audio encoder</th><th>Sync-C↑</th><th>Sync-D↓</th></tr></thead>
+      <tbody>
+        <tr><td>funcodec</td><td>4.286</td><td>10.373</td></tr>
+        <tr><td>Whisper</td><td><strong>7.696</strong></td><td><strong>7.536</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>Architecture</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th></tr></thead>
+      <tbody>
+        <tr><td>Single-Head</td><td>22.110</td><td><strong>172.553</strong></td><td><strong>7.790</strong></td><td><strong>7.474</strong></td></tr>
+        <tr><td>Multi-Head</td><td><strong>21.352</strong></td><td>173.463</td><td>7.696</td><td>7.536</td></tr>
+      </tbody>
+    </table>
+    <div class="cap">表 2：音频编码器与单头/多头消融。Whisper 明显优于 funcodec；single-head 同步略好，multi-head 更利于实时生成（来源：Zhen et al., 2025, Table 3-4）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">局限与启发：实时数字人的 token 化路线</div>
+
+  <p>Teller 值得放进数字人系列，是因为它把 talking head 从“视频生成模型”重新表述为“音频条件下的运动 token 流生成”。这个改写很重要：一旦运动被离散化，系统就可以借鉴语言模型的自回归预测、chunk streaming、top-k sampling 和多头并行预测；视频生成不再每次都从像素或 latent diffusion 开始 #Zhen-et-al.-2025#。</p>
+
+  <p>局限也很清楚。第一，CVF 页面和论文没有给出官方代码仓库，源码级实现仍需等待公开。第二，25 FPS 与低于 200ms 的 chunk 延迟是在 4×H800 推理设置下报告的，消费级显卡、端侧设备或云端多租户服务都需要重新测量。第三，ETM 虽然修复小部位运动，但依赖额外二阶段模型和 MediaPipe 区域 mask，工程链路比单纯的隐式关键点驱动更复杂 #Zhen-et-al.-2025#。</p>
+
+  <div class="review-box">
+    <h3>复习速查</h3>
+    <ul>
+      <li><strong>核心路线</strong>：隐式关键点 motion latent → RVQ motion tokens → AR Transformer → ETM。</li>
+      <li><strong>实时关键</strong>：200ms chunk，Whisper 7ms + Stage 1 106ms + Stage 2 71ms，低于 chunk 时长。</li>
+      <li><strong>代表数字</strong>：Hallo 20.93s vs Teller 0.92s for one second video generation；最高 25 FPS。</li>
+      <li><strong>主要风险</strong>：多卡 H800 环境、无公开源码、ETM 增加工程复杂度。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ol>
+    <li data-cite-key="Zhen-et-al.-2025">Zhen, D., Yin, S., Qin, S., Yi, H., Zhang, Z., Liu, S., Qi, G., & Tao, M. (2025). <em>Teller: Real-Time Streaming Audio-Driven Portrait Animation with Autoregressive Motion Generation</em>. Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 21075-21085. <a href="https://openaccess.thecvf.com/content/CVPR2025/html/Zhen_Teller_Real-Time_Streaming_Audio-Driven_Portrait_Animation_with_Autoregressive_Motion_Generation_CVPR_2025_paper.html" target="_blank">CVF HTML</a> · <a href="https://openaccess.thecvf.com/content/CVPR2025/papers/Zhen_Teller_Real-Time_Streaming_Audio-Driven_Portrait_Animation_with_Autoregressive_Motion_Generation_CVPR_2025_paper.pdf" target="_blank">PDF</a></li>
+    <li data-cite-key="Teller-Supplement">Zhen et al. (2025). <em>Teller Supplementary Material</em>. CVF supplemental zip, including supplementary PDF and demo videos. <a href="https://openaccess.thecvf.com/content/CVPR2025/supplemental/Zhen_Teller_Real-Time_Streaming_CVPR_2025_supplemental.zip" target="_blank">Supplemental</a></li>
+    <li data-cite-key="Guo-et-al.-2024">Guo, J. et al. (2024). <em>LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control</em>. arXiv:2407.03168. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv</a></li>
+    <li data-cite-key="Xu-et-al.-2024-Hallo">Xu, M. et al. (2024). <em>Hallo: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation</em>. arXiv:2406.08801. <a href="https://arxiv.org/abs/2406.08801" target="_blank">arXiv</a></li>
+    <li data-cite-key="Wei-et-al.-2024-AniPortrait">Wei, H. et al. (2024). <em>AniPortrait: Audio-Driven Synthesis of Photorealistic Portrait Animation</em>. arXiv:2403.17694. <a href="https://arxiv.org/abs/2403.17694" target="_blank">arXiv</a></li>
+  </ol>
+</div>

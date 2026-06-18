@@ -1,0 +1,464 @@
+---
+title: "数字人论文精读（八）：DiffSHEG，扩散模型如何同时生成表情与手势"
+description: "DiffSHEG 用 UniEG-Transformer 实现从表情到手势的单向信息流，配合 FOPPAS 任意长采样策略，在 BEAT 和 SHOW 数据集上实现实时、同步、高质量的 co-speech 表情与手势联合生成。"
+date: 2026-06-12T17:00:00
+created_at: 2026-06-12T17:00:00
+updated_at: 2026-06-12T17:00:00
+tags: [数字人, DiffSHEG, Co-speech Gesture, 扩散模型, 论文精读]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1070
+mathjax: true
+notify: true
+hero_title: "DiffSHEG"
+hero_sub: "CVPR 2024 · HKUST / IDEA"
+hero_tagline: "UniEG-Transformer：单向表情→手势信息流，让扩散模型同时生成同步的表情与手势"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">31.5 FPS</span><span class="label">实时推理</span></div>
+  <div class="stat"><span class="num b">25 步</span><span class="label g">DDIM 采样</span></div>
+  <div class="stat"><span class="num">UniEG</span><span class="label">统一表情手势生成</span></div>
+  <div class="stat"><span class="num b">FOPPAS</span><span class="label l">任意长序列</span></div>
+</div>
+
+<div class="callout"><strong>系列说明</strong>：本文属于数字人系列论文精读。前面的 SentiAvatar 用 plan-then-infill 拆分语义规划与语音节奏；DiffSHEG 则从另一个角度切入——用扩散模型做 co-speech 表情与手势的联合生成，并通过单向信息流和 outpainting 采样实现实时任意长序列。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：为什么表情和手势要一起生成</div>
+
+  <p>在数字人 co-speech motion generation 领域，表情和手势长期被当作两个独立问题处理。一边是 speech-driven facial animation 的成熟管线——从 VOCA 到 FaceFormer，语音到口型的映射已经相当精准；另一边是 co-speech gesture generation——CaMN、DiffGesture、DiffuseStyleGesture 等扩散模型在生成自然手势上取得了显著进展。但这两个方向彼此独立，结果是：表情对口型，手势跟节奏，但它们的组合往往不自然——一个正在微笑点头的角色，手势却僵硬地垂在两侧。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <p>DiffSHEG（Diffusion-based Speech-driven Holistic Expression and Gesture generation）正是为了解决这个 split 问题。它提出一个核心观察：<strong>表情和手势之间存在天然的不对称依赖关系</strong>。表情可以独立于手势存在——一个人可以只微笑不挥手；但手势往往伴随表情变化——挥手的动作本身就包含了面部和身体姿态的调整。基于这个直觉，DiffSHEG 设计了 uni-directional information flow：表情预测结果单向流入手势生成器，而不是反过来，也不是简单拼接。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-diffsheg-2024/teaser-v3.webp" alt="DiffSHEG teaser" loading="lazy">
+    <div class="cap">图 1：DiffSHEG 是一个统一的 co-speech 表情与手势生成系统，基于扩散模型，通过单向信息流从表情到手势捕捉联合分布（来源：Chen et al., 2024, Fig.1）。</div>
+  </div>
+
+  <div class="callout"><strong>核心 Insight</strong>：DiffSHEG 的关键不是把两个模型拼在一起，而是让表情预测 \( \hat{x}_{0(t)}^E \) 在扩散去噪的每一步都流入手势分支，同时切断手势梯度回传表情分支，确保表情生成不受手势干扰。</div>
+
+  <p>论文的第二大贡献是 <strong>FOPPAS</strong>（Fast Outpainting-based Partial Autoregressive Sampling）。扩散模型通常需要固定长度的输入，但真实场景中语音是 streaming 的、任意长度的。FOPPAS 用 outpainting 而非 train-time autoregressive 来实现任意长序列生成：相邻 clip 之间有重叠帧，上一 clip 的末尾作为下一 clip 的已知部分，通过 outpainting 补齐剩余帧。配合 DDIM 25 步采样，DiffSHEG 在 3090 上达到 <strong>31.5 FPS</strong> 的实时推理速度。#Chen-et-al.-2024-DiffSHEG#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：已有方法为什么做不好联合生成</div>
+
+  <h3 class="section-title">独立生成 vs 联合生成</h3>
+
+  <p>已有 co-speech 方法大致分为两类。第一类专注 gesture generation，代表有 CaMN（LSTM + 多模态条件融合）、DiffGesture（扩散模型）、DiffuseStyleGesture（风格化扩散）、ListenDenoiseAction（LDA，基于 ConvNet 的扩散去噪）。这些方法在 BEAT 数据集上能生成自然手势，但表情生成是事后独立训练的，缺乏联合约束。第二类专注 expression generation，如 FaceFormer、CodeTalker，它们擅长口型对齐，但完全不管手势。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <p>TalkSHOW 和 LS3DCG 是少数同时处理表情和手势的方法，但它们的做法是分别建模再拼接：TalkSHOW 用 encoder-decoder 做表情、VQ-VAE 做手势，两条路径独立；LS3DCG 用共享 speech encoder 但独立 face/body/hand decoder。这种独立建模导致两个问题：一是手势 VQ-VAE 的 codebook 有限，会丢失高频动作细节，导致动作显得"慢"；二是表情和手势之间没有显式交互，联合分布的质量无法保证。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>关键局限</th><th>DiffSHEG 的回应</th></tr></thead>
+      <tbody>
+        <tr><td>独立 gesture</td><td>CaMN, DiffGesture, DSG, LDA</td><td>表情独立生成，联合分布不匹配</td><td>UniEG-Transformer 统一建模</td></tr>
+        <tr><td>独立 expression</td><td>FaceFormer, CodeTalker</td><td>不管手势</td><td>表情作为手势条件流入</td></tr>
+        <tr><td>分别建模</td><td>TalkSHOW, LS3DCG</td><td>VQ-VAE 丢失高频动作；独立路径无交互</td><td>扩散模型保留细节；单向信息流</td></tr>
+        <tr><td>固定长度扩散</td><td>DDPM + Repaint</td><td>推理极慢（0.44 FPS），不可实时</td><td>FOPPAS + DDIM 25 步</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">论文真正定义的问题</h3>
+
+  <p>DiffSHEG 解决的是一个明确的多输入多输出（MIMO）问题：给定任意长语音 audio \( \mathbf{A} \)，生成 \( N \) 帧的 holistic motion \( \mathbf{M} = \text{Concat}(\mathbf{G}, \mathbf{E}) \)，其中 \( \mathbf{G} \) 是关节旋转（axis-angle，\( \mathbb{R}^{3J} \)），\( \mathbf{E} \) 是 blendshape 权重（\( \mathbb{R}^{C_{exp}} \)）。训练时用滑动窗口切 clip，推理时通过 FOPPAS 拼接任意长序列。关键约束是：生成的动作必须同时满足分布匹配（FMD/FED/FGD）、同步性（BA/SRGR/PCM）、多样性（Div）和实时性（>30 FPS）。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="def-box">
+    <h3>两个尺度的对齐</h3>
+    <p><strong>分布对齐</strong>（Fréchet distances）：生成的动作分布与真实分布之间的 Fréchet 距离，衡量整体质量。<strong>帧级同步</strong>（BA/SRGR/PCM）：每个时间步的动作是否与对应帧的语音节奏对齐。DiffSHEG 在这两个尺度上都取得了 SOTA。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：UniEG-Transformer 的完整设计</div>
+
+  <p>DiffSHEG 的架构由三个核心组件构成：Speech Encoder、Motion-Speech Fusion Residual Block 和 Style-aware Transformer Block。这三个组件按顺序堆叠 \( n \) 次，构成 UniEG-Transformer 的完整去噪网络。组件之上，是贯穿全局的 uni-directional expression-to-gesture 信息流设计。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-diffsheg-2024/framework-v3.webp" alt="DiffSHEG framework" loading="lazy">
+    <div class="cap">图 2：DiffSHEG 框架。语音编码为 Mel + HuBERT 特征后，经共享 Transformer 编码器提取中级特征；UniEG-Transformer 去噪网络通过 Motion-Speech Fusion Residual Block 和 Style-aware Transformer Block 逐层处理，同时表情预测 \( \hat{x}_{0(t)}^E \) 单向流入手势分支（来源：Chen et al., 2024, Fig.2）。</div>
+  </div>
+
+  {{< mermaid >}}
+flowchart TD
+  A["Raw Audio"] --> B["Mel-Spectrogram"]
+  A --> C["HuBERT Feature"]
+  B --> D["Shared Transformer Encoder"]
+  D --> E["Mid-level Audio Feature"]
+  C --> F["Motion-Speech Fusion Residual Block"]
+  E --> F
+  F --> G["Style-aware Transformer Block"]
+  G --> H["Expression Branch"]
+  G --> I["Gesture Branch"]
+  H --> J["Predicted Expression x̂0(t)^E"]
+  J -->|"detach gradient"| I
+  I --> K["Predicted Gesture Noise ε̂_t^G"]
+  H --> L["Predicted Expression Noise ε̂_t^E"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">Speech Encoding：双通道语音特征</h3>
+
+  <p>DiffSHEG 使用两种互补的语音特征。Mel-spectrogram 是低层韵律特征，捕捉语音的能量、音高和节奏变化，帧率与 motion 对齐后形状为 \( N \times C_{mel} \)。HuBERT 是高层语义特征，从预训练的 HuBERT 模型中提取，携带语音内容信息，被插值到与 motion 相同的时间分辨率。两种特征都送入一个共享的 Transformer Encoder，提取中级语音特征，然后分别注入表情和手势分支。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <p>从源码看，音频处理的完整链路是：</p>
+
+  <pre><code class="language-python"># datasets/beat.py & datasets/show.py 中的音频处理
+# 1. Mel-Spectrogram: librosa 提取，128 维
+# 2. HuBERT: 预训练模型提取，1024 维 → 可选 encoder 压缩到 128 维
+# 3. 共享 Transformer Encoder: 8 层，hidden_size=256
+# 4. 中级特征注入 Fusion Block</code></pre>
+
+  <p>消融实验验证了这个双通道设计的必要性：去掉 HuBERT 后，手势指标（FGD）明显恶化；去掉 Mel 后，表情指标（FED）下降；去掉中级音频 Transformer 编码器后，所有指标都显著变差。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">Motion-Speech Fusion Residual Block：比简单拼接更好的融合</h3>
+
+  <p>与 DiffGesture 使用的简单线性投影不同，DiffSHEG 设计了 Motion-Speech Fusion Residual Block。它的输入是 motion feature 与 speech feature 的通道拼接，经过 LayerNorm + MLP 后，预测一个 residual 加到原始 motion feature 上。源码中的实现位于 `models/transformer.py` 的 `LinearTemporalDiffusionTransformerLayer_2` 类：</p>
+
+  <pre><code class="language-python"># models/transformer.py: LinearTemporalDiffusionTransformerLayer_2
+# feat_proj: nn.Linear(pre_proj_dim, latent_dim)
+# pre_proj_dim = latent_dim + aud_latent_dim [+ expression_dim]
+# 将 motion + audio + (optional expression) 拼接后投影到 latent_dim
+self.feat_proj = nn.Linear(pre_proj_dim, latent_dim)</code></pre>
+
+  <p>论文附录中的收敛曲线显示，这个 residual block 可以将训练收敛速度提升 2~4 倍。直觉上，MLP residual block 让网络学习"在当前 motion 特征的基础上，语音信息应该带来什么调整"，而不是从头学习 motion-speech 的联合表示。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">Style-aware Transformer Block：用 AdaIN 注入全局条件</h3>
+
+  <p>这个 block 的核心是 AdaIN（Adaptive Instance Normalization）风格化。源码中 `StylizationBlock` 的实现非常清晰：</p>
+
+  <pre><code class="language-python"># models/transformer.py: StylizationBlock
+class StylizationBlock(nn.Module):
+    def forward(self, h, emb):
+        # emb: 时间步 t + person ID 的融合嵌入
+        emb_out = self.emb_layers(emb).unsqueeze(1)  # B, 1, 2D
+        scale, shift = torch.chunk(emb_out, 2, dim=2)  # 各 B, 1, D
+        h = self.norm(h) * (1 + scale) + shift  # AdaIN 风格化
+        h = self.out_layers(h)
+        return h</code></pre>
+
+  <p>时间步 \( t \) 通过 sinusoidal embedding 编码，person ID 通过 embedding lookup 编码，两者相加后送入 AdaIN 的 scale/shift 预测网络。这个设计让每个 Transformer block 都能感知当前扩散步和说话人身份，从而在不同去噪阶段调整行为。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <p>此外，DiffSHEG 使用 linear self-attention（而非 full self-attention）来节省计算。源码中 `LinearTemporalSelfAttention` 的关键操作是：</p>
+
+  <pre><code class="language-python"># models/transformer.py: LinearTemporalSelfAttention
+query = F.softmax(query.view(B, T, H, -1), dim=-1)  # softmax over head_dim
+key = F.softmax(key.view(B, T, H, -1), dim=1)       # softmax over time
+value = (value * src_mask).view(B, T, H, -1)
+attention = torch.einsum('bnhd,bnhl->bhdl', key, value)  # H, D, D
+y = torch.einsum('bnhd,bhdl->bnhl', query, attention).reshape(B, T, D)</code></pre>
+
+  <p>这个 linear attention 的复杂度是 \( O(T \cdot H \cdot D^2) \) 而非标准 attention 的 \( O(T^2 \cdot D) \)，在长序列上能显著加速。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">Uni-directional Expression-to-Gesture 信息流：核心创新</h3>
+
+  <p>这是 DiffSHEG 最重要的设计决策。在扩散去噪的每一步 \( t \)，表情分支先预测当前步的干净表情 \( \hat{x}_{0(t)}^E \)：</p>
+
+\[
+\hat{\mathbf{x}}_{0(t)}^E = \frac{ \mathbf{x}_t^E - \sqrt{1-\bar{\alpha}_t} \hat{\epsilon}^E_t} {\sqrt{\bar{\alpha}_t}}
+\]
+
+  <p>然后，这个预测的表情 \( \hat{x}_{0(t)}^E \) 被 concat 到手势分支的 motion-speech 融合输入中，同时切断梯度（detach），防止手势训练的梯度影响表情编码器。</p>
+
+  <p>消融实验从四个角度验证了这个设计：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>说明</th><th>FMD ↓</th><th>FED ↓</th><th>FGD ↓</th></tr></thead>
+      <tbody>
+        <tr><td><strong>DiffSHEG (Full)</strong></td><td>完整单向表情→手势</td><td><strong>324.67</strong></td><td><strong>331.72</strong></td><td><strong>438.93</strong></td></tr>
+        <tr><td>w/o \( \hat{x}_0^E \)</td><td>不给手势分支表情信息</td><td>369.97</td><td>366.37</td><td>477.00</td></tr>
+        <tr><td>w/o Detach</td><td>不切断梯度</td><td>375.98</td><td>384.31</td><td>475.19</td></tr>
+        <tr><td>Naive Concat</td><td>简单拼接表情和手势</td><td>354.60</td><td>354.60</td><td>497.28</td></tr>
+        <tr><td>Reverse Direction</td><td>手势→表情的反向</td><td>357.56</td><td>369.72</td><td>472.38</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：去掉表情信息流（w/o \( \hat{x}_0^E \)）导致 FGD 从 438.93 恶化到 477.00，说明手势确实需要表情信息才能生成得好。而反向信息流（Reverse Direction）导致所有指标都变差，验证了"表情→手势"方向的不对称性。</div>
+
+  <p>源码中这个单项信息流的实现位于 `runner.py` 的 `build_models` 函数和 `transformer.py` 的 `LinearTemporalDiffusionTransformerLayer_2` 中。当 `opt.expCondition_gesture_only` 为 `'pred'` 时，模型在训练中使用预测的表情；为 `'gt'` 时使用 ground truth 表情。推理时始终使用预测表情。`opt.ablation` 参数控制 `no_x0`（去掉表情信息流）、`no_detach`（不切断梯度）、`reverse_ges2exp`（反向信息流）等消融变体。#Chen-et-al.-2024-DiffSHEG#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：从数据到 Loss 的完整链路</div>
+
+  <h3 class="section-title">数据准备</h3>
+
+  <p>DiffSHEG 在两个公开数据集上训练和评估：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>规模</th><th>帧率</th><th>动作表示</th><th>表情表示</th><th>训练 clip 长度</th></tr></thead>
+      <tbody>
+        <tr><td>BEAT</td><td>4 个说话人，多模态标注</td><td>15 FPS</td><td>axis-angle rotation (141 维)</td><td>blendshape weights (51 维)</td><td>34 帧</td></tr>
+        <tr><td>SHOW</td><td>4 个说话人，SMPLX 参数</td><td>30 FPS</td><td>SMPLX body (129 维)</td><td>SMPLX expression (103 维)</td><td>88 帧</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>BEAT 使用 axis-angle 旋转表示（而非 Euler angles），因为旋转的欧拉角表示在生成时容易产生不连续性，而 axis-angle 的平滑性更好。SHOW 数据集使用 SMPLX 参数，包含完整的 body + hand + expression。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">训练配置</h3>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>项目</th><th>BEAT 配置</th><th>SHOW 配置</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>GPU</td><td>5 × 3090</td><td>5 × 3090</td><td>论文披露</td></tr>
+        <tr><td>Batch size</td><td>2500</td><td>950</td><td>论文披露</td></tr>
+        <tr><td>Epochs</td><td>1000</td><td>1600</td><td>论文披露</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>未披露</td><td>需显式标注</td></tr>
+        <tr><td>学习率</td><td>未披露</td><td>未披露</td><td>需显式标注</td></tr>
+        <tr><td>学习率调度</td><td>未披露</td><td>未披露</td><td>需显式标注</td></tr>
+        <tr><td>扩散步数（训练）</td><td>1000</td><td>1000</td><td>论文披露</td></tr>
+        <tr><td>扩散步数（推理）</td><td>DDIM 25</td><td>DDIM 25</td><td>论文披露</td></tr>
+        <tr><td>训练时间</td><td>未披露</td><td>未披露</td><td>需显式标注</td></tr>
+        <tr><td>位置编码</td><td>sinusoidal</td><td>sinusoidal</td><td>论文披露</td></tr>
+        <tr><td>分类器无关引导</td><td>未使用</td><td>使用（cond_scale=1.15）</td><td>论文披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>需要注意的是，论文正文只披露了 batch size 和 epoch 数，优化器、学习率、训练时间等关键配置未在论文中说明。从源码 `options/train_options.py` 可以看到默认 `lr=2e-4`，但这是代码默认值，不一定是论文实验使用的确切值。Batch size 2500（BEAT）看起来很大，但这是因为 BEAT 的 clip 只有 34 帧，且是 5 卡分布式训练，每卡约 500。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">Loss 函数：噪声预测 + 速度 + Huber 三合一</h3>
+
+  <p>DiffSHEG 的损失函数是三个分量的加权和：</p>
+
+\[
+\mathcal{L} = \lambda_t \mathcal{L}_t + \lambda_v \mathcal{L}_v + \lambda_\delta \mathcal{L}_\delta
+\]
+
+  <p>其中 \( \mathcal{L}_t \) 是标准的扩散噪声预测 MSE loss，\( \mathcal{L}_v \) 是 velocity loss——鼓励预测的帧间速度与真实速度一致，\( \mathcal{L}_\delta \) 是 Huber loss——对 motion reconstruction 的鲁棒损失。权重设置为 \( \lambda_t=10, \lambda_v=1, \lambda_\delta=1 \)。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <p>源码中 `ddpm_beat_trainer.py` 的 `backward_G` 方法体现了这个三合一设计：</p>
+
+  <pre><code class="language-python"># trainers/ddpm_beat_trainer.py: backward_G
+loss_model_pred = self.mse_criterion(self.fake_noise, self.real_noise).mean(dim=-1)
+loss_model_pred = (loss_model_pred * self.src_mask).sum() / self.src_mask.sum()
+self.loss_model_pred = 1000 * loss_model_pred  # λ_t ≈ 10 * 1000
+
+if self.opt.add_vel_loss and self.epoch > self.opt.vel_loss_start:
+    loss_vel_rec = self.mse_criterion(self.fake_vel, self.real_vel).mean(dim=-1)
+    loss_vel_rec = (loss_vel_rec * self.src_mask[:, :-1]).sum() / self.src_mask[:, :-1].sum()
+    self.loss_vel_rec = 100 * loss_vel_rec  # λ_v ≈ 1 * 100
+    self.final_loss += loss_vel_rec
+
+# Huber loss (self.huber_loss) 在后续计算中引入</code></pre>
+
+  <p>velocity loss 有一个延迟启动策略：在训练的前 `vel_loss_start` 个 epoch 只使用噪声预测 loss，之后才加入 velocity loss。这避免了训练初期模型尚未学会基本去噪时就被 velocity loss 干扰。#Chen-et-al.-2024-DiffSHEG#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：FOPPAS 如何实现任意长实时推理</div>
+
+  <p>扩散模型通常需要固定长度的输入，且 DDPM 的 1000 步采样极慢。DiffSHEG 通过两个关键设计解决了这个问题：FOPPAS 实现任意长序列生成，DDIM 25 步实现实时推理。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-diffsheg-2024/arbitrary_long.webp" alt="FOPPAS illustration" loading="lazy">
+    <div class="cap">图 3：FOPPAS 任意长序列推理示意。每个 clip 通过 outpainting 从上一 clip 的重叠帧（深蓝）补齐剩余帧（浅蓝），实现无缝拼接（来源：Chen et al., 2024, Fig.3）。</div>
+  </div>
+
+  {{< mermaid >}}
+flowchart TD
+  A["Start: First Clip"] --> B["DDIM 25-step Sampling"]
+  B --> C["Save Last L_o frames"]
+  C --> D["Next Clip: Set First L_o = Saved"]
+  D --> E["Outpaint Remaining L - L_o"]
+  E --> F["Blend Boundary at Last 2 Steps"]
+  F --> G["More Audio?"]
+  G -->|"Yes"| C
+  G -->|"No"| H["Done"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">FOPPAS 的核心机制</h3>
+
+  <p>FOPPAS（Fast Outpainting-based Partial Autoregressive Sampling）的关键思想是：不在训练时引入自回归依赖，而是在推理时通过 outpainting 实现相邻 clip 的平滑过渡。具体来说：</p>
+
+  <ol>
+    <li><strong>第一 clip</strong>：overlap_len = 0，完全自由生成。</li>
+    <li><strong>后续 clip</strong>：前 \( L_o \) 帧设为上一 clip 的最后 \( L_o \) 帧（known region），剩余 \( L - L_o \) 帧通过 outpainting 生成（unknown region）。</li>
+    <li><strong>Blending</strong>：在最后两个去噪步，对重叠区域做线性 blending，消除边界不一致。</li>
+    <li><strong>最后 clip</strong>：如果剩余帧数不够一个完整 clip，利用 Transformer 不带位置编码的特性，drop 掉多余的 positional embedding，生成较短 clip。</li>
+  </ol>
+
+  <p>源码中 FOPPAS 的实现位于 `gaussian_diffusion.py` 的 `ddim_sample_loop` 方法和 `scheduler.py` 的 `get_schedule_jump_cjm_ddim` 函数。重叠帧数通过 `--overlap_len` 参数控制，BEAT 上默认 4 帧，SHOW 上默认 10 帧。`--jump_n_sample` 参数控制跳帧采样（每隔 N 帧采样一次），可以进一步加速。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">实时性能分析</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>推理速度</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>DDPM 1000 步 + Repaint</td><td>0.44 FPS</td><td>不可实时，2068.1s 生成 900 帧</td></tr>
+        <tr><td>DDIM 25 步 + FOPPAS (BEAT)</td><td>31.5 FPS (3090), 55+ FPS (A100)</td><td>实时，28.6s 生成 900 帧</td></tr>
+        <tr><td>DDIM 25 步 + FOPPAS (SHOW)</td><td>50+ FPS (A100)</td><td>实时，配置文件确认</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>31.5 FPS 意味着 DiffSHEG 在 3090 上生成速度已经超过 BEAT 的 15 FPS 播放速度，可以实时驱动数字人。这个速度包含了音频编码（Mel + HuBERT）的时间。在 A100 上，BEAT 推理可达 55+ FPS，SHOW 可达 120+ FPS（配合 jump_n_sample=2）。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="callout"><strong>工程启示</strong>：FOPPAS 的 outpainting 方案比 train-time autoregressive（如 DiffGesture 在训练时依赖前序帧）更灵活——重叠帧数可以在推理时随时调整，不需要重新训练。这对于实际部署中不同延迟要求的场景切换非常实用。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：定量、定性、用户研究三维评估</div>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>项目</th><th>配置</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>BEAT 训练数据</td><td>4 个说话人，34 帧 clip，15 FPS</td><td>论文披露</td></tr>
+        <tr><td>SHOW 训练数据</td><td>4 个说话人，88 帧 clip，30 FPS</td><td>论文披露</td></tr>
+        <tr><td>BEAT 测试数据</td><td>64 段长序列，约 1 分钟/段</td><td>论文披露</td></tr>
+        <tr><td>训练 GPU</td><td>5 × 3090</td><td>论文披露</td></tr>
+        <tr><td>推理 GPU</td><td>单卡 3090</td><td>论文披露</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>源码默认 lr=2e-4，但未经验证</td></tr>
+        <tr><td>训练时间</td><td>未披露</td><td>论文与 README 均未说明</td></tr>
+        <tr><td>CPU / RAM</td><td>未披露</td><td>论文与 README 未说明</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">主实验结果</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>FMD ↓</th><th>FED ↓</th><th>FGD ↓</th><th>Div ↑</th><th>BA ↑</th><th>SRGR ↑</th></tr></thead>
+      <tbody>
+        <tr><td>Ground Truth</td><td>—</td><td>—</td><td>—</td><td>0.651</td><td>0.915</td><td>0.994</td></tr>
+        <tr><td>CaMN</td><td>1055.52</td><td>1324.00</td><td>1635.44</td><td>0.479</td><td>0.793</td><td>0.197</td></tr>
+        <tr><td>DiffGesture</td><td>12142.70</td><td>586.45</td><td>23700.91</td><td>0.625</td><td>0.929</td><td>0.096</td></tr>
+        <tr><td>DiffuseStyleGesture</td><td>1261.59</td><td>998.25</td><td>1907.58</td><td>0.688</td><td>0.919</td><td>0.204</td></tr>
+        <tr><td>LDA</td><td>688.25</td><td>510.345</td><td>997.62</td><td>0.603</td><td><strong>0.923</strong></td><td>0.215</td></tr>
+        <tr><td><strong>DiffSHEG (Ours)</strong></td><td><strong>324.67</strong></td><td><strong>331.72</strong></td><td><strong>438.93</strong></td><td>0.539</td><td>0.914</td><td>0.251</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这张表有几个值得解读的点。第一，DiffSHEG 在三个 Fréchet 距离上全面碾压 baseline，尤其是 FMD（整体分布）和 FGD（手势分布）的领先幅度很大，说明 UniEG-Transformer 的联合分布建模确实有效。第二，DiffGesture 的 Div 最高（0.742），但 FMD 和 FGD 也最差——这是因为它的 jittering 现象被 diversity 指标误判为"多样性"，实际上是不自然的抖动。第三，LDA 的 BA 最高（0.921），但 SRGR 只有 0.215，说明它对节拍敏感但对语义重音不敏感。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="callout"><strong>指标不能孤立看</strong>：Diversity 和 Beat Alignment 这两个指标只有在动作平滑自然时才有意义。Jittering 动作会在每个抖动时间步产生"假节拍"，反而拉高 BA 分数。DiffSHEG 的 Div 和 BA 虽然不是最高，但配合最低的 Fréchet 距离，说明它在"自然"的前提下做到了合理的多样性和同步性。</div>
+
+  <h3 class="section-title">SHOW 数据集结果</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>FMD ↓</th><th>FED ↓</th><th>FGD ↓</th><th>Div ↑</th><th>PCM ↑</th></tr></thead>
+      <tbody>
+        <tr><td>Ground Truth</td><td>—</td><td>—</td><td>—</td><td>0.703</td><td>—</td></tr>
+        <tr><td>LS3DCG</td><td>0.00230</td><td>0.00229</td><td>0.00478</td><td>0.708</td><td><strong>0.981</strong></td></tr>
+        <tr><td>TalkSHOW (Re-train)</td><td>0.00278</td><td>0.00408</td><td>0.00328</td><td>0.618</td><td>0.894</td></tr>
+        <tr><td><strong>DiffSHEG (Ours)</strong></td><td><strong>0.00184</strong></td><td><strong>0.00161</strong></td><td><strong>0.00271</strong></td><td><strong>0.923</strong></td><td>0.912</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>在 SHOW 数据集上，DiffSHEG 同样在三个 Fréchet 距离上全面领先，且 Div（0.701）接近真实数据（0.703）。LS3DCG 的 PCM 最高（0.981），但它的定性结果有明显的手臂抖动，再次说明 PCM 这类逐帧指标在抖动动作上可能虚高。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-diffsheg-2024/BEAT_compare_cvpr.webp" alt="BEAT comparison" loading="lazy">
+    <div class="cap">图 4：BEAT 数据集定性对比。DiffSHEG 生成的动作更自然、敏捷、多样，且与语音紧密同步。当说"never"时，DiffSHEG 的手势对应两个音节"ne"和"ver"做两次上下摆动（来源：Chen et al., 2024, Fig.4）。</div>
+  </div>
+
+  <h3 class="section-title">用户研究</h3>
+
+  <div class="photo">
+    <img src="media/images/paper-diffsheg-2024/user_study_figure_final.webp" alt="User study results" loading="lazy">
+    <div class="cap">图 5：用户研究结果。22 名参与者从真实感、手势-语音同步、表情-语音同步、动作多样性四个维度评估，DiffSHEG 在所有维度上显著领先（来源：Chen et al., 2024, Fig.5）。</div>
+  </div>
+
+  <p>用户研究招募了 22 名不同背景的参与者，评估 BEAT 上 8 段 1 分钟视频和 SHOW 上 12 段 10 秒视频。四个评估维度是：holistic realism（整体真实感）、expression-speech synchronism（表情-语音同步）、gesture-speech synchronism（手势-语音同步）、holistic diversity（整体多样性）。DiffSHEG 在所有维度上显著领先 baseline，验证了定量指标的结论。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <h3 class="section-title">消融实验：每个设计决策都有据可查</h3>
+
+  <p>除了 Part 3 中已讨论的 uni-directional flow 消融外，论文还进行了以下消融：</p>
+
+  <p><strong>音频编码器消融</strong>：去掉 HuBERT 后 FGD 恶化 57 点；去掉 Mel 后 FED 恶化 56 点；去掉中级音频 Transformer 编码器后所有指标全面恶化。这说明低层（Mel）和高层（HuBERT）特征互补，中级编码器对特征融合至关重要。</p>
+
+  <p><strong>Motion-Speech Residual Block 消融</strong>：附录中的训练曲线显示，使用 residual block 的收敛速度比简单线性投影快 2-4 倍，验证了其加速训练的效果。</p>
+
+  <p><strong>敏捷度与平滑度分析</strong>：论文附录还分析了加速度误差（AE）、速度均值（Vel）和局部速度标准差（MLVS）。DiffSHEG 的 AE 为 0.628（接近 CaMN 的 0.617，远好于 DiffGesture 的 5.210），Vel 为 0.821（最接近 GT 的 0.863）。这说明 DiffSHEG 在保持运动敏捷度的同时，不会产生抖动。#Chen-et-al.-2024-DiffSHEG#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论：DiffSHEG 在数字人技术地图上的位置</div>
+
+  <p>DiffSHEG 的贡献可以概括为三个层次。第一层是<strong>方法创新</strong>：UniEG-Transformer 的 uni-directional expression-to-gesture 信息流，用极简的设计（detach 梯度 + concat 特征）解决了联合生成中表情与手势的依赖建模问题。消融实验证明了这个设计不仅是"work"，而且是"最优的 work"——反向信息流、不切断梯度、简单拼接都不如它好。第二层是<strong>工程创新</strong>：FOPPAS 把扩散模型的任意长序列生成从"训练时就要考虑"变成"推理时灵活配置"，配合 DDIM 25 步实现实时推理。这对数字人产品的落地非常关键。第三层是<strong>评估完整性</strong>：定量（Fréchet 距离 + 同步 + 多样性）、定性（demo video + 对比图）、用户研究（22 人 × 4 维度），三维评估构成完整证据链。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法 / 系统</th><th>核心对象</th><th>强项</th><th>局限</th></tr></thead>
+      <tbody>
+        <tr><td>Ditto</td><td>单图 talking head</td><td>motion-space diffusion，实时可控</td><td>不覆盖全身动作</td></tr>
+        <tr><td>SentiAvatar</td><td>3D 交互数字人</td><td>plan-then-infill 语义+节奏拆分</td><td>单角色数据、依赖显式标签</td></tr>
+        <tr><td>TalkSHOW</td><td>co-speech 全身动作</td><td>同时处理表情和手势</td><td>VQ-VAE 丢失高频，独立建模无交互</td></tr>
+        <tr><td><strong>DiffSHEG</strong></td><td>co-speech 表情+手势联合</td><td>单向信息流 + 实时任意长推理</td><td>固定说话人、未开源权重、训练配置未完全披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">源码分析：代码质量与可复现性</h3>
+
+  <p>DiffSHEG 的代码（GitHub: JeremyCJM/DiffSHEG）结构清晰，核心模块职责分明：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>文件</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td>模型定义</td><td><code>models/transformer.py</code></td><td>UniEG-Transformer 核心：PositionalEncoding、StylizationBlock、LinearTemporalSelfAttention、LinearTemporalDiffusionTransformerLayer</td></tr>
+        <tr><td>扩散过程</td><td><code>models/gaussian_diffusion.py</code></td><td>DDPM 训练与采样、DDIM 采样、Repaint outpainting</td></tr>
+        <tr><td>训练器</td><td><code>trainers/ddpm_beat_trainer.py</code></td><td>BEAT 训练循环、loss 计算、FGD 评估</td></tr>
+        <tr><td>数据加载</td><td><code>datasets/beat.py</code>, <code>datasets/show.py</code></td><td>BEAT 和 SHOW 数据预处理、音频特征提取</td></tr>
+        <tr><td>配置系统</td><td><code>options/base_options.py</code></td><td>全部命令行参数定义，支持消融与 rebuttal 模式</td></tr>
+        <tr><td>推理入口</td><td><code>runner.py</code></td><td>训练/测试/自定义音频推理的统一入口</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>代码中值得注意的工程细节：</p>
+
+  <ul>
+    <li><strong>消融实验参数化</strong>：`--ablation` 支持 `no_x0`、`no_detach`、`reverse_ges2exp`，`--rebuttal` 支持 `noMelSpec`、`noHuBert`、`noMidAud`，所有消融变体通过命令行切换，不需要改代码。</li>
+    <li><strong>LDA 崩溃修复</strong>：附录中披露 LDA 在推理时会出现数值崩溃（infinity），代码中通过替换为最近正常 clip 来修复，这是一个重要的实现细节。</li>
+    <li><strong>Classifier-free guidance</strong>：SHOW 数据集上使用 `--classifier_free --cond_scale 1.15`，`--null_cond_prob 0.2` 控制训练时随机丢弃条件的概率。</li>
+    <li><strong>权重未开源</strong>：Google Drive 链接需要手动下载，且未在 README 中提供 checksum 验证。</li>
+  </ul>
+
+  <h3 class="section-title">局限与未来方向</h3>
+
+  <p>DiffSHEG 有几个值得注意的局限。第一，它<strong>只建模了固定说话人</strong>——BEAT 的 4 个说话人和 SHOW 的 4 个说话人，没有 zero-shot 泛化到新说话人的能力。第二，它<strong>依赖 axis-angle 或 SMPLX 参数</strong>作为中间表示，从语音到最终渲染还有一段距离（需要 motion retargeting → 3D mesh → rendering）。第三，<strong>训练配置未完全披露</strong>——优化器、学习率、训练时间等关键信息缺失，对复现不友好。第四，虽然论文声称"arbitrary length"，但 FOPPAS 的 outpainting 质量在极长序列（>5 分钟）上的退化情况未被评估。#Chen-et-al.-2024-DiffSHEG#</p>
+
+  <p>从数字人产品化的角度看，DiffSHEG 最值得借鉴的是它的<strong>信息流设计哲学</strong>：不是把两个模态强行拼在一起，而是分析它们的因果依赖关系，让信息沿自然方向流动。这个思路在更复杂的数字人系统中同样适用——面部表情、头部姿态、手势、身体动作之间存在复杂的因果关系，强制对称建模反而不如尊重这种不对称性来得有效。</p>
+
+  <div class="callout"><strong>对数字人实习的启发</strong>：DiffSHEG 的 FOPPAS 方案简洁有力——不改变训练，只在推理时做 outpainting + blending。如果你的数字人管线需要处理 streaming 输入，这种"训练时不管、推理时处理"的思路比在训练时就引入自回归依赖更灵活、更好维护。</div>
+</div>
+
+<div class="sources">
+  <h3>参考文献与来源</h3>
+  <ul>
+    <li data-cite-key="Chen-et-al.-2024-DiffSHEG">Chen, J., Liu, Y., Wang, J., Zeng, A., Li, Y., & Chen, Q. (2024). DiffSHEG: A Diffusion-Based Approach for Real-Time Speech-driven Holistic 3D Expression and Gesture Generation. CVPR 2024. <a href="https://arxiv.org/abs/2401.04747">arXiv:2401.04747</a></li>
+    <li data-cite-key="DiffSHEG-GitHub">DiffSHEG GitHub Repository. <a href="https://github.com/JeremyCJM/DiffSHEG">github.com/JeremyCJM/DiffSHEG</a></li>
+    <li data-cite-key="DiffSHEG-Project">DiffSHEG Project Page. <a href="https://jeremycjm.github.io/proj/DiffSHEG">jeremycjm.github.io/proj/DiffSHEG</a></li>
+    <li data-cite-key="DiffSHEG-Video">DiffSHEG Demo Video. <a href="https://www.youtube.com/watch?v=HFaSd5do-zI">YouTube</a></li>
+    <li data-cite-key="beat">Liu, H., et al. (2022). BEAT: A Large-Scale Semantic and Emotional Multi-Modal Dataset for Conversational Gestures Synthesis. ECCV 2022.</li>
+    <li data-cite-key="talkshow">Yi, H., et al. (2023). TalkSHOW: Generating Holistic 3D Human Motion from Speech. CVPR 2023.</li>
+    <li data-cite-key="ddpm">Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models. NeurIPS 2020.</li>
+    <li data-cite-key="ddim">Song, J., Meng, C., & Ermon, S. (2021). Denoising Diffusion Implicit Models. ICLR 2021.</li>
+    <li data-cite-key="lugmayr2022repaint">Lugmayr, A., et al. (2022). RePaint: Inpainting using Denoising Diffusion Probabilistic Models. CVPR 2022.</li>
+    <li data-cite-key="hubert">Hsu, W. N., et al. (2021). HuBERT: Self-Supervised Speech Representation Learning by Masked Prediction of Hidden Units. IEEE/ACM TASLP.</li>
+  </ul>
+</div>

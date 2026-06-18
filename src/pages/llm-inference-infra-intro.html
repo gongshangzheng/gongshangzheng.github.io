@@ -1,0 +1,148 @@
+---
+title: "LLM 推理基础设施入门：从 prefill 和 decode 开始理解一切"
+description: "从 token-by-token 生成、KV cache、continuous batching 到 scheduler，梳理大语言模型推理系统最基本也最关键的工程语言。"
+date: 2026-06-01T23:59:33
+created_at: 2026-06-01T23:59:33
+updated_at: 2026-06-02T00:09:10
+tags: [LLM 推理, KV Cache, Prefill, Decode, 调度器, AI Infra]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: LLM 推理基础设施入门
+hero_sub: 从 prefill 和 decode 开始理解一切
+hero_tagline: 为什么“生成一个 token”背后，会长出一整套推理工程学
+mathjax: false
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2</span><span class="label">核心阶段</span></div>
+  <div class="stat"><span class="num b">1</span><span class="label g">关键状态：KV Cache</span></div>
+  <div class="stat"><span class="num">4</span><span class="label">基础概念</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列二</div>
+  <div class="ch-title">为什么“推理”不是一次前向传播那么简单</div>
+
+  在离线实验里，调用一个大语言模型看上去只是做一次 forward：给它一段 prompt，等它吐出结果。但一旦模型要真正在线服务用户，问题立刻会变样。系统必须同时面对许多请求，这些请求的 prompt 长短不一、输出长度不一、结束时间也不一致；更重要的是，模型不是一次性吐出整段回答，而是一个 token 一个 token 地往前生成。这意味着推理系统必须持续管理状态、安排批次、调度显存，并在延迟、吞吐和成本之间反复取舍 #vLLM-2023# #LLM-Inference-Survey-2025#。
+
+  因此，理解 LLM 推理基础设施的第一步，不是先看某个框架的 benchmark，而是先搞清一个更底层的问题：<strong>模型在生成一个 token 时，到底发生了什么？</strong> 这一篇就从这里开始，把后面所有推理系统设计都会反复出现的几个基础概念立起来：token-by-token generation、prefill、decode、KV cache、continuous batching，以及 scheduler。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、模型生成文本，本质上是一次一个 token 地往前走</div>
+
+  大语言模型并不会一次性输出整段答案。它每一步只会预测“下一个 token 是什么”，然后把这个新 token 拼回上下文，再继续预测下一个。这个过程叫做<strong>自回归生成（autoregressive decoding）</strong>。
+
+  这件事之所以重要，是因为它决定了推理系统必须围绕“状态累积”来设计。模型并不是每一步都从头把整段上下文重算一遍，而是会把之前已经算过的注意力中间结果缓存起来，供下一步复用。于是，生成过程从一开始就不只是“算一次”，而是“算一步、存一份状态、再用这份状态推进下一步”。
+
+  <div class="info-box">
+    <h3>直觉类比</h3>
+    如果把模型写作过程想成写小说，autoregressive generation 不是“先把全文构思完再誊写出来”，而是“每写一句都要参考前文，但又不可能每次从第一页重新读起”。KV cache 就像那份被持续维护的“前文摘要”。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、推理为什么总被拆成 prefill 和 decode？</div>
+
+  虽然用户只看到一次回答，但从系统角度看，推理通常会被拆成两个阶段：<strong>prefill</strong> 和 <strong>decode</strong>。
+
+  <div class="section fade-in">
+    <div class="section-title">2.1 Prefill：先把 prompt 全部“读进去”</div>
+    在 prefill 阶段，用户输入的整段 prompt 会一次性送进模型。模型逐层处理所有输入 token，并把后续生成需要用到的 attention key/value 张量缓存下来，形成 KV cache。因为这一步要处理的是整段上下文，所以计算可以组织成较大的矩阵乘法，往往更接近 compute-bound 的工作负载：瓶颈更多落在算力而不是显存带宽 #vLLM-2023#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">2.2 Decode：之后每一步只生成一个新 token</div>
+    进入 decode 后，模型每次只处理一个新 token。它不会重新计算全部历史，而是把新 token 和已经缓存下来的 KV cache 进行 attention 计算，然后产出下一个 token。表面上看，这比 prefill 轻很多；但也正因为每一步只处理极少量新数据，GPU 的大部分时间反而花在“读取那份越来越大的缓存”上，于是 decode 往往更接近 memory-bound 的工作负载 #vLLM-2023# #LLM-Inference-Survey-2025#。
+  </div>
+
+  这就是为什么推理系统里总会反复出现一句话：<strong>prefill 和 decode 不是同一种活。</strong> 前者像一口气读完整份材料并做出笔记，后者则像每写一个新句子都要快速翻阅笔记本中的关键页。它们虽然连在同一条用户请求链上，但瓶颈并不相同，优化方向自然也不同。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、KV cache：推理系统最昂贵也最关键的状态</div>
+
+  一旦理解了 prefill / decode 的分工，就能看出 KV cache 为什么会成为现代推理基础设施的核心对象。
+
+  在 Transformer 的注意力机制里，每个已处理 token 都会生成对应的 key 和 value 张量。为了避免 decode 时每次都把历史上下文重新计算一遍，系统会把这些 key/value 缓存在显存中。这样新 token 只需要和缓存交互，就能继续生成下一个 token。
+
+  但这份缓存有三个非常麻烦的特征：
+
+  <ul>
+    <li><strong>它很大</strong>：上下文越长、模型越大、并发越高，KV cache 占用就越夸张。</li>
+    <li><strong>它是动态增长的</strong>：请求生成得越久，缓存就越长。</li>
+    <li><strong>它很难整齐地分配</strong>：不同请求长度不同，容易产生碎片和过度预留。</li>
+  </ul>
+
+  vLLM 对这个问题的经典回答是 PagedAttention：把 KV cache 组织成类似操作系统分页的块结构，让逻辑上连续的序列可以映射到物理上不连续的内存块，从而显著减少碎片与浪费 #vLLM-2023# #vLLM-PagedAttention-Docs#。
+
+  <div class="callout"><strong>关键判断</strong>：很多 LLM serving 问题，表面上在比“谁更快”，本质上其实是在比“谁更会管理 KV cache”。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、为什么必须做 continuous batching？</div>
+
+  如果一台 GPU 一次只服务一个用户请求，那么大多数时候它都会被浪费。真实服务场景里，系统必须同时处理很多请求，于是 batching 就变成自然选择。但传统 batching 很快会遇到一个问题：不同请求的输出长度不一样，有的几步就结束，有的会生成很久。如果系统必须等整批请求都结束才能处理下一批，那么先结束的请求会一直空等。
+
+  continuous batching 的意义，就在于把“批”的边界从整段生成过程移动到<strong>每一步 decode</strong>。谁这一轮还在生成，就继续留在批里；谁已经生成结束，就退出；新来的请求也可以在合适时机被插入。这让 GPU 能持续保持较高利用率，同时避免传统静态 batching 带来的排队浪费 #LLM-Inference-Survey-2025#。
+
+  从这里可以看出，推理基础设施并不是简单地“把多个请求凑在一起”，而是在持续组织一个会动态变化的请求集合。批次不再是静态容器，而更像是一条不断流动的交通队列。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、scheduler 在推理系统里到底在做什么？</div>
+
+  当请求不再是一个一个串行跑，而是许多请求共享同一张 GPU、共享同一份显存预算时，就必须有人来决定：
+
+  <ul>
+    <li>哪些请求先进入 prefill？</li>
+    <li>哪些请求这一轮进入 decode？</li>
+    <li>KV cache 该怎么分配和回收？</li>
+    <li>长 prompt 会不会把短请求卡住？</li>
+    <li>吞吐和首 token 延迟要怎么平衡？</li>
+  </ul>
+
+  这个“做决定的人”就是 scheduler。它并不是一个附属组件，而是推理系统里非常核心的控制层。没有 scheduler，continuous batching 就无法成立，KV cache 的分配也无法稳定进行，GPU 利用率和线上延迟也都会迅速失控。
+
+  这也是为什么今天的推理框架往往不只是一个模型加载器，而是一个带有自己调度逻辑的 runtime。很多你在 benchmark 里看到的差距，未必来自更强的数学优化，而可能来自更好的排队策略、更合理的缓存分配，以及更聪明的阶段切换方式。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">六、理解推理系统时，先记住这四个基本矛盾</div>
+
+  如果把前面的内容压缩成最小认知框架，那么理解 LLM inference infra 时，至少要先记住四组矛盾：
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>矛盾</th><th>含义</th><th>典型后果</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Prefill vs Decode</td><td>两阶段瓶颈不同</td><td>统一策略往往无法同时优化两者</td></tr>
+        <tr><td>算力 vs 带宽</td><td>不是所有慢都来自 FLOPs 不够</td><td>decode 常常卡在显存读写</td></tr>
+        <tr><td>延迟 vs 吞吐</td><td>批次做大吞吐更高，但等待更长</td><td>TTFT 和总吞吐常常互相拉扯</td></tr>
+        <tr><td>状态复用 vs 状态成本</td><td>KV cache 让生成更快，但也更贵</td><td>显存预算和碎片管理成为主战场</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  你会发现，后面几乎所有推理系统优化——PagedAttention、prefix caching、chunked prefill、prefill/decode disaggregation——本质上都只是在围绕这四组矛盾重新分配资源和约束。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">七、为什么这套基础语言值得先立住？</div>
+
+  在 AI Infra 的全景里，推理基础设施之所以值得先讲，不只是因为它最贴近用户体验，更因为它把现代 AI 系统的许多根本矛盾都压缩在同一个现场里。你几乎可以把它看成整个 AI Infra 的微缩版：显存不够、带宽受限、状态昂贵、请求异步、延迟敏感、成本高企，而系统设计的任务，就是在这些现实约束之间不断寻找新的平衡点。
+
+  所以，后面无论是继续讨论 KV cache、scheduler、vLLM 与 SGLang 的差异，还是进一步走向多模态和语音的 multi-stage inference，真正的逻辑起点都在这里：<strong>推理不是一次前向传播，而是一场围绕状态、批次和资源调度持续展开的系统工程。</strong>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="vLLM-2023">Kwon, W. et al. <em>vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention</em>. 2023. <a href="https://vllm.ai/blog/2023-06-20-vllm" target="_blank">vLLM Blog</a></li>
+    <li data-cite-key="vLLM-PagedAttention-Docs">vLLM Documentation. <em>Paged Attention</em>. <a href="https://docs.vllm.ai/en/latest/design/paged_attention" target="_blank">Docs</a></li>
+    <li data-cite-key="LLM-Inference-Survey-2025">Anonymous authors. <em>A Survey of LLM Inference Systems</em>. 2025/2026. <a href="https://arxiv.org/abs/2506.21901" target="_blank">arXiv</a></li>
+  </ul>
+</div>

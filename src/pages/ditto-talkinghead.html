@@ -1,0 +1,297 @@
+---
+title: "数字人工程解读（五）：Ditto 源码，把 Talking Head 做成实时流水线"
+description: "从 antgroup/ditto-talkinghead 的 README、推理入口、扩散模型、训练分支和工程流水线出发，拆解一个实时可控 Talking Head 系统如何组织。"
+date: 2026-06-05T17:55:22
+created_at: 2026-06-05T17:55:22
+updated_at: 2026-06-05T18:04:31
+tags: [github, source-code, talking-head, diffusion, digital-human]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 2100
+mathjax: false
+---
+
+<div class="ch fade-in"><div class="ch-label">Context</div><div class="ch-title">这个仓库解决什么问题</div><p><code>antgroup/ditto-talkinghead</code> 是 Ant Group 开源的实时 Talking Head 生成项目，对应论文 <em>Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis</em>。仓库主分支面向推理，训练代码放在 <code>train</code> 分支。#Ditto GitHub# #Ditto Paper#</p><div class="callout"><strong>一句话判断</strong>：Ditto 不是一个单纯的 lipsync demo，而是把人脸预处理、音频特征、运动扩散、运动缝合、3D feature warping、图像解码和视频写出组织成一条可流式运行的工程流水线。</div><p>它的输入是一张人脸图或一段 source video，再加一段音频；输出是一段跟随音频说话的头像视频。README 给出的推理命令显示，用户主要通过 <code>inference.py</code> 传入 <code>--data_root</code>、<code>--cfg_pkl</code>、<code>--audio_path</code>、<code>--source_path</code> 和 <code>--output_path</code>。</p><div class="photo"><img src="media/images/ditto-talkinghead/example-image.webp" alt="Ditto example source image" loading="lazy"><div class="cap">图 1：仓库 <code>example/image.png</code> 中的示例 source image。推理时它会先经过人脸检测、裁剪、关键点与 appearance feature 提取，再进入后续驱动流程。</div></div></div><div class="ch fade-in"><div class="ch-label">Usage</div><div class="ch-title">先看怎么安装、推理和训练</div><p>读模型仓库时，使用路径会暴露真实工程边界：依赖什么硬件、权重如何组织、入口参数是什么、训练和推理是否在同一个分支。</p><h3 class="section-title">安装与模型下载</h3><p>README 推荐用 <code>environment.yaml</code> 创建 conda 环境；如果不用 conda，则要自行准备 PyTorch、CUDA、cuDNN、TensorRT、librosa、OpenCV、cuda-python 和 ffmpeg 等依赖。README 标注测试环境为 CentOS 7.2、NVIDIA A100、Python 3.10、PyTorch 2.5.1、CUDA 12.1、TensorRT 8.6.1。#Ditto GitHub#</p><pre><code class="language-bash">conda env create -f environment.yaml
+conda activate ditto</code></pre><p>权重从 HuggingFace 下载到本地 <code>checkpoints</code> 目录。README 中列出的权重形态包括 <code>ditto_cfg</code>、<code>ditto_onnx</code>、<code>ditto_trt_Ampere_Plus</code> 和 <code>ditto_pytorch</code>。本次阅读中 HuggingFace 页面访问超时，因此只采用 README 中能核实到的说明。#Ditto HuggingFace#</p><h3 class="section-title">推理命令</h3><p>README 的推理命令本质上是在告诉 <code>inference.py</code> 三件事：模型在哪里、输入素材在哪里、结果写到哪里。</p><pre><code class="language-bash">python inference.py \
+  --data_root "./checkpoints/ditto_trt_Ampere_Plus" \
+  --cfg_pkl "./checkpoints/ditto_cfg/v0.4_hubert_cfg_trt.pkl" \
+  --audio_path "./example/audio.wav" \
+  --source_path "./example/image.png" \
+  --output_path "./tmp/result.mp4"</code></pre><div class="table-wrap param-table"><table><thead><tr><th>参数</th><th>作用</th><th>怎么替换</th></tr></thead><tbody><tr><td><code>--data_root</code></td><td>模型文件根目录。<code>parse_cfg</code> 会把配置里的模型相对路径拼到这个目录下，因此它决定本次使用 TensorRT、ONNX 还是 PyTorch 权重。</td><td>想用 TensorRT 就指向 <code>ditto_trt_Ampere_Plus</code> 或自己转换出的 TensorRT 目录；想用 PyTorch 就指向 <code>ditto_pytorch</code>。</td></tr><tr><td><code>--cfg_pkl</code></td><td>推理配置文件，里面记录各 atomic component 使用哪些模型、输入输出维度和运行参数。</td><td>必须和 <code>data_root</code> 的模型格式匹配。例如 TensorRT 用 <code>v0.4_hubert_cfg_trt.pkl</code>，PyTorch 用 <code>v0.4_hubert_cfg_pytorch.pkl</code>。</td></tr><tr><td><code>--audio_path</code></td><td>驱动音频。源码会用 <code>librosa</code> 以 16 kHz 读取，再交给 <code>Wav2Feat</code> 提取 HuBERT 特征。</td><td>换成自己的 <code>.wav</code> 音频路径。音频内容决定嘴型、表情节奏和说话时长。</td></tr><tr><td><code>--source_path</code></td><td>被驱动的人脸素材，可以是 source image，也可以按仓库支持传 source video。</td><td>换成自己的头像图片或视频。这个素材提供身份、初始姿态、appearance feature 和 source keypoints。</td></tr><tr><td><code>--output_path</code></td><td>最终输出视频路径。pipeline 会先写临时视频，再用 <code>ffmpeg</code> 合成原音频得到这个 mp4。</td><td>换成你想保存的路径，例如 <code>./tmp/my-result.mp4</code>；目录要可写。</td></tr></tbody></table></div><div class="admonition tip"><div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>如何判断命令是否配对正确</div><div class="admonition-content"><p><code>--data_root</code> 和 <code>--cfg_pkl</code> 要作为一组看：TensorRT 目录配 TensorRT 配置，PyTorch 目录配 PyTorch 配置。如果 GPU 架构不兼容仓库提供的 TensorRT engine，就先用 <code>scripts/cvt_onnx_to_trt.py</code> 从 ONNX 转成本机 engine，再把 <code>--data_root</code> 指向转换后的目录。</p></div></div><h3 class="section-title">训练在 train 分支</h3><p>主分支没有完整训练入口。训练代码位于 <code>train</code> 分支，其中入口是 <code>MotionDiT/train.py</code>，数据准备脚本位于 <code>prepare_data</code>，Quick Start 使用 <code>accelerate launch train.py</code> 启动。训练分支 README 提醒：示例训练只用于走通流程，要得到合理效果需要更多高质量数据和更长训练。</p><pre><code class="language-bash">git checkout train
+cd MotionDiT
+accelerate launch train.py \
+  --experiment_dir ${EXP_DIR} \
+  --experiment_name ${EXP_NAME} \
+  --use_sc \
+  --use_last_frame \
+  --use_last_frame_loss \
+  --use_emo \
+  --use_eye_open \
+  --use_eye_ball \
+  --audio_feat_dim 1103 \
+  --motion_feat_dim 265</code></pre><div class="table-wrap param-table"><table><thead><tr><th>参数</th><th>作用</th><th>阅读代码时对应哪里</th></tr></thead><tbody><tr><td><code>--experiment_dir</code></td><td>实验输出根目录，用来保存日志、配置快照和 checkpoint。</td><td><code>Trainer._init_log</code> 与 checkpoint 保存逻辑。</td></tr><tr><td><code>--experiment_name</code></td><td>本次实验名称，通常作为输出目录的一部分。</td><td>训练日志目录和 checkpoint 目录组织。</td></tr><tr><td><code>--use_sc</code></td><td>启用 source canonical / source 相关条件，让 motion 生成感知 source 身份与结构。</td><td><code>Stage2Dataset</code> 组织 <code>aud_cond</code> 和附加条件。</td></tr><tr><td><code>--use_last_frame</code></td><td>把上一帧或条件帧作为生成条件，帮助片段之间保持连续。</td><td><code>kp_cond</code>、<code>cond_frame</code> 进入 LMDM。</td></tr><tr><td><code>--use_last_frame_loss</code></td><td>增加 last-frame 相关损失，约束片段边界或条件帧附近的连续性。</td><td><code>MotionDiffusion.p_losses</code> 中的 last-frame loss 分支。</td></tr><tr><td><code>--use_emo</code></td><td>把 emotion 特征加入条件，影响表情生成。</td><td><code>Stage2Dataset</code> 加载 <code>emo</code> 特征并拼入条件。</td></tr><tr><td><code>--use_eye_open</code> / <code>--use_eye_ball</code></td><td>加入眼睛开合和眼球方向条件，帮助控制眨眼与视线。</td><td>训练数据中的 eye 特征，以及推理侧 <code>MotionStitch</code> 的眼睛控制逻辑。</td></tr><tr><td><code>--audio_feat_dim</code></td><td>音频条件维度。README 示例为 <code>1103</code>，需要和预处理出来的音频特征一致。</td><td><code>MotionDecoder</code> 的条件投影层输入维度。</td></tr><tr><td><code>--motion_feat_dim</code></td><td>motion 表示维度。README 示例为 <code>265</code>，需要和数据集导出的 motion feature 一致。</td><td><code>LMDM</code> / <code>MotionDecoder</code> 的 motion 输入输出维度。</td></tr></tbody></table></div></div><div class="ch fade-in"><div class="ch-label">Architecture</div><div class="ch-title">从运行单元看整体架构</div><p>主分支最重要的不是单个模型定义，而是 <code>inference.py</code>、<code>stream_pipeline_offline.py</code> / <code>stream_pipeline_online.py</code> 和 <code>core/atomic_components</code> 下的一组原子组件。它们共同把“音频驱动头像”拆成多阶段队列流水线。</p>{{< mermaid >}}
+flowchart TD
+  User["用户输入<br/>source image/video + audio"] --> CLI["inference.py<br/>命令行入口"]
+  CLI --> SDK["StreamSDK<br/>推理编排"]
+  SDK --> CFG["parse_cfg<br/>cfg_pkl + data_root"]
+  CFG --> Loader["load_model<br/>ONNX / TensorRT / PyTorch"]
+  SDK --> Source["Source2Info / AvatarRegistrar<br/>人脸裁剪、关键点、appearance feature"]
+  SDK --> Audio["Wav2Feat<br/>HuBERT 音频特征"]
+  Source --> Cond["ConditionHandler<br/>source canonical + audio + emotion + eye"]
+  Audio --> Cond
+  Cond --> A2M["Audio2Motion<br/>调用 LMDM"]
+  A2M --> Stitch["MotionStitch<br/>运动缝合与控制"]
+  Stitch --> Warp["WarpF3D<br/>3D feature warping"]
+  Warp --> Decode["DecodeF3D<br/>图像解码"]
+  Decode --> Putback["PutBack<br/>回贴到原图"]
+  Putback --> Writer["VideoWriter + ffmpeg<br/>输出 mp4"]
+{{< /mermaid >}}<div class="table-wrap"><table><thead><tr><th>层级</th><th>仓库证据</th><th>职责</th></tr></thead><tbody><tr><td>入口</td><td><code>inference.py</code></td><td>解析参数、初始化 SDK、读取音频、触发推理</td></tr><tr><td>流水线</td><td><code>stream_pipeline_offline.py</code> / <code>stream_pipeline_online.py</code></td><td>创建队列与 worker，把各阶段串成可流式执行的 pipeline</td></tr><tr><td>模型加载</td><td><code>core/utils/load_model.py</code></td><td>按后缀统一加载 ONNX、TensorRT、PyTorch 模型</td></tr><tr><td>运动扩散</td><td><code>core/atomic_components/audio2motion.py</code>、<code>core/models/lmdm.py</code></td><td>把音频和条件转为 motion sequence</td></tr><tr><td>运动控制</td><td><code>core/atomic_components/motion_stitch.py</code></td><td>融合 source motion、driving motion、眼睛和姿态控制</td></tr></tbody></table></div></div><div class="ch fade-in"><div class="ch-label">Code Path</div><div class="ch-title">推理主调用链怎么跑起来</div><p><code>inference.py</code> 是一个很薄的入口：它解析命令行参数，创建 <code>StreamSDK</code>，调用 <code>run</code>。真正的工程复杂度在 <code>StreamSDK.setup</code> 和各个 worker 中。</p><pre><code class="language-text">inference.py
+  -> StreamSDK(cfg_pkl, data_root)
+  -> SDK.setup(source_path, output_path)
+  -> librosa.load(audio_path, sr=16000)
+  -> Wav2Feat.wav2feat(audio)
+  -> audio2motion_queue.put(audio_feature)
+  -> 多线程 worker pipeline
+  -> ffmpeg 合成临时视频与原音频</code></pre><h3 class="section-title">入口源码：run 如何把音频送进流水线</h3><p>这段是真实入口代码。它先用 <code>SDK.setup</code> 注册 source，再把音频固定重采样到 16 kHz；离线模式下，HuBERT 特征会被放入 <code>audio2motion_queue</code>，后续 worker 从队列继续消费。</p><p><code>inference.py :: run</code></p><pre><code class="language-python">def run(SDK: StreamSDK, audio_path: str, source_path: str, output_path: str, more_kwargs: str | dict = {}):
+
+    if isinstance(more_kwargs, str):
+        more_kwargs = load_pkl(more_kwargs)
+    setup_kwargs = more_kwargs.get(&quot;setup_kwargs&quot;, {})
+    run_kwargs = more_kwargs.get(&quot;run_kwargs&quot;, {})
+
+    SDK.setup(source_path, output_path, **setup_kwargs)
+
+    audio, sr = librosa.core.load(audio_path, sr=16000)
+    num_f = math.ceil(len(audio) / 16000 * 25)
+
+    fade_in = run_kwargs.get(&quot;fade_in&quot;, -1)
+    fade_out = run_kwargs.get(&quot;fade_out&quot;, -1)
+    ctrl_info = run_kwargs.get(&quot;ctrl_info&quot;, {})
+    SDK.setup_Nd(N_d=num_f, fade_in=fade_in, fade_out=fade_out, ctrl_info=ctrl_info)
+
+    online_mode = SDK.online_mode
+    if online_mode:
+        chunksize = run_kwargs.get(&quot;chunksize&quot;, (3, 5, 2))
+        audio = np.concatenate([np.zeros((chunksize[0] * 640,), dtype=np.float32), audio], 0)
+        split_len = int(sum(chunksize) * 0.04 * 16000) + 80  # 6480
+        for i in range(0, len(audio), chunksize[1] * 640):
+            audio_chunk = audio[i:i + split_len]
+            if len(audio_chunk) &lt; split_len:
+                audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode=&quot;constant&quot;)
+            SDK.run_chunk(audio_chunk, chunksize)
+    else:
+        aud_feat = SDK.wav2feat.wav2feat(audio)
+        SDK.audio2motion_queue.put(aud_feat)
+    SDK.close()
+
+    cmd = f&#x27;ffmpeg -loglevel error -y -i &quot;{SDK.tmp_output_path}&quot; -i &quot;{audio_path}&quot; -map 0:v -map 1:a -c:v copy -c:a aac &quot;{output_path}&quot;&#x27;
+    print(cmd)
+    os.system(cmd)
+</code></pre><div class="code-tabs"><div class="code-tabs-header"><button class="code-tab-btn active" data-tab="main-flow">调用链</button><button class="code-tab-btn" data-tab="main-algorithm">伪代码</button></div><div class="code-tab-content active" data-panel="main-flow">{{< mermaid >}}
+sequenceDiagram
+  participant CLI as inference.py
+  participant SDK as StreamSDK
+  participant A2M as Audio2Motion worker
+  participant Stitch as MotionStitch worker
+  participant Render as Warp/Decode/PutBack workers
+  participant Writer as Writer/ffmpeg
+  CLI->>SDK: "setup(source_path, output_path)"
+  CLI->>SDK: "run(audio_path)"
+  SDK->>A2M: "audio feature queue"
+  A2M->>Stitch: "motion sequence"
+  Stitch->>Render: "stitched keypoints"
+  Render->>Writer: "frame images"
+  Writer-->>CLI: "result.mp4"
+{{< /mermaid >}}</div><div class="code-tab-content" data-panel="main-algorithm"><pre><code class="language-text">Algorithm: Ditto offline inference
+Input: source_path, audio_path, cfg_pkl, data_root
+1. Parse cfg_pkl and bind every model path to data_root.
+2. Register source image/video: crop face, extract keypoints and 3D feature.
+3. Convert waveform to HuBERT audio feature.
+4. Feed audio feature into audio2motion queue.
+5. LMDM samples motion sequence in motion space.
+6. MotionStitch mixes source motion, driving motion, gaze and pose controls.
+7. Warp 3D feature, decode crop image, put crop back to original canvas.
+8. Write temporary video and mux original audio by ffmpeg.
+Output: result.mp4</code></pre></div></div></div><div class="ch fade-in"><div class="ch-label">Motion Diffusion</div><div class="ch-title">LMDM：扩散模型落在 motion space</div><p>Ditto 的关键不是直接在像素空间扩散，而是在 motion 表示上做 diffusion。推理侧的核心路径是 <code>core/atomic_components/audio2motion.py</code> 调用 <code>core/models/lmdm.py</code>，再进入 <code>core/models/modules/LMDM.py</code> 和 <code>core/models/modules/lmdm_modules/model.py</code>。</p>{{< mermaid >}}
+flowchart LR
+  X["noisy motion x_t"] --> Decoder["MotionDecoder"]
+  Frame["cond_frame"] --> Decoder
+  Audio["audio condition"] --> Tokens["condition tokens"]
+  EmoEye["emotion / eye / source canonical"] --> Tokens
+  T["timestep embedding"] --> Decoder
+  Tokens --> Decoder
+  Decoder --> X0["predicted x_start"]
+  X0 --> DDIM["DDIM update"]
+  DDIM --> Next["x_t_minus_1"]
+{{< /mermaid >}}<p><code>MotionDecoder</code> 会把当前 noisy motion、条件帧、音频条件以及 timestep embedding 组合起来。源码中的 <code>guided_forward</code> 是 classifier-free guidance 风格：先算无条件输出，再算有条件输出，然后用 <code>guidance_weight</code> 放大二者差值。</p><h3 class="section-title">核心源码：guidance 与 DDIM 采样</h3><p><code>guided_forward</code> 不是伪概念，而是源码里直接实现的 classifier-free guidance：同一批 noisy motion 分别跑无条件和有条件分支，再用 <code>guidance_weight</code> 放大条件分支带来的差异。</p><p><code>core/models/modules/lmdm_modules/model.py :: MotionDecoder.guided_forward / forward</code></p><pre><code class="language-python">    def guided_forward(self, x, cond_frame, cond_embed, times, guidance_weight):
+        unc = self.forward(x, cond_frame, cond_embed, times, cond_drop_prob=1)
+        conditioned = self.forward(x, cond_frame, cond_embed, times, cond_drop_prob=0)
+
+        return unc + (conditioned - unc) * guidance_weight
+
+    def forward(
+        self, x: Tensor, cond_frame: Tensor, cond_embed: Tensor, times: Tensor, cond_drop_prob: float = 0.0
+    ):
+        batch_size, device = x.shape[0], x.device
+
+        # concat last frame, project to latent space
+        # cond_frame: [b, dim] | [b, n, dim+1]
+        if self.multi_cond_frame:
+            # [b, n, dim+1] (+1 mask)
+            x = torch.cat([x, cond_frame], dim=-1)
+        else:
+            # [b, dim]
+            x = torch.cat([x, cond_frame.unsqueeze(1).repeat(1, x.shape[1], 1)], dim=-1)
+        x = self.input_projection(x)
+        # add the positional embeddings of the input sequence to provide temporal information
+        x = self.abs_pos_encoding(x)
+
+        # create audio conditional embedding with conditional dropout
+        keep_mask = prob_mask_like((batch_size,), 1 - cond_drop_prob, device=device)
+        keep_mask_embed = rearrange(keep_mask, &quot;b -&gt; b 1 1&quot;)
+        keep_mask_hidden = rearrange(keep_mask, &quot;b -&gt; b 1&quot;)
+
+        cond_tokens = self.cond_projection(cond_embed)
+        # encode tokens
+        cond_tokens = self.abs_pos_encoding(cond_tokens)
+        cond_tokens = self.cond_encoder(cond_tokens)
+
+        null_cond_embed = self.null_cond_embed.to(cond_tokens.dtype)
+        cond_tokens = torch.where(keep_mask_embed, cond_tokens, null_cond_embed)</code></pre><p><code>ddim_sample</code> 则负责从高斯噪声开始迭代更新 motion。每一步先预测 <code>x_start</code> 与噪声，再按 DDIM 公式更新到下一个时间步。</p><p><code>core/models/modules/LMDM.py :: MotionDiffusion.ddim_sample</code></p><pre><code class="language-python">    @torch.no_grad()
+    def ddim_sample(self, kp_cond, aud_cond, sampling_timesteps):
+        self.setup(sampling_timesteps)
+
+        cond_frame = kp_cond
+        cond = aud_cond
+
+        shape = (1, self.seq_frames, self.motion_feat_dim)
+        x = torch.randn(shape, device=self.device)
+
+        x_start = None
+        i = 0
+        for _, time_next in self.time_pairs:
+            time_cond = self.time_cond_list[i]
+            pred_noise, x_start = self.model_predictions(x, cond_frame, cond, time_cond)
+            if time_next &lt; 0:
+                x = x_start
+                continue
+
+            alpha_next_sqrt = self.alpha_next_sqrt_list[i]
+            c = self.c_list[i]
+            sigma = self.sigma_list[i]
+            noise = self.noise_list[i]
+            x = x_start * alpha_next_sqrt + c * pred_noise + sigma * noise
+
+            i += 1
+        return x  # pred_kp_seq</code></pre><div class="callout"><strong>设计直觉</strong>：把扩散放在 motion space，可以把生成问题从“每帧像素怎么画”转成“表情、姿态、关键点和眼睛怎么随音频演化”。</div></div><div class="ch fade-in"><div class="ch-label">Training</div><div class="ch-title">训练分支如何组织数据和 loss</div><p>训练分支的主入口是 <code>MotionDiT/train.py</code>。它通过 <code>tyro</code> 解析训练参数，创建 <code>Trainer</code>，再由 <code>Trainer.train_loop</code> 执行训练。关键路径包括 <code>MotionDiT/src/trainers/trainer.py</code>、<code>MotionDiT/src/datasets/s2_dataset_v2.py</code>、<code>MotionDiT/src/models/LMDM.py</code> 和 <code>MotionDiT/src/models/modules/diffusion.py</code>。</p>{{< mermaid >}}
+flowchart TD
+  TrainPy["MotionDiT/train.py"] --> Trainer["Trainer"]
+  Trainer --> Dataset["Stage2Dataset"]
+  Dataset --> Batch["kp_seq / kp_cond / aud_cond"]
+  Trainer --> LMDMTrain["LMDM.diffusion"]
+  Batch --> LMDMTrain
+  LMDMTrain --> Loss["MotionDiffusion.p_losses"]
+  Loss --> Backward["loss backward + optimizer step"]
+{{< /mermaid >}}<p><code>Stage2Dataset</code> 会加载 motion、audio、emotion、eye 等预处理特征，切成固定长度片段，返回 <code>kp_seq</code>、<code>kp_cond</code> 和 <code>aud_cond</code>。<code>p_losses</code> 不只计算 position loss，还支持 velocity、acceleration、last-frame loss 和 regularization loss。</p></div><div class="ch fade-in"><div class="ch-label">Engineering Notes</div><div class="ch-title">工程取舍与复现边界</div><p><code>core/utils/load_model.py</code> 通过文件后缀选择 ONNX Runtime、TensorRT 或 PyTorch backend。这让上层 atomic component 不必关心底层模型格式，也解释了为什么 README 可以提供 TensorRT、ONNX、PyTorch 三类权重路径。</p><h3 class="section-title">模型加载源码：用后缀切换推理后端</h3><p>这里是可替换 backend 的关键：<code>.onnx</code> 走 ONNX Runtime，<code>.engine</code> / <code>.trt</code> 走 TensorRT，<code>.pt</code> / <code>.pth</code> 才实例化 PyTorch module。</p><p><code>core/utils/load_model.py :: load_model</code></p><pre><code class="language-python">def load_model(model_path: str, device: str = &quot;cuda&quot;, **kwargs):
+    if kwargs.get(&quot;force_ori_type&quot;, False):
+        # for hubert, landmark, retinaface, mediapipe
+        model = load_force_ori_type(model_path, device, **kwargs)
+        return model, &quot;ori&quot;
+
+    if model_path.endswith(&quot;.onnx&quot;):
+        # onnx
+        import onnxruntime
+
+        if device == &quot;cuda&quot;:
+            providers = [&quot;CUDAExecutionProvider&quot;, &quot;CPUExecutionProvider&quot;]
+        else:
+            providers = [&quot;CPUExecutionProvider&quot;]
+        model = onnxruntime.InferenceSession(model_path, providers=providers)
+        return model, &quot;onnx&quot;
+
+    elif model_path.endswith(&quot;.engine&quot;) or model_path.endswith(&quot;.trt&quot;):
+        # tensorRT
+        from .tensorrt_utils import TRTWrapper
+
+        model = TRTWrapper(model_path)
+        return model, &quot;tensorrt&quot;
+
+    elif model_path.endswith(&quot;.pt&quot;) or model_path.endswith(&quot;.pth&quot;):
+        # pytorch
+        model = create_model(model_path, device, **kwargs)
+        return model, &quot;pytorch&quot;
+</code></pre><h3 class="section-title">运动缝合源码：source 身份与 driving motion 如何混合</h3><p><code>MotionStitch</code> 是控制感最强的一段代码：它先按 <code>use_d_keys</code> 混合 source 与 driving motion，再处理眼睛、VAD、姿态偏移和 fade，最后把 source / driving motion 都变成 keypoint，并可选调用 stitching network 修正。</p><p><code>core/atomic_components/motion_stitch.py :: MotionStitch.__call__</code></p><pre><code class="language-python">    def __call__(self, x_s_info, x_d_info, **kwargs):
+        # return x_s, x_d
+
+        kwargs = self._merge_kwargs(self.overall_ctrl_info, kwargs)
+
+        if self.scale_ratio is None:
+            self.scale_b = x_s_info[&#x27;scale&#x27;].item()
+            self.scale_ratio = self.scale_a / self.scale_b
+            self._set_scale_ratio(self.scale_ratio)
+
+        if self.relative_d and self.d0 is None:
+            self.d0 = copy.deepcopy(x_d_info)
+
+        x_d_info = _mix_s_d_info(
+            x_s_info,
+            x_d_info,
+            self.use_d_keys,
+            self.d0,
+        )
+
+        delta_eye = 0
+        if self.drive_eye and self.delta_eye_arr is not None:
+            delta_eye = self.delta_eye_arr[
+                self.delta_eye_idx_list[self.idx % len(self.delta_eye_idx_list)]
+            ][None]
+        x_d_info = _fix_exp_for_x_d_info_v2(
+            x_d_info,
+            x_s_info,
+            delta_eye,
+            self.fix_exp_a1,
+            self.fix_exp_a2,
+            self.fix_exp_a3,
+        )
+
+        if kwargs.get(&quot;vad_alpha&quot;, 1) &lt; 1:
+            x_d_info = ctrl_vad(x_d_info, x_s_info, kwargs.get(&quot;vad_alpha&quot;, 1))
+
+        x_d_info = ctrl_motion(x_d_info, **kwargs)
+
+        if self.fade_type == &quot;d0&quot; and self.fade_dst is None:
+            self.fade_dst = copy.deepcopy(x_d_info)
+
+        # fade
+        if &quot;fade_alpha&quot; in kwargs and self.fade_type in [&quot;d0&quot;, &quot;s&quot;]:
+            fade_alpha = kwargs[&quot;fade_alpha&quot;]
+            fade_keys = kwargs.get(&quot;fade_out_keys&quot;, self.fade_out_keys)
+            if self.fade_type == &quot;d0&quot;:
+                fade_dst = self.fade_dst
+            elif self.fade_type == &quot;s&quot;:
+                if self.fade_dst is not None:
+                    fade_dst = self.fade_dst
+                else:
+                    fade_dst = copy.deepcopy(x_s_info)
+                    if self.is_image_flag:
+                        self.fade_dst = fade_dst
+            x_d_info = fade(x_d_info, fade_dst, fade_alpha, fade_keys)
+
+        if self.drive_eye:
+            if self.pose_s is None:
+                yaw_s = bin66_to_degree(x_s_info[&#x27;yaw&#x27;]).item()
+                pitch_s = bin66_to_degree(x_s_info[&#x27;pitch&#x27;]).item()
+                self.pose_s = [yaw_s, pitch_s]
+            x_d_info = _fix_gaze(self.pose_s, x_d_info)
+
+        if self.x_s is not None:
+            x_s = self.x_s
+        else:
+            x_s = transform_keypoint(x_s_info)
+            if self.is_image_flag:
+                self.x_s = x_s
+        
+        x_d = transform_keypoint(x_d_info)
+        
+        if self.flag_stitching:
+            x_d = self.stitch_net(x_s, x_d)</code></pre><p>从源码结构看，实时性并不是单靠一个模型很快，而是来自“分阶段队列 + worker 并行 + 可替换推理后端”的组合。</p><div class="admonition warning"><div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>复现边界</div><div class="admonition-content"><p>本机没有 <code>checkpoints</code>、没有可用 <code>nvidia-smi</code>、也没有 conda，因此这次没有实际跑通推理命令。本文对运行方式的说明来自 README 和源码；对输出效果不做本机实测背书。</p></div></div></div><div class="ch fade-in"><div class="ch-label">Takeaways</div><div class="ch-title">读完这个仓库能带走什么</div><div class="review-box"><h3>复习速查</h3><ul><li><strong>项目定位</strong>：Ditto 是一个实时可控 Talking Head 系统，主分支负责推理，训练在 <code>train</code> 分支。</li><li><strong>核心路径</strong>：<code>inference.py -> StreamSDK -> Audio2Motion/LMDM -> MotionStitch -> WarpF3D -> DecodeF3D -> PutBack -> Writer</code>。</li><li><strong>关键设计</strong>：扩散模型不直接生成像素，而是在 motion space 生成运动，再通过 feature warping 和 decoder 变成视频帧。</li><li><strong>工程价值</strong>：这个仓库展示了研究模型如何落成实时 pipeline：后端可替换、阶段可并行、控制逻辑独立于生成模型。</li><li><strong>复现提醒</strong>：TensorRT、CUDA、GPU 架构和外部 checkpoint 是主要门槛；训练示例只是流程验证，不代表最终效果。</li></ul></div></div><div class="sources"><h3>参考来源</h3><ul><li data-cite-key="Ditto-GitHub">Ant Group. <em>ditto-talkinghead</em>. <a href="https://github.com/antgroup/ditto-talkinghead" target="_blank">GitHub repository</a></li><li data-cite-key="Ditto-Paper">Li, Z. et al. <em>Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis</em>. <a href="https://arxiv.org/abs/2411.19509" target="_blank">arXiv:2411.19509</a></li><li data-cite-key="Ditto-HuggingFace">digital-avatar. <em>ditto-talkinghead checkpoints</em>. <a href="https://huggingface.co/digital-avatar/ditto-talkinghead" target="_blank">HuggingFace model page</a></li></ul></div>

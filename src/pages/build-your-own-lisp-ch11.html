@@ -1,0 +1,357 @@
+---
+title: "变量 — 环境与符号定义"
+description: "Build Your Own Lisp 第 11 章：为 Lisp 添加变量支持，包括环境（environment）的概念、变量定义和查找机制。"
+date: 2026-05-28T00:00:00
+created_at: 2026-05-28T15:19:46
+updated_at: 2026-05-28T16:00:00
+tags: [C, Lisp, 变量, 环境, 函数指针]
+categories: [编程]
+subcategory: "BuildYourOwnLisp"
+hero_title: "变量"
+hero_sub: "Build Your Own Lisp · 第 11 章"
+hero_tagline: "为 Lisp 添加变量支持，包括环境与符号定义"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 11 · 变量</div>
+  <div class="ch-title">环境与符号定义</div>
+
+  <div class="info-box">
+    <h3>章节信息</h3>
+    <p><strong>原书章节</strong>：第 11 章 Variables</p>
+    <p><strong>中文翻译</strong>：<a href="https://github.com/ksco/BuildYourOwnLispCn">KSCO (GitHub)</a></p>
+    <p><strong>原书地址</strong>：<a href="https://buildyourownlisp.com/chapter11_variables">buildyourownlisp.com</a></p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">不可变性</div>
+
+  <p>在前面的章节中，我们在语言的基础设施方面取得了相当大的进展。</p>
+
+  <p>我们已经可以做一些其他语言做不到的很酷的事情，比如把代码放在列表里。现在是时候开始添加一些<em>特性</em>，让我们的语言变得实用了。第一个要添加的就是<em>变量</em>。</p>
+
+  <p>它们被称为变量，但这是一个误导性的名字，因为我们的变量不会改变。我们的变量是<em>不可变的</em>，意味着它们不能被改变。到目前为止，我们语言中的一切都表现得像是<em>不可变的</em>。当我们求值一个表达式时，我们想象之前的东西已经被删除，新的东西被返回。在实现中，我们通常会重用之前数据来构建新数据，但从概念上来说，这是思考我们语言工作方式的好方法。</p>
+
+  <p>所以实际上，我们的变量只是一种<em>命名值</em>的方式。它们让我们给一个<em>值</em>赋予一个<em>名字</em>，然后在需要的时候可以获取该值的副本。</p>
+
+  <p>为了实现<em>命名值</em>，我们需要创建一个结构来存储程序中所有命名的名字和值。我们称之为<em>环境</em>（environment）。当我们启动一个新的交互式提示符时，我们希望创建一个新的环境与之配合，每个新的输入都在这个环境中被求值。然后我们就可以在编程时存储和回忆变量了。</p>
+
+  <div class="def-box">
+    <h3>环境（Environment）</h3>
+    <p>环境是一个数据结构，用于存储变量名和对应的值。它支持两种基本操作：</p>
+    <ul>
+      <li><strong>定义</strong>（put）：将名字和值的关联添加到环境中</li>
+      <li><strong>查找</strong>（get）：根据名字获取对应的值</li>
+    </ul>
+  </div>
+
+  <div class="callout">
+    <strong>提示</strong>：当我们重新给一个名字赋值时会发生什么？这不是可变性吗？在我们的 Lisp 中，当我们重新赋值时，我们会删除旧的关联并创建一个新的。这给人一种该名字所赋值的东西已经改变的错觉，但实际上我们只是删除了旧东西并给它赋了新东西。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">符号语法</div>
+
+  <p>既然我们要允许用户定义变量，我们就需要更新符号的语法规则，使其更加灵活。它不应该只匹配我们的内置函数，而应该匹配任何可能的有效符号。不像 C 语言中变量名有相当严格的限制，我们将允许在变量名中使用各种字符。</p>
+
+  <p>我们可以创建一个正则表达式来表示可用的字符范围：</p>
+
+  <pre><code class="language-c">/[a-zA-Z0-9_+\-*\/\\=<>!&]+/</code></pre>
+
+  <p>乍一看，这看起来像是我们胡乱敲击键盘产生的。实际上这是一个使用了大范围说明符 <code>[]</code> 的正则表达式。在范围说明符内部，特殊字符失去了它们的含义，但其中一些字符仍然需要用反斜杠转义。因为这是 C 字符串的一部分，我们需要用两个反斜杠来表示输入中的一个反斜杠字符。</p>
+
+  <p>这个规则允许符号是任何普通的 C 标识符字符 <code>a-zA-Z0-9_</code>、算术运算符字符 <code>+\-*\/</code>、反斜杠字符 <code>\\</code>、比较运算符字符 <code>=<>!</code> 或者 <code>&</code>。这将给我们定义新符号和现有符号所需的全部灵活性。</p>
+
+  <pre><code class="language-c">mpca_lang(MPCA_LANG_DEFAULT,
+  "                                                     \
+    number : /-?[0-9]+/ ;                               \
+    symbol : /[a-zA-Z0-9_+\-*\/\\=<>!&]+/ ;         \
+    sexpr  : '(' <expr>* ')' ;                          \
+    qexpr  : '{' <expr>* '}' ;                          \
+    expr   : <number> | <symbol> | <sexpr> | <qexpr> ;  \
+    lispy  : /^/ <expr>* /$/ ;                          \
+  ",
+  Number, Symbol, Sexpr, Qexpr, Expr, Lispy);</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">函数指针</div>
+
+  <p>一旦我们引入变量，符号将不再代表我们语言中的函数，而是代表一个名字，我们可以用它来查找环境并获取新的值。</p>
+
+  <p>因此我们需要一个新的值来表示我们语言中的函数，当遇到内置符号之一时可以返回它。为了创建这种新的 <code>lval</code> 类型，我们将使用一种叫做<em>函数指针</em>的东西。</p>
+
+  <p>函数指针是 C 语言的一个很棒的特性，它让你可以存储和传递函数的指针。编辑这些指针所指向的数据没有意义。相反，我们用它们来调用它们所指向的函数，就像调用普通函数一样。</p>
+
+  <p>和普通指针一样，函数指针也有与之关联的类型。这个类型指定的是所指向函数的类型，而不是所指向数据的类型。这让编译器能够判断函数是否被正确调用。</p>
+
+  <p>在前一章中，我们的内置函数接受一个 <code>lval*</code> 作为输入并返回一个 <code>lval*</code> 作为输出。在本章中，我们的内置函数将额外接受一个指向环境的指针 <code>lenv*</code> 作为输入。我们可以这样声明一个新的函数指针类型 <code>lbuiltin</code>：</p>
+
+  <pre><code class="language-c">typedef lval*(*lbuiltin)(lenv*, lval*);</code></pre>
+
+  <div class="def-box">
+    <h3>函数指针语法解析</h3>
+    <p>C 语言的函数指针语法看起来很奇怪，但可以这样理解：</p>
+    <ul>
+      <li><code>typedef</code>：将变量名声明为新类型</li>
+      <li><code>*</code>：指针类型，应该写在变量名左边</li>
+      <li><code>lbuiltin</code>：要声明的新类型名</li>
+      <li><code>(lenv*, lval*)</code>：函数接受的参数类型</li>
+      <li><code>lval*</code>：函数返回的类型</li>
+    </ul>
+    <p>理解方式："为了得到一个 <code>lval*</code>，我们解引用 <code>lbuiltin</code> 并用 <code>lenv*</code> 和 <code>lval*</code> 调用它。" 因此 <code>lbuiltin</code> 必须是一个函数指针，它接受 <code>lenv*</code> 和 <code>lval*</code> 并返回 <code>lval*</code>。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">循环类型</div>
+
+  <p><code>lbuiltin</code> 类型引用了 <code>lval</code> 类型和 <code>lenv</code> 类型。这意味着它们应该在源文件中首先被声明。</p>
+
+  <p>但我们想在 <code>lval</code> 结构体中创建一个 <code>lbuiltin</code> 字段，这样我们就可以创建函数值。因此我们的 <code>lbuiltin</code> 声明必须在 <code>lval</code> 声明之前。这导致了一种叫做<em>循环类型依赖</em>的情况，即两个类型相互依赖。</p>
+
+  <p>我们之前在处理相互依赖的函数时遇到过这个问题。解决方案是创建一个<em>前向声明</em>，它声明了函数但没有定义函数体。</p>
+
+  <p>在 C 语言中，我们可以对类型做完全相同的事情。首先，我们声明两个没有结构体的 <code>struct</code> 类型。其次，我们将它们 typedef 为 <code>lval</code> 和 <code>lenv</code>。然后我们可以定义我们的 <code>lbuiltin</code> 函数指针类型。最后我们可以定义 <code>lval</code> 结构体的主体。现在我们所有的类型问题都解决了，编译器不会再抱怨了。</p>
+
+  <pre><code class="language-c">/* Forward Declarations */
+
+struct lval;
+struct lenv;
+typedef struct lval lval;
+typedef struct lenv lenv;
+
+/* Lisp Value */
+
+enum { LVAL_ERR, LVAL_NUM,   LVAL_SYM,
+       LVAL_FUN, LVAL_SEXPR, LVAL_QEXPR };
+
+typedef lval*(*lbuiltin)(lenv*, lval*);
+
+struct lval {
+  int type;
+
+  long num;
+  char* err;
+  char* sym;
+  lbuiltin fun;
+
+  int count;
+  lval** cell;
+};</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">函数类型</div>
+
+  <p>随着我们添加了一个新的可能的 <code>lval</code> 类型（枚举值 <code>LVAL_FUN</code>），我们应该更新所有处理 <code>lval</code> 的相关函数来正确处理这个更新。在大多数情况下，这只是在 switch 语句中插入新的 case。</p>
+
+  <p>我们可以从为这个类型创建一个新的构造函数开始：</p>
+
+  <pre><code class="language-c">lval* lval_fun(lbuiltin func) {
+  lval* v = malloc(sizeof(lval));
+  v->type = LVAL_FUN;
+  v->fun = func;
+  return v;
+}</code></pre>
+
+  <p>在<strong>删除</strong>时，我们不需要为函数指针做任何特别的事情：</p>
+
+  <pre><code class="language-c">case LVAL_FUN: break;</code></pre>
+
+  <p>在<strong>打印</strong>时，我们可以只打印一个名义字符串：</p>
+
+  <pre><code class="language-c">case LVAL_FUN:   printf("<function>"); break;</code></pre>
+
+  <p>我们还将添加一个用于<strong>复制</strong> <code>lval</code> 的新函数。这在我们向环境中放入东西和从环境中取出东西时会很有用。对于数字和函数，我们可以直接复制相关字段。对于字符串，我们需要使用 <code>malloc</code> 和 <code>strcpy</code> 来复制。要复制列表，我们需要分配正确的空间量，然后逐个复制每个元素。</p>
+
+  <pre><code class="language-c">lval* lval_copy(lval* v) {
+
+  lval* x = malloc(sizeof(lval));
+  x->type = v->type;
+
+  switch (v->type) {
+
+    /* Copy Functions and Numbers Directly */
+    case LVAL_FUN: x->fun = v->fun; break;
+    case LVAL_NUM: x->num = v->num; break;
+
+    /* Copy Strings using malloc and strcpy */
+    case LVAL_ERR:
+      x->err = malloc(strlen(v->err) + 1);
+      strcpy(x->err, v->err); break;
+
+    case LVAL_SYM:
+      x->sym = malloc(strlen(v->sym) + 1);
+      strcpy(x->sym, v->sym); break;
+
+    /* Copy Lists by copying each sub-expression */
+    case LVAL_SEXPR:
+    case LVAL_QEXPR:
+      x->count = v->count;
+      x->cell = malloc(sizeof(lval*) * x->count);
+      for (int i = 0; i < x->count; i++) {
+        x->cell[i] = lval_copy(v->cell[i]);
+      }
+    break;
+  }
+
+  return x;
+}</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">环境</div>
+
+  <p>现在我们可以开始编写环境结构和相关函数了。环境结构非常简单。它包含两个列表，一个是字符串列表，一个是 <code>lval*</code> 列表。每个字符串对应一个 <code>lval*</code>。当我们想要获取某个符号的值时，我们在字符串列表中搜索，然后返回对应的 <code>lval*</code>。</p>
+
+  <pre><code class="language-c">struct lenv {
+  int count;
+  char** syms;
+  lval** vals;
+};</code></pre>
+
+  <p>构造函数和析构函数如下：</p>
+
+  <pre><code class="language-c">lenv* lenv_new(void) {
+  lenv* e = malloc(sizeof(lenv));
+  e->count = 0;
+  e->syms = NULL;
+  e->vals = NULL;
+  return e;
+}
+
+void lenv_del(lenv* e) {
+  for (int i = 0; i < e->count; i++) {
+    free(e->syms[i]);
+    lval_del(e->vals[i]);
+  }
+  free(e->syms);
+  free(e->vals);
+  free(e);
+}</code></pre>
+
+  <p>为了从环境中获取值，我们在列表中搜索匹配的字符串。如果找到了，我们就返回值的副本。如果没有找到，我们就返回错误。</p>
+
+  <pre><code class="language-c">lval* lenv_get(lenv* e, lval* k) {
+
+  /* Iterate over all items in environment */
+  for (int i = 0; i < e->count; i++) {
+    /* Check if the stored string matches the symbol string */
+    /* If it does, return a copy of the value */
+    if (strcmp(e->syms[i], k->sym) == 0) {
+      return lval_copy(e->vals[i]);
+    }
+  }
+  /* If no symbol found return error */
+  return lval_err("unbound symbol!");
+}</code></pre>
+
+  <p>为了向环境中添加值，我们搜索现有的变量。如果找到了，我们就用新值替换它。如果没有找到，我们就分配新的空间来存储新的变量-值对。</p>
+
+  <pre><code class="language-c">void lenv_put(lenv* e, lval* k, lval* v) {
+
+  /* Iterate over all items in environment */
+  /* This is to see if variable already exists */
+  for (int i = 0; i < e->count; i++) {
+
+    /* If variable is found delete item at that position */
+    /* And replace with variable supplied by user */
+    if (strcmp(e->syms[i], k->sym) == 0) {
+      lval_del(e->vals[i]);
+      e->vals[i] = lval_copy(v);
+      return;
+    }
+  }
+
+  /* If no existing entry found allocate space for new entry */
+  e->count++;
+  e->vals = realloc(e->vals, sizeof(lval*) * e->count);
+  e->syms = realloc(e->syms, sizeof(char*) * e->count);
+
+  /* Copy contents of lval and symbol string into new location */
+  e->vals[e->count-1] = lval_copy(v);
+  e->syms[e->count-1] = malloc(strlen(k->sym)+1);
+  strcpy(e->syms[e->count-1], k->sym);
+}</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">内置函数</div>
+
+  <p>现在我们需要更改所有的内置函数，使其接受一个 <code>lenv*</code> 参数。在 <code>main</code> 函数中，我们还需要创建一个环境，并在循环的每次迭代中将其传递给 <code>lval_eval</code>。</p>
+
+  <p>我们还需要改变求值函数，使其在环境中查找符号，而不是将它们视为函数：</p>
+
+  <pre><code class="language-c">lval* lval_eval(lenv* e, lval* v) {
+  if (v->type == LVAL_SYM) {
+    lval* x = lenv_get(e, v);
+    lval_del(v);
+    return x;
+  }
+  if (v->type == LVAL_SEXPR) { return lval_eval_sexpr(e, v); }
+  return v;
+}</code></pre>
+
+  <p>我们还需要添加一个内置函数 <code>def</code>，用于定义全局变量。它接受一个包含一个或多个符号的 Q-表达式，以及相同数量的要赋给这些符号的值：</p>
+
+  <pre><code class="language-c">lval* builtin_def(lenv* e, lval* a) {
+  LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
+    "Function 'def' passed incorrect type!");
+
+  /* First argument is symbol list */
+  lval* syms = a->cell[0];
+
+  /* Ensure all elements of first list are symbols */
+  for (int i = 0; i < syms->count; i++) {
+    LASSERT(a, syms->cell[i]->type == LVAL_SYM,
+      "Function 'def' cannot define non-symbol");
+  }
+
+  /* Check correct number of symbols and values */
+  LASSERT(a, syms->count == a->count-1,
+    "Function 'def' cannot define incorrect "
+    "number of values to symbols");
+
+  /* Assign copies of values to symbols */
+  for (int i = 0; i < syms->count; i++) {
+    lenv_put(e, syms->cell[i], a->cell[i+1]);
+  }
+
+  lval_del(a);
+  return lval_sexpr();
+}</code></pre>
+</div>
+
+<div class="review-box fade-in">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>环境</strong>：存储变量名和值的数据结构</li>
+    <li><strong>不可变性</strong>：变量一旦定义就不能改变，重新赋值实际上是删除旧关联创建新关联</li>
+    <li><strong>函数指针</strong>：C 语言中存储和传递函数指针的特性</li>
+    <li><strong>循环类型依赖</strong>：两个类型相互依赖，需要前向声明解决</li>
+    <li><strong>lenv_get</strong>：从环境中获取变量值</li>
+    <li><strong>lenv_put</strong>：向环境中添加或更新变量</li>
+    <li><strong>builtin_def</strong>：定义全局变量的内置函数</li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="build-your-own-lisp-ch10.html"><span class="nav-label">上一章</span><span class="nav-title">Q-表达式</span></a>
+  <a class="nav-card current" href="build-your-own-lisp.html"><span class="nav-label">枢纽页</span><span class="nav-title">Build Your Own Lisp</span></a>
+  <a class="nav-card" href="build-your-own-lisp-ch12.html"><span class="nav-label">下一章</span><span class="nav-title">函数</span></a>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://buildyourownlisp.com/chapter11_variables" target="_blank">Build Your Own Lisp — Chapter 11: Variables</a></li>
+    <li><a href="https://github.com/ksco/BuildYourOwnLispCn" target="_blank">BuildYourOwnLispCn — 中文翻译</a></li>
+  </ul>
+</div>
+
+</div>

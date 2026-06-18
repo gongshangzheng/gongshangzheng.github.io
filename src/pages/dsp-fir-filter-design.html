@@ -1,0 +1,832 @@
+---
+title: "FIR 数字滤波器的设计|数字信号处理笔记"
+description: "FIR 数字滤波器的设计方法:线性相位四类分析、窗函数法、频率采样法与等波纹逼近法,含例题和三种方法对比"
+created_at: 2026-06-04T17:08:30
+updated_at: 2026-06-04T17:30:00
+tags: [FIR滤波器, 窗函数法, 频率采样法, 切比雪夫逼近, Parks-McClellan]
+categories: ["课程"]
+subcategory: "数字信号处理"
+sub_id: 110
+mathjax: true
+hero_title: "FIR 数字滤波器的设计"
+hero_sub: "第七讲|窗函数、频率采样、等波纹逼近"
+hero_tagline: "严格线性相位、绝对稳定、阶次代价"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">4</span><span class="label">线性相位类型</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">核心设计方法</span></div>
+  <div class="stat"><span class="num">5+</span><span class="label">常用窗函数</span></div>
+  <div class="stat"><span class="num b">1</span><span class="label g">最优逼近算法</span></div>
+</div>
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">学习目标</div>
+  <div class="ch-title">本节在课程中的位置</div>
+  上一章我们学习了 IIR 数字滤波器的设计方法--借助模拟低通原型(巴特沃斯、切比雪夫、椭圆),通过双线性变换把成熟的模拟设计"翻译"到数字域。IIR 滤波器可以用很低的阶次实现陡峭的过渡带,但它有一个挥之不去的痛点:<strong>相位非线性</strong>。在语音处理、图像处理、通信系统等对信号波形保真度要求高的场景中,非线性相位会造成波形失真。FIR 滤波器虽然阶次更高、计算量更大,却能实现<strong>严格的线性相位</strong>,并且天然<strong>绝对稳定</strong>。本节将系统介绍 FIR 滤波器的三种主流设计方法:窗函数法、频率采样法、等波纹(切比雪夫)最优逼近法。
+  <div class="callout"><strong>核心问题</strong>:如何在有限阶次 N 的约束下,让 FIR 滤波器的频率响应尽可能逼近理想指标,同时保持线性相位?</div>
+</div>
+
+<div class="info-box">
+  <h3>前置知识回顾</h3>
+  <p>如果下面这些概念不熟,先回看对应章节;本节会默认使用它们。</p>
+  <ul>
+    <li><strong>DTFT 与 IDFT</strong>:序列与频谱的正反变换关系。去哪里补:<a href="dsp-discrete-time-fourier-transform.html">DTFT 笔记</a> / 课件第三讲。</li>
+    <li><strong>系统函数与零极点</strong>:$H(z)$ 的零极点分布与频率响应形状的对应关系。去哪里补:<a href="dsp-z-transform-and-difference-equations.html">Z 变换笔记</a> / 课件第四讲。</li>
+    <li><strong>理想滤波器的冲激响应</strong>:理想低通是无限长 sinc 序列。去哪里补:课件第七讲第 36 页。</li>
+    <li><strong>IIR 滤波器设计</strong>:双线性变换、模拟原型法的基本思想。去哪里补:<a href="dsp-iir-filter-design.html">IIR 滤波器设计笔记</a> / 课件第六讲。</li>
+  </ul>
+</div>
+
+<!-- ==================== FIR 定义与 IIR 对比 ==================== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 0 · FIR 是什么</div>
+  <div class="ch-title">定义、与 IIR 的根本区别</div>
+
+  <div class="def-box">
+    <h3>FIR 滤波器(Finite Impulse Response)</h3>
+    <p>一个 FIR 数字滤波器的单位冲激响应 $h(n)$ 只在有限个时刻非零:</p>
+    <p style="text-align:center">\[
+    h(n) = 0,\quad n < 0 \text{ 或 } n \ge N.
+    \]</p>
+    <p>系统函数是 $z^{-1}$ 的有限次多项式(无极点,除 $z=0$):</p>
+    <p style="text-align:center">\[
+    H(z) = \sum_{n=0}^{N-1} h(n)\,z^{-n},\qquad y(n) = \sum_{k=0}^{N-1} h(k)\,x(n-k).
+    \]</p>
+    <p>$N$ 是滤波器长度(抽头数),阶数为 $N-1$。$H(z)$ 在 $z\to\infty$ 处有 $N-1$ 阶零点,在 $z=0$ 处有 $N-1$ 阶极点--这些极点全部在原点,所以 FIR 滤波器<strong>天然绝对稳定</strong>。</p>
+  </div>
+
+  <div class="example-box">
+    <h3>例题：差分方程系数与系统函数的一一对应</h3>
+    <p>设 LTI 系统的差分方程系数为 $b_k = [1, 2, 1]$，求系统函数 $H(z)$ 和频率响应 $H(e^{j\omega})$。</p>
+    <p><strong>解：</strong>差分方程系数即冲激响应：</p>
+    <p style="text-align:center">$$h(n) = \delta(n) + 2\delta(n-1) + \delta(n-2)$$</p>
+    <p>Z 变换：</p>
+    <p style="text-align:center">$$H(z) = 1 + 2z^{-1} + z^{-2}$$</p>
+    <p>令 $z = e^{j\omega}$ 得频率响应：</p>
+    <p style="text-align:center">$$H(e^{j\omega}) = 1 + 2e^{-j\omega} + e^{-2j\omega}$$</p>
+
+    <div class="callout">FIR 滤波器之所以如此"透明",是因为它没有反馈：差分方程 $y(n)=\sum b_k x(n-k)$ 的系数 $b_k$ 直接就是冲激响应 $h(k)$,直接就是 $H(z)$ 多项式的系数。不存在 IIR 那种"系数和极点关系复杂"的问题。</div>
+  </div>
+
+  <p>FIR 和 IIR 的根本区别在于<strong>冲激响应是否有限长</strong>。这个看似简单的差异,直接决定了两者在结构、稳定性、相位特性和设计方法上的全面分野:</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>IIR</th><th>FIR</th></tr></thead>
+      <tbody>
+        <tr><td>冲激响应 $h(n)$</td><td>无限长(递归)</td><td>有限长 $N$ 点(非递归)</td></tr>
+        <tr><td>系统函数 $H(z)$</td><td>有理分式,含极点</td><td>多项式,仅 $z=0$ 处有极点</td></tr>
+        <tr><td>差分方程</td><td>$y(n)=\sum b_k x(n-k)+\sum a_k y(n-k)$</td><td>$y(n)=\sum h(k)\,x(n-k)$</td></tr>
+        <tr><td>稳定性</td><td>需极点在单位圆内</td><td>始终稳定</td></tr>
+        <tr><td>相位特性</td><td>非线性,难以控制</td><td>可实现严格线性相位</td></tr>
+        <tr><td>阶次</td><td>低(相同指标下)</td><td>高(通常 5~10 倍)</td></tr>
+        <tr><td>群延迟</td><td>非常数</td><td>常数 $(N-1)/2$(线性相位时)</td></tr>
+        <tr><td>设计方法</td><td>模拟原型 + 双线性变换</td><td>窗函数 / 频率采样 / 最优逼近</td></tr>
+        <tr><td>存储/计算</td><td>少(低阶递归)</td><td>多(高阶卷积或 FFT)</td></tr>
+        <tr><td>典型应用</td><td>音频均衡、通信信道</td><td>波形保真、图像处理、数据传输</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>一句话总结:</strong>IIR 用反馈获得低阶高效,代价是相位非线性和潜在不稳定;FIR 放弃反馈换取绝对稳定和线性相位,代价是阶次高、延迟大。选择哪一种取决于应用场景--波形保真选 FIR,计算资源紧张选 IIR。</div>
+
+  <p>用一个最小例子来直观感受两者的区别。输入脉冲 $x(0)=1$,其余 $x(n)=0$,观察输出如何演化。</p>
+
+  <div class="def-box">
+    <h3>FIR 例子:算完就忘</h3>
+    <p style="text-align:center">$$H(z)=1+0.5z^{-1}+0.25z^{-2}$$</p>
+    <p>差分方程:</p>
+    <p style="text-align:center">$$y(n)=x(n)+0.5\,x(n-1)+0.25\,x(n-2)$$</p>
+    <p>逐步计算:</p>
+    <ul>
+      <li>$y(0)=1+0+0=1$</li>
+      <li>$y(1)=0+0.5\times 1+0=0.5$</li>
+      <li>$y(2)=0+0+0.25\times 1=0.25$</li>
+      <li>$y(3)=0+0+0=0$</li>
+      <li>$y(4)=y(5)=\cdots=0$ ← 永远为零</li>
+    </ul>
+    <p>脉冲进来,经过 3 个抽头,输出归零。<strong>有限长,有终点。</strong></p>
+  </div>
+
+  <div class="def-box">
+    <h3>IIR 例子:永远记得自己说过什么</h3>
+    <p style="text-align:center">$$H(z)=\frac{1}{1-0.5z^{-1}}$$</p>
+    <p>差分方程:</p>
+    <p style="text-align:center">$$y(n)=x(n)+0.5\,y(n-1)$$</p>
+    <p>逐步计算:</p>
+    <ul>
+      <li>$y(0)=1+0=1$</li>
+      <li>$y(1)=0+0.5\times 1=0.5$</li>
+      <li>$y(2)=0+0.5\times 0.5=0.25$</li>
+      <li>$y(3)=0+0.5\times 0.25=0.125$</li>
+      <li>$y(4)=0.0625$, $y(5)=0.03125$, $\cdots$</li>
+    </ul>
+    <p>脉冲进来,每次输出都拿上一次的结果乘 0.5 再用。<strong>无限长,永远在衰减但永远不停。</strong></p>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>$n$</th><th>FIR $y(n)$</th><th>IIR $y(n)$</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>1</td><td>1</td></tr>
+        <tr><td>1</td><td>0.5</td><td>0.5</td></tr>
+        <tr><td>2</td><td>0.25</td><td>0.25</td></tr>
+        <tr><td>3</td><td><strong>0</strong></td><td>0.125</td></tr>
+        <tr><td>4</td><td>0</td><td>0.0625</td></tr>
+        <tr><td>5</td><td>0</td><td>0.03125</td></tr>
+        <tr><td>$\cdots$</td><td><strong>0</strong></td><td>$(0.5)^n$</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>前 3 步输出完全一样,但第 4 步 FIR 归零了,IIR 还在继续衰减。原因是 IIR 差分方程里有 $y(n-1)$--<strong>反馈</strong>:输出反过来喂给自己。FIR 只看输入的历史 $x(n-k)$,不看自己的历史输出。</p>
+
+  <p>从这两个数值例子出发,可以推导出 FIR 与 IIR 在稳定性、相位和阶次上的全部差异:</p>
+
+  <div class="info-box">
+    <h3>从冲激响应看三个核心差异</h3>
+    <p><strong>1 稳定性</strong>。FIR 的 $H(z)$ 是有限多项式,没有分母就没有极点(除 $z=0$),不管输入什么,输出最多延续 $N$ 个采样点就归零,<strong>天然绝对稳定</strong>。IIR 的 $H(z)$ 有分母,极点 $z=0.5$ 在单位圆内所以 $h(n)=0.5^n$ 衰减;但若把系数改成 $1.1$,极点移到 $z=1.1$ 跑出单位圆,$h(n)=1.1^n$ 指数爆炸。<strong>IIR 的稳定性完全取决于极点位置</strong>,设计时必须确保所有极点在单位圆内。</p>
+    <p><strong>2 相位</strong>。FIR 的 $h(n)$ 只有有限个非零值,可以自由安排排列--让 $h(n)$ 关于中心对称就得到严格线性相位。IIR 的 $h(n)$ 是无限长的,受极点支配呈指数衰减,无法关于某个中心对称,所以<strong>IIR 做不到严格线性相位</strong>。</p>
+    <p><strong>3 阶次</strong>。FIR 用 3 个系数实现的衰减速率,IIR 用 1 个反馈系数就能做到类似效果,因为每个输出都在循环利用之前所有输出的累积--一个反馈系数等效于无限多个前馈系数。<strong>IIR 阶次更低、效率更高</strong>,代价是必须管住极点并接受非线性相位。</p>
+    <p style="margin-top:0.8em"><strong>一句话:反馈是有代价的自由。</strong>FIR 没有 feedback,所以安全、线性相位、但阶次高;IIR 有 feedback,所以高效、但必须管住极点、接受非线性相位。</p>
+  </div>
+</div>
+
+<!-- ==================== 第一组:理论分析 ==================== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第一组 · 理论分析</div>
+  <div class="ch-title">线性相位 FIR 的本质与约束</div>
+  <p>在深入具体设计方法之前,我们必须先回答一个根本问题:FIR 滤波器凭什么能做到线性相位?要做到这一点,它的冲激响应 $h(n)$ 必须满足什么对称条件?这些对称条件又把滤波器分成了哪几类,每类各自能做什么、不能做什么?</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">为什么需要线性相位</div>
+  <p>IIR 滤波器依靠递归结构(反馈)实现,系统函数 $H(z)$ 的极点可以靠近单位圆,从而用低阶次获得很窄的过渡带。但代价是:极点位置与相位特性深度耦合,<strong>无法独立控制</strong>。FIR 滤波器没有反馈,$H(z)$ 只有零点没有极点,这给它带来了两个天然优势:</p>
+  <ul>
+    <li><strong>绝对稳定</strong>:没有极点,不存在稳定性问题。</li>
+    <li><strong>线性相位可实现</strong>:只要 $h(n)$ 满足对称条件,群延迟就是常数。</li>
+  </ul>
+  <p>线性相位的物理意义是:信号通过滤波器后,所有频率分量被延迟的时间<strong>完全相同</strong>,波形只是整体平移,不会发生色散失真。这在图像滤波、数据通信、雷达信号处理中至关重要。</p>
+
+  <p>这句话的数学表述是:如果滤波器的相位响应为 $\varphi(\omega)=-\omega\tau$(关于 $\omega$ 的线性函数,斜率为常数 $\tau$),那么频率为 $\omega$ 的分量被延迟 $\tau$,频率为 $2\omega$ 的分量也被延迟 $\tau$--所有频率的延迟完全相同。结果就是波形形状不变,只是整体晚了 $\tau$ 个采样点。反过来,如果 $\varphi(\omega)$ 不是线性的,不同频率延迟不一样,波形散了,这就是相位失真。</p>
+
+  <figure class="img-center">
+    <img src="/media/images/dsp/fir-linear-phase-demo.png" alt="FIR 线性相位实验:因果 vs 对称滑动平均" loading="lazy" />
+    <figcaption>线性相位的数值验证。上图:因果 5 点滑动平均(输出写在 $i+4$),系数不对称,橙线相对蓝线明显右移(相位非线性)。下图:对称 5 点滑动平均(输出写在 $i+2$ 即窗口中心),系数对称,橙线和蓝线完全重合,只去掉噪声没有位移(线性相位=恒定延时)。</figcaption>
+  </figure>
+
+  <p>图中对比了同一个 5 点滑动平均的两种写法:</p>
+  <ul>
+    <li><strong>上图</strong>(因果实现):输出写在 $i+4$,系数序列 $[\frac{1}{5},\frac{1}{5},\frac{1}{5},\frac{1}{5},\frac{1}{5}]$ 关于中心不对称(因果约束),相位非线性,滤波结果相对原始信号有明显位移。</li>
+    <li><strong>下图</strong>(对称实现):输出写在 $i+2$(窗口中心),同样的系数但输出位置对齐了窗口中心,等效于 $h(n)=h(N{-}1{-}n)$,相位线性,滤波结果与原始信号完全重合,只有平滑效果没有位移。</li>
+  </ul>
+
+  <p>这正是 $h(n)=h(N{-}1{-}n)$ 的物理后果:对称系数保证所有频率分量被延迟相同的时间 $\tau=\frac{N-1}{2}$,波形保真。</p>
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      IIR vs FIR 不是简单的"谁更好"
+    </div>
+    <div class="admonition-content">
+      <p>IIR 阶次低、过渡带窄,但相位非线性且可能不稳定;FIR 相位线性且绝对稳定,但阶次高、延迟大、计算量大。工程上要根据场景取舍,而非一刀切。</p>
+    </div>
+  </div>
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=1 title="IIR vs FIR 对比" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">线性相位的对称条件</div>
+  <p>FIR 滤波器的系统函数为有限项多项式:</p>
+  <p style="text-align:center">$$H(z)=\sum_{n=0}^{N-1}h(n)z^{-n}$$</p>
+  <p>其频率响应 $H(e^{j\omega})$ 可以写成幅度与相位的乘积。为了得到线性相位,需要相位 $\varphi(\omega)$ 与 $\omega$ 成严格的线性关系。数学上可以证明,这要求冲激响应 $h(n)$ 关于中心点 $\alpha=\frac{N-1}{2}$ 满足<strong>对称性</strong>:</p>
+  <div class="def-box">
+    <h3>线性相位的充要条件</h3>
+    <p>若 FIR 滤波器具有线性相位,则其冲激响应满足</p>
+    <p style="text-align:center">$$h(n)=\pm h(N-1-n),\quad n=0,1,\ldots,N-1$$</p>
+    <p>其中 "$+$" 对应<strong>偶对称</strong>($h(n)=h(N-1-n)$),"$-$" 对应<strong>奇对称</strong>($h(n)=-h(N-1-n)$)。群延迟恒为 $\tau=\frac{N-1}{2}$ 个采样点。</p>
+  </div>
+  <p>为什么对称能保证线性相位?直观理解:对称的 $h(n)$ 相当于把信号按中心"镜像折叠"后再加权求和,这种操作对每个频率分量的延迟完全一致,因此相位斜率是常数。</p>
+
+  <p>这里有一个常见的误解需要澄清。对称条件 $h(n)=h(N{-}1{-}n)$ 要求滤波器的"中心"在第 $\frac{N-1}{2}$ 个采样点,也就是说要等到输入信号的"未来"样本到达后才能计算当前输出。有人把这叫作"非因果"--但这个词容易误导。更准确的说法是<strong>非即时</strong>:</p>
+  <ul>
+    <li><strong>频域视角</strong>:线性相位意味着 $\varphi(\omega)=-\omega\cdot\tau$,即相位随频率线性变化,斜率恒为 $\tau=\frac{N-1}{2}$。这不是"相位出问题了",而是所有频率分量统一偏移了一个固定斜率。</li>
+    <li><strong>时域视角</strong>:这个固定斜率 $\tau$ 就是恒定延时--输出波形整体晚 $\frac{N-1}{2}$ 个采样点出现,形状完全不变。</li>
+  </ul>
+  <p>所以"非因果"不是真的违反因果律,而是<strong>为了对称而付出的延迟代价</strong>。因果系统完全可以实现线性相位,只要接受输出不是"即时"的,而是固定延迟 $\frac{N-1}{2}$ 个采样。在实时处理中,这个延迟是可预测、可补偿的;在离线处理中,直接把输出对齐回来就行。前面实验图里对称滑动平均的橙线和蓝线完全重合,就是因为输出写在窗口中心 $i+2$,自动补偿了这个延迟。</p>
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=3 title="FIR 零极点分布" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">四类线性相位 FIR 滤波器</div>
+  <p>对称条件有"偶/奇"两种,滤波器长度 $N$ 有"奇/偶"两种,组合起来正好四类。每一类的频率响应形式和适用滤波器类型各不相同,这是 FIR 设计中最核心的约束表,做题时必须首先查表确定类型。</p>
+
+  <div class="theorem-box">
+    <h3>四类线性相位 FIR 的频率响应特征</h3>
+    <p>令 $\alpha=\frac{N-1}{2}$,$M=\left\lfloor\frac{N-1}{2}\right\rfloor$,四类滤波器的频率响应可统一写成</p>
+    <p style="text-align:center">$$H(e^{j\omega})=e^{-j\alpha\omega}\cdot e^{j\beta\pi/2}\cdot H_g(\omega)$$</p>
+    <p>其中 $H_g(\omega)$ 为实函数(幅度函数,可正可负),$\beta=0$(偶对称)或 $\beta=1$(奇对称)。</p>
+  </div>
+
+  <figure class="img-center">
+    <img src="/media/images/dsp/fir-type1-type2-linear-phase.png" alt="第一类与第二类线性相位 FIR 的时域对称与频率响应形式" loading="lazy" />
+    <figcaption>第一类与第二类线性相位 FIR 的对比总结。共同点是都满足偶对称 $h(n)=h(N-1-n)$，因此相位都是严格线性的：$\phi(\omega)=-\tau\omega$。区别在于：第一类 $N$ 为奇数，对称轴正好落在中心采样点上，因此幅度函数里有一个独立的中心项 $h(\tau)$；第二类 $N$ 为偶数，对称轴落在两个采样点之间，因此没有独立中心项，只剩成对余弦项，这也导致它必有 $H(\pi)=0$。</figcaption>
+  </figure>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead>
+        <tr><th>类型</th><th>对称性</th><th>长度 N</th><th>$H_g(\omega)$ 形式</th><th>$\omega=0$</th><th>$\omega=\pi$</th><th>可设计类型</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>第一类</strong></td>
+          <td>偶对称</td>
+          <td>奇数</td>
+          <td>$h(\alpha)+2\sum\limits_{n=0}^{M}h(n)\cos[(\alpha-n)\omega]$</td>
+          <td>任意</td>
+          <td>任意</td>
+          <td>低通、高通、带通、带阻</td>
+        </tr>
+        <tr>
+          <td><strong>第二类</strong></td>
+          <td>偶对称</td>
+          <td>偶数</td>
+          <td>$2\sum\limits_{n=0}^{N/2-1}h(n)\cos[(\alpha-n)\omega]$</td>
+          <td>任意</td>
+          <td>$H_g(\pi)=0$</td>
+          <td>低通、带通(<strong>不能</strong>高通/带阻)</td>
+        </tr>
+        <tr>
+          <td><strong>第三类</strong></td>
+          <td>奇对称</td>
+          <td>奇数</td>
+          <td>$2\sum\limits_{n=0}^{M}h(n)\sin[(\alpha-n)\omega]$</td>
+          <td>$H_g(0)=0$</td>
+          <td>$H_g(\pi)=0$</td>
+          <td><strong>仅带通</strong>(微分器、希尔伯特)</td>
+        </tr>
+        <tr>
+          <td><strong>第四类</strong></td>
+          <td>奇对称</td>
+          <td>偶数</td>
+          <td>$2\sum\limits_{n=0}^{N/2-1}h(n)\sin[(\alpha-n)\omega]$</td>
+          <td>$H_g(0)=0$</td>
+          <td>任意</td>
+          <td>高通、带通(<strong>不能</strong>低通/带阻)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>记忆口诀</strong>:奇对称必有 $H(0)=0$;偶对称且 $N$ 偶数必有 $H(\pi)=0$。设计高通/带阻时,要么第一类($N$ 奇、偶对称),要么第四类($N$ 偶、奇对称)--但第四类不能做低通。</div>
+
+  <p>最近几张课件图还可以和这里形成一条完整的理解链：</p>
+  <ul>
+    <li><strong>理想低通图</strong>给出窗函数法的目标：矩形幅频响应 $|H(e^{j\omega})|$ 在时域对应无限长的 sinc 序列 $h_d(n)=\frac{\sin[\omega_c(n-\tau)]}{\pi(n-\tau)}$，这解释了为什么后面必须“加窗”。</li>
+    <li><strong>5 点滑动平均例题</strong>说明“偶对称 + 奇数长度”就是第一类线性相位 FIR，也是最简单的线性相位低通。</li>
+    <li><strong>$h(n)=\{2,2,3,0,-3,-2,-2\}$ 例题</strong>说明“奇对称 + 奇数长度”属于第三类，并且天然有 $H(0)=0$，所以能滤除直流。</li>
+    <li><strong>汉明窗例题</strong>说明只要构造出关于中心 $\tau=\frac{N-1}{2}$ 偶对称的窗序列，就能得到线性相位；当 $N=31$ 时，它属于第一类。</li>
+  </ul>
+
+  <div class="example-box">
+    <h3>例题：判断 FIR 滤波器的线性相位类型</h3>
+    <p><strong>题目：</strong>已知系统差分方程为 $y(n)=\frac{1}{5}\sum_{i=0}^{4}x(n-i)$，判断属于哪一类线性相位滤波器。</p>
+    <p><strong>解：</strong></p>
+    <p>由差分方程写出冲激响应：</p>
+    <p style="text-align:center">$$h(n) = \frac{1}{5}\bigl[\delta(n)+\delta(n-1)+\delta(n-2)+\delta(n-3)+\delta(n-4)\bigr]$$</p>
+    <p>滤波器长度 $N=5$（$N-1=4$），系数为 $[\frac{1}{5},\frac{1}{5},\frac{1}{5},\frac{1}{5},\frac{1}{5}]$。</p>
+    <p>观察对称性：$h(0)=h(4)=\frac{1}{5}$，$h(1)=h(3)=\frac{1}{5}$，$h(2)=\frac{1}{5}$，即 $h(n)=h(N-1-n)$，<strong>偶对称</strong>。</p>
+    <p>长度 $N=5$（奇数），偶对称 → 查表得 <strong>第一类线性相位 FIR</strong>。</p>
+    <div class="callout">第一类滤波器 $\omega=0$ 和 $\omega=\pi$ 处都可以任意取值，因此可以设计低通、高通、带通、带阻——四类中唯一"全能"的。这个 5 点滑动平均就是一个最简单的第一类低通 FIR。</div>
+  </div>
+
+  <div class="example-box">
+    <h3>例题 2：判断线性相位类型与直流滤波能力</h3>
+    <p><strong>题目：</strong>已知系统单位脉冲响应 $h(n)=\{2,2,3,0,-3,-2,-2\}$，分析该滤波器属于哪类线性相位？长度是多少？能否滤除直流信号？</p>
+    <p><strong>解：</strong></p>
+    <p><strong>1) 对称性与类型判断</strong></p>
+    <p>序列长度 $N=7$，中心 $\alpha=\frac{N-1}{2}=3$。逐项检验：</p>
+    <ul>
+      <li>$h(0)=2$, $h(6)=-2$ → $h(0)=-h(6)$</li>
+      <li>$h(1)=2$, $h(5)=-2$ → $h(1)=-h(5)$</li>
+      <li>$h(2)=3$, $h(4)=-3$ → $h(2)=-h(4)$</li>
+      <li>$h(3)=0$ → 满足 $h(3)=-h(3)$</li>
+    </ul>
+    <p>因此 $h(n)=-h(N-1-n)$，<strong>奇对称</strong>。$N=7$（奇数）+ 奇对称 → 查表得 <strong>第三类线性相位 FIR</strong>。</p>
+
+    <div class="admonition warning">
+      <div class="admonition-title">易错点：第三类 vs 第二类</div>
+      <div class="admonition-content"><p>部分课件将本题误判为"第二类"。正确判断：<strong>第二类 = 偶对称 + $N$ 偶数</strong>，<strong>第三类 = 奇对称 + $N$ 奇数</strong>。本题 $N=7$（奇数）且奇对称，应为第三类。</p></div>
+    </div>
+
+    <p><strong>2) 滤波器阶数</strong></p>
+    <p>$h(n)$ 中 $z$ 的最高负幂次为 $z^{-6}$，所以阶数为 $N-1=6$，即 6 阶系统。</p>
+
+    <p><strong>3) 能否滤除直流</strong></p>
+    <p>第三类的特征：$H_g(0)=0$。验证：令 $\omega=0$，</p>
+    <p style="text-align:center">$$H(e^{j0})=\sum_{n=0}^{6}h(n)=2+2+3+0-3-2-2=0$$</p>
+    <p>频率响应在 $\omega=0$ 处为零，<strong>可以滤除直流信号</strong>。这正是第三类"$H(0)=0$"约束的直接体现——奇对称的系数正负抵消，直流分量被完全抑制。</p>
+  </div>
+
+  <div class="example-box">
+    <h3>例题 3：由汉明窗序列判断线性相位性质</h3>
+    <p><strong>题目：</strong>已知 FIR 系统的单位脉冲响应</p>
+    <p style="text-align:center">$$h(n)=\bigl[0.54-0.46\cos(\tfrac{n\pi}{15})\bigr]R_N(n)$$</p>
+    <p>问：该系统属于何种类型的滤波器？是否具有线性相位特性？</p>
+    <p><strong>解：</strong></p>
+    <p>要判断是否具有线性相位，只需检查是否满足对称条件。令 $\tau=\frac{N-1}{2}$，考察</p>
+    <p style="text-align:center">$$h(N-1-n)=\bigl[0.54-0.46\cos(\tfrac{(N-1-n)\pi}{15})\bigr]R_N(n)$$</p>
+    <p>若要有 $h(N-1-n)=h(n)$，必须使</p>
+    <p style="text-align:center">$$\cos\!\left(\frac{(N-1-n)\pi}{15}\right)=\cos\!\left(\frac{n\pi}{15}\right)$$</p>
+    <p>利用恒等式</p>
+    <p style="text-align:center">$$\cos\!\left(\frac{(N-1)\pi}{15}-\frac{n\pi}{15}\right)=\cos\!\left(\frac{n\pi}{15}\right)$$</p>
+    <p>只要取</p>
+    <p style="text-align:center">$$\frac{(N-1)\pi}{15}=2\pi$$</p>
+    <p>即可成立，因此</p>
+    <p style="text-align:center">$$N-1=30\quad\Rightarrow\quad N=31$$</p>
+    <p>于是 $N=31$（奇数），并且 $h(n)=h(N-1-n)$（偶对称），故该系统属于 <strong>第一类线性相位 FIR 滤波器</strong>，具有严格线性相位，群延迟为</p>
+    <p style="text-align:center">$$\tau=\frac{N-1}{2}=15$$</p>
+    <div class="callout">这道题说明：窗函数本身只要关于中心偶对称，就天然适合用来构造线性相位 FIR。汉明窗、汉宁窗、布莱克曼窗之所以常用，一个重要原因就是它们都满足这种对称性。</div>
+  </div>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=8 title="第一类线性相位公式" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">零点分布规律</div>
+  <p>线性相位 FIR 的零点不是随意分布的,它们具有严格的<strong>共轭倒数对称</strong>结构。若 $z_i$ 是 $H(z)$ 的零点,则 $z_i^*$、$1/z_i$、$1/z_i^*$ 也必然是零点--四个零点组成一组"四重对称"。</p>
+  <p>这种结构来源于线性相位条件的代数要求:$H(z)=\pm z^{-(N-1)}H(z^{-1})$。它强制 $H(z)$ 的零点关于单位圆镜像对称,同时关于实轴共轭对称。</p>
+  <ul>
+    <li>当零点恰好落在<strong>单位圆上</strong>($|z_i|=1$)时,$z_i$ 与 $1/z_i^*$ 重合,退化为<strong>二重零点</strong>。</li>
+    <li>当零点恰好落在<strong>实轴上</strong>($z_i=\pm 1$)时,四个点全部重合为单点,且 $\omega=0$ 或 $\omega=\pi$ 处必有过零。</li>
+  </ul>
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      零点分布与滤波器类型的关系
+    </div>
+    <div class="admonition-content">
+      <p>第二类和第三类在 $\omega=\pi$ 处有过零,说明 $z=-1$ 处必有零点;第三类在 $\omega=0$ 处也有过零,说明 $z=1$ 处也必有零点。这是它们不能设计某些滤波器类型的根本原因--零点被对称条件"钉死"在了特定位置。</p>
+    </div>
+  </div>
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=3 title="FIR 零极点分布" >}}
+</div>
+
+<!-- ==================== 第二组:三种设计方法 ==================== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第二组 · 三大设计方法</div>
+  <div class="ch-title">从时域、频域到最优逼近</div>
+  <p>明确了线性相位的分类约束后,核心问题转化为:<strong>如何由给定的频率指标 $H_d(e^{j\omega})$,求出满足线性相位条件的有限长 $h(n)$?</strong> 三种方法对应三条不同的路径:时域截断(窗函数法)、频域采样(频率采样法)、误差最小化(等波纹最优法)。</p>
+</div>
+
+<!-- ====== 2.1 窗函数法 ====== -->
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">窗函数法:理想响应的时域截断</div>
+  <p>最直观的设计思路是:先写出理想滤波器的频率响应 $H_d(e^{j\omega})$,通过 IDTFT 得到无限长的理想冲激响应 $h_d(n)$,然后用一个有限长的"窗" $w(n)$ 把它截断为 $N$ 点,得到可实现的 $h(n)=h_d(n)\cdot w(n)$。</p>
+
+  <figure class="img-center">
+    <img src="/media/images/dsp/fir-ideal-lowpass-sinc.png" alt="理想低通滤波器的矩形幅频响应与其对应的 sinc 冲激响应" loading="lazy" />
+    <figcaption>理想低通滤波器的频域与时域对应关系。上图是“砖墙式”理想低通幅频响应：$|H_d(e^{j\omega})|=1$（$|\omega|\le \omega_c$），其余频率完全抑制；下图是对应的单位冲激响应 $h_d(n)$，呈无限长的 sinc（Sa）序列：$h_d(n)=\frac{\sin[\omega_c(n-\tau)]}{\pi(n-\tau)}$，在 $n=\tau$ 处取极限值 $h_d(\tau)=\omega_c/\pi$。这正是窗函数法的起点：先得到理想目标序列，再用窗把它截成有限长 FIR。</figcaption>
+  </figure>
+
+  <p>这里有一个根本问题：<strong>为什么要加窗？</strong>理想低通滤波器的冲激响应是无限长的 sinc 函数 $h_d(n)=\frac{\sin[\omega_c(n-\alpha)]}{\pi(n-\alpha)}$，向两侧无限延伸。一个无限长的 $h(n)$ 在物理上无法实现——你不能存储无限个历史样本，也不能做无限次乘法。FIR 滤波器的定义就是<strong>冲激响应有限长</strong>：$h(n)$ 只在 $n=0,1,\ldots,N-1$ 处非零。所以<strong>必须截断</strong>。窗函数就是截断的工具：$w(n)$ 在 $0\le n\le N-1$ 内非零、外面为零，乘以 $h_d(n)$ 后就把无限长序列"剪"成了 $N$ 点。</p>
+
+  <p>反过来，正因为 FIR 允许我们自由选择保留哪 $N$ 个点、怎么过渡到零，所以才有了"加窗"这个设计空间。不同窗函数的区别就在于截断的方式不同：矩形窗是硬切，汉宁/汉明窗是软着陆。截断方式不同，频域的"涂抹"效果就不同——这就是窗函数法设计的全部内容。</p>
+
+  <div class="def-box">
+    <h3>理想低通的冲激响应</h3>
+    <p>截止频率为 $\omega_c$ 的理想低通滤波器,其 IDTFT 为</p>
+    <p style="text-align:center">$$h_d(n)=\frac{\sin[\omega_c(n-\alpha)]}{\pi(n-\alpha)},\quad \alpha=\frac{N-1}{2}$$</p>
+    <p>这是一个以 $\alpha$ 为中心、向两侧无限延伸的 sinc 函数。$h_d(n)$ 天然关于 $\alpha$ 偶对称,因此只要窗函数 $w(n)$ 也关于 $\alpha$ 偶对称,截断后的 $h(n)$ 就保持偶对称,满足第一类线性相位。</p>
+  </div>
+
+  <p>从频域看,时域乘积对应频域卷积:</p>
+  <p style="text-align:center">$$H(e^{j\omega})=\frac{1}{2\pi}\int_{-\pi}^{\pi}H_d(e^{j\theta})W(e^{j(\omega-\theta)})\,d\theta$$</p>
+  <p>因此,$H(e^{j\omega})$ 的形状由窗函数频谱 $W(e^{j\omega})$ "涂抹"理想响应得到。窗函数的频谱特性直接决定了设计结果的三大指标:</p>
+  <ul>
+    <li><strong>过渡带宽度</strong>:由窗频谱主瓣宽度决定,近似为 $\Delta\omega\approx c\cdot\frac{2\pi}{N}$。</li>
+    <li><strong>通带波纹</strong>:由窗频谱主瓣与理想响应的卷积造成。</li>
+    <li><strong>阻带衰减</strong>:由窗频谱旁瓣的峰值相对幅度决定。</li>
+  </ul>
+
+  <div class="callout"><strong>一句话理解</strong>:窗函数法就是用"一把剪刀"把无限长的 sinc 序列剪成 $N$ 点,剪口越平滑(好窗),频谱上的毛刺越少。</div>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=43 title="加窗卷积过程(吉布斯现象)" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">五种常用窗函数</div>
+  <p>窗的选择是窗函数法的核心。以下五种窗从“最粗糙”到“最平滑”递进，主瓣越窄则过渡带越陡，旁瓣越低则阻带衰减越大——二者不可兼得。</p>
+
+  <figure class="img-center">
+    <img src="/media/images/dsp/fir-five-windows.png" alt="五种常用窗函数时域波形对比" loading="lazy" />
+    <figcaption>图 7.11 五种常用窗函数的时域波形。所有窗关于中心 $n=\frac{N-1}{2}$ 对称，峰值 $w(n)=1$。矩形窗（最宽、截断最硬）→ 三角窗 → 汉宁窗 → 海明窗 → 布莱克曼窗（最窄、边缘衰减最柔和）。底部公式：$h(n)=h_d(n)\cdot w(n)$，加窗后的频率响应 $H(e^{j\omega})=\sum_{n=0}^{N-1}h(n)e^{-j\omega n}$。</figcaption>
+  </figure>
+
+  <p>从图中可以看出窗函数设计的核心权衡：矩形窗的“剪刀”最锋利（主瓣最窄，过渡带最陡），但截断太硬导致频谱旁瓣很高；越往右的窗边缘衰减越柔和，旁瓣越低，但主瓣越宽（过渡带越宽）。五种窗的关键参数对比见下表。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead>
+        <tr><th>窗名称</th><th>时域表达式 $w(n)$</th><th>主瓣宽度</th><th>旁瓣峰值 (dB)</th><th>阻带最小衰减 (dB)</th><th>过渡带 $\Delta\omega$</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>矩形窗</td><td>$1$</td><td>$4\pi/N$</td><td>$-13$</td><td>$-21$</td><td>$1.8\pi/N$</td></tr>
+        <tr><td>三角窗</td><td>$1-\frac{2|n-\alpha|}{N-1}$</td><td>$8\pi/N$</td><td>$-25$</td><td>$-25$</td><td>$6.1\pi/N$</td></tr>
+        <tr><td>汉宁窗</td><td>$0.5-0.5\cos\frac{2\pi n}{N-1}$</td><td>$8\pi/N$</td><td>$-31$</td><td>$-44$</td><td>$6.2\pi/N$</td></tr>
+        <tr><td>汉明窗</td><td>$0.54-0.46\cos\frac{2\pi n}{N-1}$</td><td>$8\pi/N$</td><td>$-41$</td><td>$-53$</td><td>$6.6\pi/N$</td></tr>
+        <tr><td>布莱克曼窗</td><td>$0.42-0.5\cos\frac{2\pi n}{N-1}+0.08\cos\frac{4\pi n}{N-1}$</td><td>$12\pi/N$</td><td>$-57$</td><td>$-74$</td><td>$11\pi/N$</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>工程上最常用的是<strong>汉明窗</strong>:它在主瓣宽度与旁瓣衰减之间取得了最佳平衡,阻带衰减约 53 dB,足以满足大多数应用。</p>
+
+  {{< jsxgraph title="矩形窗与汉明窗的时域波形对比(N=32)" height="320" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-2, 1.2, 34, -0.2],
+  showCopyright: false, showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], {});
+var N = 32, alpha = (N-1)/2;
+for (var n = 0; n < N; n++) {
+  var w_rect = 1.0;
+  var w_hamm = 0.54 - 0.46 * Math.cos(2 * Math.PI * n / (N - 1));
+  b.create('segment', [[n+0.5,0],[n+0.5,w_rect]], { strokeColor:'#dc2626', strokeWidth:2, highlight:false });
+  b.create('point', [n+0.5,w_rect], { face:'o', size:2, strokeColor:'#dc2626', fillColor:'#dc2626', withLabel:false, showInfobox:false });
+  b.create('segment', [[n+0.55,0],[n+0.55,w_hamm]], { strokeColor:'#2563eb', strokeWidth:2, highlight:false });
+  b.create('point', [n+0.55,w_hamm], { face:'o', size:2, strokeColor:'#2563eb', fillColor:'#2563eb', withLabel:false, showInfobox:false });
+}
+b.create('text', [33, 1.05, 'rect'], { fontSize:12, color:'#dc2626', anchorX:'right' });
+b.create('text', [33, 0.9, 'hamm'], { fontSize:12, color:'#2563eb', anchorX:'right' });
+  {{< /jsxgraph >}}
+
+  <p>上图展示了 $N=32$ 时矩形窗(红色)与汉明窗(蓝色)的时域波形。汉明窗在两端逐渐衰减到接近零,这种"软着陆"显著抑制了频谱旁瓣,代价是主瓣变宽一倍。</p>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=53 title="五种窗函数频谱对比" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">窗函数法设计步骤</div>
+  <p>窗函数法的完整设计流程可以归纳为四步,考试时按此顺序书写,不容易遗漏。</p>
+  <div class="theorem-box">
+    <h3>窗函数法设计流程</h3>
+    <ol>
+      <li><strong>确定滤波器类型</strong>:根据指标(低通/高通/带通/带阻)和相位要求,查四类表选定对称类型(通常第一类)。</li>
+      <li><strong>由阻带衰减选定窗</strong>:根据 $A_s$ 要求选择窗函数。$A_s\leq 21$ dB 用矩形窗;$A_s\leq 53$ dB 用汉明窗;$A_s\leq 74$ dB 用布莱克曼窗。</li>
+      <li><strong>由过渡带估计阶数 N</strong>:利用 $\Delta\omega\approx c\cdot\frac{2\pi}{N}$ 反解 $N$,并向上取整到最近的奇数(若用第一类)。</li>
+      <li><strong>计算并加窗</strong>:求 $h_d(n)=\frac{\sin[\omega_c(n-\alpha)]}{\pi(n-\alpha)}$,乘以 $w(n)$ 得 $h(n)=h_d(n)\cdot w(n)$。</li>
+    </ol>
+  </div>
+  <p>其中 $\omega_c$ 通常取通带边缘 $\omega_p$ 与阻带边缘 $\omega_{st}$ 的<strong>算术中点</strong>:$\omega_c=\frac{\omega_p+\omega_{st}}{2}$。这是因为加窗后通带和阻带各向中间"侵蚀"了一段。</p>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=56 title="窗函数法设计步骤" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">例题 7-1:汉明窗低通设计</div>
+  <div class="example-box">
+    <h3>例 7-1:用窗函数法设计线性相位 FIR 低通滤波器</h3>
+    <p><strong>题目:</strong>采样频率 $F_s=1.5\times 10^4$ Hz,通带截止频率 $f_p=1.5\times 10^3$ Hz,阻带截止频率 $f_{st}=3\times 10^3$ Hz,阻带衰减 $A_s\geq 50$ dB。求 $h(n)$。</p>
+    <p><strong>目标:</strong>用汉明窗设计第一类线性相位 FIR 低通滤波器。</p>
+    <ol>
+      <li><strong>选定窗函数</strong>:阻带衰减要求 $A_s\geq 50$ dB。查表可知矩形窗($-21$ dB)和三角窗($-25$ dB)均不满足;汉宁窗($-44$ dB)仍不够;<strong>汉明窗($-53$ dB)</strong>满足要求。选汉明窗。</li>
+      <li><strong>计算数字边缘频率</strong>:
+        $$\omega_p=2\pi\frac{f_p}{F_s}=2\pi\times\frac{1500}{15000}=0.2\pi$$
+        $$\omega_{st}=2\pi\frac{f_{st}}{F_s}=2\pi\times\frac{3000}{15000}=0.4\pi$$
+        过渡带宽度 $\Delta\omega=\omega_{st}-\omega_p=0.2\pi$。
+      </li>
+      <li><strong>估计阶数 N</strong>:汉明窗过渡带近似 $6.6\pi/N$,故
+        $$N\approx\frac{6.6\pi}{\Delta\omega}=\frac{6.6\pi}{0.2\pi}=33$$
+        取 $N=33$(奇数,满足第一类)。群延迟 $\alpha=\frac{N-1}{2}=16$。
+      </li>
+      <li><strong>确定理想截止频率</strong>:取通带与阻带的几何中点或算术中点
+        $$\omega_c=\frac{\omega_p+\omega_{st}}{2}=\frac{0.2\pi+0.4\pi}{2}=0.3\pi$$
+      </li>
+      <li><strong>计算理想冲激响应</strong>:
+        $$h_d(n)=\frac{\sin[0.3\pi(n-16)]}{\pi(n-16)},\quad n=0,1,\ldots,32$$
+        当 $n=16$ 时,用极限 $h_d(16)=\frac{0.3\pi}{\pi}=0.3$。
+      </li>
+      <li><strong>加汉明窗</strong>:
+        $$w(n)=0.54-0.46\cos\frac{2\pi n}{32},\quad n=0,1,\ldots,32$$
+        $$h(n)=h_d(n)\cdot w(n)$$
+      </li>
+    </ol>
+    <p><strong>答案:</strong>$h(n)$ 为 33 点偶对称序列,中心点 $h(16)\approx 0.3\times 1=0.3$,两侧按 sinc 包络乘以汉明窗曲线递减。实际频率响应需用 MATLAB / Python 的 <code>freqz</code> 验证通带波纹和阻带衰减是否满足 50 dB 要求。</p>
+    <div class="callout"><strong>易错点</strong>:$n=\alpha$ 处的 $h_d(n)$ 是 $0/0$ 型不定式,必须用洛必达法则或 sinc 在零点的极限值 $h_d(\alpha)=\omega_c/\pi$ 直接代入,不能留空。</div>
+  </div>
+
+  {{< jsxgraph title="理想低通 sinc 冲激响应与加窗后的 h(n)(示意)" height="340" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-2, 0.45, 34, -0.15],
+  showCopyright: false, showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], {});
+var N = 33, alpha = 16, wc = 0.3 * Math.PI;
+for (var n = 0; n < N; n++) {
+  var dn = n - alpha;
+  var hd = (dn === 0) ? (wc / Math.PI) : (Math.sin(wc * dn) / (Math.PI * dn));
+  var w = 0.54 - 0.46 * Math.cos(2 * Math.PI * n / (N - 1));
+  b.create('segment', [[n+0.45,0],[n+0.45,hd]], { strokeColor:'#888', strokeWidth:1.5, highlight:false });
+  b.create('segment', [[n+0.55,0],[n+0.55,hd*w]], { strokeColor:'#2563eb', strokeWidth:2, highlight:false });
+  b.create('point', [n+0.55,hd*w], { face:'o', size:2, strokeColor:'#2563eb', fillColor:'#2563eb', withLabel:false, showInfobox:false });
+}
+b.create('text', [33, 0.4, 'hd(n)'], { fontSize:11, color:'#888', anchorX:'right' });
+b.create('text', [33, 0.33, 'h(n)=hd·w'], { fontSize:11, color:'#2563eb', anchorX:'right' });
+  {{< /jsxgraph >}}
+
+  <p>上图展示了 $N=33$、$\omega_c=0.3\pi$ 时理想 sinc 序列(灰色)与加汉明窗后的 $h(n)$(蓝色)。窗函数把两侧"削平",同时保持中心区域的对称性。</p>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=61 title="例 7-1 幅频响应" >}}
+</div>
+
+<!-- ====== 2.2 频率采样法 ====== -->
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">频率采样法:从频域直接构造</div>
+  <p>窗函数法走的是"时域截断"路线。另一条思路是:既然 $h(n)$ 是 $N$ 点有限长序列,它的 DTFT 在单位圆上采样 $N$ 点正好对应 DFT。那么,何不直接在频域"画"出想要的 $H_d(k)$,再反变换回时域?这就是频率采样法。</p>
+
+  <div class="def-box">
+    <h3>频率采样法的基本思想</h3>
+    <p>对理想频率响应 $H_d(e^{j\omega})$ 在 $\omega_k=\frac{2\pi k}{N}$($k=0,1,\ldots,N-1$)处采样 $N$ 个点,得到 $H(k)=H_d(e^{j\omega_k})$,再通过 $N$ 点 IDFT 得到</p>
+    <p style="text-align:center">$$h(n)=\frac{1}{N}\sum_{k=0}^{N-1}H(k)e^{j\frac{2\pi}{N}kn},\quad n=0,1,\ldots,N-1$$</p>
+    <p>实际频率响应则由内插公式重建:</p>
+    <p style="text-align:center">$$H(e^{j\omega})=\sum_{k=0}^{N-1}H(k)\Phi\left(\omega-\frac{2\pi k}{N}\right)$$</p>
+    <p>其中 $\Phi(\omega)=\frac{\sin(N\omega/2)}{N\sin(\omega/2)}e^{-j\omega(N-1)/2}$ 为内插函数。</p>
+  </div>
+
+  <p>频率采样法的优点是<strong>直接</strong>:你把想要的频响"画"在 $N$ 个采样点上,IDFT 后就自动得到 $h(n)$。缺点也很明显:采样点之间的频率响应由内插函数"连接",如果采样点处跳变太剧烈(比如从通带 1 直接跳到阻带 0),内插会在中间产生较大的起伏,导致阻带衰减不够。</p>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=68 title="频率采样法基本思想" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">线性相位约束下的采样点相位</div>
+  <p>为保证线性相位,$H(k)$ 的相位不能随意取,必须满足与四类对称对应的约束。以最常见的<strong>第一类(偶对称、$N$ 奇数)</strong>为例,幅度采样 $H_k$ 必须为偶对称 $H_k=H_{N-k}$,相位采样则为</p>
+  <p style="text-align:center">$$\theta(k)=-\frac{k(N-1)\pi}{N},\quad k=0,1,\ldots,\frac{N-1}{2}$$</p>
+  <p>第二类(偶对称、$N$ 偶数)还需要额外满足 $H_{N/2}=0$,因为 $H(\pi)=0$。</p>
+
+  <div class="callout"><strong>一句话理解</strong>:频率采样法相当于在频域"打桩"--$N$ 个采样点是桩,桩与桩之间由内插函数拉线。桩的高度和角度必须成对对称,才能保证拉出来的线是线性相位的。</div>
+
+  <p>频率采样法通常分为 I 型和 II 型,区别仅在于第一个采样点的位置:</p>
+  <ul>
+    <li><strong>I 型</strong>:第一个采样点在 $\omega=0$ 处($k=0$),即标准的 $N$ 点 DFT 采样。</li>
+    <li><strong>II 型</strong>:第一个采样点在 $\omega=\frac{\pi}{N}$ 处,采样点整体偏移半个间隔。</li>
+  </ul>
+  <p>两种类型在通带平坦度和设计灵活性上略有差异,但核心思想完全相同。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">过渡带采样的技巧</div>
+  <p>频率采样法最经典的问题出现在低通设计:通带最后一个采样点为 1,阻带第一个采样点为 0,中间没有任何过渡。内插函数在跳变边缘会产生类似吉布斯现象的振荡,阻带衰减通常只有 20 dB 左右,远不能满足工程需求。</p>
+  <p>解决方法是:在通带与阻带之间<strong>故意插入一个或几个过渡带采样点</strong>,取介于 0 和 1 之间的值。这相当于在频域"修坡",让跳变变缓。代价是过渡带变宽,但阻带衰减可以大幅提高。</p>
+
+  <div class="example-box">
+    <h3>过渡带采样实例</h3>
+    <p><strong>题目:</strong>用频率采样法设计低通滤波器,$N=33$,不插入过渡点时阻带衰减仅约 20 dB。若在 $k=9$ 处(即 $\omega=\frac{18\pi}{33}\approx 0.545\pi$)插入一个过渡样点 $H(9)=0.5$,其余阻带样点保持为 0,通带样点为 1。</p>
+    <p><strong>结果:</strong>阻带衰减从约 20 dB 提升到约 <strong>40 dB</strong>。</p>
+    <p>如果进一步插入两个过渡样点($H(9)=0.5886$,$H(10)=0.1065$),阻带衰减可达 <strong>60 dB</strong> 以上。过渡样点的最优值可以通过优化算法求解。</p>
+    <div class="callout"><strong>易错点</strong>:插入过渡样点后,$H(k)$ 的共轭对称性 $H_k=H_{N-k}^*$ 仍然必须保持,不能只改单边。</div>
+  </div>
+
+  {{< jsxgraph title="加过渡带前后阻带衰减对比示意" height="300" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-0.2, 1.15, 3.5, -0.15],
+  showCopyright: false, showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], {});
+// 理想矩形低通
+b.create('functiongraph', [function(x) {
+  return (x >= 0 && x < 1.0) ? 1 : ((x >= 1.0 && x < 1.3) ? 0.5 : 0);
+}], { strokeColor:'#2563eb', strokeWidth:2.5, highlight:false });
+// 无过渡带时的振荡示意(简化)
+b.create('functiongraph', [function(x) {
+  if (x < 0 || x > 3.2) return 0;
+  if (x < 1.0) return 1 + 0.08 * Math.sin(15 * (x - 1.0)) * Math.exp(-2 * Math.abs(x - 1.0));
+  return 0.15 * Math.sin(12 * (x - 1.0)) * Math.exp(-1.5 * (x - 1.0));
+}], { strokeColor:'#dc2626', strokeWidth:1.8, dash:2, highlight:false });
+// 有过渡带时的平滑示意
+b.create('functiongraph', [function(x) {
+  if (x < 0 || x > 3.2) return 0;
+  if (x < 1.0) return 1 + 0.03 * Math.sin(10 * (x - 1.0)) * Math.exp(-3 * Math.abs(x - 1.0));
+  if (x < 1.3) return 0.5 - 0.4 * (x - 1.0) / 0.3 + 0.03 * Math.sin(10 * (x - 1.3));
+  return 0.05 * Math.sin(10 * (x - 1.3)) * Math.exp(-2 * (x - 1.3));
+}], { strokeColor:'#16a34a', strokeWidth:1.8, highlight:false });
+b.create('text', [3.2, 1.05, '理想'], { fontSize:11, color:'#2563eb', anchorX:'right' });
+b.create('text', [3.2, 0.9, '无过渡'], { fontSize:11, color:'#dc2626', anchorX:'right' });
+b.create('text', [3.2, 0.75, '有过渡'], { fontSize:11, color:'#16a34a', anchorX:'right' });
+  {{< /jsxgraph >}}
+
+  <p>上图示意了三种情况:理想矩形频响(蓝色实线)、无过渡带采样时的频响起伏(红色虚线,吉布斯振荡明显)、插入过渡带采样后的平滑结果(绿色)。过渡带采样"牺牲"了过渡带的陡峭度,换取了阻带内更干净的高衰减。</p>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=88 title="增加过渡带的效果" >}}
+</div>
+
+<!-- ====== 2.3 等波纹逼近法 ====== -->
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">等波纹逼近法:最优设计</div>
+  <p>窗函数法和频率采样法都有一个共同缺陷:它们无法精确控制通带波纹 $\delta_1$ 和阻带衰减 $\delta_2$,设计结果是"碰运气"的--阶数 $N$ 选大了浪费计算,选小了指标不达标。有没有一种方法,能在给定阶数 $N$ 的约束下,让最大逼近误差<strong>最小化</strong>?</p>
+  <p>答案是<strong>等波纹最优逼近法</strong>,也称切比雪夫逼近法或 Parks-McClellan 算法。它的数学目标非常清晰:</p>
+  <div class="def-box">
+    <h3>切比雪夫最优逼近问题</h3>
+    <p>寻找 $h(n)$,使得加权误差的最大绝对值最小化:</p>
+    <p style="text-align:center">$$\min_{h(n)}\max_{\omega\in A}\left|W(\omega)\left[H_d(e^{j\omega})-H(e^{j\omega})\right]\right|$$</p>
+    <p>其中 $A$ 为通带与阻带的并集(过渡带不参与优化),$W(\omega)$ 为加权函数:</p>
+    <p style="text-align:center">$$W(\omega)=\begin{cases}\delta_2/\delta_1,&\omega\in\text{通带}\\1,&\omega\in\text{阻带}\end{cases}$$</p>
+    <p>通带误差被放大了 $\delta_2/\delta_1$ 倍,使得优化结果在通带和阻带中的波纹幅度之比恰好为 $\delta_1:\delta_2$。</p>
+  </div>
+
+  <p>为什么叫"等波纹"?因为最优解有一个惊人的性质:误差函数 $E(\omega)=W(\omega)[H_d(\omega)-P(\omega)]$ 在逼近区间 $A$ 上的极值点数目达到最大,且所有极值点的绝对值<strong>相等</strong>,形成均匀分布的波纹。直观上,这就像把一块弹性膜绷紧在理想响应上,膜上的波峰波谷高度完全一致--没有任何一处"特别突出"。</p>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=98 title="交错定理" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">交错定理与 Remez 交换算法</div>
+  <p>等波纹最优解的存在性和唯一性由<strong>交错定理</strong>保证。</p>
+
+  <div class="theorem-box">
+    <h3>交错定理(Alternation Theorem)</h3>
+    <p>设 $P(\omega)$ 为 $r$ 阶三角多项式(对应 $N$ 阶 FIR 滤波器的幅度函数),$A$ 为 $[0,\pi]$ 上若干个不相交闭区间的并集。$P(\omega)$ 是 $H_d(\omega)$ 在 $A$ 上的唯一最优切比雪夫逼近,当且仅当误差函数 $E(\omega)=W(\omega)[H_d(\omega)-P(\omega)]$ 在 $A$ 上至少有 $r+2$ 个<strong>交错点</strong>,即存在 $\omega_0<\omega_1<\cdots<\omega_{r+1}$ 使得</p>
+    <p style="text-align:center">$$E(\omega_i)=-E(\omega_{i+1})=\pm\max|E(\omega)|,\quad i=0,1,\ldots,r$$</p>
+    <p>也就是误差在最值之间正负交替,且绝对值相等。</p>
+  </div>
+
+  <p>基于交错定理,Parks 和 McClellan 提出了高效的迭代算法--<strong>Remez 交换算法</strong>。它的核心思想是:</p>
+  <ol>
+    <li>在逼近区间 $A$ 内<strong>猜测</strong>一组 $r+2$ 个极值点频率 $\{\omega_i\}$。</li>
+    <li>解线性方程组,求出这组极值点上的等波纹误差值 $\delta$ 和多项式系数。</li>
+    <li>计算整个区间上的误差函数 $E(\omega)$,找出真正的极值点。</li>
+    <li>用新的极值点替换旧的猜测,<strong>重复迭代</strong>直到收敛。</li>
+  </ol>
+  <p>Remez 算法收敛非常快,通常只需 5-10 次迭代即可达到机器精度。MATLAB 的 <code>firpm</code>(原 <code>remez</code>)和 SciPy 的 <code>scipy.signal.remez</code> 都是这一算法的实现。</p>
+
+  <div class="callout"><strong>核心优势</strong>:等波纹法在同等阶数 $N$ 下,能获得最大的阻带衰减、最窄的过渡带。它是 FIR 设计的"天花板"--理论最优,没有理由在阶数受限时不用它。</div>
+
+  {{< docpage "pdf/dsp/第七讲2.pdf" page=105 title="Parks-McClellan 算法" >}}
+</div>
+
+<!-- ==================== 第三组:对比与总结 ==================== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第三组 · 方法对比与实战</div>
+  <div class="ch-title">三种方法如何选择</div>
+  <p>现在我们已经掌握了 FIR 滤波器的三种设计方法。窗函数法概念最直观、手算最方便;频率采样法适合需要精确控制频域某些点响应的场景;等波纹法在给定阶数下性能最优。下面从多个维度进行系统对比。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">三种设计方法全面对比</div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead>
+        <tr><th>对比维度</th><th>窗函数法</th><th>频率采样法</th><th>等波纹最优法</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>设计路径</strong></td>
+          <td>时域:理想响应 $h_d(n)$ + 窗截断</td>
+          <td>频域:$H_d(k)$ 采样 → IDFT</td>
+          <td>优化:最小化最大加权误差</td>
+        </tr>
+        <tr>
+          <td><strong>核心思想</strong></td>
+          <td>用有限长窗"软化"无限长 sinc</td>
+          <td>频域打桩 + 内插重建</td>
+          <td>交错定理 + Remez 迭代</td>
+        </tr>
+        <tr>
+          <td><strong>能否精确控制 $\delta_1, \delta_2$</strong></td>
+          <td>不能,只能靠试 $N$</td>
+          <td>不能,过渡带采样需试凑</td>
+          <td><strong>能</strong>,直接作为优化约束</td>
+        </tr>
+        <tr>
+          <td><strong>过渡带宽度</strong></td>
+          <td>由窗主瓣决定,较宽</td>
+          <td>由采样密度决定,较宽</td>
+          <td><strong>最窄</strong>(同阶下最优)</td>
+        </tr>
+        <tr>
+          <td><strong>阻带衰减</strong></td>
+          <td>由窗旁瓣决定,固定值</td>
+          <td>过渡带采样可提升,但有限</td>
+          <td><strong>最大</strong>(同阶下最优)</td>
+        </tr>
+        <tr>
+          <td><strong>通带/阻带波纹分布</strong></td>
+          <td>不均匀(两端大、中间小)</td>
+          <td>不均匀</td>
+          <td><strong>等波纹</strong>(均匀分布)</td>
+        </tr>
+        <tr>
+          <td><strong>计算复杂度</strong></td>
+          <td>低,解析公式直接求</td>
+          <td>低,一次 IDFT</td>
+          <td>中,需迭代求解</td>
+        </tr>
+        <tr>
+          <td><strong>手算可行性</strong></td>
+          <td><strong>高</strong>(考试常考)</td>
+          <td>中</td>
+          <td>低(依赖计算机迭代)</td>
+        </tr>
+        <tr>
+          <td><strong>适用场景</strong></td>
+          <td>快速设计、原型验证、考试</td>
+          <td>需要频域任意点精确控制的场景</td>
+          <td>阶数受限、指标苛刻的工程实现</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      工程实践的选择建议
+    </div>
+    <div class="admonition-content">
+      <p>快速原型或课堂作业 → <strong>窗函数法</strong>(汉明窗最常用)。</p>
+      <p>需要频域陷波或特定频点精确响应 → <strong>频率采样法</strong>(配合过渡带优化)。</p>
+      <p>产品级实现、DSP 芯片资源受限 → <strong>等波纹法</strong>(用 MATLAB <code>firpm</code> 设计后量化系数量化)。</p>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">FIR 设计的通用流程图</div>
+  <p>无论用哪种方法,FIR 滤波器设计都可以归纳为以下决策流程:</p>
+  {{< mermaid >}}
+flowchart TD
+    A[给定滤波器指标] --> B{需要线性相位?}
+    B -->|是| C[FIR]
+    B -->|否| D[IIR]
+    C --> E{阶次受限且指标苛刻?}
+    E -->|是| F[等波纹最优法<br/>Parks-McClellan]
+    E -->|否| G{需要手算/快速原型?}
+    G -->|是| H[窗函数法<br/>汉明/汉宁/布莱克曼]
+    G -->|否| I[频率采样法<br/>配合过渡带优化]
+    F --> J[量化系数<br/>实现为 DSP/FPGA]
+    H --> J
+    I --> J
+  {{< /mermaid >}}
+</div>
+
+<!-- ==================== 复习与导航 ==================== -->
+
+<div class="review-box">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>线性相位条件</strong>:$h(n)=\pm h(N-1-n)$,群延迟 $\tau=(N-1)/2$。</li>
+    <li><strong>四类 FIR</strong>:奇偶对称 × 奇偶长度。第一类万能;第二类不能高通/带阻;第三类只能带通;第四类不能低通/带阻。</li>
+    <li><strong>窗函数法公式</strong>:$h_d(n)=\frac{\sin[\omega_c(n-\alpha)]}{\pi(n-\alpha)}$,$h(n)=h_d(n)\cdot w(n)$,$\omega_c=\frac{\omega_p+\omega_{st}}{2}$。</li>
+    <li><strong>常用窗衰减</strong>:矩形 $-21$ dB → 汉宁 $-44$ dB → 汉明 $-53$ dB → 布莱克曼 $-74$ dB。</li>
+    <li><strong>频率采样法</strong>:$H(k)$ 采样 → IDFT 得 $h(n)$。插入过渡带采样可大幅提升阻带衰减。</li>
+    <li><strong>等波纹最优</strong>:最小化 $\max|W(\omega)[H_d-P]|$。交错定理保证 $r+2$ 个等幅交错极值点。Remez 算法迭代求解。</li>
+    <li><strong>方法选择</strong>:考试/手算用窗函数法;频域点控用频率采样;阶次受限用等波纹最优。</li>
+  </ul>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="XiJiao-DSP-Course">
+      西安交通大学数字信号处理课程. 第七讲:FIR 数字滤波器的设计方法.
+      <a href="pdf/dsp/第七讲2.pdf" target="_blank">课件 PDF(114 页)</a>
+    </li>
+    <li data-cite-key="Oppenheim-DSP-3rd">
+      Oppenheim, A. V. & Schafer, R. W. (2009). <em>Discrete-Time Signal Processing</em> (3rd ed.). Pearson.
+      <a href="https://www.pearson.com/en-us/subject-catalog/p/discrete-time-signal-processing/P200000005792" target="_blank">出版社页面</a>
+    </li>
+    <li data-cite-key="Parks-McClellan-1972">
+      Parks, T. W. & McClellan, J. H. (1972). Chebyshev Approximation for Nonrecursive Digital Filters with Linear Phase. <em>IEEE Trans. on Circuit Theory</em>, 19(2), 189-194.
+      <a href="https://ieeexplore.ieee.org/document/1083419" target="_blank">IEEE Xplore</a>
+    </li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="dsp-iir-filter-design.html">
+    <span class="nav-label">上一章</span>
+    <span class="nav-title">IIR 数字滤波器的设计</span>
+  </a>
+  <a class="nav-card current" href="dsp-hub.html">
+    <span class="nav-label">枢纽页</span>
+    <span class="nav-title">数字信号处理课程笔记</span>
+  </a>
+  <a class="nav-card" href="dsp-quantization-errors.html">
+    <span class="nav-label">下一章</span>
+    <span class="nav-title">量化误差与有限字长效应</span>
+  </a>
+</div>
+
+</div>

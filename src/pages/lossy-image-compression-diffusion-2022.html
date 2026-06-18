@@ -1,0 +1,213 @@
+---
+title: "图像压缩论文精读（二）：CDC，把扩散模型塞进图像压缩解码器"
+description: "深读 Lossy Image Compression with Conditional Diffusion Models：为什么条件扩散能成为学习式图像压缩的感知解码器，以及它如何在码率、失真和感知质量之间重新划线。"
+date: 2026-06-03T09:49:37
+created_at: 2026-06-03T09:49:37
+updated_at: 2026-06-03T09:54:00
+tags: ["image-compression", "diffusion-model", "learned-compression", "generative-compression", "CDC"]
+categories: [AI]
+subcategory: "图像压缩"
+sub_id: 1100
+mathjax: true
+notify: true
+hero_title: "CDC：把扩散模型塞进图像压缩解码器"
+hero_sub: "Lossy Image Compression with Conditional Diffusion Models 深度解读"
+hero_tagline: "content latent 负责传输，texture latent 现场合成：生成式压缩的一条关键路线"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2024</span><span class="label">arXiv v8</span></div>
+  <div class="stat"><span class="num b">17</span><span class="label">主实验解码步</span></div>
+  <div class="stat"><span class="num g">16</span><span class="label">评估指标</span></div>
+  <div class="stat"><span class="num">4</span><span class="label">测试集</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">压缩不只是“还原”，也是“合理生成”</div>
+
+  <p>传统图像压缩最朴素的目标，是让解码图像尽量接近原图；学习式压缩把这个目标写成 rate-distortion tradeoff：一边压低比特率，一边减少 MSE、MAE、PSNR 意义上的失真。CDC 这篇论文的切入点很直接：如果人眼更在意“看起来像真实图片”，而不只是逐像素对齐，那么压缩解码器是否应该从确定性的 VAE/Gaussian decoder，换成更会生成细节的条件扩散模型？#Yang and Mandt, 2024#</p>
+
+  <p>这篇论文的完整题目是 <em>Lossy Image Compression with Conditional Diffusion Models</em>，作者 Ruihan Yang 和 Stephan Mandt。它仍然站在 transform coding 的经典框架里：编码器把图像映射到 latent space，latent 被量化并熵编码；解码端根据 latent 重建图像。真正改变的是 decoder：它不再一次性输出一个平均化的图像，而是以传输来的 content latent 为条件，运行一个条件扩散反向过程，现场合成 texture variables。#Yang and Mandt, 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/lossy-image-compression-diffusion-2022/overview.png" alt="CDC 压缩架构总览" loading="lazy">
+    <div class="cap">图 1：CDC 总览。比特流只保存内容 latent，纹理变量在解码端由条件扩散过程合成。（来源：Yang and Mandt, Fig. 1）</div>
+  </div>
+
+  <div class="callout"><strong>一句话概括</strong>：CDC 把“哪些内容必须传输”和“哪些纹理可以生成”拆开了：前者交给熵编码 latent，后者交给扩散模型。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">VAE 压缩为什么容易“糊”</div>
+
+  <p>现代学习式图像压缩常用 hierarchical VAE / hyperprior 架构：encoder 产生 latent，hyperprior 估计 latent 分布并用于算术编码，decoder 重建图像。Ballé 的 scale hyperprior 和 Minnen 的 joint autoregressive-hierarchical prior 基本奠定了这条路线的骨架。#Ballé et al., 2018# #Minnen et al., 2018#</p>
+
+  <p>问题在于，这类模型为了优化 MSE 或 MAE，decoder 往往学习条件均值。条件均值在不确定区域会自然地做“平均”：树叶、毛发、鸟眼周围的细纹理、墙面颗粒，都可能变成更平滑但更安全的重建结果。论文把这个现象和 VAE decoder 的 mode averaging 联系起来，并认为更强的条件生成模型可以缓解低码率下的过度平滑。#Yang and Mandt, 2024#</p>
+
+  <div class="def-box">
+    <h3>三个目标的三角关系</h3>
+    <p><strong>Rate</strong> 是每个像素平均要花多少 bit；<strong>Distortion</strong> 是重建图和原图在 PSNR、MS-SSIM 等意义上的距离；<strong>Perception</strong> 是图像是否像真实自然图像，常用 FID、LPIPS、DISTS 等指标近似。Blau 和 Michaeli 证明，感知质量和失真之间存在基本张力：不能在固定架构和分布下同时任意做到最优。#Blau and Michaeli, 2019#</p>
+  </div>
+
+  <p>CDC 的核心 insight 是：压缩不必把所有细节都传过去。全局结构、物体身份、布局、颜色等“内容”信息必须保存在 latent 里；但很多高频纹理并不需要逐像素传输，只要生成出来的纹理在视觉上合理即可。这样，解码器就从“确定性复原器”变成了“受内容约束的生成器”。#Yang and Mandt, 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">Content latent 传输，Texture latent 生成</div>
+
+  <p>CDC 的概率模型可以写成：</p>
+
+  <p style="text-align:center">\[p(x_{0:N}, z)=p(x_{0:N}\mid z)p(z)\]</p>
+
+  <p>这里的 $z$ 是要被量化和熵编码的 content latent；$x_{1:N}$ 是扩散过程里的 texture variables，不进入 bitstream，而是在解码端从噪声或零初始化出发逐步生成。换句话说，发送方和接收方共享模型参数，只真正传输 $\hat z$。#Yang and Mandt, 2024#</p>
+
+  {{< mermaid >}}
+  graph LR
+    A[原图 x0] --> B[Encoder]
+    B --> C[量化 content latent z_hat]
+    C --> D[Entropy coding bitstream]
+    D --> E[Entropy decoding]
+    E --> F[条件扩散解码器]
+    G[texture variables x_N...x_1 现场合成] --> F
+    F --> H[重建图 x_hat]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">从 ELBO 到扩散失真项</h3>
+
+  <p>普通 neural compression 常把训练目标写成 $\mathcal{D}+\lambda\mathcal{R}$，其中 distortion 来自重建误差，rate 来自 $-\log p(z)$。CDC 把 decoder 换成条件扩散模型后，用 diffusion model 的 variational upper bound 近似 $-\log p(x_0\mid z)$，于是得到一个由扩散模型诱导出来的新 distortion。论文再用 denoising score matching 简化训练：模型可以预测噪声 $\epsilon$，也可以直接预测干净图像 $x_0$，后者就是本文重点使用的 $\mathcal{X}$-prediction。#Ho et al., 2020# #Yang and Mandt, 2024#</p>
+
+  <p style="text-align:center">\[L_{upper}(x_0\mid z) \approx \mathbb{E}_{x_0,n,\epsilon}\frac{\alpha_n}{1-\alpha_n}\lVert x_0-\mathcal{X}_\theta(x_n,z,n/N_{train})\rVert^2\]</p>
+
+  <div class="photo">
+    <img src="media/images/lossy-image-compression-diffusion-2022/model-architecture.png" alt="CDC 模型架构细节" loading="lazy">
+    <div class="cap">图 2：CDC 的模型结构。编码端生成 content latent，扩散 U-Net 在多个尺度接收 conditioning。（来源：Yang and Mandt, Appendix Fig. architecture）</div>
+  </div>
+
+  <h3 class="section-title">为什么 X-prediction 能加速</h3>
+
+  <p>扩散模型常被批评“采样太慢”。CDC 的有趣发现是，在压缩场景里 $\mathcal{X}$-prediction 可以用很少的解码步得到可用质量。原因是它的目标很像 autoencoder：当噪声步很大时，$x_n$ 几乎没有信息，模型主要依赖 $z$ 重建整体内容；当噪声步较小时，$x_n$ 已经接近图像，模型用它继续细化纹理。论文主实验中，$\mathcal{X}$-prediction 使用 17 个解码步，而 $\epsilon$-prediction 的对比实验需要数百步。#Salimans and Ho, 2022# #Yang and Mandt, 2024#</p>
+
+  <h3 class="section-title">随机解码：把不可传输的细节“画回来”</h3>
+
+  <p>解码时，CDC 可以让 $x_N=0$ 做确定性解码，也可以从 $x_N\sim\mathcal{N}(0,\gamma^2 I)$ 开始做随机解码。$\gamma$ 越大，模型越倾向于补出高频纹理；但纹理未必和原图逐像素一致，所以感知指标可能变好，MS-SSIM 等失真指标可能变差。论文在定性实验里发现 $\gamma=0.8$ 能获得较好的纹理观感。#Yang and Mandt, 2024#</p>
+
+  <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+    <div class="photo" style="flex:1;min-width:200px;">
+      <img src="media/images/lossy-image-compression-diffusion-2022/gamma-truth.png" alt="随机解码 ground truth" loading="lazy">
+      <div class="cap">图 3：原图 crop，用于比较不同随机解码强度。（来源：Yang and Mandt, stochastic decoding ablation）</div>
+    </div>
+    <div class="photo" style="flex:1;min-width:200px;">
+      <img src="media/images/lossy-image-compression-diffusion-2022/gamma-0.png" alt="gamma=0 确定性解码" loading="lazy">
+      <div class="cap">图 4：$\gamma=0$ 确定性解码，纹理更平滑，MS-SSIM=0.979，LPIPS=0.078。（来源：Yang and Mandt）</div>
+    </div>
+    <div class="photo" style="flex:1;min-width:200px;">
+      <img src="media/images/lossy-image-compression-diffusion-2022/gamma-08.png" alt="gamma=0.8 随机解码" loading="lazy">
+      <div class="cap">图 5：$\gamma=0.8$ 随机解码，高频纹理更丰富，MS-SSIM=0.973，LPIPS=0.054。（来源：Yang and Mandt）</div>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 训练方法</div>
+  <div class="ch-title">一个三方权衡的损失函数</div>
+
+  <p>CDC 的完整训练目标包含两部分：一个 compression loss，负责 diffusion reconstruction upper bound 和 bitrate；一个 perceptual loss，论文采用 LPIPS，并用 $\rho$ 控制它的权重。最终目标可以理解为：</p>
+
+  <p style="text-align:center">\[L=\rho L_p+(1-\rho)L_c\]</p>
+
+  <p>当 $\rho=0$ 时，模型更像传统 rate-distortion codec，distortion 指标更稳；当 $\rho=0.9$ 时，模型更重视感知质量，FID、LPIPS 等指标更有优势。这个设计让 CDC 不只是一个模型，而是一个可调旋钮：根据业务场景选择“更像原图”还是“更像自然图”。#Yang and Mandt, 2024#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>项目</th><th>论文设置</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>训练集</td><td>Vimeo-90k，随机取帧并裁剪到 256×256</td><td>用自然视频帧训练图像压缩模型</td></tr>
+        <tr><td>warm-up</td><td>$\lambda=10^{-5}$，约 500k steps</td><td>先稳定学习基本重建</td></tr>
+        <tr><td>主训练</td><td>再训练约 1M steps</td><td>对齐目标 bitrate</td></tr>
+        <tr><td>优化器</td><td>Adam，batch size 4</td><td>小 batch 长训练</td></tr>
+        <tr><td>学习率</td><td>$5\times10^{-5}$ 起，每 100k steps 衰减 20%，最低 $2\times10^{-5}$</td><td>缓慢收敛</td></tr>
+        <tr><td>扩散步数</td><td>$\epsilon$ 模型 20,000；$\mathcal{X}$ 模型 8,193</td><td>两种 parameterization 分开训练</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">代码如何对应论文</h3>
+
+  <p>官方仓库把实现拆成 `epsilonparam` 和 `xparam` 两套。`xparam/modules/compress_modules.py` 中的 `ResnetCompressor` 对应 content encoder、hyper encoder/decoder 和 bpp 计算；`xparam/modules/denoising_diffusion.py` 中的 `GaussianDiffusion` 负责 beta schedule、DDIM sampling、`pred_mode="x"` 以及 `compress`；`xparam/train.py` 组装 `ResnetCompressor`、`Unet` 和 `GaussianDiffusion`，并暴露 `--beta`、`--sample_steps`、`--aux_weight` 等训练控制项。#Yang and Mandt GitHub, 2024#</p>
+
+  <div class="admonition tip">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>读代码时的抓手</div>
+    <div class="admonition-content"><p>先看 `compress_modules.py` 理解哪些 latent 真正产生 bpp，再看 `denoising_diffusion.py` 的 `set_sample_schedule` 和 `ddim`，就能把“少步采样”和“随机解码”对应到代码路径。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 实验验证</div>
+  <div class="ch-title">CDC 到底赢在哪里</div>
+
+  <p>论文在 Kodak、Tecnick、DIV2K、COCO2017 四个测试集上评估，共覆盖 16 个指标。主文展示 8 个常用指标，并把指标分为两类：PSNR、SSIM、MS-SSIM、FSIM 等更偏 distortion；FID、LPIPS、DISTS、PieAPP 等更偏 perceptual realism。FID 计算时，作者遵循 HiFiC 的做法，把图像切成 256×256 non-overlapping patches。#Yang and Mandt, 2024# #Mentzer et al., 2020#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型/设置</th><th>强项</th><th>代价</th><th>论文结论</th></tr></thead>
+      <tbody>
+        <tr><td>CDC, $\rho=0$, deterministic</td><td>FSIM、SSIM、MS-SSIM 等 distortion 指标更稳</td><td>感知纹理较保守</td><td>接近强 VAE baseline，但 PSNR 不占优</td></tr>
+        <tr><td>CDC, $\rho=0.9$, stochastic</td><td>FID 等感知指标突出</td><td>失真指标变差</td><td>三到四个感知指标中表现最强</td></tr>
+        <tr><td>HiFiC</td><td>LPIPS 很强，低码率视觉质量好</td><td>GAN 训练复杂，部分指标不稳定</td><td>CDC 的主要感知 baseline</td></tr>
+        <tr><td>DGML / NSC / MS-Hyper</td><td>rate-distortion 路线成熟</td><td>更容易平滑</td><td>PSNR 等传统指标仍有优势</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>消融实验给出了两个关键信号。第一，增加 $\mathcal{X}$-prediction 的解码步数，对随机解码下的 perceptual quality 更有帮助；但确定性解码的 distortion 并不会随着更多步数显著提升。第二，调大 $\gamma$ 会增加生成纹理，LPIPS 先变好，但过大时感知质量和失真都会恶化；论文实验中 $\gamma=0.8$ 是比较合适的点。#Yang and Mandt, 2024#</p>
+
+  <h3 class="section-title">效率：能用，但还不轻</h3>
+
+  <p>附录报告了模型规模和解码时间：CDC 有 53.8M 参数；1 step 解码约 0.015 秒，17 steps 解码约 1.04 秒；相比之下，HiFiC 有 181.47M 参数但解码约 0.0051 秒，MS-hyper 和 DGML 更快。这个结果很微妙：CDC 参数量不算夸张，但 iterative denoising 仍然是部署瓶颈。#Yang and Mandt, 2024#</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>低码率生成式压缩的风险</div>
+    <div class="admonition-content"><p>论文明确提醒：感知优先的神经压缩可能在低码率下 hallucinate 细节。对人脸、医学影像、证据图像等场景，这不是“视觉更好”的问题，而是可信度问题。#Yang and Mandt, 2024#</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 讨论与启发</div>
+  <div class="ch-title">这篇论文在生成式压缩地图上的位置</div>
+
+  <p>CDC 的历史位置很清楚：它不是抛弃 learned compression 的 transform coding，而是在这个框架里替换 decoder。相比 HiFiC 这类 GAN-based perceptual compression，CDC 用扩散模型获得更稳定的生成训练；相比传统 hyperprior/VAE codec，它承认某些纹理不必精确传输，而可以条件生成。#Mentzer et al., 2020# #Yang and Mandt, 2024#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>传输什么</th><th>解码器</th><th>主要问题</th></tr></thead>
+      <tbody>
+        <tr><td>Hyperprior / VAE codec</td><td>latent 内容与细节都尽量编码</td><td>确定性或简单概率 decoder</td><td>低码率易平滑</td></tr>
+        <tr><td>HiFiC / GAN compression</td><td>latent + adversarially realistic detail</td><td>GAN decoder</td><td>训练和指标稳定性</td></tr>
+        <tr><td>CDC</td><td>content latent</td><td>conditional diffusion decoder</td><td>解码速度与 hallucination 风险</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>对后续研究，我认为这篇论文最有价值的不是“扩散一定适合压缩”，而是它提供了一个非常清晰的分工：bitstream 负责语义和结构，生成模型负责符合分布的细节。沿着这个方向，可以继续追问三个问题：第一，能否用 one-step diffusion、consistency model 或 distillation 把 17 steps 降到 1 step；第二，能否用更强 entropy model 降低 content latent 的码率；第三，能否给生成式细节加可信度标注，让用户知道哪些内容是传输来的，哪些是模型补出来的。</p>
+
+  <p>如果把图像压缩看成“信息预算管理”，CDC 的启发是：不是所有像素都同等值得传输。真正值得传输的是那些改变语义、结构和用户判断的内容；而视觉系统容忍的纹理不确定性，可以交给生成模型处理。这也是生成式压缩最迷人、也最危险的地方。</p>
+
+  <p>从工程角度看，CDC 还提示我们不要只盯着单一指标做模型选择。面向图库预览、社交媒体缩略图、纹理类自然图像时，FID/LPIPS 改善可能比 PSNR 更接近用户感知；但面向档案保存、医学诊断、证据留存时，随机生成细节反而需要被严格限制。一个实际系统也许应该同时提供两种解码模式：默认确定性重建保证可追溯，在用户明确选择“视觉增强”时才启用随机纹理生成，并在界面上标明生成式细节的存在。这个边界，是所有生成式压缩系统上线前都必须讲清楚的产品契约。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Yang-and-Mandt-2024">Yang, R. and Mandt, S. (2024). <em>Lossy Image Compression with Conditional Diffusion Models</em>. arXiv:2209.06950. <a href="https://arxiv.org/abs/2209.06950" target="_blank">arXiv</a></li>
+    <li data-cite-key="Yang-and-Mandt-GitHub-2024">Yang, R. (2024). <em>CDC_compression official code repository</em>. <a href="https://github.com/buggyyang/CDC_compression" target="_blank">GitHub</a></li>
+    <li data-cite-key="Ballé-et-al.-2018">Ballé, J. et al. (2018). <em>Variational Image Compression with a Scale Hyperprior</em>. ICLR. <a href="https://arxiv.org/abs/1802.01436" target="_blank">arXiv</a></li>
+    <li data-cite-key="Minnen-et-al.-2018">Minnen, D. et al. (2018). <em>Joint Autoregressive and Hierarchical Priors for Learned Image Compression</em>. NeurIPS. <a href="https://arxiv.org/abs/1809.02736" target="_blank">arXiv</a></li>
+    <li data-cite-key="Mentzer-et-al.-2020">Mentzer, F. et al. (2020). <em>High-Fidelity Generative Image Compression</em>. NeurIPS. <a href="https://arxiv.org/abs/2006.09965" target="_blank">arXiv</a></li>
+    <li data-cite-key="Blau-and-Michaeli-2019">Blau, Y. and Michaeli, T. (2019). <em>Rethinking Lossy Compression: The Rate-Distortion-Perception Tradeoff</em>. ICML. <a href="https://arxiv.org/abs/1901.07821" target="_blank">arXiv</a></li>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J. et al. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv</a></li>
+    <li data-cite-key="Salimans-and-Ho-2022">Salimans, T. and Ho, J. (2022). <em>Progressive Distillation for Fast Sampling of Diffusion Models</em>. ICLR. <a href="https://arxiv.org/abs/2202.00512" target="_blank">arXiv</a></li>
+  </ul>
+</div>

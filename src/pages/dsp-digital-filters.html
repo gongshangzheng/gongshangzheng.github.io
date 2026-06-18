@@ -1,0 +1,1168 @@
+---
+title: "数字滤波器基础、分析与结构｜数字信号处理笔记"
+description: "系统整理数字滤波器的差分方程、系统函数、FIR/IIR 区分、零极点频率响应、理想滤波器不可实现性，以及 IIR/FIR 的直接型、级联型、并联型、频率抽样型、线性相位型和快速卷积结构。"
+date: 2026-05-20T01:17:02
+created_at: 2026-05-20T01:17:02
+updated_at: 2026-06-04T12:44:30
+tags: [数字信号处理, 傅里叶变换, 数字滤波器, FIR, IIR, 零极点, 滤波器结构, 课程笔记]
+categories: [课程]
+sub_id: 80
+mathjax: true
+hero_title: "数字滤波器基础、分析与结构"
+hero_sub: "从系统函数到频率响应"
+hero_tagline: "FIR / IIR、零极点、理想响应、稳定性、结构实现与工程取舍"
+subcategory: "数字信号处理"
+---
+
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">大组结构</span></div>
+  <div class="stat"><span class="num b">7+</span><span class="label g">完整例题</span></div>
+  <div class="stat"><span class="num">9+</span><span class="label">结构类型</span></div>
+  <div class="stat"><span class="num b">FIR/IIR</span><span class="label">分析与实现</span></div>
+</div>
+
+<div class="wrap">
+
+<div class="info-box">
+  <h3>前置知识回顾</h3>
+  <p>数字滤波器是前面所有 DSP 基础的汇合点。读这一节前，建议先把下面几条线串起来：</p>
+  <ul>
+    <li><strong>差分方程</strong>：知道 $y[n]$ 可以由当前/过去输入和过去输出递推得到。可回看 <a href="dsp-convolution-and-difference-equations.html">卷积与差分方程</a>。</li>
+    <li><strong>Z 变换与系统函数</strong>：理解 $H(z)=Y(z)/X(z)$，知道极点、零点和 ROC 的意义。可回看 <a href="dsp-z-transform-and-difference-equations.html">Z 变换</a>。</li>
+    <li><strong>DTFT 与频率响应</strong>：知道 $H(e^{j\omega})$ 描述系统对不同频率复指数的放大和相移。可回看 <a href="dsp-discrete-time-fourier-transform.html">DTFT</a>。</li>
+    <li><strong>DFT/FFT</strong>：实际计算频率响应时，经常用 DFT 采样和 FFT 快速实现。可回看 <a href="dsp-dft-and-fft.html">DFT 与 FFT</a>。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">一、基本模型</div>
+  <div class="ch-title">从“滤波是什么”到系统函数</div>
+  <p>数字滤波器和模拟滤波器在功能上没有本质差别，目标都是保留某些频率成分、压制另一些频率成分。低通保留慢变化，高通强调快速变化，带通提取某个频带，带阻抑制某个频带。</p>
+  <p>区别在于实现方式。模拟滤波器由电阻、电容、电感或运放等硬件实现；数字滤波器由差分方程、系统函数和数值运算实现。一个 LTI 数字滤波器可以同时用三种方式描述：</p>
+  <ul>
+    <li><strong>差分方程</strong>：直接说明输入输出样本如何递推。</li>
+    <li><strong>单位抽样响应</strong>：$h[n]$ 描述系统对 $\delta[n]$ 的响应，输出为 $y[n]=x[n]*h[n]$。</li>
+    <li><strong>系统函数</strong>：$H(z)=Y(z)/X(z)$ 把时域递推变成复平面上的有理函数。</li>
+  </ul>
+  <p>常系数差分方程的一般形式为</p>
+
+  \[
+  \sum_{k=0}^{N}a_k y[n-k]=\sum_{m=0}^{M}b_m x[n-m].
+  \]
+
+  <p>零初始条件下取 Z 变换，得到</p>
+
+  \[
+  H(z)=\frac{Y(z)}{X(z)}=\frac{\sum_{m=0}^{M}b_m z^{-m}}{\sum_{k=0}^{N}a_k z^{-k}}.
+  \]
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=4 title="系统函数：从 X(z) 到 Y(z) 的结构表示" >}}
+
+  <p>这里用 Z 变换而不是直接用傅里叶变换，是因为 $H(z)$ 描述的是系统在整个复平面上的结构：分子给零点，分母给极点，收敛域还能进一步判断因果性和稳定性。傅里叶变换只看单位圆上的频率表现，即把 $z=e^{j\omega}$ 代入后得到的 $H(e^{j\omega})$。所以通常先用 Z 变换求系统函数，再从系统函数读出频率响应。</p>
+  <p>为什么专门看单位圆？因为 $z=re^{j\omega}$ 中，角度 $\omega$ 表示振荡频率，半径 $r$ 表示序列包络是否随时间指数增长或衰减。只有当 $r=1$ 时，输入 $e^{j\omega n}$ 才是幅度不变的纯频率分量。数字滤波器的“滤波效果”问的正是：输入某个频率的正弦或复指数后，输出被放大多少、相移多少。因此要看单位圆上的 $H(e^{j\omega})$，其中 $|H(e^{j\omega})|$ 是幅度响应，$\arg H(e^{j\omega})$ 是相位响应。</p>
+  <p>滤波器分析的核心就是读懂这个 $H(z)$：它的分子给零点，分母给极点；它在单位圆上的取值 $H(e^{j\omega})$ 就是频率响应。</p>
+
+  <h3 class="section-title">FIR 与 IIR：有没有反馈，决定了系统性格</h3>
+  <p>按单位抽样响应（impulse response）是否会无限延续，数字滤波器最常见地分为 FIR 和 IIR。这里的名字本身就说明了差别：</p>
+
+  <div class="def-box">
+    <h3>FIR / IIR 的英文全称</h3>
+    <ul>
+      <li><strong>FIR</strong>：Finite Impulse Response，有限长单位冲激响应滤波器。一个冲激输入进去，输出只响有限多拍，之后归零。</li>
+      <li><strong>IIR</strong>：Infinite Impulse Response，无限长单位冲激响应滤波器。一个冲激输入进去，由于系统内部有反馈，输出理论上会一直拖尾。</li>
+    </ul>
+  </div>
+
+  <p>“单位冲激响应”可以理解成系统被敲一下之后的回声。FIR 像敲一下桌面：响几下就没了；IIR 像带回声的房间：声音会在内部反复反射，越来越小或者越来越大。这里的关键不是名字，而是<strong>有没有把过去的输出再喂回系统</strong>。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>类型</th><th>英文</th><th>差分方程</th><th>系统函数</th><th>冲激响应</th><th>核心特征</th></tr></thead>
+      <tbody>
+        <tr><td>FIR</td><td>Finite Impulse Response</td><td>$y[n]=\sum_{m=0}^{M}b_m x[n-m]$</td><td>$H(z)=\sum_{m=0}^{M}b_m z^{-m}$</td><td>有限长</td><td>无反馈，天然稳定，容易做线性相位</td></tr>
+        <tr><td>IIR</td><td>Infinite Impulse Response</td><td>$y[n]=\sum_{m=0}^{M}b_mx[n-m]-\sum_{k=1}^{N}a_ky[n-k]$</td><td>$H(z)=\frac{\sum_{m=0}^{M}b_mz^{-m}}{1+\sum_{k=1}^{N}a_kz^{-k}}$</td><td>通常无限长</td><td>有反馈，低阶高效，但稳定性由极点控制</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 class="ch-section">FIR：只记住有限段过去输入</h4>
+  <p>FIR 的输出只依赖当前和过去若干个输入样本，不依赖过去输出。例如二点滑动平均</p>
+  \[
+  y[n]=\frac{1}{2}x[n]+\frac{1}{2}x[n-1]
+  \]
+  <p>对应的冲激响应只有两项：</p>
+  \[
+  h[n]=\frac{1}{2}\delta[n]+\frac{1}{2}\delta[n-1].
+  \]
+  <p>这就是“有限长”的意思：冲激输入只让系统响两拍。因为没有反馈，系统不会自己把能量滚起来，所以 FIR 只要系数有限，就天然 BIBO 稳定。</p>
+
+  <h4 class="ch-section">IIR：把过去输出再反馈回来</h4>
+  <p>IIR 的输出会依赖过去输出。最简单的一阶例子是</p>
+  \[
+  y[n]=x[n]+ay[n-1].
+  \]
+  <p>如果输入是一个单位冲激 $\delta[n]$，输出会变成</p>
+  \[
+  h[n]=a^n u[n].
+  \]
+  <p>只要 $a\ne0$，这个序列理论上永远不会在有限时间后精确归零，所以叫 Infinite Impulse Response。它的好处是：用一个反馈系数就能形成很长的指数尾巴，因此低阶 IIR 就能做出较陡的频率选择性；风险是：如果反馈太强，也就是极点跑到单位圆外，尾巴会越滚越大，系统不稳定。</p>
+
+  <div class="callout"><strong>选择直觉</strong>：如果任务强调严格线性相位、稳定性和实现简单，优先考虑 FIR；如果任务强调用较低阶数获得陡峭过渡带，常考虑 IIR，但必须检查极点是否在单位圆内。</div>
+
+  <h3 class="section-title">理想响应：完美矩形频响为什么不能直接实现</h3>
+  <p>先把目标说清楚：所谓“理想低通”，就是希望所有低频原封不动通过，所有高频完全砍掉。若截止频率是 $\omega_c$，理想幅频响应可以写成</p>
+  \[
+  H_d(e^{j\omega})=\begin{cases}1,&|\omega|\le \omega_c,\\0,&\omega_c<|\omega|\le \pi.
+  \end{cases}
+  \]
+  <p>这张图就是它的样子：中间一段完全平坦，两侧突然掉到 0。它在频域非常漂亮，但“突然掉下去”这件事，正是麻烦的来源。</p>
+
+  {{< jsxgraph title="理想低通滤波器的矩形幅频响应" height="320" >}}
+  var board = JXG.JSXGraph.initBoard(el, {
+    boundingbox: [-3.4, 1.35, 3.4, -0.25],
+    axis: false,
+    showCopyright: false,
+    showNavigation: false
+  });
+  board.create('axis', [[-3.2, 0], [3.2, 0]], { ticks: { visible: false } });
+  board.create('axis', [[0, -0.15], [0, 1.2]], { ticks: { visible: false } });
+  var cutoff = 1.25;
+  board.create('segment', [[-3.14, 0], [-cutoff, 0]], { strokeColor: '#94a3b8', strokeWidth: 2 });
+  board.create('segment', [[-cutoff, 1], [cutoff, 1]], { strokeColor: '#2563eb', strokeWidth: 3 });
+  board.create('segment', [[cutoff, 0], [3.14, 0]], { strokeColor: '#94a3b8', strokeWidth: 2 });
+  board.create('segment', [[-cutoff, 0], [-cutoff, 1]], { strokeColor: '#ef4444', strokeWidth: 2, dash: 2 });
+  board.create('segment', [[cutoff, 0], [cutoff, 1]], { strokeColor: '#ef4444', strokeWidth: 2, dash: 2 });
+  board.create('text', [-3.05, -0.08, '-pi'], { fontSize: 13, fixed: true });
+  board.create('text', [2.78, -0.08, 'pi'], { fontSize: 13, fixed: true });
+  board.create('text', [-cutoff - 0.22, -0.08, '-wc'], { fontSize: 13, fixed: true });
+  board.create('text', [cutoff - 0.05, -0.08, 'wc'], { fontSize: 13, fixed: true });
+  board.create('text', [0.14, 1.04, 'passband = 1'], { fontSize: 13, fixed: true, color: '#2563eb' });
+  board.create('text', [1.65, 0.12, 'stopband = 0'], { fontSize: 13, fixed: true, color: '#64748b' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>关键直觉：</strong>频域里切得越干净，时域里拖得越长。理想低通的“无限锋利边界”会变成时域中无限长的振荡尾巴。</div>
+
+  <p>为什么会这样？因为冲激响应 $h_d[n]$ 是频率响应 $H_d(e^{j\omega})$ 的反 DTFT：</p>
+  \[
+  h_d[n]=\frac{1}{2\pi}\int_{-\omega_c}^{\omega_c}e^{j\omega n}\,d\omega.
+  \]
+  <p>当 $n\ne0$ 时，积分结果为</p>
+  \[
+  h_d[n]=\frac{\sin(\omega_c n)}{\pi n};
+  \]
+  <p>当 $n=0$ 时，极限值为 $h_d[0]=\omega_c/\pi$。如果用 [[wiki.zh sinc函数 | sinc 函数]] 的写法，也常写成</p>
+  \[
+  h_d[n]=\frac{\omega_c}{\pi}\operatorname{sinc}\left(\frac{\omega_c n}{\pi}\right).
+  \]
+  <p>这里的重点不是记住某个写法，而是看懂图像：它不是只在有限几个采样点非零，而是向左、向右都无限延伸，并且一边振荡一边慢慢衰减。</p>
+
+  {{< jsxgraph title="理想低通对应的 sinc 型冲激响应" height="340" >}}
+  var board = JXG.JSXGraph.initBoard(el, {
+    boundingbox: [-32, 0.55, 32, -0.32],
+    axis: false,
+    showCopyright: false,
+    showNavigation: false
+  });
+  board.create('axis', [[-31, 0], [31, 0]], { ticks: { visible: false } });
+  board.create('axis', [[0, -0.28], [0, 0.5]], { ticks: { visible: false } });
+  var cutoff = Math.PI / 3;
+  for (var sampleIndex = -500; sampleIndex <= 500; sampleIndex++) {
+    var value = sampleIndex === 0 ? cutoff / Math.PI : Math.sin(cutoff * sampleIndex) / (Math.PI * sampleIndex);
+    if (Math.abs(sampleIndex) <= 30) {
+      board.create('segment', [[sampleIndex, 0], [sampleIndex, value]], { strokeColor: '#2563eb', strokeWidth: 1.4 });
+      board.create('point', [sampleIndex, value], { face: 'o', size: 2.4, strokeColor: '#2563eb', fillColor: '#2563eb', fixed: true, name: '' });
+    }
+  }
+  board.create('text', [1.2, 0.35, 'main lobe'], { fontSize: 13, fixed: true, color: '#2563eb' });
+  board.create('text', [9, 0.13, 'side lobes keep going'], { fontSize: 13, fixed: true, color: '#64748b' });
+  board.create('text', [-29, -0.07, 'n'], { fontSize: 13, fixed: true });
+  {{< /jsxgraph >}}
+
+  <p>于是理想低通有两个实现障碍。第一，它的 $h_d[n]$ 对所有正负 $n$ 都可能非零，长度无限；真实滤波器不能存储和计算无限多个抽头。第二，它在 $n<0$ 的位置也有值，这意味着输出当前样本时需要用到“未来输入”，所以通常是非因果的。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      理想滤波器不是设计结果，而是逼近目标
+    </div>
+    <div class="admonition-content">
+      <p>课程里画理想低通，是为了说明“想要什么频率选择性”，不是说真实系统可以直接实现这个矩形响应。</p>
+      <p>真正的 FIR/IIR 设计，就是在通带起伏、阻带衰减、过渡带宽、阶数和稳定性之间折中：允许边界不那么锋利，换来因果、稳定、有限复杂度的系统。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">四类基本滤波器：低通、高通、带通、带阻</h3>
+  <p>四类基本滤波器可以先按“通带保留哪里、阻带压制哪里”来记。阅读时不要只记名字，而要盯住通带、阻带和过渡带的位置。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>滤波器类型</th><th>通带保留</th><th>阻带压制</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td>低通</td><td>低频</td><td>高频</td><td>平滑、去高频噪声、抗混叠预滤波</td></tr>
+        <tr><td>高通</td><td>高频</td><td>低频</td><td>去直流、边缘/突变检测</td></tr>
+        <tr><td>带通</td><td>某一频段</td><td>频段外</td><td>提取载波、语音频段、谐振成分</td></tr>
+        <tr><td>带阻</td><td>除某一频段外</td><td>某一频段</td><td>陷波、去 50/60 Hz 工频干扰</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>实际设计时还要给出通带边界、阻带边界、通带起伏和阻带衰减。没有这些指标，就谈不上“设计”，只能说是“想要某种大概效果”。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">二、频域判断</div>
+  <div class="ch-title">用零极点和例题读懂滤波效果</div>
+  <p>前一组回答了“滤波器如何表示”。接下来要回答的是“如何从这个表示判断它到底在滤什么”。关键入口不是盯着差分方程的外形猜，而是把系统函数放到单位圆上看。</p>
+
+  <h3 class="section-title">零极点几何：系统函数如何决定滤波效果</h3>
+  <p>把 $z$ 限制在单位圆上，令 $z=e^{j\omega}$，就得到频率响应。若系统函数写成</p>
+  \[
+  H(z)=G\frac{\prod_i(z-z_i)}{\prod_k(z-p_k)},
+  \]
+  <p>则单位圆上某一点 $e^{j\omega}$ 的响应大小可理解为：</p>
+  \[
+  |H(e^{j\omega})|=|G|\frac{\prod_i |e^{j\omega}-z_i|}{\prod_k |e^{j\omega}-p_k|}.
+  \]
+  <p>这给出一个非常好用的几何直觉：单位圆上的频点离零点越近，响应越小；离极点越近，响应越大。零点负责“挖坑”，极点负责“抬峰”。</p>
+  <div class="callout"><strong>稳定性底线</strong>：因果 IIR 滤波器稳定要求所有极点严格在单位圆内。这个结论来自 Z 变换里的 ROC 逻辑：因果系统的 $h[n]$ 是右边序列，ROC 在最外极点之外；稳定又要求单位圆落在 ROC 内，所以最外极点必须小于 1。可回看 <a href="dsp-z-transform-and-difference-equations.html#三种序列类型">Z 变换：右边序列、ROC 与因果系统</a>。零点可以在单位圆外，但极点不能。</div>
+
+  <div class="info-box">
+    <h3>直觉理解：极点像反馈回声的衰减因子</h3>
+    <p>可以把一个因果 IIR 系统想成“输入激发一次，系统内部会一圈圈反馈回声”。一阶系统 $H(z)=1/(1-az^{-1})$ 的冲激响应是 $h[n]=a^n u[n]$：第一拍是 1，下一拍剩 $a$，再下一拍剩 $a^2$，之后是 $a^3,a^4,\ldots$。</p>
+    <p>如果 $|a|<1$，每绕一圈都乘上一个小于 1 的数，回声越来越小，尾巴虽然无限长，但总量有限，所以稳定；如果 $|a|>1$，每绕一圈都被放大，哪怕输入只有一个冲激，输出也会越滚越大，系统就不稳定。单位圆半径正好是“乘一次后不变大也不变小”的边界，所以极点必须落在单位圆内。</p>
+    <p>多极点系统也可以这样看：每个极点都对应一种指数模式。只要有一个极点在单位圆外，就有一种内部模式会放大；只有所有极点都在单位圆内，所有反馈模式才都会衰减。</p>
+  </div>
+
+  <h3 class="section-title">例题：从差分方程判断 FIR/IIR 和频率特性</h3>
+
+  <div class="example-box">
+    <h3>例题 1：判断滤波器类型和系统函数</h3>
+    <p><strong>题目：</strong>给定差分方程 $y[n]=0.5x[n]+0.5x[n-1]$。判断它是 FIR 还是 IIR，并求 $H(z)$。</p>
+    <ol>
+      <li><strong>看是否含过去输出：</strong>右端只有输入项 $x[n]$、$x[n-1]$，没有 $y[n-k]$，所以没有反馈。</li>
+      <li><strong>取 Z 变换：</strong>$Y(z)=0.5X(z)+0.5z^{-1}X(z)$。</li>
+      <li><strong>求系统函数：</strong>
+        \[
+        H(z)=\frac{Y(z)}{X(z)}=0.5(1+z^{-1}).
+        \]
+      </li>
+      <li><strong>读频率响应：</strong>$H(e^{j\omega})=0.5(1+e^{-j\omega})=e^{-j\omega/2}\cos(\omega/2)$。</li>
+    </ol>
+    <p><strong>答案：</strong>这是二点滑动平均 FIR 滤波器，低频 $\omega=0$ 处增益为 1，高频 $\omega=\pi$ 处增益为 0，具有低通倾向。</p>
+    <div class="callout"><strong>易错点：</strong>“平均”并不是凭直觉低通，而是因为 $|\cos(\omega/2)|$ 在高频处变小。</div>
+  </div>
+
+  <div class="example-box">
+    <h3>例题 2：由极点判断 IIR 稳定性和滤波倾向</h3>
+    <p><strong>题目：</strong>系统满足 $y[n]-ay[n-1]=x[n]$，其中 $0<a<1$。判断类型、稳定性和频率倾向。</p>
+    <ol>
+      <li><strong>类型：</strong>方程含过去输出 $y[n-1]$，因此是 IIR。</li>
+      <li><strong>系统函数：</strong>
+        \[
+        H(z)=\frac{1}{1-az^{-1}}.
+        \]
+      </li>
+      <li><strong>极点：</strong>极点在 $z=a$。因 $0<a<1$，极点在单位圆内；对因果系统而言，ROC 在最外极点之外并包含单位圆，所以系统稳定。这个逻辑见 <a href="dsp-z-transform-and-difference-equations.html#三种序列类型">Z 变换笔记中的 ROC 解释</a>。</li>
+      <li><strong>频率响应：</strong>
+        \[
+        |H(e^{j\omega})|=\frac{1}{|1-ae^{-j\omega}|}.
+        \]
+        当 $\omega=0$ 时分母为 $|1-a|$，当 $\omega=\pi$ 时分母为 $|1+a|$，所以低频增益更大。</li>
+    </ol>
+    <p><strong>答案：</strong>这是稳定的一阶 IIR 低通滤波器。</p>
+    <div class="callout"><strong>易错点：</strong>IIR 是否稳定不由“有反馈”直接决定，而由 <a href="dsp-z-transform-and-difference-equations.html#三种序列类型">因果 ROC 是否包含单位圆</a> 决定；对因果有理系统，这等价于所有极点落在单位圆内。</div>
+  </div>
+
+  <h3 class="section-title">设计流程：先定指标，再选 FIR/IIR，再谈实现</h3>
+  <p>面对滤波器设计题，顺序不能反。不要一上来就问“用窗函数还是双线性变换”，而是先把需求写成指标：</p>
+  <ol>
+    <li>通带和阻带边界在哪里。</li>
+    <li>通带允许多大起伏。</li>
+    <li>阻带至少要衰减多少。</li>
+    <li>是否要求线性相位。</li>
+    <li>是否更关心低阶数、低延迟或数值稳定。</li>
+  </ol>
+  <p>如果要求线性相位且可以接受较高阶数，FIR 常更合适；如果希望较低阶实现陡峭响应，IIR 常更高效。后续具体设计方法包括：窗函数法、频率采样法、Parks-McClellan FIR 设计、巴特沃斯/切比雪夫/椭圆 IIR 设计、双线性变换等。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">三、分析方法复习</div>
+  <div class="ch-title">数字滤波器做题入口</div>
+  <p>前面的 DTFT、DFT、Z 变换都在为滤波器服务。DTFT 给频率响应，DFT/FFT 给计算工具，Z 变换给系统函数和稳定性判据。滤波器把这些工具合成一个工程对象：给定指标，构造一个可实现系统。</p>
+  <p>如果继续深入，下一步通常会分成两条线：FIR 设计重在窗函数、线性相位和频率采样；IIR 设计重在模拟原型、频率变换和双线性变换。</p>
+
+  <h3 class="section-title">复习速查：数字滤波器做题入口</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>问题</th><th>入口</th><th>判断标准</th><th>常见误区</th></tr></thead>
+      <tbody>
+        <tr><td>FIR/IIR 判断</td><td>看差分方程是否含过去输出</td><td>无反馈为 FIR，有反馈通常为 IIR</td><td>把有限阶差分方程误认为 FIR</td></tr>
+        <tr><td>稳定性</td><td>看极点位置</td><td>因果 IIR 极点必须在单位圆内</td><td>只看零点不看极点</td></tr>
+        <tr><td>频率响应</td><td>令 $z=e^{j\omega}$</td><td>读 $|H(e^{j\omega})|$ 和相位</td><td>只看幅度忽略相位</td></tr>
+        <tr><td>低通/高通判断</td><td>比较 $\omega=0$ 与 $\omega=\pi$</td><td>低频大为低通，高频大为高通</td><td>凭差分方程外观猜</td></tr>
+        <tr><td>理想响应可实现性</td><td>看 $h[n]$ 是否因果有限/稳定</td><td>突变频响常对应无限非因果冲激响应</td><td>把理想响应当真实系统</td></tr>
+        <tr><td>设计选择</td><td>先列指标</td><td>线性相位偏 FIR，低阶陡峭偏 IIR</td><td>先选算法再补需求</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">四、结构语言</div>
+  <div class="ch-title">从系统函数到结构图</div>
+
+  <h3 class="section-title">数字滤波器的概念</h3>
+
+  <h4 class="ch-section">滤波器</h4>
+  <p>数字滤波器是对输入离散时间序列 $x(n)$ 进行运算、得到输出序列 $y(n)$ 的离散时间系统。它的任务不是“凭空产生新信号”，而是按照给定频率选择规则保留、削弱或改变信号中的某些频率分量：低通保留低频，高通保留高频，带通保留某个频带，带阻抑制某个频带。</p>
+
+  <h4 class="ch-section">系统函数</h4>
+  <p>数字滤波器通常被看成线性时不变系统。若输入为 $x(n)$、输出为 $y(n)$，则系统函数定义为 $H(z)=Y(z)/X(z)$。当 $H(z)$ 写成 $z^{-1}$ 的有理分式时，分子系数 $b_k$ 对应输入延迟项，分母系数 $a_k$ 对应输出反馈项。</p>
+
+  <h4 class="ch-section">差分方程</h4>
+  <p>从系统角度看，滤波器可以同时用三种语言描述：时域里的差分方程，$z$ 域里的系统函数 $H(z)$，以及工程实现里的结构图。差分方程告诉我们每一拍怎样递推；系统函数告诉我们零点、极点和频率响应；结构图则回答“这些加法器、乘法器、延迟器应该怎样连接”。</p>
+
+  <p>一个 $N$ 阶 IIR 滤波器的系统函数和差分方程分别为</p>
+  \[
+  H(z)=\frac{\sum_{k=0}^{M}b_k z^{-k}}{1-\sum_{k=1}^{N}a_k z^{-k}},\qquad
+  y(n)=\sum_{k=0}^{M}b_k x(n-k)+\sum_{k=1}^{N}a_k y(n-k).
+  \]
+
+  <p>分子实现<strong>零点</strong>（对 $x(n)$ 的加权延迟），分母实现<strong>极点</strong>（对 $y(n)$ 的加权延迟，即反馈）。结构设计的核心问题就是：如何用最少存储单元、最少乘法、最稳定的数值特性来实现同一 $H(z)$。</p>
+
+  <h4 class="ch-section">滤波器的功能与实现</h4>
+  <p>无论滤波器多复杂，实现它所需的<strong>基本运算只有三种</strong>：加法、乘常数、单位延迟。</p>
+
+  <div class="def-box">
+    <h3>三种基本运算</h3>
+    <table>
+      <thead><tr><th>运算</th><th>时域表示</th><th>Z 域表示</th><th>在结构图中的角色</th></tr></thead>
+      <tbody>
+        <tr><td>加法</td><td>$y(n)=x_1(n)+x_2(n)$</td><td>$Y(z)=X_1(z)+X_2(z)$</td><td>汇合节点，把多个支路输出相加</td></tr>
+        <tr><td>乘常数</td><td>$y(n)=a\,x(n)$</td><td>$Y(z)=a\,X(z)$</td><td>滤波器系数，决定每条支路权重</td></tr>
+        <tr><td>单位延迟</td><td>$y(n)=x(n-1)$</td><td>$Y(z)=z^{-1}X(z)$</td><td>存储一个采样周期，形成历史样本或状态</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=6 title="方框图法：单位延时与乘常数" >}}
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=7 title="方框图法：相加节点与递推方程例子" >}}
+
+  <div class="callout"><strong>结构实现的出发点：</strong>同一个 $H(z)$ 可以对应许多不同结构。它们理论频率响应相同，但延迟单元数量、内部变量动态范围、系数量化敏感度和并行实现难度不同。</div>
+
+  <div class="def-box">
+    <h3>滤波器结构要比较什么？</h3>
+    <ul>
+      <li><strong>存储量</strong>：需要多少个单位延迟器，也就是要保存多少个历史样本或状态。</li>
+      <li><strong>运算量</strong>：每输出一个样本需要多少次乘法和加法。</li>
+      <li><strong>数值稳定性</strong>：有限字长下，系数量化和舍入误差是否容易放大。</li>
+      <li><strong>可调性</strong>：某个系数变化时，能否局部控制一对零点或极点。</li>
+      <li><strong>并行性</strong>：不同支路能否同时计算，是否适合 FPGA、GPU 或多 MAC 单元 DSP。</li>
+    </ul>
+  </div>
+
+  <h3 class="section-title">数字滤波器的结构表示法</h3>
+
+  <p>用这三种运算元件搭出滤波器，常见表示法有两种：<strong>方框图法</strong>和<strong>信号流图法</strong>。它们描述的是同一个计算过程，只是视角不同：方框图更像硬件连接图，信号流图更像代数关系图。</p>
+
+  <h4 class="ch-section">方框图法</h4>
+  <p>方框图法用方框、箭头、加法节点、乘法系数和单位延迟器直接画出样本如何流动。它最适合从差分方程出发检查“先延迟、再乘系数、最后在哪里相加”。</p>
+
+  <p>二抽头 FIR 方框图可以直接按差分方程阅读：输入 $x(n)$ 分成两路，一路直接乘 $b_0$，另一路先经过一个单位延迟 $z^{-1}$ 得到 $x(n-1)$，再乘 $b_1$，最后两路相加得到输出。</p>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=6 title="方框图法：单位延时与乘常数" >}}
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>支路</th><th>经过的操作</th><th>贡献项</th></tr></thead>
+      <tbody>
+        <tr><td>直接支路</td><td>不延迟，只乘 $b_0$</td><td>$b_0x(n)$</td></tr>
+        <tr><td>延迟支路</td><td>先经 $z^{-1}$，再乘 $b_1$</td><td>$b_1x(n-1)$</td></tr>
+        <tr><td>输出节点</td><td>两路相加</td><td>$y(n)=b_0x(n)+b_1x(n-1)$</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>上图对应一个最简单的二抽头 FIR：</p>
+  \[
+  y(n)=b_0x(n)+b_1x(n-1).
+  \]
+  <p>如果差分方程含有过去输出项，例如 $y(n)=b_0x(n)+a_1y(n-1)$，方框图中就会出现从输出端经过 $z^{-1}$ 和系数 $a_1$ 回到加法节点的<strong>反馈支路</strong>。这正是 IIR 结构和 FIR 结构的图形区别。</p>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=8 title="方框图法：由递推方程得到反馈结构" >}}
+
+  <h4 class="ch-section">信号流图法</h4>
+  <p>信号流图法把每个中间变量画成节点，把乘常数、单位延迟和直接传递画成有向支路。它比方框图更紧凑，适合推导直接型、级联型、并联型，以及后面的转置定理。</p>
+
+  {{< mermaid >}}
+  graph LR
+    X(("x(n)")) -->|"b₀"| Y(("y(n)"))
+    X -->|"z⁻¹"| N1(("x(n-1)"))
+    N1 -->|"b₁"| Y
+    N1 -->|"z⁻¹"| N2(("x(n-2)"))
+    N2 -->|"b₂"| Y
+  {{< /mermaid >}}
+
+  <p>这张信号流图对应三抽头 FIR：</p>
+  \[
+  y(n)=b_0x(n)+b_1x(n-1)+b_2x(n-2).
+  \]
+  <p>节点表示变量，支路上的标注表示支路增益或延迟。这里从 $x(n)$ 到 $x(n-1)$、从 $x(n-1)$ 到 $x(n-2)$ 都必须经过一个单位延迟 $z^{-1}$；若一条支路不标传输系数，才默认增益为 1。多个支路汇入同一节点时，节点值等于所有输入支路信号之和。</p>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=9 title="信号流图法：三种基本运算" >}}
+
+  <p>课件第 11 页给出的是信号流图法的完整示例：先把差分方程中的每个延迟、系数和相加关系翻译成支路，再从输入节点沿有向边读到输出节点。它比前面的三抽头小例子更接近后面 IIR 直接型结构的画法。</p>
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=11 title="信号流图法：由差分方程画出结构示例" >}}
+
+  <div class="def-box">
+    <h3>两种表示法怎么选</h3>
+    <table>
+      <thead><tr><th>表示法</th><th>更适合回答的问题</th><th>优势</th><th>局限</th></tr></thead>
+      <tbody>
+        <tr><td>方框图法</td><td>这个滤波器怎么按硬件/程序步骤实现？</td><td>直观，便于检查延迟、乘法和加法位置</td><td>高阶结构会很拥挤</td></tr>
+        <tr><td>信号流图法</td><td>这些结构是否等价？能否转置、级联或共享延迟？</td><td>紧凑，便于代数变换和结构推导</td><td>初看不如方框图具象</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>信号流图四要素：</strong>源点（输入节点，只有输出）、阱点（输出节点，只有输入）、分支节点（一个输入多个输出，值分配到各支路）、相加器（多个输入相加，输出为和）。支路不标传输系数时默认为 1。</div>
+
+  <p>掌握这两种表示法后，后面的结构就不再是孤立图形，而是同一件事的不同翻译：直接型从差分方程直接翻译，级联型从因式分解翻译，并联型从部分分式展开翻译。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">五、IIR 递归结构</div>
+  <div class="ch-title">IIR 数字滤波器的基本结构</div>
+
+  <h3 class="section-title">特点</h3>
+
+  <p>IIR（Infinite Impulse Response）滤波器的特点是：单位冲激响应 $h(n)$ 无限长；$H(z)$ 在有限 $z$ 平面上有极点；结构上存在输出到输入的反馈，是<strong>递归型</strong>的。</p>
+
+  <p>递归结构带来两个直接后果。第一，IIR 可以用较低阶数得到很陡的过渡带，因此同样指标下通常比 FIR 更省乘法器；第二，极点位置决定稳定性，只要极点受量化影响跑到单位圆外，系统就会失稳。所以 IIR 结构设计最关心的是极点控制、系数量化敏感度和内部状态动态范围。</p>
+
+  <h3 class="section-title">为什么同一个 IIR 要有多种结构</h3>
+
+  <p>一个系统函数 $H(z)$ 只规定了输入和输出之间的关系，并没有规定中间变量怎么存、乘法器怎么排、反馈支路怎么组织。直接 I 型、直接 II 型、级联型、并联型本质上是同一个 $H(z)$ 的不同“施工方案”。</p>
+
+  <div class="def-box">
+    <h3>四种 IIR 结构分别解决什么问题</h3>
+    <table>
+      <thead><tr><th>结构</th><th>它从什么想法出发</th><th>主要解决的问题</th><th>什么时候用</th></tr></thead>
+      <tbody>
+        <tr><td>直接 I 型</td><td>按差分方程原样连接</td><td>让公式和结构一一对应，便于学习和手算</td><td>低阶例题、概念说明、原型验证</td></tr>
+        <tr><td>直接 II 型</td><td>把零点网络和极点网络的延迟链合并</td><td>减少存储单元，得到最少延迟结构</td><td>存储紧张、阶数较低、浮点实现</td></tr>
+        <tr><td>级联型</td><td>把高阶系统拆成多个一阶/二阶节串联</td><td>降低系数量化敏感度，局部控制零极点</td><td>实际 IIR 实现最常用，尤其是 Biquad 级联</td></tr>
+        <tr><td>并联型</td><td>把系统拆成多个一阶/二阶支路相加</td><td>缩短误差传播路径，提高并行计算能力</td><td>并行硬件、模态分析、部分分式形式自然的系统</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>一句话理解：</strong>直接 I 型最像公式，直接 II 型最省存储，级联型最适合工程调试和定点实现，并联型最适合并行计算和降低误差串行传播。</div>
+
+  {{< mermaid >}}
+  graph TD
+    A["拿到同一个 H(z)"] --> B{"目标是什么？"}
+    B -->|"先看懂公式怎么实现"| C["直接 I 型"]
+    B -->|"尽量少用延迟/存储"| D["直接 II 型"]
+    B -->|"高阶 IIR 要稳定可靠"| E["级联型二阶节"]
+    B -->|"硬件能并行、多支路同时算"| F["并联型"]
+    C --> G["学习、手算、低阶原型"]
+    D --> H["存储省，但内部状态动态范围要小心"]
+    E --> I["工程最常用：逐节控制零极点"]
+    F --> J["误差不串行传递，适合并行架构"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">基本结构</h3>
+
+  <h4 class="ch-section">2.1 直接 I 型</h4>
+  <p>按差分方程直接画出：先实现零点网络（$M$ 个延迟+加权，对 $x$ 的横向抽头），再实现极点网络（$N$ 个延迟+加权，对 $y$ 的反馈）。</p>
+
+  <div class="def-box">
+    <h3>直接 I 型结构</h3>
+    <p>零点网络：$M$ 个延迟单元，$M+1$ 个乘法器。</p>
+    <p>极点网络：$N$ 个延迟单元，$N$ 个乘法器（$a_0=1$ 不需乘）。</p>
+    <p>总延迟单元数：$M+N$。</p>
+  </div>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=15 title="IIR 直接 I 型结构流图" >}}
+
+  <p>课件第 16 页把直接 I 型和系统函数公式对应起来：分子多项式对应输入抽头网络，分母多项式对应输出反馈网络。因此直接 I 型不是凭空画出来的，而是把 $H(z)$ 的分子、分母分别按 $z^{-1}$ 延迟链展开。</p>
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=16 title="IIR 直接 I 型：系统函数与结构对应关系" >}}
+
+  <p>直接 I 型的直观好处是"零点在前、极点在后"，与差分方程一一对应，容易手画。缺点是延迟单元多，系数 $a_k,b_k$ 对极点/零点的控制不直观，且极点对系数变化非常敏感，容易出现不稳定或较大误差。</p>
+
+  <h4 class="ch-section">2.2 直接 II 型（正准型）</h4>
+  <p>直接 I 型的零点网络和极点网络是级联的，可以把它们交换顺序。交换后，两个网络中间的延迟单元完全重合，合并后只需 $\max(M,N)$ 个延迟单元。课件第 17 面给出的直接 II 型可以理解成一条共享的状态链：先由反馈系数 $a_k$ 递推得到中间状态 $x'(n)$，再由前向系数 $b_k$ 从这些状态合成输出 $y(n)$。</p>
+
+  <p>因此直接 II 型的核心不是“换一种画法”，而是把原本分别服务于分子和分母的两组延迟记忆合并为同一组内部状态。若 $M=N$，直接 I 型需要 $2N$ 个延迟单元，直接 II 型只需要 $N$ 个；若 $M\ne N$，则需要 $\max(M,N)$ 个。它很省存储，所以也叫正准型（canonical form）。</p>
+
+  <div class="def-box">
+    <h3>直接 II 型（正准型 / Canonical Form）</h3>
+    <p>把 $H(z)=H_1(z)\cdot H_2(z)$ 中 $H_1$（极点）和 $H_2$（零点）交换顺序，合并共用延迟链。</p>
+    <p>总延迟单元数：$\max(M,N)$（最少可能）。</p>
+    <p>总乘法器数：$M+N+1$（与直接 I 型相同）。</p>
+  </div>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=17 title="IIR 直接 II 型（正准型）结构流图" >}}
+
+  <div class="callout"><strong>关键结论：</strong>直接 II 型与直接 I 型实现的是<strong>同一个</strong> $H(z)$，但直接 II 型用了最少的延迟单元，因此也叫"正准型"。代价是内部状态 $x'(n)$ 同时承受递归反馈和前向抽头的影响，动态范围可能比输入/输出大；在定点实现中，直接 II 型虽然省延迟，却不一定最稳健。高阶 IIR 通常进一步拆成级联型或并联型。</div>
+
+  <div class="example-box">
+    <h3>例题：三阶 IIR 直接 II 型实现</h3>
+    <p>给定系统函数：</p>
+    <p style="text-align:center">$$H(z)=\frac{8-4z^{-1}+11z^{-2}-2z^{-3}}{1-\frac{5}{4}z^{-1}+\frac{3}{4}z^{-2}-\frac{1}{8}z^{-3}}$$</p>
+    <p>对应的差分方程：</p>
+    <p style="text-align:center">$$y(n)=8x(n)-4x(n-1)+11x(n-2)-2x(n-3)+\frac{5}{4}y(n-1)-\frac{3}{4}y(n-2)+\frac{1}{8}y(n-3)$$</p>
+
+    <p><strong>分析系数：</strong>从 $H(z)$ 读出前向系数 $b_k=\{8,-4,11,-2\}$，反馈系数 $a_k=\{-\frac{5}{4},\frac{3}{4},-\frac{1}{8}\}$（注意符号：差分方程中反馈项系数是分母系数的<strong>相反数</strong>）。</p>
+
+    <p><strong>直接 II 型实现：</strong>将 $H(z)$ 拆成 $H_1(z)\cdot H_2(z)$，其中 $H_1(z)$ 实现零点（前向支路），$H_2(z)$ 实现极点（反馈支路）。两者共享同一条延时链，只需 $\max(3,3)=3$ 个 $z^{-1}$ 延时单元：</p>
+
+    <ul>
+      <li><strong>反馈部分 $H_2(z)$</strong>：中间状态 $w(n)$ 由输入和反馈递推：
+        <p style="text-align:center">$$w(n)=x(n)+\tfrac{5}{4}w(n-1)-\tfrac{3}{4}w(n-2)+\tfrac{1}{8}w(n-3)$$</p>
+        <p>三个延时器分别存储 $w(n-1),w(n-2),w(n-3)$。</p>
+      </li>
+      <li><strong>前向部分 $H_1(z)$</strong>：输出 $y(n)$ 从共享状态链抽头加权求和：
+        <p style="text-align:center">$$y(n)=8w(n)-4w(n-1)+11w(n-2)-2w(n-3)$$</p>
+      </li>
+    </ul>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>参数</th><th>值</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>阶数 $N$</td><td>3</td><td>分子分母均为三次</td></tr>
+          <tr><td>前向系数 $b_k$</td><td>$\{8,-4,11,-2\}$</td><td>零点位置</td></tr>
+          <tr><td>反馈系数 $-a_k$</td><td>$\{\frac{5}{4},-\frac{3}{4},\frac{1}{8}\}$</td><td>极点位置（符号取反）</td></tr>
+          <tr><td>延时单元</td><td>3 个 $z^{-1}$</td><td>直接 II 型正准型，$\max(M,N)=3$</td></tr>
+          <tr><td>乘法器</td><td>$4+3=7$ 个</td><td>$b_0$ 至 $b_3$ 加 $-a_1$ 至 $-a_3$</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="img-center">
+      <img src="/media/images/dsp/iir-direct2-example.png" alt="三阶 IIR 直接 II 型结构：传递函数、差分方程与信号流图" loading="lazy" />
+      <figcaption>三阶 IIR 滤波器：$H(z)$ 传递函数 → 差分方程 → 直接 II 型（$H_1$ 零点部分 + $H_2$ 极点部分共享延时链）</figcaption>
+    </figure>
+
+    <p>如上图所示，$H_1(z)$（零点部分）在左侧：输入 $x(n)$ 从左进入，经反馈递推得到中间状态，再通过 $b_0,b_1,b_2,b_3$ 四条前向支路加权求和输出 $y(n)$。$H_2(z)$（极点部分）在右侧：输出端的 $y(n)$ 经 $z^{-1}$ 延时后分别乘 $-a_1,-a_2$ 反馈回加法节点。两条链共享同一组延时器，这就是直接 II 型比直接 I 型节省存储的核心。</p>
+
+    <div class="callout"><strong>易错点：</strong>差分方程中反馈项的系数符号与 $H(z)$ 分母系数<strong>相反</strong>。$H(z)$ 分母是 $1-\frac{5}{4}z^{-1}+\frac{3}{4}z^{-2}-\frac{1}{8}z^{-3}$，而差分方程中对应 $+\frac{5}{4}y(n-1)-\frac{3}{4}y(n-2)+\frac{1}{8}y(n-3)$。画信号流图时，支路上标的 $-a_1=\frac{5}{4}$，即 $a_1=-\frac{5}{4}$，这就是符号翻转的来源。</div>
+
+    <h4>Python 实现与仿真结果</h4>
+
+    <p>用 Python 直接实现上述差分方程，对 100 个采样点的输入信号进行滤波：</p>
+
+    <pre><code class="language-python">x_1, x_2, x_3, y_1, y_2, y_3 = 0, 0, 0, 0, 0, 0
+
+def filter(x):
+    global x_1, x_2, x_3, y_1, y_2, y_3
+    y = (8*x - 4*x_1 + 11*x_2 - 2*x_3
+         + 1.25*y_1 - 0.75*y_2 + 0.125*y_3)
+    x_3 = x_2; x_2 = x_1; x_1 = x
+    y_3 = y_2; y_2 = y_1; y_1 = y
+    return y
+
+for i in range(100):
+    y3[i] = filter(y[i])</code></pre>
+
+    <figure class="img-center">
+      <img src="/media/images/dsp/iir-direct2-code-result.png" alt="三阶 IIR 滤波器 Python 实现：代码与输入/输出波形对比" loading="lazy" />
+      <figcaption>左：差分方程的 Python 实现（全局状态变量保存历史样本）；右上：原始输入信号（幅值范围 95~125）；右下：滤波器输出（初始瞬态尖峰达 ~4900，振铃衰减缓慢）</figcaption>
+    </figure>
+
+    <p>从仿真结果可以观察到两个典型现象：</p>
+    <ul>
+      <li><strong>初始瞬态过冲</strong>：输出在 $n\approx 5$ 处飙升至 ~4900，远超输入信号的幅值范围（95~125）。这是因为滤波器启动时所有状态变量初始化为零（零初始条件），前几个采样点的反馈还未建立，前向系数 $b_0=8$ 的放大效应直接作用在输入上。</li>
+      <li><strong>持续振铃</strong>：过冲之后输出并未迅速收敛，而是在 3500~4500 之间缓慢振荡。这说明分母的极点虽然最终使系统稳定（极点在单位圆内），但靠近单位圆的极点导致了缓慢衰减的振铃。输出量级（~1000~5000）比输入（~100）放大了约一个数量级，对应前向增益 $\sum|b_k|=8+4+11+2=25$ 的累积效果。</li>
+    </ul>
+
+    <div class="callout"><strong>工程启示：</strong>直接型实现高阶 IIR 时，零初始条件会导致大幅瞬态过冲。实际应用中通常需要（1）预热滤波器（pre-fill 状态），或（2）拆成级联二阶节逐节处理以控制动态范围。这正是前面说的“直接 II 型虽然省延迟，却不一定最稳健”的数值体现。</div>
+  </div>
+
+  <h4 class="ch-section">2.3 级联型（Cascade Form）</h4>
+  <p>先把 $H(z)$ 的分子分母分别因式分解为零点和极点：</p>
+  \[
+  H(z)=A\,\frac{\prod_{k=1}^{M_1}(1-g_k z^{-1})\prod_{k=1}^{M_2}(1-h_k z^{-1})(1-h_k^* z^{-1})}{\prod_{k=1}^{N_1}(1-c_k z^{-1})\prod_{k=1}^{N_2}(1-d_k z^{-1})(1-d_k^* z^{-1})}.
+  \]
+
+  <p>其中 $g_k$ 为实零点，$h_k$ 为复零点，$c_k$ 为实极点，$d_k$ 为复极点；$M=M_1+2M_2$，$N=N_1+2N_2$。再把共轭对组合成实系数二阶因子：</p>
+  \[
+  H(z)=A\prod_{k=1}^{K}\frac{1+\beta_{1k}z^{-1}+\beta_{2k}z^{-2}}{1-\alpha_{1k}z^{-1}-\alpha_{2k}z^{-2}},\qquad K=\left\lceil\frac{N}{2}\right\rceil.
+  \]
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=20 title="IIR 级联型结构（二阶节串联）" >}}
+
+  <p>课件第 23 面进一步给出了级联型的信号流图法：每个一阶或二阶小节先单独画成信号流图，再按系统函数乘积的顺序首尾相接。这样读图时不需要一次面对完整高阶多项式，而是逐节检查每个子系统的零点、极点和延迟链。</p>
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=23 title="IIR 级联型：信号流图法" >}}
+
+  <p>课件第 24–25 面补充了级联型最关键的工程理解：当 $M=N=4$ 时，系统可拆成 2 个二阶节；当 $M=N=6$ 时，可拆成 3 个二阶节。每一节都有自己的 $\beta_{1k},\beta_{2k}$ 与 $\alpha_{1k},\alpha_{2k}$，所以调节第 $k$ 节时，主要影响第 $k$ 对零点和第 $k$ 对极点，而不是一次牵动整个高阶多项式。</p>
+  {{< docpages "pdf/dsp/第五讲1.pdf" pages="24-25" title="IIR 级联型：二阶节展开与结构特点" >}}
+
+  <p>课件第 20 面的级联型把高阶滤波器拆成若干个一阶/二阶小系统串联。每个二阶节（Biquad）只用 2 个延迟单元，负责一对共轭零点和一对共轭极点；整体 $H(z)$ 等于各节系统函数的乘积。这样：</p>
+  <ul>
+    <li>$\beta_{1k},\beta_{2k}$ 主要决定第 $k$ 节的零点位置，常用来塑造通带、阻带或陷波位置。</li>
+    <li>$\alpha_{1k},\alpha_{2k}$ 决定第 $k$ 节的极点位置，直接影响峰值、带宽和稳定性。</li>
+    <li>每节只处理低阶多项式，系数量化误差不会一次性作用在高阶多项式上，数值灵敏度通常低于直接型。</li>
+    <li>实际实现时还可以调整二阶节顺序和每节增益分配，避免某一节内部信号过大而溢出。</li>
+  </ul>
+
+  <div class="callout"><strong>注意：</strong>若实零点/实极点个数为奇数，则对应二阶节中有一个系数为零（退化为一阶节）。通常 $M=N$ 时共有 $\lceil(N+1)/2\rceil$ 个二阶节。</div>
+
+  <h4 class="ch-section">2.4 并联型（Parallel Form）</h4>
+  <p>把 $H(z)$ 做部分分式展开：</p>
+  \[
+  H(z)=\sum_{k=0}^{M-N}G_k z^{-k}+\sum_{k=1}^{N_1}\frac{A_k}{1-c_k z^{-1}}+\sum_{k=1}^{N_2}\frac{\gamma_{0k}+\gamma_{1k}z^{-1}}{1-\alpha_{1k}z^{-1}-\alpha_{2k}z^{-2}}.
+  \]
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=27 title="IIR 并联型结构（多支路并行）" >}}
+
+  <p>课件第 30 面给出了并联型的具体演示：先把系统函数展开成若干个简单支路，每条支路独立实现一个一阶或二阶子系统，最后在输出端求和。这个例子适合对照部分分式展开，理解“相加的系统函数”如何变成“并行的结构图”。</p>
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=30 title="IIR 并联型：部分分式到并行支路演示" >}}
+
+  <p>课件第 27 面的并联型来自部分分式展开：把一个高阶有理函数拆成若干个一阶/二阶子系统的和。输入 $x(n)$ 同时送入所有支路，各支路分别产生一个分量响应，最后把这些输出相加得到 $y(n)$。</p>
+
+  <p>当 $M<N$ 时不含 $G_k$ 项；当 $M\ge N$ 时需要先做长除法，前面的 $G_k z^{-k}$ 是直接前馈项；当 $N$ 为奇数时通常会有一个一阶节。并联型的特点是：</p>
+  <ul>
+    <li>各并联支路互相独立，某一支路的舍入误差不会继续传入下一节，<strong>误差传播路径短</strong>。</li>
+    <li>多个支路可以同时计算，再在末端相加，适合 FPGA、SIMD 或多乘法器 DSP 这类并行硬件。</li>
+    <li>每个分母因子对应一组极点，所以可以较清楚地观察每组极点贡献的模态响应。</li>
+    <li>零点不是由某个单独支路直接控制，而是所有支路相加后整体形成，因此<strong>不如级联型那样便于单独调整零点</strong>。</li>
+  </ul>
+
+  <h4 class="ch-section">IIR 结构实现例题</h4>
+
+  <div class="example-box">
+    <h3>例题：用四种结构实现给定 IIR 滤波器</h3>
+    <p><strong>题目：</strong>设 IIR 数字滤波器差分方程为</p>
+    \[
+    y(n)=x(n)+\tfrac{1}{4}x(n-1)+\tfrac{5}{4}y(n-1)-\tfrac{3}{8}y(n-2),
+    \]
+    <p>试用直接 I 型、直接 II 型、级联型、并联型四种结构实现。</p>
+
+    <p><strong>解：</strong></p>
+    <p><strong>步骤 1：写系统函数</strong></p>
+    \[
+    H(z)=\frac{1+\tfrac{1}{4}z^{-1}}{1-\tfrac{5}{4}z^{-1}+\tfrac{3}{8}z^{-2}}.
+    \]
+
+    <p><strong>步骤 2：直接 I 型</strong></p>
+    <p>直接 I 型按原差分方程拆成两条延迟链：一条输入抽头链计算 $x(n)$ 与 $x(n-1)$ 的前向部分，另一条输出反馈链计算 $y(n-1)$ 与 $y(n-2)$ 的反馈部分。这个例子中分子一阶、分母二阶，因此需要 $1+2=3$ 个延迟单元。</p>
+    \[
+    y(n)=\underbrace{x(n)+\tfrac{1}{4}x(n-1)}_{\text{输入抽头链}}
+    +\underbrace{\tfrac{5}{4}y(n-1)-\tfrac{3}{8}y(n-2)}_{\text{输出反馈链}}.
+    \]
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>链路</th>
+            <th>需要保存的状态</th>
+            <th>参与求和的项</th>
+            <th>延迟单元数</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>输入抽头链</td>
+            <td>$x(n-1)$</td>
+            <td>$x(n)$、$\tfrac{1}{4}x(n-1)$</td>
+            <td>1</td>
+          </tr>
+          <tr>
+            <td>输出反馈链</td>
+            <td>$y(n-1), y(n-2)$</td>
+            <td>$\tfrac{5}{4}y(n-1)$、$-\tfrac{3}{8}y(n-2)$</td>
+            <td>2</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>直接 I 型的实现顺序可以写成：先从输入链得到 $x(n)$ 与 $x(n-1)$ 的加权和，再从输出历史中取出两项反馈量，最后把四项相加得到 $y(n)$。它的优点是结构直观，缺点是延迟单元没有共享。</p>
+
+    <p><strong>步骤 3：直接 II 型</strong></p>
+    <p>直接 II 型把分母递归部分和分子前向部分串接，并把两条延迟链合并为一条内部状态链。令内部状态为 $w(n)$：</p>
+    \[
+    w(n)=x(n)+\tfrac{5}{4}w(n-1)-\tfrac{3}{8}w(n-2),
+    \qquad
+    y(n)=w(n)+\tfrac{1}{4}w(n-1).
+    \]
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>含义</th>
+            <th>进入递归部分的系数</th>
+            <th>进入输出部分的系数</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>$w(n)$</td>
+            <td>当前内部状态</td>
+            <td>主通路系数 1</td>
+            <td>主通路系数 1</td>
+          </tr>
+          <tr>
+            <td>$w(n-1)$</td>
+            <td>一次延迟状态</td>
+            <td>$\tfrac{5}{4}$</td>
+            <td>$\tfrac{1}{4}$</td>
+          </tr>
+          <tr>
+            <td>$w(n-2)$</td>
+            <td>二次延迟状态</td>
+            <td>$-\tfrac{3}{8}$</td>
+            <td>0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>直接 II 型只需要 2 个延迟单元。读它时不要再把输入延迟链和输出反馈链分开，而是盯住同一串状态 $w(n),w(n-1),w(n-2)$：递归方程负责生成 $w(n)$，输出方程负责从这些状态抽头得到 $y(n)$。</p>
+
+    <p><strong>步骤 4：级联型</strong></p>
+    <p>因式分解：分子 $1+z^{-1}/4=(1+0.25z^{-1})$，分母 $1-1.25z^{-1}+0.375z^{-2}=(1-0.75z^{-1})(1-0.5z^{-1})$。</p>
+    \[
+    H(z)=\frac{1+0.25z^{-1}}{1-0.75z^{-1}}\cdot\frac{1}{1-0.5z^{-1}}.
+    \]
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>级联节</th>
+            <th>系统函数</th>
+            <th>递推关系</th>
+            <th>控制的零极点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>第 1 节</td>
+            <td>$H_1(z)=\dfrac{1+0.25z^{-1}}{1-0.75z^{-1}}$</td>
+            <td>$v(n)=u(n)+0.25u(n-1)+0.75v(n-1)$</td>
+            <td>零点 $-0.25$，极点 $0.75$</td>
+          </tr>
+          <tr>
+            <td>第 2 节</td>
+            <td>$H_2(z)=\dfrac{1}{1-0.5z^{-1}}$</td>
+            <td>$y(n)=v(n)+0.5y(n-1)$</td>
+            <td>极点 $0.5$</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>级联型不强调“按原公式一口气算完”，而是把系统拆成两个小滤波器串起来：$x(n)\to H_1(z)\to v(n)\to H_2(z)\to y(n)$。每个小节只控制一部分零极点，调试和定点实现都更稳。</p>
+
+    <p><strong>步骤 5：并联型</strong></p>
+    <p>部分分式展开：</p>
+    \[
+    H(z)=\frac{A}{1-0.75z^{-1}}+\frac{B}{1-0.5z^{-1}},
+    \]
+    <p>解得 $A=4,B=-3$。两支路并联，输入同时进入两个一阶节，输出相加：</p>
+    \[
+    H(z)=\frac{4}{1-0.75z^{-1}}-\frac{3}{1-0.5z^{-1}}.
+    \]
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>并联支路</th>
+            <th>系统函数</th>
+            <th>递推关系</th>
+            <th>输出合成</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>上支路</td>
+            <td>$H_a(z)=\dfrac{4}{1-0.75z^{-1}}$</td>
+            <td>$y_a(n)=4x(n)+0.75y_a(n-1)$</td>
+            <td rowspan="2">$y(n)=y_a(n)+y_b(n)$</td>
+          </tr>
+          <tr>
+            <td>下支路</td>
+            <td>$H_b(z)=\dfrac{-3}{1-0.5z^{-1}}$</td>
+            <td>$y_b(n)=-3x(n)+0.5y_b(n-1)$</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>并联型的每条支路独立计算一个一阶系统的响应，最后相加。它牺牲了“零点单独可调”的直观性，但支路可以并行运行，误差也不会像级联那样从前一节继续传到后一节。</p>
+
+    <div class="callout"><strong>易错点：</strong>级联型和并联型都需要先对 $H(z)$ 做因式分解或部分分式展开，务必先化为 $z^{-1}$ 的有理分式标准形式（分母常数项为 1）。直接 I 型和直接 II 型的反馈符号来自分母移项后的差分方程：这里反馈项是 $+\tfrac{5}{4}$ 与 $-\tfrac{3}{8}$。直接 I 型需要 3 个延迟单元，直接 II 型通过共享内部状态链降为 2 个。</div>
+  </div>
+
+  <div class="example-box">
+    <h3>例题：课件原题 — 三阶 IIR 四种结构实现</h3>
+    <p><strong>题目：</strong>设 IIR 数字滤波器系统函数为</p>
+    \[
+    H(z)=\frac{8-4z^{-1}+11z^{-2}-2z^{-3}}{1-\frac{5}{4}z^{-1}+\frac{3}{4}z^{-2}-\frac{1}{8}z^{-3}},
+    \]
+    <p>试用直接 I 型、直接 II 型（正准型）、级联型、并联型四种结构实现。</p>
+
+    <p><strong>解：</strong></p>
+    <p><strong>步骤 1：识别参数</strong></p>
+    <p>分子系数 $b_0=8, b_1=-4, b_2=11, b_3=-2$（$M=3$）；分母系数 $a_1=5/4, a_2=-3/4, a_3=1/8$（$N=3$）。</p>
+
+    <p><strong>步骤 2：直接 I 型</strong></p>
+    <p>先画零点网络（4 个抽头，$8, -4, 11, -2$），再画极点网络（3 个反馈，$5/4, -3/4, 1/8$），共用 $3+3=6$ 个延迟单元。</p>
+
+    <p><strong>步骤 3：直接 II 型（正准型）</strong></p>
+    <p>交换零极点网络顺序，合并中间 3 个延迟单元，共用 $\max(3,3)=3$ 个延迟单元。结构更紧凑。</p>
+
+    {{< docpages "pdf/dsp/第五讲1.pdf" pages="35,36" title="三阶 IIR 直接 I 型与正准型结构流图" >}}
+
+    <p><strong>步骤 4：级联型</strong></p>
+    <p>对分母因式分解：$1-\frac{5}{4}z^{-1}+\frac{3}{4}z^{-2}-\frac{1}{8}z^{-3}=(1-\frac{1}{4}z^{-1})(1-z^{-1}+\frac{1}{2}z^{-2})$。</p>
+    <p>但通常优先将共轭复根组合为二阶节。分母的三个根为 $z_1=1/4$（实根）和 $z_{2,3}=\frac{1}{2}(1 \pm j)$（共轭复根），二阶因子为 $1-z^{-1}+\frac{1}{2}z^{-2}$。</p>
+    <p>分子 $8-4z^{-1}+11z^{-2}-2z^{-3}$ 同理分解为实系数因子的乘积。</p>
+    \[
+    H(z)=A\cdot\frac{1+\beta_{11}z^{-1}}{1-\alpha_{11}z^{-1}}\cdot\frac{1+\beta_{12}z^{-1}+\beta_{22}z^{-2}}{1-\alpha_{12}z^{-1}-\alpha_{22}z^{-2}}.
+    \]
+    <p>一个一阶节和一个二阶节级联。</p>
+
+    <p><strong>步骤 5：并联型</strong></p>
+    <p>对 $H(z)$ 做部分分式展开，由于 $M=N$，先做长除法提取常数项，再对真分式部分展开。</p>
+
+    <div class="callout"><strong>易错点：</strong>三阶系统的因式分解比二阶复杂得多，分母的三次多项式需要先试根或用 Cardano 公式求根。级联型中一阶节和二阶节的配对顺序不影响系统函数，但会影响有限字长下的噪声特性。</div>
+  </div>
+
+  <h3 class="section-title">转置定理</h3>
+  <div class="theorem-box">
+    <h3>转置定理（Transposition Theorem）</h3>
+    <p>将网络中<strong>所有支路方向反转</strong>，输入输出交换位置，系统函数 $H(z)$ <strong>不变</strong>。转置后的直接 I 型等价于直接 II 型的"转置型"，延迟单元数不变。</p>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>结构</th><th>延迟单元</th><th>核心优点</th><th>核心缺点</th></tr></thead>
+      <tbody>
+        <tr><td>直接 I 型</td><td>$M+N$</td><td>直观，与差分方程对应</td><td>延迟多，系数敏感</td></tr>
+        <tr><td>直接 II 型</td><td>$\max(M,N)$</td><td>最少延迟，正准型</td><td>系数仍敏感</td></tr>
+        <tr><td>级联型</td><td>$N$</td><td>零极点独立可调</td><td>需因式分解</td></tr>
+        <tr><td>并联型</td><td>较多</td><td>误差最小，可并行</td><td>不能调零点</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{< docref "pdf/dsp/第五讲1.pdf" page=2 title="数字滤波器结构的表示方法" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=10 title="IIR 直接 I 型与直接 II 型" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=20 title="级联型与并联型结构" >}}
+
+  <p>IIR 的难点来自反馈：结构稍有变化，内部状态、极点灵敏度和误差传播方式就会不同。接下来转到 FIR，问题会换一个方向：没有反馈以后，稳定性压力减小，重点变成怎样利用有限长冲激响应、频域采样和线性相位来减少运算或改善实现。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">六、FIR 非递归结构</div>
+  <div class="ch-title">FIR 数字滤波器的基本结构</div>
+
+  <h3 class="section-title">特点</h3>
+
+  <p>FIR（Finite Impulse Response）滤波器的特点是：$h(n)$ 只在有限个 $n$ 处非零；$H(z)$ 无极点（除 $z=0$ 处的 $N-1$ 阶极点），在有限 $z$ 平面处处收敛；结构上<strong>非递归</strong>，没有反馈。</p>
+
+  <p>没有反馈意味着 FIR 天然稳定：只要输入有界，有限个输入样本的加权和一定有界。它还可以通过 $h(n)$ 的偶对称或奇对称设计出严格线性相位，因此在语音、通信、图像这类关心波形形状的场景中非常常用。代价是同样的幅频指标下，FIR 往往需要比 IIR 更高的阶数。</p>
+
+  <h3 class="section-title">基本结构</h3>
+
+  <p>课件第 38 面开始进入 FIR 数字滤波器结构：由于 FIR 没有反馈，所有基本结构都围绕有限长冲激响应 $h(n)$ 的不同组织方式展开。</p>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=38 title="FIR 数字滤波器的基本结构" >}}
+
+  <div class="def-box">
+    <h3>FIR 系统函数</h3>
+    \[
+    H(z)=\sum_{n=0}^{N-1}h(n)z^{-n},\qquad y(n)=\sum_{k=0}^{N-1}h(k)\,x(n-k).
+    \]
+    <p>$h(n)$ 是 $N$ 点序列，$H(z)$ 是 $z^{-1}$ 的 $N-1$ 次多项式。不同 FIR 结构的区别，不在于系统函数是否改变，而在于怎样组织这些延迟、乘法和加法。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>为什么 FIR 也要分这么多结构</h3>
+    <table>
+      <thead><tr><th>结构</th><th>它利用了什么性质</th><th>主要用途</th><th>直觉</th></tr></thead>
+      <tbody>
+        <tr><td>横截型</td><td>直接利用卷积和公式</td><td>通用 FIR、教材例题、自适应滤波</td><td>每个抽头就是一个 $h(k)$</td></tr>
+        <tr><td>转置横截型</td><td>利用转置定理保持 $H(z)$ 不变</td><td>流水线实现、某些硬件 MAC 结构</td><td>先乘系数，再沿链路逐级累加</td></tr>
+        <tr><td>级联型</td><td>把 $H(z)$ 分解成零点因子</td><td>需要控制零点位置的 FIR</td><td>一节负责一对零点</td></tr>
+        <tr><td>频率抽样型</td><td>用频率采样值 $H(k)$ 表示滤波器</td><td>直接按频域采样点调节频响</td><td>改一个 $H(k)$ 就是在改一个频点附近的形状</td></tr>
+        <tr><td>线性相位型</td><td>利用 $h(n)$ 的偶对称或奇对称</td><td>语音、通信、图像等需要波形保真的场景</td><td>对称抽头先相加/相减，乘法次数约减半</td></tr>
+        <tr><td>FFT 快速卷积</td><td>用频域乘法代替长时域卷积</td><td>长 FIR、流式音频、实时卷积</td><td>滤波器太长时，先变到频域再乘更便宜</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>一句话理解：</strong>FIR 没有稳定性危机，所以结构选择更多是在优化乘法次数、硬件流水线、频域调节方式和线性相位约束。</div>
+
+  <h4 class="ch-section">3.1 横截型（卷积型 / 直接型）</h4>
+  <p>课件第 39 面说明横截型结构。它直接用差分方程实现：$N-1$ 个延迟单元组成延时链，$N$ 个抽头分别乘 $h(0),h(1),\ldots,h(N-1)$，再相加。这就是线性移不变系统的卷积和公式。</p>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=39 title="FIR 横截型结构" >}}
+
+  <p>横截型的优点是最直观：每个抽头对应一个冲激响应样本，改某个 $h(k)$ 就是改第 $k$ 条抽头的乘法系数。它常作为理解 FIR 的基准结构，也常用于系数需要频繁更新的自适应 FIR。</p>
+
+  <h4 class="ch-section">3.2 转置横截型与级联型</h4>
+  <p>课件第 40 面先用转置定理把横截型变换为等价的转置横截型：将所有支路方向反转，输入输出互换，系统函数 $H(z)$ 不变。转置后，输入信号先分配到各个乘法器，再沿着延迟链逐级累加，延迟单元数仍为 $N-1$。</p>
+
+  <p>第 40 面同时给出 FIR 级联型。级联型把 $H(z)$ 分解为实系数一阶或二阶因子的乘积：</p>
+  \[
+  H(z)=\prod_{k=1}^{\lfloor N/2\rfloor}(\beta_{0k}+\beta_{1k}z^{-1}+\beta_{2k}z^{-2}).
+  \]
+
+  <p>$N$ 为偶数时共 $N/2$ 个二阶节；$N$ 为奇数时有一个一阶节（$\beta_{2k}=0$）。每节主要对应一对零点，因此级联型适合从零点分布理解和调节 FIR；缺点是需要先因式分解，且节次顺序和系数缩放会影响有限字长误差。</p>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=40 title="FIR 转置横截型与级联型结构" >}}
+
+  <h4 class="ch-section">3.3 频率抽样型</h4>
+  <p>课件第 43 面说明频率抽样型。它利用 DFT 频域采样定理，把 $H(z)$ 用 $N$ 个频率采样值 $H(k)$ 表示：</p>
+  \[
+  H(z)=(1-z^{-N})\,\frac{1}{N}\sum_{k=0}^{N-1}\frac{H(k)}{1-W_N^{-k}z^{-1}},\qquad W_N=e^{-j2\pi/N}.
+  \]
+
+  <p>这可以看成两部分级联：</p>
+  <ul>
+    <li><strong>梳状滤波器</strong> $1-z^{-N}$：在单位圆上有 $N$ 个等间隔零点 $\omega_k=2\pi k/N$，频率响应为 $|2\sin(N\omega/2)|$。</li>
+    <li><strong>谐振器组</strong> $\sum H(k)/(1-W_N^{-k}z^{-1})$：每个一阶节在单位圆上有一个极点 $\omega_k=2\pi k/N$，正好与梳状滤波器的零点抵消，使得 $\omega=2\pi k/N$ 处的频率响应等于 $H(k)$。</li>
+  </ul>
+
+  {{< docpage "pdf/dsp/第五讲1.pdf" page=43 title="FIR 频率抽样型结构（梳状滤波器 + 谐振器组）" >}}
+
+  <div class="callout"><strong>核心思想：</strong>频率抽样型把滤波器设计成"先梳状滤除，再谐振恢复"。修改 $H(k)$ 即可直接调整频响在采样点的值，适合需要快速调节频响形状的场合。缺点是极点恰好在单位圆上，有限字长下可能不稳定。</div>
+
+  <h4 class="ch-section">3.3b 修正的频率抽样型</h4>
+  <p>上面标准频率抽样型的极点恰好落在单位圆上 $z_k=W_N^{-k}=e^{j2\pi k/N}$，在有限字长实现时极点可能漂移到单位圆外导致不稳定。工程解决方案是把所有极点（连同梳状滤波器的零点）从单位圆<strong>收缩到半径 $r<1$ 的圆上</strong>。</p>
+
+  <p>修正后的系统函数为</p>
+  \[
+  H(z)=\frac{1-r^N z^{-N}}{N}\sum_{k=0}^{N-1}\frac{H(k)}{1-rW_N^{-k}z^{-1}}.
+  \]
+
+  <p>由于 $H(k)$ 和 $H(N-k)$ 互为共轭（$h(n)$ 为实序列时），可以将第 $k$ 个和第 $(N-k)$ 个谐振器合并为一个实系数二阶网络：</p>
+  \[
+  H_k(z)=\frac{\beta_{0k}+\beta_{1k}z^{-1}}{1-z^{-1}\cdot 2r\cos\!\left(\frac{2\pi}{N}k\right)+r^2 z^{-2}},
+  \]
+  <p>其中 $\beta_{0k}=2\,\mathrm{Re}[H(k)]$，$\beta_{1k}=-2r\,\mathrm{Re}[H(k)W_N^k]$。这样每个二阶节都是实系数的，极点稳定地位于半径 $r$ 的圆上。</p>
+
+  <div class="def-box">
+    <h3>修正频率抽样型 vs 标准频率抽样型</h3>
+    <table>
+      <thead><tr><th>特性</th><th>标准型</th><th>修正型 ($r<1$)</th></tr></thead>
+      <tbody>
+        <tr><td>极点位置</td><td>单位圆 $|z|=1$</td><td>半径 $r<1$ 的圆</td></tr>
+        <tr><td>稳定性</td><td>有限字长下可能不稳定</td><td>保证稳定</td></tr>
+        <tr><td>零极点抵消</td><td>精确抵消</td><td>近似抵消（$r^N \approx 1$ 时误差小）</td></tr>
+        <tr><td>二阶节系数</td><td>复数（需配对合并）</td><td>实系数</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>工程要点：</strong>$r$ 通常取 $0.99 \sim 0.999$，兼顾稳定性和频响精度。修正后的结构与标准型相比只多了 $r$ 的缩放因子，硬件复杂度几乎不变，但彻底解决了有限字长稳定性问题。</div>
+
+  {{< docref "pdf/dsp/第五讲1.pdf" page=47 title="修正的频率抽样型结构" >}}
+
+  <h4 class="ch-section">3.4 线性相位型</h4>
+  <p>当 FIR 滤波器的单位冲激响应满足<strong>偶对称</strong> $h(n)=h(N-1-n)$ 或<strong>奇对称</strong> $h(n)=-h(N-1-n)$ 时，相位响应具有严格的线性特性：</p>
+  <ul>
+    <li><strong>偶对称</strong>（情况 I、II）：$\theta(\omega)=-\frac{N-1}{2}\omega$，纯线性相位。</li>
+    <li><strong>奇对称</strong>（情况 III、IV）：$\theta(\omega)=-\frac{N-1}{2}\omega+\frac{\pi}{2}$，线性相位加 $90°$ 相移。</li>
+  </ul>
+
+  <p>利用对称性，可以把乘法次数减少约一半。根据 $N$ 的奇偶和对称性，线性相位 FIR 有四种情况：</p>
+
+  <div class="def-box">
+    <h3>线性相位 FIR 的四种情况</h3>
+    <table>
+      <thead><tr><th>情况</th><th>对称性</th><th>$N$</th><th>群延迟</th><th>频率响应特点</th></tr></thead>
+      <tbody>
+        <tr><td>I</td><td>$h(n)=h(N\!-\!1\!-\!n)$</td><td>奇</td><td>$(N\!-\!1)/2$</td><td>纯线性相位</td></tr>
+        <tr><td>II</td><td>$h(n)=h(N\!-\!1\!-\!n)$</td><td>偶</td><td>$(N\!-\!1)/2$</td><td>$\omega=\pi$ 处必为零</td></tr>
+        <tr><td>III</td><td>$h(n)=-h(N\!-\!1\!-\!n)$</td><td>奇</td><td>$(N\!-\!1)/2$</td><td>$\omega=0,\pi$ 处必为零</td></tr>
+        <tr><td>IV</td><td>$h(n)=-h(N\!-\!1\!-\!n)$</td><td>偶</td><td>$(N\!-\!1)/2$</td><td>$\omega=0$ 处必为零</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>$N$ 为奇数（情况 I）时</strong>，对称中心在整数样点 $n=(N-1)/2$，所有 $h(n)$ 都可配对。结构上，对称位置的两个延迟输出相加（偶对称取 $+1$）或相减（奇对称取 $-1$），再乘以系数 $h(n)$，乘法次数从 $N$ 减为 $(N+1)/2$。</p>
+
+  \[
+  H(z)=\sum_{n=0}^{(N-3)/2}h(n)\left[z^{-n} \pm z^{-(N-1-n)}\right] + h\!\left(\frac{N-1}{2}\right)z^{-(N-1)/2}.
+  \]
+
+  <p><strong>$N$ 为偶数（情况 II）时</strong>，对称中心在 $n=(N-1)/2$ 处（非整数样点），没有单独的中心项。乘法次数从 $N$ 减为 $N/2$。</p>
+
+  \[
+  H(z)=\sum_{n=0}^{N/2-1}h(n)\left[z^{-n} \pm z^{-(N-1-n)}\right].
+  \]
+
+  <p>线性相位 FIR 在通信、图像处理中非常重要，因为线性相位意味着<strong>所有频率分量延迟相同</strong>，信号波形不会失真。</p>
+
+  {{< docref "pdf/dsp/第五讲1.pdf" page=56 title="线性相位 FIR 滤波器的直接型结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=58 title="N 为奇数时线性相位 FIR 结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=59 title="N 为偶数时线性相位 FIR 结构" >}}
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>结构</th><th>延迟单元</th><th>核心优点</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td>横截型</td><td>$N-1$</td><td>简单直观</td><td>通用</td></tr>
+        <tr><td>级联型</td><td>$N-1$</td><td>控制零点对</td><td>需调零点时</td></tr>
+        <tr><td>频率抽样型</td><td>$N$</td><td>改 $H(k)$ 即改频响</td><td>频域设计</td></tr>
+        <tr><td>线性相位型</td><td>$N-1$</td><td>乘法减半，相位线性</td><td>波形保真</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{< docref "pdf/dsp/第五讲1.pdf" page=38 title="FIR 滤波器的基本结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=39 title="FIR 横截型结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=40 title="FIR 转置横截型与级联型结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=43 title="FIR 频率抽样型结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=50 title="线性相位型结构" >}}
+
+  <h3 class="section-title">用 DFT/FFT 实现 FIR 滤波</h3>
+
+  <p>时域卷积 $y(n)=x(n)*h(n)$ 在频域等价于乘法 $Y(k)=X(k)\cdot H(k)$。当 FIR 滤波器的单位冲激响应 $h(n)$ 较长（比如 $N>64$）时，直接时域卷积需要 $N$ 次乘累加（MAC）运算，而用 FFT 在频域做乘法的计算量反而更小。</p>
+
+  <div class="def-box">
+    <h3>基本原理</h3>
+    <p>设 FIR 滤波器 $h(n)$ 长度为 $M$，输入 $x(n)$ 长度为 $L$。线性卷积结果长度为 $L+M-1$。用 DFT 计算线性卷积的步骤：</p>
+    <ol>
+      <li>将 $h(n)$ 补零到 $N\ge L+M-1$ 点</li>
+      <li>将 $x(n)$ 补零到 $N$ 点</li>
+      <li>分别做 $N$ 点 DFT：$H(k)=\mathrm{DFT}\{h(n)\}$，$X(k)=\mathrm{DFT}\{x(n)\}$</li>
+      <li>频域相乘：$Y(k)=X(k)\cdot H(k)$</li>
+      <li>IDFT 恢复：$y(n)=\mathrm{IDFT}\{Y(k)\}$</li>
+    </ol>
+  </div>
+
+  <p>当 $N$ 取 2 的幂时，FFT 的计算复杂度为 $O(N\log N)$，而直接卷积为 $O(N\cdot M)$。当 $M$ 较大时 FFT 方法显著更快。</p>
+
+  <p>实际应用中输入信号通常是<strong>无限长</strong>的流式数据（如音频），需要分段处理。两种经典方法：</p>
+
+  <h4 class="ch-section">重叠相加法（Overlap-Add）</h4>
+  <p>将长序列 $x(n)$ 分成每段长 $L$ 的无重叠子段 $x_m(n)$。每段与 $h(n)$ 做 $N$ 点循环卷积（$N\ge L+M-1$），结果长度为 $L+M-1$，相邻段的输出有 $M-1$ 个样本重叠，将重叠部分相加即可。</p>
+
+  <p>流程图：</p>
+  {{< mermaid >}}
+  graph LR
+    A["x(n) 分段"] --> B["补零到 N 点"]
+    B --> C["N 点 FFT"]
+    C --> D["乘以 H(k)"]
+    D --> E["N 点 IFFT"]
+    E --> F["重叠相加"]
+    F --> G["y(n)"]
+  {{< /mermaid >}}
+
+  <h4 class="ch-section">重叠保留法（Overlap-Save）</h4>
+  <p>每段输入取 $N$ 点，但相邻段有 $M-1$ 点重叠（每段前 $M-1$ 个点是上一段的后 $M-1$ 个点）。每段做 $N$ 点循环卷积后，丢弃前 $M-1$ 个受缠绕效应影响的样本，保留后 $L=N-M+1$ 个有效样本拼接输出。</p>
+
+  <div class="callout"><strong>两种方法的对比：</strong>重叠相加法需要在输出端做加法（重叠相加），但输入分段干净无重叠；重叠保留法不需要输出端加法，但输入分段有重叠。实际工程中两者计算量相当，具体选择往往取决于实现平台和缓存策略。两者都利用了 <a href="dsp-dft-and-fft.html">DFT 与 FFT</a> 来加速卷积运算。</div>
+
+  {{< docref "pdf/dsp/第五讲1.pdf" page=53 title="FIR 快速卷积结构" >}}
+  {{< docref "pdf/dsp/第五讲1.pdf" page=55 title="重叠相加法与重叠保留法" >}}
+
+
+  <h3 class="section-title">FIR 结构实现例题</h3>
+
+  <div class="example-box">
+    <h3>例题：FIR 滤波器横截型与转置型结构</h3>
+    <p><strong>题目：</strong>设 FIR 滤波器差分方程为</p>
+    \[
+    y(n)=8x(n)-4x(n-1)+11x(n-2)-2x(n-3),
+    \]
+    <p>试画出横截型结构及其转置型结构。</p>
+
+    <p><strong>解：</strong></p>
+    <p><strong>步骤 1：识别参数</strong></p>
+    <p>滤波器长度 $N=4$，系数 $h(0)=8,h(1)=-4,h(2)=11,h(3)=-2$。需要 $N-1=3$ 个延迟单元。</p>
+
+    <p><strong>步骤 2：横截型（直接型）</strong></p>
+    <p>输入 $x(n)$ 进入延时链，依次得到 $x(n-1),x(n-2),x(n-3)$，分别乘以 $8,-4,11,-2$ 后相加得 $y(n)$。</p>
+
+    <p><strong>步骤 3：转置型结构</strong></p>
+    <p>应用转置定理：将所有支路方向反转，输入输出互换。转置后：输入信号先分成 4 条支路，分别乘以 $8,-4,11,-2$，再通过 3 个串联的延迟单元沿反向传播，在节点处相加。两种结构的 $H(z)$ 完全相同：</p>
+    \[
+    H(z)=8-4z^{-1}+11z^{-2}-2z^{-3}.
+    \]
+
+    <div class="callout"><strong>注意：</strong>转置操作改变了信号的流动路径，但不改变系统函数。在定点实现中，转置型和原型的量化噪声特性可能不同，有时转置型有更好的数值特性。</div>
+  </div>
+
+  <p>至此，FIR 部分已经从时域横截型讲到频域快速卷积。它和 IIR 的结构选择标准不同：IIR 首先要管住极点和反馈误差，FIR 则更多是在乘法次数、频域调节、线性相位和分段卷积之间做取舍。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">七、工程取舍</div>
+  <div class="ch-title">实际工程中怎么选</div>
+
+  <p>同一个滤波器指标通常可以落到多种结构上。真正实现时，不是只问“哪个公式正确”，而是问“这个平台上哪个结构更稳、更省、更容易调”。选择时需综合考虑延迟、系数灵敏度、量化误差、并行度和可调度性。</p>
+
+  <div class="def-box">
+    <h3>结构选择速查</h3>
+    <ul>
+      <li><strong>直接型</strong>：仅用于理论分析或低阶原型验证。高阶时系数灵敏度极高，$a_k$ 微小变化就可能把极点推出单位圆。</li>
+      <li><strong>级联型</strong>：最常用。每节二阶，零极点独立可调，便于模块化设计和调试。适合定点 DSP 实现。</li>
+      <li><strong>并联型</strong>：对并行架构友好（GPU/FPGA），运算误差最小。适合需要高速实时处理的场景。</li>
+      <li><strong>频率抽样型</strong>：适合频域自适应滤波，修改 $H(k)$ 即可快速改变频响。注意极点在单位圆上的稳定性问题。</li>
+    </ul>
+  </div>
+
+  <div class="callout"><strong>工程经验：</strong>实际 DSP 芯片（如 TI C6000 系列）通常用级联型二阶节（Biquad）实现 IIR 滤波器，因为二阶节的系数范围有限、动态范围可控，且便于用芯片内置的乘累加（MAC）单元高效计算。</div>
+</div>
+
+<div class="review-box">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>三种基本运算</strong>：加法、乘常数、单位延迟（$z^{-1}$）。</li>
+    <li><strong>直接 II 型</strong>：交换零极点顺序，共用延迟链，延迟单元最少（$\max(M,N)$）。</li>
+    <li><strong>级联型</strong>：零极点因式分解为二阶节，独立可调，最常用。</li>
+    <li><strong>并联型</strong>：部分分式展开，误差最小，可并行。</li>
+    <li><strong>频率抽样型</strong>：梳状滤波器 + 谐振器组，改 $H(k)$ 即改频响。</li>
+    <li><strong>快速卷积</strong>：频域乘法代替时域卷积，$O(N\log N)$ vs $O(NM)$，长 FIR 时显著更快。</li>
+    <li><strong>重叠相加/保留</strong>：流式数据的分段卷积方法，处理无限长输入。</li>
+    <li><strong>线性相位 FIR</strong>：$h(n)=\pm h(N-1-n)$，四种情况，乘法减半，相位严格线性。</li>
+    <li><strong>修正频率抽样型</strong>：极点收缩到 $r<1$ 的圆上，解决有限字长稳定性。</li>
+  </ul>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="DSP-course-materials"><strong>本地课程材料：</strong>《数字信号处理教程（第五版）》第 5-7 章；第二讲作业与系统函数、频率响应相关题型。</li>
+    <li data-cite-key="MIT-OCW-DSP"><a href="https://ocw.mit.edu/courses/res-6-008-digital-signal-processing-spring-2011/" target="_blank">MIT OCW · Digital Signal Processing</a>：用于核对数字滤波器频率响应与 FIR/IIR 基本概念。</li>
+    <li data-cite-key="Stanford-EE264-DSP"><a href="https://web.stanford.edu/class/ee264/" target="_blank">Stanford EE264 · Digital Signal Processing</a>：用于补充滤波器设计的课程视角。</li>
+    <li data-cite-key="DSP-Guide"><a href="https://www.dspguide.com/" target="_blank">The Scientist and Engineer's Guide to DSP</a>：用于补充滤波器直觉和工程解释。</li>
+    <li data-cite-key="NI-Pole-Zero-Plots"><a href="https://www.ni.com/docs/en-US/bundle/labview-digital-filter-design-toolkit/page/poles-zeroes-and-pole-zero-plots-digital-filt.html" target="_blank">NI · Pole-Zero Plots for Digital Filters</a>：用于补充零极点几何解释。</li>
+    <li data-cite-key="课程讲义-第五讲-数字滤波器的基本结构">课程讲义：第五讲《数字滤波器的基本结构》</li>
+    <li data-cite-key="程佩青-数字信号处理教程-第5章">教材：程佩青《数字信号处理教程》第 5 章</li>
+    <li data-cite-key="Oppenheim-Schafer-Discrete-Time-Signal-Processing-Chap.-6">Oppenheim & Schafer, <em>Discrete-Time Signal Processing</em>, Chap. 6</li>
+    <li data-cite-key="Overlap-Add-Method-Wikipedia"><a href="https://en.wikipedia.org/wiki/Overlap%E2%80%93add_method" target="_blank">Overlap-Add Method, Wikipedia</a>：重叠相加法的详细数学推导</li>
+    <li data-cite-key="基于-FFT-的快速-FIR-知乎"><a href="https://zhuanlan.zhihu.com/p/632342899" target="_blank">基于 FFT 的快速 FIR，知乎</a>：快速卷积的工程实现解析</li>
+    <li data-cite-key="FFT-Based-FIR-Filtering-Using-Overlap-Add-Method"><a href="https://planewave.github.io/posts/fir-fft" target="_blank">FFT-Based FIR Filtering Using Overlap-Add Method</a>：Matlab 实现参考</li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="dsp-dft-and-fft.html">
+    <span class="nav-label">上一章</span>
+    <span class="nav-title">DFT 与 FFT</span>
+  </a>
+  <a class="nav-card current" href="dsp-digital-filters.html">
+    <span class="nav-label">当前</span>
+    <span class="nav-title">数字滤波器基础、分析与结构</span>
+  </a>
+  <a class="nav-card" href="dsp-iir-filter-design.html">
+    <span class="nav-label">下一章</span>
+    <span class="nav-title">IIR 数字滤波器的设计</span>
+  </a>
+</div>
+
+</div>

@@ -1,0 +1,270 @@
+---
+title: "数字人论文精读（十五）：Hallo，用分层音频视觉对齐生成高质量说话肖像"
+description: "精读 Hallo：如何用 Hierarchical Audio-Driven Visual Synthesis、ReferenceNet、UNet denoiser 与 temporal alignment 做端到端音频驱动肖像动画。"
+date: 2026-06-09T10:52:50
+created_at: 2026-06-09T10:52:50
+updated_at: 2026-06-09T10:52:50
+tags: [数字人, Hallo, Portrait Animation, 论文精读, Talking Head, Diffusion]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1140
+mathjax: true
+notify: true
+hero_title: "Hallo"
+hero_sub: "arXiv 2024 · Fudan / Baidu / ETH Zurich / Nanjing University"
+hero_tagline: "Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">108.86h</span><span class="label">过滤后训练数据</span></div>
+  <div class="stat"><span class="num b">14</span><span class="label g">训练帧数</span></div>
+  <div class="stat"><span class="num">20.545</span><span class="label">HDTF FID</span></div>
+  <div class="stat"><span class="num b">7.750</span><span class="label l">HDTF Sync-C</span></div>
+</div>
+
+<div class="callout"><strong>系列说明</strong>：Hallo 属于端到端扩散式 talking portrait 路线。它不像 Wav2Lip 只强调局部嘴部同步，也不像 SadTalker 先预测 3D motion coefficients，而是直接在 latent diffusion 框架里学习音频到视觉动态的分层对齐。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">这篇论文的核心问题：音频到底该驱动脸上的哪一部分？</div>
+
+  <p>Hallo 要解决的是 audio-driven portrait image animation：给定一张静态肖像和一段语音，生成与语音同步、视觉高保真且时间一致的说话肖像视频。#Xu-et-al.-2024-Hallo#</p>
+
+  <p>论文把任务困难拆成两个层面：第一，音频不仅要控制嘴唇，还要协调表情和头姿；第二，生成结果不能只是一帧帧好看，而要在视频时间轴上保持连贯。#Xu-et-al.-2024-Hallo# 这两个要求放在一起，就会让传统中间表示路线很尴尬：3DMM、landmark 或隐式运动系数更容易控制，却会受限于表示精度；端到端扩散模型更有画质潜力，却容易把音频—视觉对齐学得过于粗糙。#Xu-et-al.-2024-Hallo#</p>
+
+  <div class="callout"><strong>一句话结论</strong>：Hallo 的核心贡献不是“又用扩散模型做 talking head”，而是把音频驱动拆成 lip、expression、pose 三个视觉层级，让 cross-attention 在空间上更知道自己该对齐什么。</div>
+
+  <p>这种拆法很符合直觉。同一句音频里，音素主要决定嘴唇开合，语气和节奏会影响表情，停顿和强调又可能带来头部姿态变化。如果把整张脸都放进一个统一 audio-visual cross-attention，模型会得到一个“全脸平均”的驱动信号；Hallo 则让不同区域各自接收音频条件，再用自适应融合把它们合回 diffusion denoiser。#Xu-et-al.-2024-Hallo#</p>
+
+  <div class="photo">
+    <img src="media/images/hallo-2024/pipeline.webp" alt="Hallo overall pipeline" loading="lazy">
+    <div class="cap">图 1：Hallo 总体框架。系统以参考肖像和音频为输入，用 ReferenceNet 编码参考图像纹理，用 face/audio encoder 生成条件特征，并在 UNet denoiser 中引入 hierarchical audio-driven visual synthesis（来源：Xu et al., 2024, arXiv source Fig.2）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">方法总览：ReferenceNet 保身份，UNet denoiser 负责生成，HADVS 负责对齐</div>
+
+  <h3 class="section-title">从 Stable Diffusion 改成音频驱动视频生成</h3>
+
+  <p>Hallo 基于 Stable Diffusion 1.5 的 latent diffusion 体系：图像先由 VAE 编码到 latent space，UNet-based denoising model 在扩散时间步上预测噪声，再由 VAE decoder 还原图像。不同的是，Hallo 不再把文本作为主要条件，而是用音频和参考人脸条件驱动肖像运动。#Xu-et-al.-2024-Hallo#</p>
+
+  <div class="def-box">
+    <h3>UNet denoiser 的角色</h3>
+    <p>在 Hallo 中，UNet denoiser 是真正执行扩散去噪的视频生成主体。它接收 noisy latents、时间步、参考图像条件、音频条件和区域 mask 相关条件，逐步恢复出与音频同步的视频 latent。论文强调该网络与 ReferenceNet、temporal alignment 和 HADVS 共同构成最终生成架构。#Xu-et-al.-2024-Hallo#</p>
+  </div>
+
+  <h3 class="section-title">ReferenceNet：让生成结果像同一个人</h3>
+
+  <p>ReferenceNet 是一个与 denoising UNet 层数相同的 Stable Diffusion UNet，用来从参考图像中提取全局视觉纹理、人物身份和背景信息，并把相同空间分辨率上的特征注入 diffusion backbone。#Xu-et-al.-2024-Hallo# 换句话说，ReferenceNet 主要回答“这个人是谁、画面长什么样”，音频分支和 HADVS 主要回答“这一帧该怎么动”。</p>
+
+  <div class="def-box">
+    <h3>Face embedding 与 audio embedding</h3>
+    <p>Hallo 使用预训练 face encoder 抽取身份特征，而不是直接用 CLIP 泛化视觉特征；音频侧使用 wav2vec，并拼接 wav2vec 最后 12 层 embedding，以获得更丰富的语音语义和运动提示。论文还为每个视频帧抽取对应 5 秒音频片段，再通过线性层投影为每帧的 audio embedding。#Xu-et-al.-2024-Hallo#</p>
+  </div>
+
+  {{< mermaid >}}
+flowchart TD
+  A["参考肖像"] --> B["Face encoder / ReferenceNet"]
+  C["驱动音频"] --> D["wav2vec + audio projection"]
+  A --> E["MediaPipe landmarks"]
+  E --> F["lip / expression / pose masks"]
+  D --> G["Hierarchical audio-visual cross attention"]
+  F --> G
+  B --> H["Denoising UNet"]
+  G --> H
+  I["Temporal alignment: previous 2 frames"] --> H
+  H --> J["VAE decoder"]
+  J --> K["Talking portrait video"]
+  {{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">HADVS：把音频—视觉对齐拆成 lip、expression、pose</div>
+
+  <p>Hierarchical Audio-Driven Visual Synthesis（HADVS）是 Hallo 最值得细读的模块。论文先用 MediaPipe 从参考脸上预测 landmark，再构造 lip、expression、pose 三个区域 mask：唇部 mask 来自 lip bounding box，表情 mask 是 expression bounding box 扣掉 lip 区域，pose mask 则覆盖剩余区域。#Xu-et-al.-2024-Hallo#</p>
+
+  <div class="def-box">
+    <h3>区域 mask 的数学定义</h3>
+    <p>如果 $Y_{lip}$ 和 $Y_{exp}$ 分别表示 lip 与 expression landmark bounding box 对应的二值区域，那么 Hallo 使用：</p>
+\[
+M_{lip}=Y_{lip}, \quad M_{exp}=(1-M_{lip})\odot Y_{exp}, \quad M_{pose}=1-M_{exp}.
+\]
+    <p>这里的重点不是公式复杂，而是把“嘴唇—表情—姿态”变成 denoising UNet 内部可见的空间分区。#Xu-et-al.-2024-Hallo#</p>
+  </div>
+
+  <p>接下来，模型先对每一帧 noisy latent 和对应 audio embedding 做 cross-attention，得到音频驱动的视觉响应；然后分别用 $M_{pose}$、$M_{exp}$、$M_{lip}$ 切出姿态、表情、唇部三类响应；最后用卷积式 adaptive module 融合这些层级输出。#Xu-et-al.-2024-Hallo#</p>
+
+  <div class="photo">
+    <img src="media/images/hallo-2024/hierarchical-cross-attention.webp" alt="Hallo hierarchical audio visual cross attention" loading="lazy">
+    <div class="cap">图 2：HADVS 将 full audio-visual cross attention 改成 lip、expression、pose 分层 cross-attention，再通过 adaptive fusion 汇总（来源：Xu et al., 2024, arXiv source Fig.3）。</div>
+  </div>
+
+  <div class="callout"><strong>关键理解</strong>：HADVS 不是简单增加一个 mask loss，而是在 cross-attention 的输出路径上改变音频条件进入视觉 latent 的方式。它让“音频影响哪里”成为网络结构的一部分。</div>
+
+  <h3 class="section-title">Temporal alignment：长视频为什么需要前 2 帧</h3>
+
+  <p>Hallo 在 temporal alignment 中使用前一推理 step 的 2 帧作为 motion frames，并把它们与 latent noise 沿时间轴拼接，再通过 temporal self-attention blocks 处理序列一致性。#Xu-et-al.-2024-Hallo# 在长视频推理时，上一 clip 的最后 2 帧会作为下一 clip 的初始帧，从而以增量方式生成更长视频。#Xu-et-al.-2024-Hallo#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">Training Pipeline：两阶段训练，先学单帧，再学音频驱动视频</div>
+
+  <h3 class="section-title">Stage 1：单帧生成能力</h3>
+
+  <p>第一阶段使用 reference image 与 target video frame pairs 训练单帧生成能力；VAE encoder/decoder 和 facial image encoder 被固定，ReferenceNet 与 denoising UNet 的 spatial cross-attention 权重参与优化。#Xu-et-al.-2024-Hallo# 论文描述中，每个训练视频 clip 含 14 帧，训练时从同一视频中随机取一帧作 reference frame，再取另一帧作 target image。#Xu-et-al.-2024-Hallo#</p>
+
+  <h3 class="section-title">Stage 2：视频序列与音频对齐</h3>
+
+  <p>第二阶段输入 reference image、audio 与 target video，冻结 ReferenceNet 和 denoising UNet 的 spatial modules，重点训练 hierarchical audio-visual cross-attention，让音频作为 motion guidance 与 lip、expression、pose 视觉区域建立关系。#Xu-et-al.-2024-Hallo# 同时，motion modules 被引入以增强 temporal coherence，并用 AnimateDiff 权重初始化。#Xu-et-al.-2024-Hallo#</p>
+
+  <h3 class="section-title">GitHub README 中披露的训练入口</h3>
+
+  <p>官方 README 披露了可用训练流程：先用 `scripts.data_preprocess` 的 step 1 把视频转帧、抽取音频并生成 mask；step 2 用 InsightFace 生成 face embeddings、用 Wav2Vec 生成 audio embeddings；随后用 `extract_meta_info_stage1.py` 与 `extract_meta_info_stage2.py` 生成 metadata JSON；训练通过 `accelerate launch ... scripts.train_stage1 --config ./configs/train/stage1.yaml` 这类命令启动。#Hallo-GitHub#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>项目</th><th>论文/README 披露</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>硬件</td><td>8 NVIDIA A100 GPUs</td><td>披露</td></tr>
+        <tr><td>训练阶段</td><td>Stage 1 单帧；Stage 2 视频序列与音频对齐</td><td>披露</td></tr>
+        <tr><td>训练步数</td><td>两个阶段各 30,000 steps</td><td>披露</td></tr>
+        <tr><td>Batch size</td><td>4</td><td>披露</td></tr>
+        <tr><td>分辨率</td><td>512×512</td><td>披露</td></tr>
+        <tr><td>学习率</td><td>1e-5</td><td>披露</td></tr>
+        <tr><td>第二阶段帧数</td><td>每个 training instance 产生 14 frames，并拼接前 2 个 ground-truth frames</td><td>披露</td></tr>
+        <tr><td>Dropout 条件</td><td>reference image、guidance audio、motion frames 以 0.05 概率 drop</td><td>披露</td></tr>
+        <tr><td>Motion module 初始化</td><td>AnimateDiff weights</td><td>披露</td></tr>
+        <tr><td>优化器类型</td><td>论文正文未明确列出</td><td>未披露</td></tr>
+        <tr><td>完整训练耗时</td><td>论文正文未明确列出</td><td>未披露</td></tr>
+        <tr><td>完整数据许可</td><td>论文说明来源与清洗规则，但未逐项列出许可</td><td>未披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">Inference Pipeline：单图 + 音频如何变成视频</div>
+
+  <p>推理阶段输入是一张 source image 和一段 driving audio，网络输出由音频驱动的肖像动画视频。#Xu-et-al.-2024-Hallo# README 对输入有明确约束：source image 应裁成正方形，脸部占图像 50%–70%，正脸且旋转角小于 30°；driving audio 必须是 WAV，且仓库模型说明训练数据只包含英文，因此要求英文语音与清晰人声。#Hallo-GitHub#</p>
+
+  <h3 class="section-title">脚本级流程</h3>
+
+  <p>官方 `scripts/inference.py` 的当前主分支实现把推理模型组织成 `reference_unet`、`denoising_unet`、`face_locator`、`imageproj` 和 `audioproj` 五类核心模块；推理时先预处理参考图像，得到 face region、face embedding、full/face/lip mask，再预处理 16kHz audio 得到 wav2vec embedding。#Hallo-GitHub#</p>
+
+  <p>脚本还从配置中读取 `pose_weight`、`face_weight`、`lip_weight` 并组成 motion scale，这与论文所说的 visual synthesis weights 对应：用户可以在一定程度上调节 pose、face/expression 和 lip 三类视觉运动权重。#Hallo-GitHub#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>推理环节</th><th>输入/输出</th><th>作用</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>Source image preprocessing</td><td>source image → pixels、face masks、face embedding</td><td>定位脸部与身份条件</td><td>README / inference.py 披露</td></tr>
+        <tr><td>Audio preprocessing</td><td>WAV → wav2vec embeddings</td><td>提取音频 motion guidance</td><td>README / inference.py 披露</td></tr>
+        <tr><td>Reference branch</td><td>reference image latent → texture/context features</td><td>保持身份、纹理和背景</td><td>论文 / 代码披露</td></tr>
+        <tr><td>Denoising branch</td><td>noisy latent + conditions → denoised latent</td><td>生成视频 latent</td><td>论文 / 代码披露</td></tr>
+        <tr><td>Temporal stitching</td><td>上一 clip 最后 2 帧 → 下一 clip 初始帧</td><td>提升长视频连续性</td><td>论文披露</td></tr>
+        <tr><td>采样步数</td><td>正文未明确列出默认步数</td><td>影响速度与质量</td><td>未披露</td></tr>
+        <tr><td>实时性</td><td>论文给出不同分辨率耗时，但未声称实时产品级延迟</td><td>部署判断</td><td>部分披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">实验：质量、同步、消融与效率分别说明什么</div>
+
+  <h3 class="section-title">数据集与评估指标</h3>
+
+  <p>论文训练数据来自 HDTF、Bilibili 与 YouTube，原始总量为 2209 IDs / 164.32 小时；清洗后保留 1823 IDs / 108.86 小时。#Xu-et-al.-2024-Hallo# 清洗规则包括保留单人说话且唇音一致的视频，排除场景切换、明显相机运动、过大面部运动和完整侧脸镜头。#Xu-et-al.-2024-Hallo#</p>
+
+  <div class="photo">
+    <img src="media/images/hallo-2024/data-statistics.webp" alt="Hallo dataset statistics" loading="lazy">
+    <div class="cap">图 3：Hallo 训练与推理数据统计。过滤后数据包括 HDTF 6.47h、Bilibili 8.66h、YouTube 93.73h，总计 108.86h（来源：Xu et al., 2024, arXiv source Fig.4）。</div>
+  </div>
+
+  <p>评估指标包括 FID、FVD、Sync-C、Sync-D 和 E-FID；其中 FID/FVD 衡量图像与视频分布质量，Sync-C/Sync-D 衡量唇音同步，E-FID 用 Inception 特征评估生成图像质量。#Xu-et-al.-2024-Hallo#</p>
+
+  <h3 class="section-title">核心量化结果</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>FID ↓</th><th>FVD ↓</th><th>Sync-C ↑</th><th>Sync-D ↓</th><th>E-FID ↓</th><th>论文结论</th></tr></thead>
+      <tbody>
+        <tr><td>HDTF</td><td>20.545</td><td>173.497</td><td>7.750</td><td>7.659</td><td>7.951</td><td>图像/视频质量和时间一致性最强，唇音同步接近 real video</td></tr>
+        <tr><td>CelebV</td><td>44.578</td><td>377.117</td><td>7.191</td><td>7.984</td><td>78.495</td><td>FID、FVD、Sync-C、E-FID 均为表中最优</td></tr>
+        <tr><td>Wild</td><td>23.266</td><td>239.647</td><td>6.924</td><td>7.969</td><td>34.731</td><td>复杂条件下仍保持较强鲁棒性</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>HDTF 表中，Hallo 的 FID 20.545、FVD 173.497、E-FID 7.951 均优于 SadTalker、Audio2Head、DreamTalk 和 AniPortrait；Sync-C 7.750 虽低于 Audio2Head 的 8.024，但整体质量与同步指标更均衡。#Xu-et-al.-2024-Hallo#</p>
+
+  <h3 class="section-title">消融：为什么必须三层都用</h3>
+
+  <p>HADVS 的消融很直接：只做 full audio-visual cross attention 时，HDTF FVD 为 193.062、Sync-C 为 6.499；最终使用 lip + expression + pose 三个区域后，FVD 降到 173.497，Sync-C 升到 7.750。#Xu-et-al.-2024-Hallo# 这说明 Hallo 的收益不只是来自更大的扩散 backbone，而来自音频条件进入视觉空间的方式变化。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>消融项</th><th>关键结果</th><th>解读</th></tr></thead>
+      <tbody>
+        <tr><td>Full attention baseline</td><td>FID 20.581 / FVD 193.062 / Sync-C 6.499</td><td>画质可以，但唇音同步和视频一致性不足</td></tr>
+        <tr><td>Lip + Exp + Pose</td><td>FID 20.545 / FVD 173.497 / Sync-C 7.750</td><td>三层区域注意力综合最优</td></tr>
+        <tr><td>Zero convolution fusion</td><td>FVD 173.497 / Sync-C 7.750 / E-FID 7.951</td><td>融合机制优于 self attention 和 direct addition 的综合指标</td></tr>
+        <tr><td>CFG λa=3.5, λi=3.5</td><td>FID 23.167 / FVD 195.179 / Sync-C 7.658</td><td>论文采用的视觉保真与运动多样性折中配置</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">效率：不是实时论文，而是扩散路线的成本说明</h3>
+
+  <p>效率表显示，512×512 推理使用 HADVS 时需要 9.77GB 显存、1.63 秒；去掉 HADVS 后为 9.76GB、1.63 秒；256×256 为 6.62GB、0.46 秒；1024×1024 为 20.66GB、10.29 秒。#Xu-et-al.-2024-Hallo# 因此更准确的读法是：HADVS 几乎不增加推理时间，但整个方法仍是偏离线高质量生成，而不是 Ditto 那类实时交互系统。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">局限与风险：扩散式 talking portrait 离产品化还有什么距离</div>
+
+  <p>论文明确把未来工作分成四类：增强 audio-visual synchronization、提升 temporal coherence、优化 computational efficiency、改进 expression/pose diversity control。#Xu-et-al.-2024-Hallo# 这些局限都指向同一个事实：端到端扩散模型提升了画质和自然度，但要进入稳定产品，还需要更低延迟、更强可控性和更可靠的长时一致性。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      复现和使用时的风险点
+    </div>
+    <div class="admonition-content"><p>README 明确说明当前模型训练数据仅为英文，因此中文、唱歌、强噪声或极端情绪语音都可能出现泛化风险；同时，输入人像要求正脸、脸部占比 50%–70%，这意味着任意野图并不一定适合直接推理。#Hallo-GitHub#</p></div>
+  </div>
+
+  <p>README 还单独写了 social risks and mitigations：音频驱动肖像动画可能被用于 deepfake，涉及肖像和声音的隐私、同意与误用问题，因此需要伦理准则、透明数据政策、知情同意和负责任使用。#Hallo-GitHub#</p>
+
+  <div class="review-box">
+    <h3>本文要点复盘</h3>
+    <ul>
+      <li><strong>核心问题</strong>：音频要同时对齐 lip、expression 和 pose，而不是只驱动嘴部。</li>
+      <li><strong>核心模块</strong>：HADVS 用区域 mask 与分层 cross-attention 改写音频条件进入视觉 latent 的路径。</li>
+      <li><strong>生成骨架</strong>：ReferenceNet 保身份和纹理，UNet denoiser 做扩散生成，temporal alignment 用前 2 帧增强连续性。</li>
+      <li><strong>实验结论</strong>：Hallo 在 HDTF、CelebV 和 Wild 上取得较强 FID/FVD/E-FID 与同步表现，HADVS 消融证明三层区域注意力有效。</li>
+      <li><strong>主要局限</strong>：效率、长时一致性、音频视觉精细同步和多样性控制仍是后续关键问题。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="paper-egstalker.html"><span class="nav-label">上一篇论文精读</span><span class="nav-title">EGSTalker：3DGS 实时音频驱动</span></a>
+    <a class="nav-card current" href="digital-human-hub.html"><span class="nav-label">系列入口</span><span class="nav-title">数字人系列</span></a>
+    <a class="nav-card" href="paper-ditto.html"><span class="nav-label">相关论文精读</span><span class="nav-title">Ditto：运动空间扩散</span></a>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Xu-et-al.-2024-Hallo">Xu, Mingwang, Hui Li, Qingkun Su, Hanlin Shang, Liwei Zhang, Ce Liu, Jingdong Wang, Yao Yao, and Siyu Zhu. “Hallo: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation.” arXiv:2406.08801, 2024. <a href="https://arxiv.org/abs/2406.08801" target="_blank">arXiv</a></li>
+    <li data-cite-key="Hallo-Source">arXiv TeX source for “Hallo: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation.” Retrieved from arXiv e-print source, 2026-06-09. <a href="https://arxiv.org/e-print/2406.08801" target="_blank">Source</a></li>
+    <li data-cite-key="Hallo-GitHub">Fudan Generative Vision. “hallo: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation.” GitHub repository and README. <a href="https://github.com/fudan-generative-vision/hallo" target="_blank">GitHub</a></li>
+    <li data-cite-key="Hallo-Project">Hallo project page. <a href="https://fudan-generative-vision.github.io/hallo/" target="_blank">Project website</a></li>
+  </ul>
+</div>

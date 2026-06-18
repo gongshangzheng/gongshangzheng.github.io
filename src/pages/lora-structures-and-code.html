@@ -1,0 +1,285 @@
+---
+title: "LoRA 适用结构与代码实现：从 Linear 到 Conv 的全面适配"
+description: "系统梳理 LoRA 可以应用于神经网络的哪些结构（Linear、Conv、Embedding、Attention、FFN），并提供从零手写 LoRA 和 HuggingFace PEFT 工业级配置的完整代码实现。"
+date: 2026-06-01T21:29:01
+created_at: 2026-06-01T21:29:01
+updated_at: 2026-06-02T00:47:00
+hero_title: LoRA 适用结构与代码实现
+hero_sub: 从 Linear 到 Conv 的全面适配
+hero_tagline: 哪些层可以用 LoRA？各层效果如何？代码怎么写？
+categories: [AI]
+subcategory: "微调"
+tags: [LoRA, PEFT, PyTorch, Transformer, 微调, 参数高效]
+mathjax: true
+hub: lora-training-guide
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">6</span><span class="label">适配结构</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">代码层次</span></div>
+  <div class="stat"><span class="num">7</span><span class="label">常见 target modules</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列二</div>
+  <div class="ch-title">LoRA 应该插到哪些地方</div>
+
+  如果说上一篇 [[lora-principle-deep-survey|LoRA 原理深度调研]] 回答的是“为什么 LoRA 有效”，那么这一篇回答的是两个更工程化的问题：第一，LoRA 究竟应该插到模型的哪些结构里；第二，手写一个最小可运行实现和用工业级库配置它，到底分别意味着什么。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、LoRA 可以作用于哪些结构</div>
+
+  <div class="section fade-in">
+    <div class="section-title">1.1 Linear 层是最经典入口</div>
+    LoRA 最初就是围绕线性层提出的。对于一个线性映射 $W_0 \in \mathbb{R}^{d_{out}\times d_{in}}$，LoRA 用两个低秩矩阵来表示更新：
+    $$W' = W_0 + \frac{\alpha}{r}BA$$
+    这样可训练参数从 $d_{out}d_{in}$ 变成 $r(d_{out}+d_{in})$。这也是为什么 Transformer 中的大量投影层天然适合 LoRA：它们本来就是规模很大的线性变换 #Hu et al., 2021#。
+
+    <div class="info-box">
+      <h3>Transformer 里最常见的目标层</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>位置</th><th>模块名</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>Attention 输入投影</td><td><code>q_proj</code> / <code>k_proj</code> / <code>v_proj</code></td><td>生成 Query / Key / Value</td></tr>
+            <tr><td>Attention 输出投影</td><td><code>o_proj</code></td><td>把注意力输出映回隐藏空间</td></tr>
+            <tr><td>FFN 升维/门控</td><td><code>gate_proj</code> / <code>up_proj</code></td><td>中间表示扩展</td></tr>
+            <tr><td>FFN 降维</td><td><code>down_proj</code></td><td>回到隐藏维度</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">1.2 Attention 各子矩阵的效果并不一样</div>
+    在实践中，并不是所有 Attention 子矩阵都同样重要。原始 LoRA 论文里常见的是对 attention 的投影矩阵做适配，而后续经验通常发现，<code>v_proj</code> 与 <code>o_proj</code> 是非常常见的起点组合；如果资源允许，再把 FFN 相关层一起纳入，效果往往更稳 #Hu et al., 2021#。
+
+    Amazon Science 关于 target module 选择的研究进一步说明，只用部分输出投影也可能获得很高性价比，但精度与延迟之间存在明显 trade-off #Amazon-Science-LoRA-targets#。
+
+    <div class="callout"><strong>默认建议</strong>：若你不知道怎么选，就从 <code>q_proj</code>、<code>v_proj</code> 或 <code>q/k/v/o + FFN</code> 这两档配置开始，而不是一上来随意遍历全部模块。</div>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">1.3 FFN / MLP 层往往被低估</div>
+    很多人第一次接触 LoRA 时，只会把它看成“attention 适配器”。但从模型功能上看，Attention 更像信息路由器，FFN/MLP 更像语义变换器；后者对知识重写和任务适配同样关键。Sebastian Raschka 也强调，如果只盯着 Key / Value 矩阵，常常会白白损失一部分性能 #Raschka-LoRA-DoRA#。
+
+    <div class="quote">
+      <p>“If you're incorporating LoRA, ensure it's applied across all layers, not just to the Key and Value matrices, to maximize model performance.”</p>
+      <div class="who">—— Sebastian Raschka</div>
+    </div>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">1.4 Conv 层也能做 LoRA，但解释方式不同</div>
+    在卷积层上做 LoRA，本质上仍然是在大权重张量上寻找低维更新子空间，只不过卷积核是四维张量而不是二维矩阵。工程上常见的做法，是把卷积更新拆成更小的低秩卷积/线性组合，从 kernel 维度或 channel 维度近似原更新 #Modi-2024-Conv-LoRA#。
+
+    对扩散模型来说，这一点尤其重要，因为 U-Net 里不只有 attention，还有大量卷积与残差块。也正因此，Stable Diffusion 社区的 LoRA 训练与 NLP LoRA 在“目标模块选择”上会显著不同。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">1.5 Embedding 能做，LayerNorm 通常不值得</div>
+    <code>loralib</code> 和 labml.ai 的实现都覆盖了 Embedding 版本，这对词表领域迁移、多语言词表偏移等场景是有意义的 #microsoft-LoRA# #labml-LoRA#。
+
+    但 LayerNorm / RMSNorm 往往参数量本来就极小，直接放开训练比给它套 LoRA 更直接。因此从参数效率角度看，它通常不是 LoRA 的优先目标层。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">1.6 一个实用优先级表</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>优先级</th><th>目标模块</th><th>推荐场景</th></tr></thead>
+        <tbody>
+          <tr><td>⭐⭐⭐</td><td>QKV + O + FFN</td><td>效果优先，资源充足</td></tr>
+          <tr><td>⭐⭐⭐</td><td>O_proj + FFN</td><td>性价比高，常用默认档</td></tr>
+          <tr><td>⭐⭐</td><td>Attention only</td><td>显存有限的标准选择</td></tr>
+          <tr><td>⭐</td><td>仅少量输出投影</td><td>极低延迟或快速实验</td></tr>
+          <tr><td>❌</td><td>LayerNorm / RMSNorm</td><td>更适合直接调参</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、从零手写一个最小 LoRA</div>
+
+  <div class="section fade-in">
+    <div class="section-title">2.1 最小实现应该包含什么</div>
+    一个最小可运行的 LoRA 线性层其实只需要四个核心元素：
+    <ul>
+      <li>冻结的原始权重 <code>weight</code></li>
+      <li>低秩矩阵 <code>lora_A</code></li>
+      <li>低秩矩阵 <code>lora_B</code></li>
+      <li>缩放系数 <code>alpha / r</code></li>
+    </ul>
+
+    下面的实现保留了最关键的工程细节：<code>A</code> 随机初始化、<code>B</code> 零初始化、训练态按残差方式计算、推理态可选择合并权重。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">2.2 一个最小的 LoRALinear</div>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional
+
+
+class LoRALinear(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        r: int = 8,
+        alpha: Optional[int] = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.r = r
+        self.alpha = alpha if alpha is not None else r
+        self.scaling = self.alpha / self.r
+
+        self.weight = nn.Parameter(
+            torch.empty(out_features, in_features),
+            requires_grad=False,
+        )
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features), requires_grad=False)
+        else:
+            self.register_parameter("bias", None)
+
+        self.lora_A = nn.Parameter(torch.empty(r, in_features))
+        self.lora_B = nn.Parameter(torch.empty(out_features, r))
+        self.lora_dropout = nn.Dropout(dropout)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.lora_A, a=5 ** 0.5)
+        nn.init.zeros_(self.lora_B)
+
+    def forward(self, x: torch.Tensor, merge: bool = False):
+        if merge:
+            delta_w = self.lora_B @ self.lora_A * self.scaling
+            return F.linear(x, self.weight + delta_w, self.bias)
+        base_out = F.linear(x, self.weight, self.bias)
+        lora_out = (x @ self.lora_A.T @ self.lora_B.T) * self.scaling
+        return base_out + self.lora_dropout(lora_out)
+</code></pre>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">2.3 为什么 merge / unmerge 很重要</div>
+    从训练视角看，LoRA 是“主干路径 + 低秩残差路径”；但从部署视角看，只要把 $BA$ 合并回原始权重，就能得到与显式适配器等价的线性层，从而避免推理时多走一条分支。这也是 LoRA 常被说成“几乎没有额外推理延迟”的原因之一 #Hu-et-al.-2021#。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、工业级实现：直接使用 PEFT</div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.1 LoraConfig 是配置核心</div>
+    在真实项目里，自己手写 LoRA 更多是为了理解原理；真正上训练任务时，最常见的选择是 HuggingFace PEFT。它把 target modules、rank、alpha、dropout、bias 策略、分层 rank pattern 等都封装到了 <code>LoraConfig</code> 里 #HF-PEFT-LoraConfig#。
+
+<pre><code class="language-python">from peft import LoraConfig, get_peft_model, TaskType
+
+config = LoraConfig(
+    r=8,
+    lora_alpha=16,
+    target_modules=["q_proj", "v_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type=TaskType.CAUSAL_LM,
+)
+</code></pre>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.2 常见模型的 target_modules</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>模型族</th><th>常见 target_modules</th></tr></thead>
+        <tbody>
+          <tr><td>LLaMA / Mistral / Qwen</td><td><code>q_proj</code>, <code>k_proj</code>, <code>v_proj</code>, <code>o_proj</code>, <code>gate_proj</code>, <code>up_proj</code>, <code>down_proj</code></td></tr>
+          <tr><td>ChatGLM</td><td><code>query_key_value</code></td></tr>
+          <tr><td>GPT-2</td><td><code>c_attn</code>, <code>c_proj</code>（注意 Conv1D 兼容）</td></tr>
+          <tr><td>部分多模态模型</td><td>语言侧 attention / FFN，视觉侧按架构单独评估</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.3 一个最常见的训练骨架</div>
+<pre><code class="language-python">from transformers import AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model, TaskType
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-7b-hf",
+    device_map="auto",
+    torch_dtype="bfloat16",
+)
+
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    target_modules=[
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ],
+    lora_dropout=0.05,
+    bias="none",
+    task_type=TaskType.CAUSAL_LM,
+)
+
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+</code></pre>
+    实际训练时，如果你再叠加 4-bit 量化，就会自然进入 QLoRA 路线；这时 PEFT 往往与 bitsandbytes 协同使用 #HF-PEFT-LoraConfig#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.4 训练时最容易踩的坑</div>
+    <div class="admonition warning">
+      <div class="admonition-title">常见注意事项</div>
+      <div class="admonition-content">
+        <ul>
+          <li>LoRA 的学习率通常高于全量微调，常见区间在 $10^{-4}$ 到 $3\times10^{-4}$。</li>
+          <li>如果是 QLoRA，优化器和量化配置要与基础模型精度保持兼容。</li>
+          <li>先确认 target_modules 与具体模型命名严格匹配，否则适配器可能根本没有注入成功。</li>
+          <li>推理前若要合并权重，要确认后续还需不需要继续训练，因为 merge 后通常意味着回到“整块权重”形态。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">总结</div>
+
+  <div class="review-box">
+    <h3>这篇文章想让你记住什么</h3>
+    <ul>
+      <li><strong>LoRA 首先是线性层方法</strong>，但可以扩展到 Embedding 和 Conv 等更广结构 #microsoft-LoRA#。</li>
+      <li><strong>模块选择比想象中更重要</strong>；Attention 不是唯一入口，FFN 往往同样关键 #Amazon-Science-LoRA-targets# #Raschka-LoRA-DoRA#。</li>
+      <li><strong>手写实现的价值</strong>在于理解 merge、初始化和参数量，而不是替代成熟库。</li>
+      <li><strong>工业实践几乎都会走 PEFT</strong>，它已经把 LoRA 配置面封装得足够成熟 #HF-PEFT-LoraConfig#。</li>
+    </ul>
+  </div>
+
+  下一篇 [[lora-ecosystem|LoRA 生态与经典库]] 会继续回答：这些能力在真实工具链里分别由谁提供、怎么选型。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Hu-et-al.-2021">Hu, E. J. et al. (2021). <em>LoRA: Low-Rank Adaptation of Large Language Models</em>. <a href="https://arxiv.org/abs/2106.09685" target="_blank">arXiv:2106.09685</a></li>
+    <li data-cite-key="microsoft-LoRA">Microsoft. <em>microsoft/LoRA</em>. <a href="https://github.com/microsoft/LoRA" target="_blank">GitHub</a></li>
+    <li data-cite-key="HF-PEFT-LoraConfig">HuggingFace. <em>PEFT LoraConfig Documentation</em>. <a href="https://huggingface.co/docs/peft/package_reference/lora" target="_blank">Documentation</a></li>
+    <li data-cite-key="labml-LoRA">labml.ai. <em>LoRA PyTorch Implementation</em>. <a href="https://nn.labml.ai/lora/index.html" target="_blank">labml.ai</a></li>
+    <li data-cite-key="Modi-2024-Conv-LoRA">Modi, A. (2024). <em>Implementing LoRA for Convolutional Layers</em>. <a href="https://medium.com/@adimodi96/implementing-low-rank-adaptation-lora-for-convolutional-layers-04decdf2e3b3" target="_blank">Medium</a></li>
+    <li data-cite-key="Raschka-LoRA-DoRA">Raschka, S. <em>LoRA and DoRA from Scratch</em>. <a href="https://magazine.sebastianraschka.com/p/lora-and-dora-from-scratch" target="_blank">Blog</a></li>
+    <li data-cite-key="Amazon-Science-LoRA-targets">Amazon Science. <em>Optimizing LoRA Target Module Selection for Efficient Fine-Tuning</em>. <a href="https://www.amazon.science/blog/optimizing-lora-target-module-selection-for-efficient-fine-tuning" target="_blank">Amazon Science Blog</a></li>
+  </ul>
+</div>

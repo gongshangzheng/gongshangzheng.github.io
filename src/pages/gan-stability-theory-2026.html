@@ -1,0 +1,120 @@
+---
+title: GAN 稳定训练：从极小极大博弈到 WGAN、梯度惩罚与谱归一化
+description: 拆解 GAN 为什么难训练，以及 WGAN、WGAN-GP、谱归一化、正则化和归一化如何让对抗训练更稳定。
+date: 2026-06-02T17:10:40
+created_at: 2026-06-02T17:10:40
+updated_at: 2026-06-02T17:10:40
+tags: [GAN, WGAN, WGAN-GP, Spectral-Normalization, training-stability]
+categories: [AI]
+subcategory: "GAN"
+mathjax: true
+notify: true
+hero_title: GAN 稳定训练
+hero_sub: 从目标函数、Lipschitz 约束到判别器正则化
+hero_tagline: 理解 GAN 的关键，不是 loss 下降，而是博弈信号是否可用
+page_style: |
+  .metric-table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 0.94rem; }
+  .metric-table th, .metric-table td { border: 1px solid var(--border-color, #ddd); padding: 8px 10px; vertical-align: top; }
+  .metric-table th { background: var(--bg-block); font-weight: 700; }
+  .sources li { margin-bottom: 8px; }
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">4</span><span class="label">核心路线</span></div>
+  <div class="stat"><span class="num b">2014→2020</span><span class="label g">稳定训练演进</span></div>
+  <div class="stat"><span class="num">2</span><span class="label">核心公式</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">GAN 难训练，不是因为网络太深，而是因为目标会移动</div>
+
+  <p>普通监督学习通常有一个固定目标：模型预测错了，就沿着损失函数下降。但 GAN 不是这样。生成器 $G$ 在学习生成样本，判别器 $D$ 同时也在学习识别真假；一个模型刚刚适应的目标，可能在另一个模型更新后立刻改变。Goodfellow 等人在原始 GAN 中把这个过程写成极小极大博弈，目标是让 $D$ 区分真实样本与生成样本，同时让 $G$ 生成能骗过 $D$ 的样本 #Goodfellow et al., 2014#。</p>
+
+  <div class="def-box">
+    <h3>原始 GAN 的极小极大目标</h3>
+    <p>最经典的写法是：</p>
+    <p style="text-align:center">\[\min_G \max_D V(D,G)=\mathbb{E}_{x\sim p_{data}}[\log D(x)] + \mathbb{E}_{z\sim p_z}[\log(1-D(G(z)))].\]</p>
+    <p>这个式子看起来像一个二分类损失，但它真正描述的是两个网络之间的动态系统。</p>
+  </div>
+
+  <p>训练不稳定主要来自三类现象。第一，判别器太强时，生成器可能拿不到有意义梯度。第二，生成器可能发现判别器的局部漏洞，只生成少数类型样本，也就是 mode collapse。第三，判别器 loss 和生成质量之间不一定有稳定对应关系，所以训练曲线并不总能告诉我们模型是否变好 #Goodfellow, 2016#。</p>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/gan-minimax.svg" alt="GAN minimax game" loading="lazy">
+    <div class="cap">图 1：GAN 的训练目标会随对手改变，因此稳定性问题本质上是博弈动态问题。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">WGAN：先换一个更连续的“距离”</div>
+
+  <p>WGAN 的核心洞察是：早期 GAN 目标与 Jensen-Shannon divergence 等分布差异有关，当真实分布和生成分布几乎不重叠时，判别器可以很容易把二者分开，但生成器得到的梯度反而可能很差。Arjovsky、Chintala 和 Bottou 因此用 Wasserstein-1 distance 替换原始目标，并把判别器改称 critic，因为它不再输出真假概率，而是给样本打分 #Arjovsky et al., 2017#。</p>
+
+  <div class="def-box">
+    <h3>Wasserstein-1 距离的直觉</h3>
+    <p>Wasserstein 距离可以理解为“把一个分布搬运成另一个分布的最小成本”：</p>
+    <p style="text-align:center">\[W(p_r,p_g)=\inf_{\gamma\in\Pi(p_r,p_g)}\mathbb{E}_{(x,y)\sim\gamma}[\lVert x-y\rVert].\]</p>
+    <p>即使两个分布支撑集不重叠，它仍然能给出连续变化的距离信号。</p>
+  </div>
+
+  <p>WGAN 的经验价值在于，critic loss 更接近样本质量变化，训练时更容易观察模型是否真的在进步。论文报告 WGAN 在实验中减少了 mode collapse，并让训练曲线更有解释性 #Arjovsky et al., 2017#。不过第一版 WGAN 依赖 weight clipping 来满足 Lipschitz 约束，这个做法粗糙：裁剪太严会限制 critic 表达能力，裁剪太松又可能破坏约束。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">WGAN-GP：不要裁剪权重，直接约束梯度</div>
+
+  <p>Gulrajani 等人指出，weight clipping 会导致 critic 容量不足、梯度异常和样本质量下降，于是提出 gradient penalty。它不再强行把权重压进固定区间，而是在真实样本和生成样本之间的插值点上，惩罚 critic 对输入的梯度范数偏离 1 的程度 #Gulrajani et al., 2017#。</p>
+
+  <div class="def-box">
+    <h3>WGAN-GP 惩罚项</h3>
+    <p style="text-align:center">\[\lambda\,\mathbb{E}_{\hat{x}}\left[(\lVert\nabla_{\hat{x}}D(\hat{x})\rVert_2-1)^2\right].\]</p>
+    <p>这相当于直接控制 critic 在样本空间附近的局部变化速度。</p>
+  </div>
+
+  <p>WGAN-GP 的意义不只是一个正则项。它把稳定训练从“调一个裁剪阈值”变成“约束判别函数几何性质”。论文展示了它能在多种架构上稳定训练，包括 101 层 ResNet 和语言模型设置，并在 CIFAR-10 与 LSUN bedrooms 上得到更好生成质量 #Gulrajani et al., 2017#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">谱归一化：把 Lipschitz 控制做成一行层包装</div>
+
+  <p>谱归一化进一步把 Lipschitz 约束变成轻量工程组件。Miyato 等人对判别器每层权重矩阵除以其最大奇异值，从而限制该层的谱范数。相比 gradient penalty，谱归一化不需要对输入额外求梯度，计算开销更小，也更容易嵌入常规卷积网络 #Miyato et al., 2018#。</p>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>方法</th><th>控制对象</th><th>优点</th><th>风险</th></tr></thead>
+      <tbody>
+        <tr><td>Weight clipping</td><td>critic 权重范围</td><td>实现最简单</td><td>限制容量，阈值敏感</td></tr>
+        <tr><td>Gradient penalty</td><td>输入梯度范数</td><td>几何意义清晰，稳定性强</td><td>额外计算梯度，训练更慢</td></tr>
+        <tr><td>Spectral normalization</td><td>每层权重谱范数</td><td>开销小，易工程化</td><td>主要约束判别器，仍需配合架构与优化</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/stability-toolkit.svg" alt="GAN stability toolkit" loading="lazy">
+    <div class="cap">图 2：稳定训练不是单一技巧，而是目标函数、判别器约束、架构偏置和采样策略的组合。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结语</div>
+  <div class="ch-title">稳定 GAN 的核心：让判别器强，但不要让它失控</div>
+
+  <p>GAN 稳定训练的悖论是：判别器太弱，生成器学不到真实数据结构；判别器太强，生成器拿不到可用梯度。WGAN、WGAN-GP 和谱归一化的共同目标，不是简单削弱判别器，而是让判别器强得“可控”。Kurach 等人的大规模研究也说明，GAN 的表现高度依赖正则化、归一化、架构和超参，单独比较某个 loss 往往不够 #Kurach et al., 2018#。</p>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Goodfellow-et-al.-2014">Goodfellow, I. et al. (2014). Generative Adversarial Networks. <a href="https://arxiv.org/abs/1406.2661" target="_blank">arXiv:1406.2661</a>.</li>
+      <li data-cite-key="Goodfellow-2016">Goodfellow, I. (2016). NIPS 2016 Tutorial: Generative Adversarial Networks. <a href="https://arxiv.org/abs/1701.00160" target="_blank">arXiv:1701.00160</a>.</li>
+      <li data-cite-key="Arjovsky-et-al.-2017">Arjovsky, M. et al. (2017). Wasserstein GAN. <a href="https://arxiv.org/abs/1701.07875" target="_blank">arXiv:1701.07875</a>.</li>
+      <li data-cite-key="Gulrajani-et-al.-2017">Gulrajani, I. et al. (2017). Improved Training of Wasserstein GANs. <a href="https://arxiv.org/abs/1704.00028" target="_blank">arXiv:1704.00028</a>.</li>
+      <li data-cite-key="Miyato-et-al.-2018">Miyato, T. et al. (2018). Spectral Normalization for Generative Adversarial Networks. <a href="https://arxiv.org/abs/1802.05957" target="_blank">arXiv:1802.05957</a>.</li>
+      <li data-cite-key="Kurach-et-al.-2018">Kurach, K. et al. (2018). A Large-Scale Study on Regularization and Normalization in GANs. <a href="https://arxiv.org/abs/1807.04720" target="_blank">arXiv:1807.04720</a>.</li>
+    </ul>
+  </div>
+</div>

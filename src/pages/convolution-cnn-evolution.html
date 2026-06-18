@@ -1,0 +1,187 @@
+---
+title: "卷积与 CNN 演进：从局部感受野到空洞卷积、残差网络和轻量化卷积"
+description: "系统梳理卷积神经网络的核心机制：卷积核、感受野、参数共享、池化、空洞卷积、深度可分离卷积、残差连接，以及常见题目如何判断。"
+date: 2026-06-12T10:59:28
+created_at: 2026-06-12T10:59:28
+updated_at: 2026-06-12T11:04:18
+tags: [CNN, 卷积神经网络, 空洞卷积, ResNet, MobileNet, 计算机视觉]
+categories: [AI]
+subcategory: "视觉模型"
+mathjax: true
+hero_title: "卷积与 CNN 演进"
+hero_sub: "局部感受野 · 参数共享 · 空洞卷积 · 轻量化卷积"
+hero_tagline: "卷积不是过时结构，而是一套关于局部性、尺度和计算预算的归纳偏置。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3×3</span><span class="label">经典卷积核</span></div>
+  <div class="stat"><span class="num b">r</span><span class="label g">空洞率</span></div>
+  <div class="stat"><span class="num">1×1</span><span class="label">通道混合</span></div>
+  <div class="stat"><span class="num b">A</span><span class="label l">本题答案</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Motivation</div>
+  <div class="ch-title">卷积为什么能成为视觉模型的默认起点</div>
+
+  <p>图像不是一维表格。相邻像素之间有强局部相关性，同一个边缘、角点或纹理模式也可能出现在画面的任意位置。卷积神经网络（Convolutional Neural Network，CNN）正是把这两个事实写进模型结构：用局部窗口看图像，用同一组卷积核在不同空间位置共享参数。LeNet、AlexNet、VGG、ResNet 到 U-Net 的主线，都是围绕这个归纳偏置不断扩展规模、深度和尺度表达能力 #LeCun-et-al.-1998# #Krizhevsky-et-al.-2012# #Simonyan-Zisserman-2014# #He-et-al.-2016#。</p>
+
+  <p>今天 Transformer 和状态空间模型已经大量进入视觉领域，但卷积没有消失。它仍然常见于 stem、neck、decoder、segmentation head、轻量化移动端网络和混合视觉骨干中。原因很简单：卷积天然擅长捕捉局部模式，计算布局规则，硬件实现成熟，而且在小窗口内非常高效。</p>
+
+  <div class="callout"><strong>核心判断</strong>：卷积的价值不是“比 attention 更高级”，而是用更强的局部先验和更低的计算成本，解决视觉信号中的局部结构建模问题。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">卷积层到底在做什么</div>
+
+  <div class="def-box">
+    <h3>卷积层</h3>
+    <p>在 CNN 里，卷积层用一个小窗口在图像或特征图上滑动。每个输出位置只看输入中的一个局部区域，并用同一组权重计算响应。对二维输入来说，可以把单通道卷积写成：</p>
+
+$$
+Y(i,j)=\sum_{u=0}^{k-1}\sum_{v=0}^{k-1} W(u,v)X(i+u,j+v)
+$$
+
+    <p>其中 $k$ 是卷积核大小，$W$ 是卷积核参数，$X$ 是输入特征图，$Y$ 是输出特征图。</p>
+  </div>
+
+  <p>这一定义里有三个关键词。第一是<strong>局部感受野</strong>：一个输出神经元只连接输入的一小块区域，而不是像全连接层那样连接所有像素。第二是<strong>参数共享</strong>：同一个卷积核在所有空间位置复用，所以参数量不会随图像大小线性爆炸。第三是<strong>平移等变性</strong>：如果输入里的边缘向右移动，卷积响应也会大致向右移动，而不是完全换一套参数重新学习。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>机制</th><th>解决的问题</th><th>代价</th></tr></thead>
+      <tbody>
+        <tr><td>局部连接</td><td>图像局部纹理、边缘和角点优先建模</td><td>单层只能看到有限范围</td></tr>
+        <tr><td>参数共享</td><td>同一模式可在任意位置复用，参数量大幅下降</td><td>不天然区分绝对位置</td></tr>
+        <tr><td>多层堆叠</td><td>浅层学边缘，深层学部件和语义</td><td>过深后训练困难，需要残差等机制</td></tr>
+        <tr><td>下采样/池化</td><td>扩大上下文，降低分辨率和计算量</td><td>会损失细粒度定位信息</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>早期 CNN 依赖卷积、非线性激活和池化层逐级抽象图像；AlexNet 证明大规模数据和 GPU 训练能让 CNN 在 ImageNet 上远超传统视觉特征；VGG 则展示了小卷积核堆叠的工程美学：多个 $3\times3$ 卷积既能扩大有效感受野，又保持参数和非线性层的可控增长 #Krizhevsky-et-al.-2012# #Simonyan-Zisserman-2014#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">CNN 后续改进，其实围绕三件事展开</div>
+
+  <p>卷积网络的后续改进看起来很多：更深的网络、更宽的网络、多尺度结构、分组卷积、深度可分离卷积、空洞卷积、转置卷积、残差连接、注意力模块。把它们放在一起看，核心目标通常只有三类：<strong>看得更大</strong>、<strong>算得更省</strong>、<strong>训得更深</strong>。</p>
+
+  {{< mermaid >}}
+flowchart TD
+  A["CNN 改进目标"] --> B["看得更大：扩大感受野"]
+  A --> C["算得更省：减少参数和 FLOPs"]
+  A --> D["训得更深：缓解退化和梯度问题"]
+  B --> B1["池化 / 步幅卷积"]
+  B --> B2["空洞卷积 / 多尺度上下文"]
+  C --> C1["1×1 卷积"]
+  C --> C2["分组卷积 / 深度可分离卷积"]
+  D --> D1["残差连接"]
+  D --> D2["归一化与更稳定的初始化"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">2.1 看得更大：感受野与多尺度上下文</h3>
+  <p>感受野（receptive field）指一个输出位置理论上能受到输入中多大区域的影响。分类任务通常希望深层特征看到全局物体；分割、检测和生成任务则更矛盾：既要看大范围上下文，又不能把空间分辨率降得太低。传统做法是池化或步幅卷积，但它们会缩小特征图；后续再上采样虽然能恢复尺寸，却不一定恢复细节。</p>
+
+  <h3 class="section-title">2.2 算得更省：从标准卷积到深度可分离卷积</h3>
+  <p>标准卷积同时做两件事：在空间上聚合邻域信息，在通道上混合特征。如果输入通道数和输出通道数都很大，这一步会很贵。MobileNet 的深度可分离卷积把它拆成两步：先用 depthwise convolution 对每个通道分别做空间卷积，再用 $1\times1$ pointwise convolution 做通道混合。这样可以显著减少参数量和计算量，是移动端视觉模型的重要基础 #Howard-et-al.-2017#。</p>
+
+  <h3 class="section-title">2.3 训得更深：残差连接改变优化问题</h3>
+  <p>网络加深后，问题不只是过拟合，还包括优化退化：理论上更深模型至少可以学成浅模型，但实际训练误差反而可能更高。ResNet 的残差连接让网络学习 $F(x)=H(x)-x$，输出写作 $y=F(x)+x$。这给梯度提供了更直接的传播路径，使上百层 CNN 变得可训练 #He-et-al.-2016#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">空洞卷积：不加参数地扩大感受野</div>
+
+  <p>空洞卷积（Dilated Convolution，也常称 atrous convolution 或膨胀卷积）是理解 CNN 后续改进时非常高频的考点。它的做法是在卷积核采样点之间插入间隔。卷积核参数个数仍然是原来的 $k\times k$，但采样覆盖的输入范围变大了。</p>
+
+  <div class="def-box">
+    <h3>空洞卷积的有效卷积核大小</h3>
+    <p>对核大小 $k$、空洞率 $r$ 的卷积，有效覆盖范围可以写成：</p>
+
+$$
+k_{\mathrm{eff}} = k + (k-1)(r-1)
+$$
+
+    <p>例如 $3\times3$ 卷积在 $r=2$ 时，有效覆盖范围变成 $5\times5$，但参数量仍然是 $3\times3$。它扩大的是采样跨度，不是卷积核里的可学习权重数量。</p>
+  </div>
+
+  <p>这就是为什么空洞卷积常用于语义分割和 dense prediction：模型希望每个像素预测都能看到更大的上下文，但又不希望通过连续下采样损失空间分辨率。Yu 和 Koltun 的多尺度上下文聚合、DeepLab 系列中的 atrous convolution / ASPP，都是围绕这一点设计的 #Yu-Koltun-2015# #Chen-et-al.-2017-DeepLabv3#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>做法</th><th>是否扩大感受野</th><th>是否增加卷积核参数</th><th>是否保留分辨率</th></tr></thead>
+      <tbody>
+        <tr><td>加大卷积核，例如 3×3 → 5×5</td><td>是</td><td>是</td><td>通常保留</td></tr>
+        <tr><td>池化或 stride=2</td><td>是</td><td>否</td><td>否，特征图变小</td></tr>
+        <tr><td>堆叠更多卷积层</td><td>是</td><td>是</td><td>通常保留</td></tr>
+        <tr><td>空洞卷积</td><td>是</td><td><strong>否</strong></td><td><strong>是</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>一句话记忆</strong>：空洞卷积是在卷积核采样点之间“隔空取样”，用同样数量的参数看更大的输入范围。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Quiz</div>
+  <div class="ch-title">题库：空洞卷积的作用</div>
+
+  <div class="example-box">
+    <h3>题目</h3>
+    <p>空洞卷积（Dilated Convolution）的作用是：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>选项</th><th>说法</th><th>判断</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td>增加感受野而不增加参数</td><td><strong>正确</strong></td></tr>
+          <tr><td>B</td><td>提高特征图分辨率</td><td>不准确。空洞卷积可以在不下采样的情况下保留分辨率，但它本身不是上采样操作</td></tr>
+          <tr><td>C</td><td>以上都不对</td><td>错误，因为 A 正确</td></tr>
+          <tr><td>D</td><td>减少计算量</td><td>不是主要作用。相比同尺寸普通 $k\times k$ 卷积，参数量和乘加次数通常不因 dilation 本身减少</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h3>答案解析</h3>
+    <p>正确答案是 <strong>A. 增加感受野而不增加参数</strong>。空洞率 $r$ 增大后，卷积核采样点之间的间隔变大，输出位置能覆盖更大的输入区域；但可学习参数仍然只是原来的卷积核权重数量。例如 $3\times3$、$r=2$ 的空洞卷积有效覆盖 $5\times5$ 区域，却仍然只有 9 个空间权重。</p>
+    <p>B 的陷阱在于“分辨率”。空洞卷积常被用来避免过度下采样，所以可以帮助模型在较高分辨率特征图上获得大上下文；但它不会像转置卷积、插值上采样或 pixel shuffle 那样主动把特征图尺寸放大。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Review</div>
+  <div class="ch-title">复习速查：卷积改进怎么归类</div>
+
+  <div class="review-box">
+    <h3>考点地图</h3>
+    <ul>
+      <li><strong>普通卷积</strong>：局部连接 + 参数共享，适合捕捉局部图像模式。</li>
+      <li><strong>1×1 卷积</strong>：不改变单点空间邻域，主要做通道混合、升维、降维。</li>
+      <li><strong>分组卷积</strong>：把通道分组后分别卷积，减少连接和计算。</li>
+      <li><strong>深度可分离卷积</strong>：把空间卷积和通道混合拆开，是 MobileNet 轻量化的关键。</li>
+      <li><strong>空洞卷积</strong>：扩大感受野，不增加卷积核参数，常用于分割和多尺度上下文。</li>
+      <li><strong>转置卷积</strong>：常用于可学习上采样，但可能带来棋盘格伪影。</li>
+      <li><strong>残差连接</strong>：不是卷积类型，而是让深层 CNN 更容易训练的结构改造。</li>
+    </ul>
+  </div>
+
+  <p>做题时最重要的是分清“扩大感受野”“提高分辨率”“减少参数”“减少计算量”这四件事。空洞卷积最标准的描述是扩大感受野而不增加参数；深度可分离卷积才是典型的减少参数和计算；转置卷积或插值上采样才直接对应提高特征图分辨率。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="LeCun-et-al.-1998">LeCun, Y., Bottou, L., Bengio, Y., & Haffner, P. <em>Gradient-Based Learning Applied to Document Recognition</em>. 1998. <a href="http://vision.stanford.edu/cs598_spring07/papers/Lecun98.pdf" target="_blank">PDF</a></li>
+    <li data-cite-key="Krizhevsky-et-al.-2012">Krizhevsky, A., Sutskever, I., & Hinton, G. <em>ImageNet Classification with Deep Convolutional Neural Networks</em>. 2012. <a href="https://proceedings.neurips.cc/paper/2012/hash/c399862d3b9d6b76c8436e924a68c45b-Abstract.html" target="_blank">NeurIPS</a></li>
+    <li data-cite-key="Simonyan-Zisserman-2014">Simonyan, K., & Zisserman, A. <em>Very Deep Convolutional Networks for Large-Scale Image Recognition</em>. 2014. <a href="https://arxiv.org/abs/1409.1556" target="_blank">arXiv:1409.1556</a></li>
+    <li data-cite-key="He-et-al.-2016">He, K., Zhang, X., Ren, S., & Sun, J. <em>Deep Residual Learning for Image Recognition</em>. 2016. <a href="https://arxiv.org/abs/1512.03385" target="_blank">arXiv:1512.03385</a></li>
+    <li data-cite-key="Howard-et-al.-2017">Howard, A. et al. <em>MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications</em>. 2017. <a href="https://arxiv.org/abs/1704.04861" target="_blank">arXiv:1704.04861</a></li>
+    <li data-cite-key="Yu-Koltun-2015">Yu, F., & Koltun, V. <em>Multi-Scale Context Aggregation by Dilated Convolutions</em>. 2015. <a href="https://arxiv.org/abs/1511.07122" target="_blank">arXiv:1511.07122</a></li>
+    <li data-cite-key="Chen-et-al.-2017-DeepLabv3">Chen, L.-C., Papandreou, G., Schroff, F., & Adam, H. <em>Rethinking Atrous Convolution for Semantic Image Segmentation</em>. 2017. <a href="https://arxiv.org/abs/1706.05587" target="_blank">arXiv:1706.05587</a></li>
+  </ul>
+</div>

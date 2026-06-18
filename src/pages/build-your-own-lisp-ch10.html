@@ -1,0 +1,220 @@
+---
+title: "Q-表达式 — 引用与列表操作"
+description: "Build Your Own Lisp 第 10 章：学习 Q-表达式，实现引用和列表操作。"
+date: 2026-05-28T00:00:00
+created_at: 2026-05-28T15:19:46
+updated_at: 2026-05-28T15:30:00
+tags: [C, Lisp, Q-表达式]
+categories: [编程]
+subcategory: "BuildYourOwnLisp"
+hero_title: "Q-表达式"
+hero_sub: "Build Your Own Lisp · 第 10 章"
+hero_tagline: "Build Your Own Lisp 第 10 章：学习 Q-表达式，实现引用和列表操作。"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 10</div>
+  <div class="ch-title">Q-表达式 — 引用与列表操作</div>
+
+  <div class="info-box">
+    <h3>章节信息</h3>
+    <p><strong>原书章节</strong>：第 10 章</p>
+    <p><strong>中文翻译</strong>：<a href="https://github.com/ksco/BuildYourOwnLispCn">KSCO (GitHub)</a></p>
+    <p><strong>原书地址</strong>：<a href="http://buildyourownlisp.com/">buildyourownlisp.com</a></p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">章节内容</div>
+  
+  <h2>第零十章 • Q-表达式</h2><h3>添加特性</h3><p>你可能会注意到包括本章在内的之后章节都遵循一个模式，这个模式也是给一个编程语言添加新特性的典型方式。它包含一系列的步骤来从无到有的实现某个特性。下表详细地说明了本章所要引入的 Q-表达式的具体实现步骤。</p><p>|   名称   | 描述                      |
+| ------- | ------------------------- |
+| **语法** | 为新特性添加新的语法规则 |
+| **表示** | 为新特性添加新的数据类型 |
+| **解析** | 为新特性添加新的函数，正确处理 AST |
+| **语义** | 为新特性添加新的函数，用于求值和操作 |</p><h3>Q-表达式</h3><p>本章我们将实现一个新的 Lisp 值类型，叫做 Q-表达式。</p><p>它的英文全称为 *quoted expression*，跟 S-表达式一样，也是 Lisp 表达式的一种，但它不受标准 Lisp 求值机制的作用。也就是说，当受到函数的作用时，Q-表达式不会被求值，而是保持原样。这个特性让 Q-表达式有着广泛的应用。我们可以用它来存储和管理其他的 Lisp 值类型，例如数字、符号或 S-表达式等。</p><p>在添加 Q-表达式之后，我们还需要定义一系列的操作来管理它。类似于数学操作，这些操作定义了 Q-表达式具体的行为。</p><p>Q- 表达式的语法和 S-表达式非常相似，唯一的不同是 Q-表达式包裹在大括号 `{}` 中，而非 S-表达式的小括号 `()`，Q-表达式的语法规则如下所示。</p><p>> #### 我从来没听说过 Q-表达式
+> 好吧，其实 Q-表达式不存在于其它的 Lisp 方言中，它们通常使用宏来禁止表达式求值。宏看起来类似于普通的函数，但不会对参数进行求值。有一个特殊叫做引用(`'`)的宏，可以用来禁止几乎所有表达式的求值，这个宏也是本书中 Q-表达式的灵感来源。所以 Q-表达式是 Lispy 独有的，我们用它来替代宏完成相应的任务。
+> 
+>  本书中的 S-表达式和 Q-表达式有滥用概念的嫌疑，但我希望这些“不恰当的行为”能够使我们的 Lispy 的行为更加清晰简洁。</p><p><pre><code class="language-c">mpc_parser_t* Number = mpc_new("number");
+mpc_parser_t* Symbol = mpc_new("symbol");
+mpc_parser_t* Sexpr  = mpc_new("sexpr");
+mpc_parser_t* Qexpr  = mpc_new("qexpr");
+mpc_parser_t* Expr   = mpc_new("expr");
+mpc_parser_t* Lispy  = mpc_new("lispy");&lt;/p&gt;&lt;p&gt;mpca_lang(MPCA_LANG_DEFAULT,
+  "                                                    \
+    number : /-?[0-9]+/ ;                              \
+    symbol : '+' | '-' | '*' | '/' ;                   \
+    sexpr  : '(' &lt;expr&gt;* ')' ;                         \
+    qexpr  : '{' &lt;expr&gt;* '}' ;                         \
+    expr   : &lt;number&gt; | &lt;symbol&gt; | &lt;sexpr&gt; | &lt;qexpr&gt; ; \
+    lispy  : /^/ &lt;expr&gt;* /$/ ;                         \
+  ",
+  Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
+</code></pre></p><p>另外，不要忘记同步更新清理函数 `mpc_cleanup` 来处理我们新添加的规则。</p><p><pre><code class="language-c">mpc_cleanup(6, Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
+</code></pre></p><h3>读取 Q-表达式</h3><p>由于 Q-表达式和 S-表达式的形式基本一致，所以它们内部实现也大致是相同的。我们考虑重用 S-表达式的数据结构来表示 Q-表达式，在此之前需要向枚举中添加一个单独的类型。</p><p><pre><code class="language-c">enum { LVAL_ERR, LVAL_NUM, LVAL_SYM, LVAL_SEXPR, LVAL_QEXPR };
+</code></pre>
+另外，还需为其编写一个构造函数。</p><p><pre><code class="language-c">/* A pointer to a new empty Qexpr lval */
+lval* lval_qexpr(void) {
+  lval* v = malloc(sizeof(lval));
+  v-&gt;type = LVAL_QEXPR;
+  v-&gt;count = 0;
+  v-&gt;cell = NULL;
+  return v;
+}
+</code></pre></p><p>Q-表达式的打印和删除逻辑也和 S-表达式别无二致，我们只需照葫芦画瓢，在相应的函数中添加对应的逻辑即可，具体如下所示。</p><p><pre><code class="language-c">void lval_print(lval* v) {
+  switch (v-&gt;type) {
+    case LVAL_NUM:   printf("%li", v-&gt;num); break;
+    case LVAL_ERR:   printf("Error: %s", v-&gt;err); break;
+    case LVAL_SYM:   printf("%s", v-&gt;sym); break;
+    case LVAL_SEXPR: lval_expr_print(v, '(', ')'); break;
+    case LVAL_QEXPR: lval_expr_print(v, '{', '}'); break;
+  }
+}
+</code></pre></p><p><pre><code class="language-c">void lval_del(lval* v) {&lt;/p&gt;&lt;p&gt;  switch (v-&gt;type) {
+    case LVAL_NUM: break;
+    case LVAL_ERR: free(v-&gt;err); break;
+    case LVAL_SYM: free(v-&gt;sym); break;&lt;/p&gt;&lt;p&gt;    /* If Qexpr or Sexpr then delete all elements inside */
+    case LVAL_QEXPR:
+    case LVAL_SEXPR:
+      for (int i = 0; i &lt; v-&gt;count; i++) {
+        lval_del(v-&gt;cell[i]);
+      }
+      /* Also free the memory allocated to contain the pointers */
+      free(v-&gt;cell);
+    break;
+  }&lt;/p&gt;&lt;p&gt;  free(v);
+}
+</code></pre></p><p>经过这些简单的变化之后，我们就可以更新读取函数 `lval_read`，使其可以正确读取 Q-表达式了。因为 Q-表达式重用了所有 S-表达式的数据类型，所以我们也自然可以重用所有 S-表达式的函数，例如 `lval_add`。</p><p>因此，为了能够读取 Q-表达式，我们只需在抽象语法树中检测并创建空的 S-表达式的地方添加一个新的情况即可。</p><p><pre><code class="language-c">if (strstr(t-&gt;tag, "qexpr"))  { x = lval_qexpr(); }
+</code></pre></p><p>因为 Q-表达式没有任何求值方式，所以无需改动任何已有的求值函数，我们的 Q-表达式就可以小试牛刀了。尝试输入几个 Q-表达式，看看是否不会被求值。</p><p><pre><code class="language-c">lispy&gt; {1 2 3 4}
+{1 2 3 4}
+lispy&gt; {1 2 (+ 5 6) 4}
+{1 2 (+ 5 6) 4}
+lispy&gt; {{2 3 4} {1}}
+{{2 3 4} {1}}
+lispy&gt;
+</code></pre></p>
+  
+</div>
+
+
+<div class="ch fade-in">
+  <div class="ch-title">内置函数</div>
+
+  <p>我们可以读取 Q-表达式，但它们仍然没有用。我们需要某种方式来操作它们。</p>
+
+  <p>为此，我们可以定义一些内置运算符来操作我们的列表类型。选择一组简洁的运算符很重要。如果我们实现了几个基本操作，那么我们就可以使用这些操作来定义新的操作，而无需添加额外的 C 代码。以下是我们将要实现的基本操作：</p>
+
+  <div class="def-box">
+    <h3>Q-表达式内置函数</h3>
+    <ul>
+      <li><code>list</code>：接受一个或多个参数，返回包含这些参数的 Q-表达式</li>
+      <li><code>head</code>：接受一个 Q-表达式，返回只包含第一个元素的 Q-表达式</li>
+      <li><code>tail</code>：接受一个 Q-表达式，返回移除第一个元素后的 Q-表达式</li>
+      <li><code>join</code>：接受一个或多个 Q-表达式，返回连接后的 Q-表达式</li>
+      <li><code>eval</code>：接受一个 Q-表达式，像 S-表达式一样求值它</li>
+    </ul>
+  </div>
+
+  <p>实现 <code>head</code> 函数：</p>
+
+  <pre><code class="language-c">lval* builtin_head(lval* a) {
+  /* Check Error Conditions */
+  LASSERT(a, a->count == 1,
+    "Function 'head' passed too many arguments!");
+  LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
+    "Function 'head' passed incorrect type!");
+  LASSERT(a, a->cell[0]->count != 0,
+    "Function 'head' passed {}!");
+
+  /* Otherwise take first argument */
+  lval* v = lval_take(a, 0);
+
+  /* Delete all elements that are not head and return */
+  while (v->count > 1) { lval_del(lval_pop(v, 1)); }
+  return v;
+}</code></pre>
+
+  <p>实现 <code>tail</code> 函数：</p>
+
+  <pre><code class="language-c">lval* builtin_tail(lval* a) {
+  LASSERT(a, a->count == 1,
+    "Function 'tail' passed too many arguments!");
+  LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
+    "Function 'tail' passed incorrect type!");
+  LASSERT(a, a->cell[0]->count != 0,
+    "Function 'tail' passed {}!");
+
+  /* Take first argument */
+  lval* v = lval_take(a, 0);
+
+  /* Delete first element and return */
+  lval_del(lval_pop(v, 0));
+  return v;
+}</code></pre>
+
+  <p>实现 <code>list</code> 函数：</p>
+
+  <pre><code class="language-c">lval* builtin_list(lval* a) {
+  a->type = LVAL_QEXPR;
+  return a;
+}</code></pre>
+
+  <p>实现 <code>eval</code> 函数：</p>
+
+  <pre><code class="language-c">lval* builtin_eval(lval* a) {
+  LASSERT(a, a->count == 1,
+    "Function 'eval' passed too many arguments!");
+  LASSERT(a, a->cell[0]->type == LVAL_QEXPR,
+    "Function 'eval' passed incorrect type!");
+
+  lval* x = lval_take(a, 0);
+  x->type = LVAL_SEXPR;
+  return lval_eval(x);
+}</code></pre>
+
+  <p>实现 <code>join</code> 函数：</p>
+
+  <pre><code class="language-c">lval* builtin_join(lval* a) {
+
+  for (int i = 0; i < a->count; i++) {
+    LASSERT(a, a->cell[i]->type == LVAL_QEXPR,
+      "Function 'join' passed incorrect type.");
+  }
+
+  lval* x = lval_pop(a, 0);
+
+  while (a->count) {
+    x = lval_join(x, lval_pop(a, 0));
+  }
+
+  lval_del(a);
+  return x;
+}</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">宏简化</div>
+
+  <p>为了简化错误检查，我们可以使用 C 语言的宏来创建更简洁的断言函数：</p>
+
+  <pre><code class="language-c">#define LASSERT(args, cond, err) \
+  if (!(cond)) { lval_del(args); return lval_err(err); }</code></pre>
+
+  <p>这样我们就可以用更简洁的方式编写错误检查代码。</p>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="build-your-own-lisp.html"><span class="nav-label">枢纽页</span><span class="nav-title">Build Your Own Lisp</span></a>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="http://buildyourownlisp.com/" target="_blank">Build Your Own Lisp — 原书</a></li>
+    <li><a href="https://github.com/ksco/BuildYourOwnLispCn" target="_blank">BuildYourOwnLispCn — 中文翻译</a></li>
+  </ul>
+</div>
+
+</div>

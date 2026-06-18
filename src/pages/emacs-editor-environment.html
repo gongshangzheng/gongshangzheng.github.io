@@ -1,0 +1,354 @@
+---
+title: "Emacs：可扩展编辑环境、快捷键与 Lisp 语法入门"
+description: "系统介绍 Emacs 的核心概念、编辑与组织功能、编程能力、插件生态、快捷键体系，并解释 Lisp 与 Emacs Lisp 的基础语法及其和配置扩展的关系。"
+date: 2026-06-05T11:21:49
+created_at: 2026-06-05T11:21:49
+updated_at: 2026-06-05T11:21:49
+categories: ["编程"]
+subcategory: "编辑器"
+tags: ["Emacs", "Emacs Lisp", "Lisp", "编辑器", "Org mode", "Magit"]
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">6</span><span class="label">核心概念</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label g">代表功能</span></div>
+  <div class="stat"><span class="num">4</span><span class="label">包仓库</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label l">语法层</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">导言</div>
+  <div class="ch-title">Emacs 不是一个“装很多插件的编辑器”</div>
+  <div class="ch-date">从文本编辑器到可扩展计算环境</div>
+
+  Emacs 最容易被误解的地方，是把它看成 Vim、VS Code 或某个 IDE 的同类竞品。更准确的理解是：Emacs 是一个围绕文本、缓冲区、命令和 Lisp 解释器组织起来的可扩展编辑环境。GNU Emacs Manual 把它定位为可编辑文本、运行命令、使用帮助系统和定制行为的交互式系统；Emacs Lisp Reference Manual 则说明 Emacs 的大部分编辑行为、扩展机制和用户配置都建立在 Emacs Lisp 之上 #Free Software Foundation, n.d.a# #Free Software Foundation, n.d.b#。
+
+  这篇文章按一条主线展开：先解释 Emacs 的核心对象，再看它如何覆盖写作、组织、文件管理、远程编辑和编程；然后介绍插件生态与快捷键体系；最后进入 Lisp 与 Emacs Lisp 的基础语法，说明为什么“会一点 Lisp”就能把 Emacs 从工具变成自己的工作环境。
+
+  <div class="callout"><strong>一句话</strong>：Emacs 的核心不是某套默认按键，而是“编辑器本身可以被同一种语言实时扩展”。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">准备</div>
+  <div class="ch-title">安装与第一次启动：先找到你的 init.el</div>
+
+  Emacs 可以在图形界面和终端中运行。GNU 项目提供官方下载入口，并说明 Windows 用户可从 GNU 镜像或主 GNU FTP 服务器下载安装包；Linux 用户通常也可以通过发行版包管理器安装 GNU Emacs #Free Software Foundation, n.d.i#。安装方式会影响字体、输入法、系统剪贴板和原生窗口集成，但不改变 Emacs 的核心模型：启动后读取初始化文件，进入一个可交互编辑环境 #Free Software Foundation, n.d.a#。
+
+  最重要的第一步，是知道配置入口在哪里。GNU Emacs Manual 说明，Emacs 启动时通常会尝试加载用户的 init file；常见位置包括主目录下的 `.emacs`、`.emacs.el`，以及 Emacs 配置目录中的 `init.el` #Free Software Foundation, n.d.j#。Emacs 内部变量 `user-init-file` 会指向实际加载的初始化文件。你不必先抄一份巨型配置；先能打开 init 文件、写一两个变量、重启或重新求值，就已经进入了 Emacs 的扩展路径。
+
+  <pre><code class="language-lisp">;; 最小 init.el：先让 Emacs 可读、可查、可继续扩展
+(setq inhibit-startup-screen t)
+(setq-default fill-column 80)
+(global-display-line-numbers-mode 1)
+
+(require 'package)
+(setq package-archives
+      '(("gnu" . "https://elpa.gnu.org/packages/")
+        ("nongnu" . "https://elpa.nongnu.org/nongnu/")
+        ("melpa" . "https://melpa.org/packages/")))
+(package-initialize)
+
+(unless (package-installed-p 'use-package)
+  (package-refresh-contents)
+  (package-install 'use-package))
+
+(require 'use-package)
+(setq use-package-always-ensure t)
+
+(use-package magit
+  :bind (("C-x g" . magit-status)))
+
+(add-hook 'prog-mode-hook #'display-line-numbers-mode)</code></pre>
+
+  <div class="callout"><strong>建议</strong>：第一份配置只放你能解释的内容。等你知道 `setq`、`add-hook`、`use-package` 和 `global-set-key` 分别在做什么，再逐步引入更大的配置框架。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">核心概念：buffer、window、frame、mode、command、keymap</div>
+
+  <h3 class="section-title">Buffer：一切先进入缓冲区</h3>
+  Emacs 中真正被编辑的对象通常不是“文件窗口”，而是 buffer。一个 buffer 可以对应磁盘文件，也可以是临时输出、帮助页、Shell、Git 状态页、目录列表或 Org agenda。文件只是 buffer 的一种来源；这使 Emacs 可以把“编辑文本”的能力推广到目录、进程、远程文件和版本控制界面 #Free Software Foundation, n.d.a#。
+
+  <h3 class="section-title">Window 与 frame：名字和日常桌面软件相反</h3>
+  Emacs 里的 window 指 frame 内部的一块显示区域，也就是很多软件里说的 pane；frame 才更接近操作系统窗口。一个 frame 可以切成多个 window，不同 window 可以显示不同 buffer，也可以显示同一 buffer 的不同位置 #Free Software Foundation, n.d.a#。
+
+  <h3 class="section-title">Mode：同一个编辑器，按内容切换行为</h3>
+  Major mode 决定当前 buffer 的主要语法、缩进、命令和菜单，比如 `emacs-lisp-mode`、`python-mode`、`org-mode`。一个 buffer 同一时间通常只有一个 major mode。Minor mode 则提供可叠加的辅助能力，比如行号、高亮当前行、自动补全、拼写检查或某个插件的局部功能；多个 minor mode 可以同时启用 #Free Software Foundation, n.d.c#。
+
+  <h3 class="section-title">Command 与 keymap：快捷键只是命令的入口</h3>
+  Emacs 的交互操作本质上是调用 command。`M-x` 可以按名字执行命令；快捷键则是 keymap 中从按键序列到命令的映射。Major mode、minor mode 和全局环境都可以拥有自己的 keymap，所以同一组键在不同上下文里可以触发不同命令 #Free Software Foundation, n.d.d#。
+
+  {{< mermaid >}}
+flowchart TD
+  A["用户输入快捷键或 M-x"] --> B["查找当前 keymap"]
+  B --> C["调用 command"]
+  C --> D["读写 buffer"]
+  D --> E["window / frame 显示结果"]
+  F["major mode"] --> B
+  G["minor modes"] --> B
+  H["Emacs Lisp 函数与变量"] --> C
+  {{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">重要功能：编辑、组织、文件、远程、编程</div>
+
+  <h3 class="section-title">文本编辑：选择、移动、搜索、替换与宏</h3>
+  Emacs 的基础编辑能力围绕 point、mark 和 region 展开。point 是光标位置，mark 用来标记区域起点，region 是 point 与 mark 之间的文本范围。搜索、替换、矩形编辑、寄存器、kill ring 和 keyboard macro 这些功能让 Emacs 更像“可编程的文本操作台”，而不只是输入字符的地方 #Free Software Foundation, n.d.a#。
+
+  <h3 class="section-title">Org mode：大纲、任务、表格与知识组织</h3>
+  Org mode 是 Emacs 生态中最有代表性的功能之一。Org Manual 的目录覆盖标题结构、可见性折叠、任务状态、标签、属性、时间戳、日程、表格、链接、导出和 literate programming 等主题 #Dominik et al., n.d.#。因此 Org 不只是标记语言，也可以作为纯文本写作、任务管理与个人信息组织系统。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>功能域</th><th>Emacs 里的代表能力</th><th>典型入口</th></tr></thead>
+      <tbody>
+        <tr><td>写作与笔记</td><td>Org 标题折叠、链接、导出、代码块</td><td>`org-mode`、`org-capture`</td></tr>
+        <tr><td>任务管理</td><td>任务状态、deadline、schedule、agenda</td><td>`org-agenda`</td></tr>
+        <tr><td>文件管理</td><td>目录 buffer 中批量改名、复制、删除、标记</td><td>`dired`</td></tr>
+        <tr><td>远程编辑</td><td>通过 SSH、sudo 等 TRAMP 方法像访问本地文件一样访问远程路径</td><td>TRAMP 路径</td></tr>
+        <tr><td>代码开发</td><td>语言模式、LSP、xref、Flymake、编译、REPL</td><td>Eglot、major mode</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Dired：目录也是可编辑文本</h3>
+  Dired 的全称是 Directory Editor。GNU Emacs Manual 描述它会把目录列表放进一个 Emacs buffer，让用户在这个 buffer 中标记、复制、重命名、删除、压缩或访问文件 #Free Software Foundation, n.d.e#。Dired 体现了 Emacs 的典型设计：把一个外部对象转成文本界面，再让普通编辑命令和专用命令共同作用。
+
+  <h3 class="section-title">TRAMP：远程文件透明化</h3>
+  TRAMP 把远程文件访问扩展到 Emacs 文件名语法里，典型路径形如 `/method:user@host:/path/to/file`。TRAMP Manual 明确说明，它的目标是让远程文件像本地文件一样被访问和编辑 #Free Software Foundation, n.d.f#。这使 Emacs 可以承担轻量远程开发、服务器配置和跨机器文件操作。
+
+  <h3 class="section-title">Eglot：把语言服务器接进 Emacs</h3>
+  Eglot 是 Emacs 的 LSP 客户端。它通过 Language Server Protocol 为源代码编辑提供导航、诊断、补全、文档、重命名和代码操作等能力 #Free Software Foundation, n.d.g#。在当前 Emacs 生态里，Eglot 已是重要的内置 LSP 路径之一；这意味着现代 Emacs 编程体验不必完全依赖第三方 IDE 风格插件。
+
+  <h3 class="section-title">五个功能的最小使用场景</h3>
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>功能</th><th>最小入口</th><th>你会看到什么</th></tr></thead>
+      <tbody>
+        <tr><td>Org</td><td>`* 任务：写文章`、`C-c C-t`、`M-x org-agenda`</td><td>标题折叠、任务状态、日程视图</td></tr>
+        <tr><td>Dired</td><td>`C-x d` 打开目录，`m` 标记，`R` 重命名</td><td>目录列表变成可操作 buffer</td></tr>
+        <tr><td>TRAMP</td><td>`C-x C-f /ssh:user@host:/path`</td><td>远程文件像本地文件一样打开</td></tr>
+        <tr><td>Magit</td><td>`M-x magit-status` 或 `C-x g`</td><td>Git 状态、diff、stage、commit 集中在一个交互界面</td></tr>
+        <tr><td>Eglot</td><td>先安装语言服务器，再在代码 buffer 中 `M-x eglot`</td><td>诊断、跳转、重命名、文档提示进入 Emacs</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">插件生态：ELPA、MELPA、use-package 与代表插件</div>
+
+  <h3 class="section-title">包仓库：官方稳定性与社区丰富性</h3>
+  Emacs 内置 `package.el`，用户可以通过 `M-x list-packages` 浏览和安装包。GNU ELPA 是 GNU 官方 Emacs Lisp Package Archive；NonGNU ELPA 收录不属于 GNU 的包；MELPA 则强调从上游源码自动构建、更新快、覆盖面广 #GNU ELPA, n.d.# #NonGNU ELPA, n.d.# #MELPA, n.d.#。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>来源</th><th>定位</th><th>适合什么</th></tr></thead>
+      <tbody>
+        <tr><td>GNU ELPA</td><td>官方 GNU 包仓库</td><td>偏稳定、默认信任链更清晰</td></tr>
+        <tr><td>NonGNU ELPA</td><td>官方基础设施上的非 GNU 包</td><td>许可证或归属不在 GNU 的常用包</td></tr>
+        <tr><td>MELPA</td><td>社区包仓库，自动从上游源码构建</td><td>包最多、更新快、生态覆盖广</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">use-package：配置可读化</h3>
+  `use-package` 是一种常用的 Emacs 配置组织方式。它把包加载、延迟加载、变量设置、快捷键绑定、hook、mode 关联和自动安装组织成声明式块，减少重复样板代码 #Free Software Foundation, n.d.k#。一个典型配置长这样：
+
+  <pre><code class="language-lisp">(use-package magit
+  :ensure t
+  :bind (("C-x g" . magit-status))
+  :config
+  (setq magit-display-buffer-function
+        #'magit-display-buffer-same-window-except-diff-v1))</code></pre>
+
+  <h3 class="section-title">Magit：为什么它常被视为代表性插件</h3>
+  Magit 官方把它定义为 Emacs 内部的 Git porcelain，也就是 Git 的完整文本界面。Magit 不只是把 Git 命令列出来，而是让状态、diff、commit、rebase、stash 等可见信息都变成可操作对象，并在后台执行 Git 命令 #Bernoulli, n.d.#。它代表了 Emacs 插件的一种高阶形态：不是给编辑器加一个按钮，而是把一个复杂工具重构成可交互 buffer。
+
+  <h3 class="section-title">常见插件类型</h3>
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>类型</th><th>代表方向</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>补全与选择</td><td>Vertico、Consult、Orderless、Corfu、Company</td><td>改善 minibuffer、命令、文件、符号和代码补全体验</td></tr>
+        <tr><td>项目与搜索</td><td>`project.el`、Projectile、ripgrep 集成</td><td>按项目查文件、查文本、跳转源码</td></tr>
+        <tr><td>Git</td><td>Magit、Forge</td><td>把版本控制和代码协作放进 Emacs buffer</td></tr>
+        <tr><td>笔记与知识库</td><td>Org-roam、Denote</td><td>在 Org 之上组织双链笔记和长期知识库</td></tr>
+        <tr><td>主题与界面</td><td>Modus、Doom themes、modeline 包</td><td>改善可读性、主题和状态栏信息密度</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">插件选择的实际原则</h3>
+  对新用户来说，不必一开始追求完整发行版或巨型配置。更稳妥的顺序是：先熟悉内置帮助、文件、buffer、Dired、Org；再用 `use-package` 管理少数刚需包；最后再考虑 Doom Emacs、Spacemacs、straight.el 或私人配置框架。这样可以避免把“学习 Emacs”误变成“调试别人的配置”。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">快捷键体系：前缀键、助记与自定义</div>
+
+  Emacs 快捷键的学习曲线很陡，但它并不是随机堆积。大多数默认键可以按前缀理解：`C-x` 偏全局编辑器操作，`C-c` 通常留给 mode 或用户扩展，`C-h` 是帮助入口，`M-x` 是按命令名调用。GNU Emacs Reference Card 也把这些基础命令按文件、buffer、窗口、搜索、帮助等类别组织 #Free Software Foundation, n.d.h#。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>按键</th><th>命令/含义</th><th>常用场景</th></tr></thead>
+      <tbody>
+        <tr><td>`C-x C-f`</td><td>`find-file`</td><td>打开文件</td></tr>
+        <tr><td>`C-x C-s`</td><td>`save-buffer`</td><td>保存当前 buffer</td></tr>
+        <tr><td>`C-x b`</td><td>`switch-to-buffer`</td><td>切换 buffer</td></tr>
+        <tr><td>`C-x 2` / `C-x 3`</td><td>上下 / 左右分割 window</td><td>多窗口编辑</td></tr>
+        <tr><td>`C-x 1` / `C-x 0`</td><td>只保留当前 window / 关闭当前 window</td><td>整理布局</td></tr>
+        <tr><td>`C-s`</td><td>增量搜索</td><td>查找文本</td></tr>
+        <tr><td>`M-x`</td><td>执行命令</td><td>不知道快捷键但知道命令名</td></tr>
+        <tr><td>`C-h k`</td><td>describe-key</td><td>查看某个快捷键绑定了什么</td></tr>
+        <tr><td>`C-h f`</td><td>describe-function</td><td>查看函数文档</td></tr>
+        <tr><td>`C-h v`</td><td>describe-variable</td><td>查看变量文档</td></tr>
+        <tr><td>`C-a` / `C-e`</td><td>行首 / 行尾</td><td>基础移动</td></tr>
+        <tr><td>`M-f` / `M-b`</td><td>按词前进 / 后退</td><td>英文或代码中快速移动</td></tr>
+        <tr><td>`C-k` / `C-y` / `M-y`</td><td>剪切到行尾 / 粘贴 / 轮换 kill ring</td><td>文本编辑</td></tr>
+        <tr><td>`C-SPC` / `C-x h`</td><td>设置 mark / 全选 buffer</td><td>选择 region</td></tr>
+        <tr><td>`M-%`</td><td>query-replace</td><td>交互式替换</td></tr>
+        <tr><td>`C-x (` / `C-x )` / `C-x e`</td><td>录制、结束、执行键盘宏</td><td>重复编辑动作</td></tr>
+        <tr><td>`C-h m`</td><td>describe-mode</td><td>查看当前 mode 的命令与快捷键</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>学快捷键的正确顺序</strong>：先记 `C-h` 帮助系统、`M-x` 命令入口和 `C-x` 文件/window/buffer 操作。能查就不必死记；真正高频的键会在使用中自然留下来。</div>
+
+  自定义快捷键的底层是修改 keymap。最简单的全局绑定可以写成：
+
+  <pre><code class="language-lisp">(global-set-key (kbd "C-c g") #'magit-status)</code></pre>
+
+  在 `use-package` 中则通常写到 `:bind` 或 mode 局部 keymap 里。理解 keymap 后，快捷键就不再是一张死表，而是 Emacs 可扩展性的外层表现。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">Lisp 语法：S-expression、求值、quote、lambda、宏</div>
+
+  <h3 class="section-title">Lisp 的最小语法单位：S-expression</h3>
+  Lisp 家族语言最有辨识度的形式是 S-expression，也就是符号表达式。一个 S-expression 可以是 atom，也可以是由括号包裹的列表。Common Lisp HyperSpec 可作为 Common Lisp 语法、对象、符号和函数等概念的规范参考；Racket Guide 的入门章节则直接覆盖函数调用、条件、`lambda`、局部绑定、列表、quote 等 Lisp 族入门主题 #LispWorks, 2005# #Flatt et al., n.d.#。
+
+  <pre><code class="language-lisp">(+ 1 2 3)        ; 函数调用：操作符在第一个位置
+(setq x 10)      ; 设置变量
+(if (> x 5)      ; 条件表达式
+    "big"
+  "small")</code></pre>
+
+  <h3 class="section-title">代码和数据长得一样</h3>
+  Lisp 的关键直觉是：许多代码形式写成列表，而这些列表也可以作为数据被读取和处理。普通求值时，`(+ 1 2)` 会被当作函数调用；加上 quote 后，`'(+ 1 2)` 则只是一个列表数据，不会执行。
+
+  <pre><code class="language-lisp">(+ 1 2)     ; 求值得到 3
+'(+ 1 2)    ; 得到列表本身，而不是执行加法</code></pre>
+
+  <h3 class="section-title">函数、lambda 与 let</h3>
+  Lisp 中函数调用使用前缀形式，匿名函数通常用 `lambda` 表达，局部绑定常见形式是 `let`。Racket Guide 把 `lambda`、`let`、递归和列表操作列为 Racket essentials 的核心内容；这些概念也能迁移到 Emacs Lisp 的阅读与配置中 #Flatt et al., n.d.#。
+
+  <pre><code class="language-lisp">((lambda (name)
+   (concat "Hello, " name))
+ "Emacs")
+
+(let ((width 80)
+      (theme 'modus-operandi))
+  (list width theme))</code></pre>
+
+  <h3 class="section-title">宏：把语言本身也纳入扩展范围</h3>
+  Lisp 宏的特殊之处在于，它把接收到的 S-expression 转换成 Lisp form，从而定义新的语法形态；Practical Common Lisp 的宏章节明确把宏描述为把传入的 S-expression 转换成 Lisp forms 的机制 #Seibel, 2005#。这也是为什么 Lisp 生态常说“语言可以长出新的语法”。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">Emacs Lisp：配置、扩展与编辑器运行时</div>
+
+  Emacs Lisp 是 Lisp 家族的一支，主要作为 Emacs 编辑器的扩展语言使用。Emacs Lisp Reference Manual 明确覆盖对象、求值、控制结构、变量、函数、宏、keymap、mode、buffer、window、process、file、display 等内容 #Free Software Foundation, n.d.b#。换句话说，Elisp 不只是语法，它绑定着 Emacs 的整个运行时对象模型。
+
+  <h3 class="section-title">变量：配置就是修改可查询的运行时状态</h3>
+  Emacs 中大量行为由变量控制。用 `setq` 设置变量，用 `setq-default` 设置默认值，用 `customize` 走图形/交互式配置。许多变量也可以是 buffer-local，因此同一个变量在不同 buffer 中有不同值。
+
+  <pre><code class="language-lisp">(setq inhibit-startup-screen t)
+(setq-default fill-column 80)
+(add-hook 'text-mode-hook #'visual-line-mode)</code></pre>
+
+  <h3 class="section-title">函数与 interactive：普通函数变成交互命令</h3>
+  一个 Emacs Lisp 函数只要包含 `(interactive)`，就可以被 `M-x` 调用，也可以绑定到快捷键。这个设计把“写函数”和“扩展编辑器命令集”连接起来。
+
+  <pre><code class="language-lisp">(defun my-open-init-file ()
+  "Open the current user's Emacs init file."
+  (interactive)
+  (find-file user-init-file))
+
+(global-set-key (kbd "C-c i") #'my-open-init-file)</code></pre>
+
+  <h3 class="section-title">Hook：在模式或事件发生时追加行为</h3>
+  Hook 是 Emacs 配置里最常用的扩展点。比如进入某个 major mode 后启用某个 minor mode，保存前格式化，打开文本文件后自动换行。它使配置可以“贴在事件上”，而不是集中写成一个巨大初始化脚本。
+
+  <pre><code class="language-lisp">(add-hook 'prog-mode-hook #'display-line-numbers-mode)
+(add-hook 'emacs-lisp-mode-hook #'eldoc-mode)</code></pre>
+
+  <h3 class="section-title">Mode 与 keymap：插件其实是在定义新上下文</h3>
+  当你写一个 major mode 或 minor mode 时，本质上是在定义一组 buffer 行为、语法规则、hook、变量和 keymap。官方手册中关于 major/minor mode 与 keymap 的章节，正是插件作者理解 Emacs 扩展模型的核心入口 #Free Software Foundation, n.d.c# #Free Software Foundation, n.d.d#。
+  <h3 class="section-title">通用 Lisp 概念与 Emacs Lisp 特有概念</h3>
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>层次</th><th>概念</th><th>在 Emacs 中的意义</th></tr></thead>
+      <tbody>
+        <tr><td>通用 Lisp</td><td>S-expression、quote、lambda、let、函数调用、宏</td><td>帮助你读懂配置文件和插件源码的基本语法形态</td></tr>
+        <tr><td>Emacs Lisp</td><td>buffer、point、window、frame、interactive、hook、keymap、autoload</td><td>把 Lisp 语法连接到编辑器运行时，让函数可以变成命令，让变量可以改变编辑行为</td></tr>
+        <tr><td>边界</td><td>Common Lisp / Racket 示例不是 Emacs 配置代码</td><td>它们用于解释 Lisp 家族共同思想；真正配置 Emacs 时应查 Emacs Lisp 手册</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结语</div>
+  <div class="ch-title">如何开始：别先抄巨型配置，先学会观察 Emacs</div>
+
+  如果从零开始，建议按四步走。第一步，只学会打开文件、保存、切 buffer、分 window、查帮助。第二步，熟悉 Org、Dired、Magit 和一种编程语言 mode。第三步，用 `use-package` 管理少数插件，而不是一次装完整发行版。第四步，再学习 Emacs Lisp：先会 `setq`、`add-hook`、`defun`、`interactive`、`global-set-key`，再逐渐读懂 mode、keymap 和宏。
+
+  <div class="review-box">
+    <h3>复习速查</h3>
+    <ul>
+      <li><strong>Emacs 的核心对象</strong>：buffer、window、frame、mode、command、keymap。</li>
+      <li><strong>代表能力</strong>：Org 管组织，Dired 管目录，TRAMP 管远程，Magit 管 Git，Eglot 管 LSP。</li>
+      <li><strong>插件生态</strong>：GNU ELPA 稳，NonGNU ELPA 补充，MELPA 广，use-package 负责配置结构化。</li>
+      <li><strong>Lisp 语法</strong>：S-expression、前缀调用、quote、lambda、let、宏。</li>
+      <li><strong>Elisp 的意义</strong>：它不是外置脚本语言，而是 Emacs 自己的配置和扩展语言。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Free-Software-Foundation-n.d.a">Free Software Foundation. (n.d.). <em>GNU Emacs Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/emacs/" target="_blank">GNU Emacs Manual</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.b">Free Software Foundation. (n.d.). <em>GNU Emacs Lisp Reference Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/elisp/" target="_blank">GNU Emacs Lisp Reference Manual</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.c">Free Software Foundation. (n.d.). Major and Minor Modes. <em>GNU Emacs Lisp Reference Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/elisp/Major-and-Minor-Modes.html" target="_blank">Major and Minor Modes</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.d">Free Software Foundation. (n.d.). Keymaps and Minor Modes. <em>GNU Emacs Lisp Reference Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/elisp/Keymaps-and-Minor-Modes.html" target="_blank">Keymaps and Minor Modes</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.e">Free Software Foundation. (n.d.). Dired, the Directory Editor. <em>GNU Emacs Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/emacs/Dired.html" target="_blank">Dired</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.f">Free Software Foundation. (n.d.). <em>TRAMP User Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/tramp/" target="_blank">TRAMP Manual</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.g">Free Software Foundation. (n.d.). <em>Eglot: The Emacs Client for the Language Server Protocol</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/eglot/" target="_blank">Eglot Manual</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.h">Free Software Foundation. (n.d.). <em>GNU Emacs Reference Card</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/refcards/pdf/refcard.pdf" target="_blank">Reference Card</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.i">Free Software Foundation. (n.d.). <em>GNU Emacs download</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/download.html" target="_blank">GNU Emacs download</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.j">Free Software Foundation. (n.d.). Init File. <em>GNU Emacs Manual</em>. Accessed 2026-06-05. <a href="https://www.gnu.org/software/emacs/manual/html_node/emacs/Init-File.html" target="_blank">Init File</a></li>
+      <li data-cite-key="Dominik-et-al.-n.d.">Dominik, C., Schulte, E., Davison, D., Dye, T., &amp; O'Connor, T. (n.d.). <em>The Org Manual</em>. Accessed 2026-06-05. <a href="https://orgmode.org/manual/" target="_blank">Org Manual</a></li>
+      <li data-cite-key="GNU-ELPA-n.d.">GNU ELPA. (n.d.). Accessed 2026-06-05. <em>GNU Emacs Lisp Package Archive</em>. <a href="https://elpa.gnu.org/" target="_blank">GNU ELPA</a></li>
+      <li data-cite-key="NonGNU-ELPA-n.d.">NonGNU ELPA. (n.d.). Accessed 2026-06-05. <em>NonGNU ELPA Packages</em>. <a href="https://elpa.nongnu.org/nongnu/" target="_blank">NonGNU ELPA</a></li>
+      <li data-cite-key="MELPA-n.d.">MELPA. (n.d.). Accessed 2026-06-05. <em>Milkypostman's Emacs Lisp Package Archive</em>. <a href="https://melpa.org/" target="_blank">MELPA</a></li>
+      <li data-cite-key="Free-Software-Foundation-n.d.k">Free Software Foundation. (n.d.). Accessed 2026-06-05. <em>use-package User Manual</em>. <a href="https://elpa.gnu.org/devel/doc/use-package.html" target="_blank">use-package User Manual</a></li>
+      <li data-cite-key="Bernoulli-n.d.">Bernoulli, J. (n.d.). Accessed 2026-06-05. <em>Magit: A Git Porcelain inside Emacs</em>. <a href="https://magit.vc/" target="_blank">Magit</a></li>
+      <li data-cite-key="LispWorks-2005">LispWorks Ltd. (2005). <em>Common Lisp HyperSpec</em>. <a href="https://www.lispworks.com/documentation/HyperSpec/Front/" target="_blank">Common Lisp HyperSpec</a></li>
+      <li data-cite-key="Flatt-et-al.-n.d.">Flatt, M., Findler, R. B., &amp; PLT. (n.d.). Accessed 2026-06-05. <em>The Racket Guide</em>. <a href="https://docs.racket-lang.org/guide/" target="_blank">The Racket Guide</a></li>
+      <li data-cite-key="Seibel-2005">Seibel, P. (2005). <em>Practical Common Lisp: Macros: Standard Control Constructs</em>. <a href="https://gigamonkeys.com/book/macros-standard-control-constructs" target="_blank">Practical Common Lisp</a></li>
+    </ul>
+  </div>
+</div>

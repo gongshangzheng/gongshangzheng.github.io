@@ -1,0 +1,683 @@
+---
+title: "数字信号处理的误差分析｜数字信号处理笔记"
+description: "有限字长引入的三大误差来源：数的表示、A/D 量化、系数量化与运算舍入。含定点/浮点对比、噪声方差、极限环与死区效应分析"
+created_at: 2026-06-04T17:08:30
+updated_at: 2026-06-04T17:30:00
+tags: [量化误差, 有限字长, 定点制, 浮点制, 极限环振荡]
+categories: ["课程"]
+subcategory: "数字信号处理"
+sub_id: 120
+mathjax: true
+hero_title: "数字信号处理的误差分析"
+hero_sub: "第八讲｜量化、舍入、极限环"
+hero_tagline: "无限精度设计 ≠ 有限字长实现"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3</span><span class="label">误差来源</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label g">交互图</span></div>
+  <div class="stat"><span class="num">6</span><span class="label">核心公式</span></div>
+  <div class="stat"><span class="num b">8</span><span class="label">docpage 引用</span></div>
+</div>
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">课程位置</div>
+  <div class="ch-title">本节在课程中的位置</div>
+  <p>前面的章节（差分方程、Z 变换、DFT、滤波器设计）全部建立在<strong>无限精度</strong>的数学模型之上。我们假设系数可以取任意实数、加法不会溢出、乘法结果可以无限精确。然而，任何实际的 DSP 系统——无论是专用芯片还是通用处理器——都必须在<strong>有限字长</strong>的约束下运行。</p>
+  <p>本章回答一个核心问题：<strong>无限精度的理论设计，在有限字长的物理实现中会发生什么？</strong>从 A/D 采样量化、滤波器系数量化，到每一步乘法运算后的舍入/截尾，误差会像多米诺骨牌一样逐级传递。理解这些误差的来源、统计特性和工程边界，是把"纸上的滤波器"变成"芯片上的滤波器"的必经之路。</p>
+  <p>本章也是数字信号处理课程前半部分（连续信号→离散化→频域分析→滤波器设计）与后半部分（硬件实现、自适应滤波、谱估计）之间的关键桥梁。</p>
+</div>
+
+<div class="info-box">
+  <h3>前置知识回顾</h3>
+  <p>本节默认你已掌握以下内容。若有遗忘，建议先回看对应章节：</p>
+  <ul>
+    <li><strong>Z 变换与系统函数</strong>：差分方程 → $H(z)$ 的推导，极零点概念。去哪里补：第二、三讲。</li>
+    <li><strong>FIR 与 IIR 结构</strong>：直接型、级联型、并联型的实现结构。去哪里补：第五、六讲。</li>
+    <li><strong>概率论基础</strong>：期望、方差、均匀分布的概率密度。去哪里补：概率论课程。</li>
+    <li><strong>二进制与补码运算</strong>：有符号整数的表示。去哪里补：数字逻辑 / 计算机组成原理。</li>
+  </ul>
+</div>
+
+<div class="admonition danger">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+    核心 takeaway：无限精度设计 ≠ 有限字长实现
+  </div>
+  <div class="admonition-content">
+    <p>一个在 MATLAB 里表现完美的 12 阶椭圆滤波器，用 16 位定点 DSP 实现时，可能因系数量化而极点移出单位圆，导致系统不稳定。这不是设计错误，而是<strong>实现误差</strong>——它根源于有限字长，必须用本章的方法去分析和控制。</p>
+  </div>
+</div>
+
+<!-- ===== 第一组：误差来源与数的表示 ===== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第一组</div>
+  <div class="ch-title">误差来源与数的表示</div>
+  <p>在深入量化误差的统计分析之前，我们必须先回答三个基本问题：误差从哪来？数字在机器里怎么表示？截尾和舍入的数学本质是什么？这一组从工程直觉出发，建立整个误差分析体系的符号与工具基础。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.1 三大误差来源</div>
+  <p>数字信号处理系统中，有限字长引入的误差可以归纳为三大类，它们发生在信号流的不同阶段：</p>
+
+  <div class="def-box">
+    <h3>误差来源分类</h3>
+    <p><strong>1. 输入信号 A/D 量化误差</strong>：模拟信号经采样后，采样值必须用有限位数的二进制表示。$x(n)$ 的真实值与量化值之间的差异称为 A/D 量化误差。</p>
+    <p><strong>2. 系数量化误差</strong>：滤波器系数 $a_k$、$b_k$ 在无限精度设计中可能是无理数（如 $rac{1}{\sqrt{2}}$），存入有限字长寄存器时被迫截断，导致实际系统函数偏离设计值。</p>
+    <p><strong>3. 运算过程误差</strong>：定点乘法产生双倍字长的结果，必须舍入或截尾回单倍字长；定点加法可能溢出；浮点运算则引入相对误差。</p>
+  </div>
+
+  <p>这三种误差在系统中的传播路径可以用一个简单模型描述：A/D 量化发生在输入端，相当于给理想信号叠加了一个噪声；系数量化改变了系统函数 $H(z)$ 的极零点位置；运算舍入则在每个乘法和加法节点注入新的噪声源。三者叠加，最终决定了输出信号的信噪比（SNR）。</p>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=1 title="章节目录" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.2 数的表示：定点与浮点</div>
+  <p>误差的大小首先取决于"数字在硬件中怎么存"。二进制表示有两种基本形式：定点制和浮点制。它们对误差特性的影响截然不同。</p>
+
+  <div class="def-box">
+    <h3>定点制（Fixed-Point）</h3>
+    <p>小数点位置固定不变。通常采用 $b$ 位小数位（含符号位）的格式，数值范围为 $[-1, 1-2^{-b}]$。</p>
+    <p style="text-align:center">\[ x = (-1)^{B_0} \sum_{i=1}^{b} B_i 2^{-i} \]</p>
+    <p>其中 $B_0$ 为符号位，$B_i \in \{0,1\}$ 为小数位。定点制的<strong>绝对量化精度</strong>固定为 $q = 2^{-b}$，与信号大小无关。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>浮点制（Floating-Point）</h3>
+    <p>小数点位置随阶码浮动，格式为 $(-1)^s \times M \times 2^c$，其中 $M$ 为尾数（mantissa），$c$ 为阶码（exponent）。</p>
+    <p style="text-align:center">\[ x = (-1)^s \cdot 2^c \cdot \sum_{i=1}^{b} B_i 2^{-i} \]</p>
+    <p>浮点制的<strong>相对精度</strong>固定，但绝对精度随信号幅度变化：大信号的绝对误差大，小信号的绝对误差小。</p>
+  </div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=8 title="浮点表示公式" >}}
+
+  <p>为什么这个区别如此关键？想象一个动态范围很大的音频信号：定点制为了覆盖大信号，必须牺牲小数位精度，导致小信号被严重量化；浮点制则能同时兼顾大信号的动态范围和小信号的精细分辨。代价是浮点运算单元更复杂、功耗更高、延迟更大。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>特性</th><th>定点制</th><th>浮点制</th></tr></thead>
+      <tbody>
+        <tr><td>表示格式</td><td>$(-1)^s \times$ 固定小数位</td><td>$(-1)^s \times M \times 2^c$</td></tr>
+        <tr><td>绝对精度</td><td>固定（$q = 2^{-b}$）</td><td>随幅度变化</td></tr>
+        <tr><td>相对精度</td><td>小信号差、大信号好</td><td>固定（约 $2^{-b}$）</td></tr>
+        <tr><td>动态范围</td><td>窄</td><td>宽</td></tr>
+        <tr><td>溢出处理</td><td>需饱和/缩放</td><td>阶码自动处理</td></tr>
+        <tr><td>硬件成本</td><td>低（面积小、功耗低）</td><td>高（面积大约 3-5 倍）</td></tr>
+        <tr><td>典型应用</td><td>嵌入式 DSP、音频 CODEC</td><td>高精度科学计算、GPU</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>一句话理解</strong>：定点制像一把固定刻度的尺子，量小东西不准；浮点制像一把游标卡尺，自动切换量程，但结构更复杂。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.2.2 负数的三种表示：原码、补码、反码</div>
+  <p>在讨论量化误差之前，必须明确负数在机器里的二进制编码方式。三种编码对截尾误差的符号有直接影响。</p>
+
+  <div class="def-box">
+    <h3>三种编码定义（设真值为 $x$，$b$ 位小数位）</h3>
+    <p><strong>原码（Sign-Magnitude）</strong>：最高位为符号位，其余表示绝对值。</p>
+    <p style="text-align:center">\[ [x]_{\text{原}} = \begin{cases} x, & x \ge 0 \\ 1+|x|, & x < 0 \end{cases} \]</p>
+    <p><strong>反码（One's Complement）</strong>：正数同原码；负数对原码逐位取反。</p>
+    <p style="text-align:center">\[ [x]_{\text{反}} = \begin{cases} x, & x \ge 0 \\ 2-2^{-b}-|x|, & x < 0 \end{cases} \]</p>
+    <p><strong>补码（Two's Complement）</strong>：正数同原码；负数对原码逐位取反再加 $2^{-b}$（或等价地，对 $2$ 取模）。</p>
+    <p style="text-align:center">\[ [x]_{\text{补}} = \begin{cases} x, & x \ge 0 \\ 2-|x|, & x < 0 \end{cases} \]</p>
+  </div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=15 title="原码/补码/反码定义" >}}
+
+  <p>补码是现代 DSP 芯片的事实标准，原因有二：第一，补码加减法只需同一套加法器，无需额外处理符号位；第二，补码溢出时自动执行模 2 运算，"绕圈"特性在某些场景下反而有益。但补码的截尾误差特性与原码不同——这是下一节的核心内容。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.2.3 截尾与舍入：误差的数学描述</div>
+  <p>当 $b+1$ 位（1 位符号 + $b$ 位小数）的寄存器只能容纳 $b$ 位小数时，必须丢弃最低位。丢弃方式有两种：截尾（Truncation）和舍入（Rounding）。</p>
+
+  <div class="def-box">
+    <h3>量化步长与两种误差</h3>
+    <p>定义<strong>量化步长</strong>（quantization step）：</p>
+    <p style="text-align:center">\[ q = 2^{-b} \]</p>
+    <p><strong>截尾误差</strong> $E_T$：直接丢弃多余位。对正数，结果变小；对负数，补码和反码的结果反而变大（向零靠近）。</p>
+    <p><strong>舍入误差</strong> $E_R$：按最接近的量化级取整， ties 时向偶数取。误差范围对称：</p>
+    <p style="text-align:center">\[ -\frac{q}{2} < E_R \le \frac{q}{2} \]</p>
+  </div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=22 title="截尾与舍入定义" >}}
+
+  <p>截尾误差的关键在于：它不是总为负，而是依赖于编码方式。下表总结了不同编码、不同符号下的截尾误差范围——这是分析系数量化效应和运算误差的基础。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>编码方式</th><th>正数 ($x>0$)</th><th>负数 ($x<0$)</th></tr></thead>
+      <tbody>
+        <tr><td>原码</td><td>$-q \le E_T < 0$</td><td>$0 < E_T \le q$</td></tr>
+        <tr><td>反码</td><td>$-q \le E_T < 0$</td><td>$0 < E_T \le q$</td></tr>
+        <tr><td>补码</td><td>$-q \le E_T < 0$</td><td>$-q \le E_T < 0$</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{< jsxgraph title="截尾误差区间对比（补码 vs 原码/反码）" height="280" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-1.2, 1.6, 1.2, -0.8],
+  showCopyright: false,
+  showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], { ticks: { drawLabels: true } });
+
+var q = 0.5;
+
+b.create('segment', [[-q, 0.6], [0, 0.6]], { strokeColor: '#2563eb', strokeWidth: 3, highlight: false });
+b.create('segment', [[0, 0.6], [q, 0.6]], { strokeColor: '#2563eb', strokeWidth: 3, highlight: false });
+b.create('text', [0, 0.85, '补码（正负均为负误差）'], { fontSize: 12, color: '#2563eb', anchorX: 'middle' });
+b.create('text', [-q/2, 0.45, '-q'], { fontSize: 10, color: '#2563eb', anchorX: 'middle' });
+b.create('text', [q/2, 0.45, '-q'], { fontSize: 10, color: '#2563eb', anchorX: 'middle' });
+b.create('text', [0, 0.45, '0'], { fontSize: 10, color: '#2563eb', anchorX: 'middle' });
+
+b.create('segment', [[-q, 0.1], [0, 0.1]], { strokeColor: '#dc2626', strokeWidth: 3, highlight: false });
+b.create('segment', [[0, 0.1], [q, 0.1]], { strokeColor: '#16a34a', strokeWidth: 3, highlight: false });
+b.create('text', [0, -0.1, '原码/反码（正数负误差，负数正误差）'], { fontSize: 12, color: '#444', anchorX: 'middle' });
+b.create('text', [-q/2, -0.2, '-q'], { fontSize: 10, color: '#dc2626', anchorX: 'middle' });
+b.create('text', [q/2, -0.2, '+q'], { fontSize: 10, color: '#16a34a', anchorX: 'middle' });
+b.create('text', [0, -0.2, '0'], { fontSize: 10, color: '#444', anchorX: 'middle' });
+
+b.create('segment', [[-q, -0.5], [q, -0.5]], { strokeColor: '#d97706', strokeWidth: 3, highlight: false });
+b.create('text', [0, -0.75, '舍入（对称，-q/2 ~ +q/2）'], { fontSize: 12, color: '#d97706', anchorX: 'middle' });
+b.create('text', [-q/2, -0.58, '-q/2'], { fontSize: 10, color: '#d97706', anchorX: 'middle' });
+b.create('text', [q/2, -0.58, '+q/2'], { fontSize: 10, color: '#d97706', anchorX: 'middle' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>关键观察</strong>：补码对正负数的截尾误差始终为非正（$-q \le E_T < 0$），而原码和反码的截尾误差符号与真值符号相反。这一差异直接影响了量化噪声的统计特性。</div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=29 title="截尾误差表与舍入概率密度" >}}
+</div>
+
+<!-- ===== 第二组：量化误差统计分析 ===== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第二组</div>
+  <div class="ch-title">量化误差的统计分析</div>
+  <p>有了误差来源和表示方法的基础，现在进入核心分析：把量化误差建模为随机噪声，推导它通过线性系统后的统计特性，并建立字长与信噪比之间的定量关系。这一组的结论直接指导工程中的字长选择。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.3.1 定点制量化误差的统计模型</div>
+  <p>单个量化误差的取值看似确定（由被量化值决定），但当输入信号足够复杂（如语音、噪声、多频信号）时，误差在量化台阶上近似均匀分布。这使得我们可以用概率统计工具来分析其长期平均效应。</p>
+
+  <div class="theorem-box">
+    <h3>舍入误差的统计特性</h3>
+    <p>假设舍入误差 $e_R$ 在 $(-q/2, q/2]$ 上均匀分布，则：</p>
+    <p style="text-align:center">\[ p(e_R) = \begin{cases} \frac{1}{q}, & -\frac{q}{2} < e_R \le \frac{q}{2} \\ 0, & \text{其他} \end{cases} \]</p>
+    <p><strong>均值</strong>：$\mu_{e_R} = E[e_R] = 0$</p>
+    <p><strong>方差</strong>：$\sigma_{e_R}^2 = E[e_R^2] = \frac{q^2}{12} = \frac{2^{-2b}}{12}$</p>
+  </div>
+
+  <p>截尾误差的方差与舍入相同（同为 $q^2/12$），但均值不为零：补码截尾有偏（$\mu = -q/2$），原码/反码截尾均值则依赖于信号分布。因此，工程上<strong>优先使用舍入</strong>——它不仅误差范围对称，而且均值零偏，不会引入直流分量。</p>
+
+  {{< jsxgraph title="舍入误差的均匀分布概率密度" height="300" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-1.2, 2.5, 1.2, -0.3],
+  showCopyright: false,
+  showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], { ticks: { drawLabels: true } });
+b.create('axis', [[0,0],[0,1]], { ticks: { drawLabels: false } });
+
+var s = b.create('slider', [[-1.0, 2.0], [0.8, 2.0], [1, 4, 12]], {
+  name: 'b (字长)',
+  snapWidth: 1,
+  precision: 0
+});
+
+var qText = b.create('text', [0.3, 1.7, function() {
+  var q = Math.pow(2, -s.Value());
+  return 'q = 2^(-' + Math.round(s.Value()) + ') = ' + q.toFixed(4);
+}], { fontSize: 13, color: '#444' });
+
+var sigmaText = b.create('text', [0.3, 1.45, function() {
+  var q = Math.pow(2, -s.Value());
+  var sig = q * q / 12;
+  return 'σ² = q²/12 = ' + sig.toExponential(3);
+}], { fontSize: 13, color: '#444' });
+
+var uniformRect = b.create('polygon', [
+  [function(){ return -Math.pow(2, -s.Value())/2; }, 0],
+  [function(){ return Math.pow(2, -s.Value())/2; }, 0],
+  [function(){ return Math.pow(2, -s.Value())/2; }, function(){ return 1/Math.pow(2, -s.Value()); }],
+  [function(){ return -Math.pow(2, -s.Value())/2; }, function(){ return 1/Math.pow(2, -s.Value()); }]
+], {
+  fillColor: '#2563eb',
+  fillOpacity: 0.2,
+  strokeColor: '#2563eb',
+  strokeWidth: 2,
+  highlight: false
+});
+
+b.create('text', [0.05, -0.15, 'e'], { fontSize: 12, color: '#666' });
+b.create('text', [-1.05, 0.15, 'p(e)'], { fontSize: 12, color: '#666' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>图读法</strong>：拖动滑块改变字长 $b$，观察量化步长 $q=2^{-b}$ 和方差 $\sigma^2=q^2/12$ 的变化。字长每增加 1 位，$q$ 减半，方差降为原来的 $1/4$。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.3.3 量化噪声通过线性系统</div>
+  <p>A/D 量化误差和运算舍入误差都可以看作在系统输入端或内部节点注入的加性白噪声。问题是：这些噪声经过滤波器后，输出端噪声的功率是多少？</p>
+
+  <div class="theorem-box">
+    <h3>FIR 系统输出噪声方差</h3>
+    <p>若量化噪声 $e(n)$ 方差为 $\sigma_e^2$，通过冲激响应为 $h(n)$ 的 FIR 系统，输出噪声方差为：</p>
+    <p style="text-align:center">\[ \sigma_f^2 = \sigma_e^2 \sum_{n=0}^{N-1} h^2(n) \]</p>
+    <p>其中 $N$ 为 FIR 阶数。由于 FIR 无反馈，输出噪声只是输入噪声与冲激响应能量的乘积。</p>
+  </div>
+
+  <div class="theorem-box">
+    <h3>IIR 系统输出噪声方差</h3>
+    <p>对于 IIR 系统，噪声通过反馈回路被反复加权，输出方差需在频域积分：</p>
+    <p style="text-align:center">\[ \sigma_f^2 = \frac{\sigma_e^2}{2\pi j} \oint_C |H(z)|^2 \frac{dz}{z} = \sigma_e^2 \sum_{n=-\infty}^{\infty} |h(n)|^2 \]</p>
+    <p>其中 $C$ 为单位圆。对有理系统函数，可用留数定理计算；对高阶系统，数值积分更实用。</p>
+  </div>
+
+  <p>这意味着 IIR 系统的输出噪声对极点位置极其敏感：当极点靠近单位圆时，$|H(z)|^2$ 在某些频率上产生尖峰，频域积分会显著放大噪声。这是 IIR 实现中必须小心选择结构（级联/并联优于直接型）的根本原因。</p>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=36 title="线性噪声模型" >}}
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      直接型 IIR 的噪声放大陷阱
+    </div>
+    <div class="admonition-content">
+      <p>直接型结构把所有反馈系数集中在一两个加法节点上，导致量化噪声被高阶递归反复放大。级联型和并联型把高阶系统拆成多个低阶节（通常是二阶节），每节的极点远离单位圆，噪声放大效应被局限在局部。</p>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.3.4 系数量化效应与结构灵敏度</div>
+  <p>系数量化不是简单的"加点噪声"，而是直接改变系统函数 $H(z)$ 的极零点位置。高阶直接型滤波器的极点对系数变化极其敏感——微小的量化误差可能把稳定极点推出单位圆。</p>
+
+  <div class="theorem-box">
+    <h3>系数量化灵敏度排序</h3>
+    <p>对同一组设计指标，三种实现结构的系数量化鲁棒性排序为：</p>
+    <p style="text-align:center">\[ \text{直接型} \;>\; \text{级联型} \;>\; \text{并联型} \]</p>
+    <p>其中 ">" 表示"更敏感"（更差）。即：<strong>并联型最鲁棒，直接型最脆弱</strong>。</p>
+  </div>
+
+  <p>直观理解：直接型的系数直接决定高阶多项式的根，而多项式求根是著名的病态问题（Wilkinson 多项式就是典型案例）。级联型把 $H(z)$ 拆成多个二阶节的乘积，每个二阶节的极点独立调整；并联型则拆成部分分式之和，各极点更加解耦。因此同样的系数量化误差，在级联/并联结构中产生的极点偏移远小于直接型。</p>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=43 title="五阶椭圆滤波器系数量化对比" >}}
+
+  {{< jsxgraph title="字长 vs 量化信噪比（SNR）" height="320" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [3, 65, 25, 0],
+  showCopyright: false,
+  showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], { ticks: { drawLabels: true } });
+b.create('axis', [[0,0],[0,1]], { ticks: { drawLabels: false } });
+
+var sigx2 = b.create('slider', [[5, 58], [18, 58], [-40, -10, 10]], {
+  name: '10·lg(σx²) (dB)',
+  snapWidth: 1,
+  precision: 0
+});
+
+b.create('functiongraph', [function(x) {
+  var s = sigx2.Value();
+  return 6.02 * x + s + 10.79;
+}], { strokeColor: '#2563eb', strokeWidth: 2.5, highlight: false });
+
+b.create('text', [14, 52, function() {
+  return 'SNR = 6.02b + ' + sigx2.Value().toFixed(0) + ' + 10.79';
+}], { fontSize: 13, color: '#2563eb' });
+
+b.create('text', [14, 47, '每增 1 bit，SNR 提升 6.02 dB'], { fontSize: 12, color: '#666' });
+
+b.create('text', [22, -3, 'b (字长)'], { fontSize: 12, color: '#666' });
+b.create('text', [3.5, 60, 'SNR (dB)'], { fontSize: 12, color: '#666' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>图读法</strong>：滑动信号功率参数，观察 SNR 曲线的上下平移。字长 $b$ 每增加 1 位，SNR 固定提升约 6 dB——这就是著名的"每 bit 6 dB"经验法则。要获得 90 dB SNR（CD 音质），约需 16 位字长。</div>
+
+  <div class="theorem-box">
+    <h3>量化信噪比经验公式（A/D 转换）</h3>
+    <p style="text-align:center">\[ \text{SNR} \approx 6.02\,b + 10\lg(\sigma_x^2) + 10.79 \;\; \text{(dB)} \]</p>
+    <p>其中 $\sigma_x^2$ 为输入信号功率。该公式是音频和通信系统中字长选择的核心依据。</p>
+  </div>
+</div>
+
+<!-- ===== 第三组：运算误差、极限环与死区 ===== -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第三组</div>
+  <div class="ch-title">运算误差、极限环与死区效应</div>
+  <p>前两组分析了量化噪声的统计模型和系数量化对极点的长期影响。本组聚焦两个更微妙的现象：定点加法溢出、极限环振荡和死区效应——它们都是非线性效应，无法用线性噪声模型描述，却在实际 DSP 中频繁出现。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.4 定点制运算误差：溢出与饱和</div>
+  <p>定点加法是本章最容易被忽视的问题。两个 $b$ 位有符号数相加，结果可能需要 $b+1$ 位才能正确表示。如果直接截断最高位，会发生什么？</p>
+
+  <div class="def-box">
+    <h3>补码溢出的"绕圈"特性</h3>
+    <p>补码加法本质上是<strong>模 $2$ 运算</strong>。当两个正数相加超过 $1-2^{-b}$ 时，结果会从正数区间"绕"到负数区间（溢出）；两个负数相加低于 $-1$ 时，则"绕"到正数区间。</p>
+    <p>例如：$0.75 + 0.5 = 1.25$，但 3 位补码的最大正数为 $0.111_2 = 0.875$，结果溢出后为 $1.001_2$（若取低 3 位则为 $0.001_2 = 0.125$），严重失真。</p>
+  </div>
+
+  <p>补码溢出的奇妙之处在于：如果中间结果多次溢出，但最终结果在表示范围内，模 2 运算的"绕圈"特性会使最终结果正确。然而，在 IIR 滤波器中，中间节点的溢出通常意味着永久性失真，不能依赖这种"运气"。</p>
+
+  <div class="callout"><strong>工程实践</strong>：大多数商用 DSP 芯片提供<strong>饱和（saturation）</strong>模式——当加法结果溢出时，自动限制到最大/最小可表示值，而不是绕圈。这比裸溢出产生的听觉/视觉伪影温和得多。</div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=50 title="加法溢出与限幅" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.5 浮点制运算误差</div>
+  <p>浮点乘法引入的是<strong>相对误差</strong>而非绝对误差。设尾数字长为 $b$ 位，则单次乘法的相对误差约为 $2^{-b}$。与定点制相比：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>场景</th><th>定点制</th><th>浮点制</th></tr></thead>
+      <tbody>
+        <tr><td>大信号</td><td>绝对误差固定，相对误差小</td><td>相对误差固定，绝对误差大</td></tr>
+        <tr><td>小信号</td><td>绝对误差固定，相对误差大（SNR 差）</td><td>相对误差固定，SNR 恒定</td></tr>
+        <tr><td>溢出</td><td>严重，需显式处理</td><td>阶码自动处理（除非上/下溢）</td></tr>
+        <tr><td>实现复杂度</td><td>低</td><td>高（需归一化、对阶）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>浮点制的核心优势是<strong>小信号信噪比恒定</strong>。在音频处理中，这意味着弱信号不会被量化噪声淹没；在科学计算中，这意味着动态范围不受限。代价是芯片面积、功耗和运算延迟——这也是为什么手机基带 DSP 通常用定点，而桌面音频工作站用浮点。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.6 极限环振荡（Limit Cycle）</div>
+  <p>极限环是有限字长 IIR 滤波器最诡异的非线性现象之一：当输入已经降为零，输出却不衰减到零，而是陷入一个<strong>周期性的小幅振荡</strong>。这不是设计错误，而是舍入非线性把稳定的极点悄悄推到了单位圆上。</p>
+
+  <div class="def-box">
+    <h3>极限环的物理机制</h3>
+    <p>考虑一阶 IIR：$y(n) = a \cdot y(n-1)$，其中 $|a| < 1$（稳定）。无限精度下，$y(n) = a^n y(0) \to 0$。</p>
+    <p>有限精度下，每次乘法 $a \cdot y(n-1)$ 后必须舍入到 $b$ 位。当 $y(n-1)$ 变得很小时，$a \cdot y(n-1)$ 的舍入结果可能<strong>恰好等于</strong> $y(n-1)$（或 $-y(n-1)$），使得输出不再衰减，而是维持一个恒定值（周期 1）或交替符号（周期 2）。</p>
+  </div>
+
+  <div class="theorem-box">
+    <h3>极限环幅度上界</h3>
+    <p>对于一阶 IIR 系统 $y(n) = Q[\,a \cdot y(n-1)\,]$（$Q$ 表示舍入量化），极限环输出满足：</p>
+    <p style="text-align:center">\[ |y(n)| \le \frac{q/2}{1-|a|} \]</p>
+    <p>其中 $q = 2^{-b}$。极点越靠近单位圆（$|a| \to 1$），极限环上界越大。</p>
+  </div>
+
+  <p>直观上，$\frac{q/2}{1-|a|}$ 是量化精度与系统"记忆长度"（由 $1-|a|$ 倒数决定）的乘积。当极点接近单位圆时，系统对过去输出的记忆很长，每次舍入的微小偏差被反复累积，最终形成可观测的振荡。</p>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=64 title="IIR 输出噪声方差算例" >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">8.7 死区效应（Dead Band）</div>
+  <p>死区是极限环的"近亲"：当输入信号的幅度小于某个阈值时，滤波器输出被完全截断到零——仿佛信号掉进了一个"死区"，再也无法被系统响应。这与极限环的共同根源是反馈路径上的量化非线性。</p>
+
+  <div class="theorem-box">
+    <h3>一阶 IIR 死区阈值</h3>
+    <p>对系统 $y(n) = Q[\,a \cdot y(n-1) + x(n)\,]$，若输入满足：</p>
+    <p style="text-align:center">\[ |x(n)| < \frac{q/2}{1-|a|} \]</p>
+    <p>则输出最终将被截断到零，系统进入死区。该阈值与极限环上界完全相同，反映了量化精度与反馈强度的基本制约关系。</p>
+  </div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=78 title="死区效应例题" >}}
+
+  <div class="example-box">
+    <h3>例题：一阶 IIR 的死区效应分析</h3>
+    <p><strong>题目：</strong>设一阶 IIR 系统 $y(n) = Q[\,a \cdot y(n-1)\,] + x(n)$，系数 $a = 0.100_2 = 0.5$（二进制 1 位整数 + 2 位小数，总字长 $b=3$），输入 $x(n) = \frac{7}{8}\delta(n)$。比较无限精度与有限精度下的输出序列。</p>
+    <p><strong>目标：</strong>观察死区效应导致的输出提前归零现象。</p>
+    <ol>
+      <li><strong>无限精度计算</strong>：$y(0)=7/8$，$y(1)=a \cdot y(0)=0.5 \times 0.875 = 0.4375 = 7/16$，$y(2)=7/32$，依此类推。输出按指数规律衰减，$y(n) = (7/8) \cdot (1/2)^n$，永不真正为零。</li>
+      <li><strong>有限精度计算</strong>（$b=3$，$q=2^{-3}=1/8$）：
+        <ul>
+          <li>$y(0) = 7/8 = 0.111_2$（精确表示）</li>
+          <li>$y(1) = Q[0.5 \times 0.875] = Q[0.4375] = Q[3.5/8]$。按舍入规则，$3.5/8$ 取整到 $4/8 = 0.5 = 0.100_2$</li>
+          <li>$y(2) = Q[0.5 \times 0.5] = Q[0.25] = Q[2/8]$。精确值为 $0.25 = 2/8$，可精确表示为 $0.010_2$</li>
+          <li>$y(3) = Q[0.5 \times 0.25] = Q[0.125] = 1/8 = 0.001_2$</li>
+          <li>$y(4) = Q[0.5 \times 0.125] = Q[0.0625] = Q[0.5/8]$。舍入到 $0$（因小于 $q/2=1/16$）</li>
+        </ul>
+      </li>
+      <li><strong>结果对比</strong>：无限精度下 $y(4)=7/128 \approx 0.055$，有限精度下 $y(4)=0$。输出在 $n=4$ 时提前归零——这就是死区效应。</li>
+    </ol>
+    <p><strong>验证死区阈值</strong>：$\frac{q/2}{1-|a|} = \frac{1/16}{0.5} = \frac{1}{8} = 0.125$。当输出衰减到 $1/8$ 以下时，下一步舍入结果为零，系统进入死区。</p>
+    <div class="callout"><strong>易错点</strong>：不要混淆死区阈值与极限环上界。死区阈值描述的是"输入/输出多小会被吞掉"，极限环上界描述的是"零输入下输出可能卡在哪里"。两者公式相同，但物理场景不同。</div>
+  </div>
+
+  {{< docpage "pdf/dsp/第八讲1.pdf" page=85 title="死区效应完整计算" >}}
+
+  {{< jsxgraph title="死区效应：无限精度 vs 有限精度输出" height="350" >}}
+var b = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-0.5, 1.0, 8.5, -0.15],
+  showCopyright: false,
+  showNavigation: false
+});
+b.create('axis', [[0,0],[1,0]], { ticks: { drawLabels: true } });
+
+var s = b.create('slider', [[1, 0.88], [5.5, 0.88], [2, 3, 6]], {
+  name: 'b (小数位)',
+  snapWidth: 1,
+  precision: 0
+});
+
+function infiniteVal(n) {
+  return (7/8) * Math.pow(0.5, n);
+}
+
+function finiteVal(n, bits) {
+  var q = Math.pow(2, -bits);
+  var y = 7/8;
+  if (n === 0) return y;
+  for (var i = 1; i <= n; i++) {
+    var prod = 0.5 * y;
+    y = Math.round(prod / q) * q;
+    if (Math.abs(y) < q/2) y = 0;
+  }
+  return y;
+}
+
+b.create('text', [6.2, 0.88, function() {
+  return 'q = ' + Math.pow(2, -s.Value()).toFixed(4);
+}], { fontSize: 13, color: '#444' });
+
+for (var n = 0; n <= 7; n++) {
+  var inf = infiniteVal(n);
+  b.create('segment', [[n+0.15, 0], [n+0.15, inf]], {
+    strokeColor: '#2563eb',
+    strokeWidth: 2.5,
+    highlight: false
+  });
+  b.create('point', [n+0.15, inf], {
+    face: 'o', size: 3,
+    strokeColor: '#2563eb', fillColor: '#2563eb',
+    withLabel: false, showInfobox: false
+  });
+
+  var fin = finiteVal(n, Math.round(s.Value()));
+  b.create('segment', [[n-0.15, 0], [n-0.15, fin]], {
+    strokeColor: '#d97706',
+    strokeWidth: 2.5,
+    highlight: false,
+    dash: 2
+  });
+  b.create('point', [n-0.15, fin], {
+    face: 'o', size: 3,
+    strokeColor: '#d97706', fillColor: '#d97706',
+    withLabel: false, showInfobox: false
+  });
+}
+
+b.create('text', [7.5, 0.85, '无限精度'], { fontSize: 11, color: '#2563eb' });
+b.create('text', [7.5, 0.75, '有限精度'], { fontSize: 11, color: '#d97706' });
+b.create('text', [7.8, -0.07, 'n'], { fontSize: 12, color: '#666' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>图读法</strong>：拖动滑块改变字长 $b$，观察有限精度输出（橙色虚线）何时提前归零。字长越小，死区来得越早。当 $b=2$ 时，输出在 $n=2$ 就归零；当 $b=6$ 时，与无限精度几乎无法区分。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">三种实现结构的灵敏度对比</div>
+  <p>系数量化效应告诉我们：同样的设计指标，用不同的实现结构，量化后的表现天壤之别。下图示意三种结构的极点偏移程度。</p>
+
+  {{< jsxgraph title="三种结构的极点偏移示意" height="340" >}}
+var board = JXG.JSXGraph.initBoard(el, {
+  boundingbox: [-1.3, 1.3, 1.3, -1.3],
+  showCopyright: false,
+  showNavigation: false
+});
+
+board.create('circle', [[0,0], 1], { strokeColor: '#ccc', strokeWidth: 1.5 });
+board.create('axis', [[0,0],[1,0]], { ticks: { drawLabels: false } });
+board.create('axis', [[0,0],[0,1]], { ticks: { drawLabels: false } });
+
+var delta = board.create('slider', [[-1.1, 1.1], [0.2, 1.1], [0.01, 0.05, 0.15]], {
+  name: 'Δ (量化扰动)',
+  precision: 2
+});
+
+var dx = board.create('text', [0.4, 1.0, function() {
+  return 'Δ = ' + delta.Value().toFixed(2);
+}], { fontSize: 12, color: '#444' });
+
+var r = 0.92;
+var theta = Math.PI / 6;
+var poleX = r * Math.cos(theta);
+var poleY = r * Math.sin(theta);
+
+board.create('point', [poleX, poleY], {
+  name: '理想极点',
+  size: 4,
+  strokeColor: '#16a34a',
+  fillColor: '#16a34a'
+});
+board.create('point', [poleX, -poleY], {
+  name: '',
+  size: 4,
+  strokeColor: '#16a34a',
+  fillColor: '#16a34a',
+  withLabel: false
+});
+
+var d = delta.Value();
+board.create('circle', [[poleX, poleY], function(){ return delta.Value() * 3; }], {
+  strokeColor: '#dc2626',
+  strokeWidth: 1.5,
+  fillColor: '#dc2626',
+  fillOpacity: 0.08,
+  highlight: false
+});
+board.create('circle', [[poleX, poleY], function(){ return delta.Value() * 1.2; }], {
+  strokeColor: '#d97706',
+  strokeWidth: 1.5,
+  fillColor: '#d97706',
+  fillOpacity: 0.08,
+  highlight: false
+});
+board.create('circle', [[poleX, poleY], function(){ return delta.Value() * 0.5; }], {
+  strokeColor: '#2563eb',
+  strokeWidth: 1.5,
+  fillColor: '#2563eb',
+  fillOpacity: 0.08,
+  highlight: false
+});
+
+board.create('text', [poleX+0.35, poleY+0.35, '直接型'], { fontSize: 11, color: '#dc2626' });
+board.create('text', [poleX+0.2, poleY-0.15, '级联型'], { fontSize: 11, color: '#d97706' });
+board.create('text', [poleX-0.15, poleY-0.35, '并联型'], { fontSize: 11, color: '#2563eb' });
+
+board.create('text', [1.15, -0.08, 'Re'], { fontSize: 11, color: '#888' });
+board.create('text', [0.08, 1.15, 'Im'], { fontSize: 11, color: '#888' });
+  {{< /jsxgraph >}}
+
+  <div class="callout"><strong>图读法</strong>：红/橙/蓝三个圆分别表示直接型、级联型、并联型在同样系数量化扰动下的极点可能偏移范围。圆越小，结构对量化越鲁棒。拖动滑块增大扰动，观察直接型的偏移范围如何迅速逼近甚至跨越单位圆（不稳定边界）。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-subtitle">例题：五阶椭圆低通滤波器的结构对比</div>
+  <p>课件给出了一个完整的工程案例：设计一个五阶椭圆低通滤波器，分别用直接型、级联型和并联型实现，观察相同字长系数量化后的幅频响应变化。</p>
+
+  <div class="example-box">
+    <h3>例题：五阶椭圆滤波器系数量化</h3>
+    <p><strong>题目：</strong>用双线性变换法设计一个五阶椭圆低通数字滤波器，通带截止频率 $0.2\pi$，阻带截止频率 $0.3\pi$，通带波纹 1 dB，阻带衰减 40 dB。将系数分别量化为 8 位、10 位、12 位，比较直接型、级联型、并联型的幅频响应。</p>
+    <p><strong>核心结论：</strong></p>
+    <ol>
+      <li><strong>直接型</strong>：8 位量化时极点移出单位圆，系统不稳定；10 位时勉强稳定但通带严重畸变；12 位时接近理想。</li>
+      <li><strong>级联型</strong>：每节二阶，极点独立。8 位量化时仍稳定，仅阻带波纹略有增加。</li>
+      <li><strong>并联型</strong>：部分分式展开，各极点解耦程度最高。8 位量化下通带和阻带均保持良好。</li>
+    </ol>
+    <div class="callout"><strong>工程启示</strong>：高阶 IIR 滤波器在定点 DSP 上实现时，几乎总是选择级联型或并联型。直接型仅用于极低阶（一阶/二阶）或浮点实现。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">后续章节</div>
+  <div class="ch-title">本章与后续内容的连接</div>
+  <p>本章的误差分析是 DSP 从"理论设计"走向"工程实现"的关键节点。后续内容中，以下场景会反复用到本章的结论：</p>
+  <ul>
+    <li><strong>自适应滤波（LMS/RLS）</strong>：梯度估计的量化误差会改变收敛轨迹，甚至导致发散。步长选择和字长设计需联合优化。</li>
+    <li><strong>多速率信号处理</strong>：抽取和内插滤波器的级联实现中，每一级的字长可以不同——前面的粗略、后面的精细，整体节省硬件资源。</li>
+    <li><strong>音频/语音编解码</strong>：感知编码器利用人耳掩蔽效应分配比特，本质上是在给定的总字长预算下最小化感知量化误差。</li>
+    <li><strong>神经网络量化（INT8/INT4）</strong>：深度学习的模型量化是本章原理在 2020 年代的直接延伸——只不过"系统"变成了神经网络，"系数"变成了权重矩阵。</li>
+  </ul>
+  <p>理解有限字长效应的物理本质，不仅能帮你写出更好的 DSP 代码，还能让你在面对神经网络量化、低比特训练等前沿问题时，拥有比别人更扎实的直觉根基。</p>
+</div>
+
+<div class="review-box">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>三大误差来源</strong>：A/D 量化（输入端）、系数量化（改变 $H(z)$）、运算舍入/溢出（每个运算节点）。</li>
+    <li><strong>量化步长</strong>：$q = 2^{-b}$，舍入误差范围 $(-q/2, q/2]$，方差 $\sigma_e^2 = q^2/12$。</li>
+    <li><strong>SNR 经验公式</strong>：$\text{SNR} \approx 6.02b + 10\lg(\sigma_x^2) + 10.79$ dB。每增 1 bit，SNR 提升约 6 dB。</li>
+    <li><strong>结构灵敏度</strong>：直接型 > 级联型 > 并联型。高阶 IIR 避免直接型。</li>
+    <li><strong>极限环上界</strong>：$|y(n)| \le \frac{q/2}{1-|a|}$。极点越靠近单位圆，极限环越严重。</li>
+    <li><strong>死区阈值</strong>：$|x(n)| < \frac{q/2}{1-|a|}$ 时输出归零。公式同极限环上界，场景不同。</li>
+    <li><strong>补码溢出</strong>：模 2 运算自动"绕圈"，但工程上通常用饱和限幅避免伪影。</li>
+  </ul>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="西安交大-DSP-第八讲">
+      西安交通大学. (2026). 数字信号处理第八讲：数字信号处理的误差分析. <em>课程讲义</em>.
+      <a href="media/pdf/dsp/第八讲1.pdf" target="_blank">第八讲1.pdf</a>
+    </li>
+    <li data-cite-key="Oppenheim-Schafer-DSP">
+      Oppenheim, A. V. & Schafer, R. W. (2009). <em>Discrete-Time Signal Processing</em> (3rd ed.). Pearson. 第 6 章（有限字长效应）.
+      <a href="https://www.pearson.com/en-us/subject-catalog/p/discrete-time-signal-processing/P200000005792" target="_blank">出版社链接</a>
+    </li>
+    <li data-cite-key="Proakis-Manolakis-DSP">
+      Proakis, J. G. & Manolakis, D. G. (2007). <em>Digital Signal Processing</em> (4th ed.). Pearson. 第 7 章（数字滤波器实现）.
+      <a href="https://www.pearson.com/en-us/subject-catalog/p/digital-signal-processing/P200000005792" target="_blank">出版社链接</a>
+    </li>
+    <li data-cite-key="Mitra-DSP">
+      Mitra, S. K. (2011). <em>Digital Signal Processing: A Computer-Based Approach</em> (4th ed.). McGraw-Hill. 第 12 章（有限字长分析）.
+      <a href="https://www.mheducation.com/highered/product/digital-signal-processing-computer-based-approach-mitra/M9780077366766.html" target="_blank">出版社链接</a>
+    </li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="dsp-filter-design.html">
+    <span class="nav-label">上一章</span>
+    <span class="nav-title">数字滤波器设计</span>
+  </a>
+  <a class="nav-card current" href="dsp-course-hub.html">
+    <span class="nav-label">枢纽页</span>
+    <span class="nav-title">数字信号处理课程</span>
+  </a>
+  <a class="nav-card" href="dsp-adaptive-filtering.html">
+    <span class="nav-label">下一章</span>
+    <span class="nav-title">自适应滤波初步</span>
+  </a>
+</div>
+
+</div>

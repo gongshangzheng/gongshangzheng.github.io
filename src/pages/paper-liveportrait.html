@@ -1,0 +1,197 @@
+---
+title: "数字人论文精读（十三）：LivePortrait，用隐式关键点把肖像动画做快、做稳、做可控"
+description: "精读 LivePortrait：从 Face Vid2vid 到可控 stitching / retargeting 的工程化肖像动画框架"
+date: 2026-06-09T10:53:00
+created_at: 2026-06-09T10:53:00
+updated_at: 2026-06-09T10:53:00
+tags: [数字人, LivePortrait, Portrait Animation, 论文精读, Talking Head]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1120
+mathjax: true
+notify: true
+---
+<!-- ============================================================
+  LivePortrait 论文精读：隐式关键点、拼接与重定向控制
+  ============================================================ -->
+
+<div class="callout"><strong>系列说明</strong>：本文属于 AI / 数字人系列论文精读，聚焦 Portrait Animation / Talking Head 工程方法。LivePortrait 的核心价值不是提出一个更大的扩散模型，而是把隐式关键点路线推到可用、可控、可部署。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">问题意识：为什么不是扩散，而是隐式关键点？</div>
+
+  <p>LivePortrait 要解决的是经典肖像动画问题：给定一张静态源肖像，用驱动视频中的头部姿态、表情、眼睛和嘴部运动，把源肖像「活起来」。论文明确没有沿着主流 diffusion portrait animation 继续堆生成质量，而是选择扩展 implicit-keypoint-based framework，因为这条路线在<strong>计算效率、可控性、工程稳定性</strong>之间更容易取得平衡 #Guo-et-al.-2024#。</p>
+
+  <p>论文摘要给出的三个数字很关键：训练数据扩到约 6900 万高质量帧；推理在 RTX 4090 + PyTorch 上达到 12.8ms；官方释放了推理代码和模型 #Guo-et-al.-2024#。这意味着 LivePortrait 更像一个「工程系统论文」：论文贡献不只在网络结构，而在数据、训练策略、控制模块、推理流程和开源落地之间形成闭环。</p>
+
+  <div class="photo">
+    <img src="media/images/liveportrait-2025/liveportrait-teaser.webp" alt="LivePortrait qualitative portrait animation results" loading="lazy">
+    <div class="cap">图 1：LivePortrait 定性效果。单张源肖像在不同驱动下可产生稳定头动、表情、眼睛和嘴部运动（来源：arXiv source Figure 1）。</div>
+  </div>
+
+  <div class="callout"><strong>一句话概括</strong>：LivePortrait 把「隐式关键点 + feature warping + decoder」这条老路线重新工程化：用大数据和更强 backbone 提升泛化，用 stitching 解决贴回原图的错位，用 eyes / lip retargeting 补齐精细可控性。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">核心表征：隐式关键点不是 landmark，而是可驱动的 motion code</div>
+
+  <h3 class="section-title">从 Face Vid2vid 继承来的骨架</h3>
+
+  <p>LivePortrait 以 Face Vid2vid 为基座：外观特征提取器 $\mathcal{F}$ 把源图像映射成 3D appearance feature volume；运动侧提取 canonical implicit keypoints、head pose、expression deformation 和 translation；warping module $\mathcal{W}$ 根据源/驱动关键点变形特征体；decoder $\mathcal{G}$ 输出目标帧 #Guo-et-al.-2024#。</p>
+
+  <div class="def-box">
+    <h3>隐式关键点（Implicit Keypoints）</h3>
+    <p>这里的关键点不是人脸 2D landmark 的直接替代，而是一个紧凑的中间运动表征。它通过 canonical keypoints、旋转、尺度、表情形变和平移组合出源关键点与驱动关键点，再交给 warping module 做特征变形。</p>
+  </div>
+
+  <p>Face Vid2vid 原始变换可写作：</p>
+
+$$x_s = x_{c,s}R_s + \delta_s + t_s, \quad x_d = x_{c,s}R_d + \delta_d + t_d$$
+
+  <p>LivePortrait 加入 scale factor，把尺度从 expression deformation 里剥离出来，降低训练难度并减少跨身份驱动时的纹理闪烁 #Guo-et-al.-2024#：</p>
+
+$$x_s = s_s \cdot (x_{c,s}R_s + \delta_s) + t_s, \quad x_d = s_d \cdot (x_{c,s}R_d + \delta_d) + t_d$$
+
+  <h3 class="section-title">为什么它能控制眼睛和嘴？</h3>
+
+  <p>论文的一个经验发现是：紧凑隐式关键点可以看成一种 implicit blendshapes。它不像 3DMM blendshape 那样有显式语义维度，但可以通过小型 MLP 学到「眼睛更开一点」「嘴巴闭合一点」「肩部贴回源图」这样的局部 deformation offset #Guo-et-al.-2024#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">Training Pipeline：两阶段训练，而不是端到端一次解决</div>
+
+  <h3 class="section-title">Stage I：Base Model Training</h3>
+
+  <p>第一阶段训练基础动画模型。训练目标是让 appearance extractor $\mathcal{F}$、motion extractor $\mathcal{M}$、warping module $\mathcal{W}$ 和 decoder $\mathcal{G}$ 形成完整可驱动链路。论文明确说这一阶段从零训练，数据包括公开视频数据、AAHQ 风格图像、收集的 4K 肖像视频、200 小时 talking head 视频、私有 LightStage 数据，以及若干风格化肖像视频/图像 #Guo-et-al.-2024#。</p>
+
+  <p>数据处理也很工程化：长视频切成 30 秒以内 clip，用 face tracking / recognition 保证单人，用 KVQ 过滤低质量片段；过滤后得到约 6900 万视频帧、约 1.89 万身份，以及 6 万静态风格化肖像 #Guo-et-al.-2024#。</p>
+
+  <div class="photo">
+    <img src="media/images/liveportrait-2025/liveportrait-training-pipeline.webp" alt="LivePortrait first-stage base model training pipeline" loading="lazy">
+    <div class="cap">图 2：第一阶段 base model training。可训练模块包括 appearance / motion extractor、warping module 和 decoder，损失覆盖全局/局部 GAN、perceptual、face identity 与 landmark guide（来源：arXiv source Figure 2）。</div>
+  </div>
+
+  <p>第一阶段总目标可以概括为：</p>
+
+$$\mathcal{L}_{base}=\mathcal{L}_E+\mathcal{L}_L+\mathcal{L}_H+\mathcal{L}_{\Delta}+\mathcal{L}_{P,cascade}+\mathcal{L}_{G,cascade}+\mathcal{L}_{faceid}+\mathcal{L}_{guide}$$
+
+  <p>其中 landmark-guided implicit keypoints optimization 很关键：论文认为单靠无监督关键点很难学到眨眼、眼球运动这类微表情，因此选择 10 个来自眼睛和嘴部的 2D landmarks，用 Wing loss 约束对应的隐式关键点投影 #Guo-et-al.-2024#。</p>
+
+  <h3 class="section-title">Stage II：Stitching and Retargeting</h3>
+
+  <p>第二阶段不再动基础生成链路，而是冻结 appearance / motion extractor、warping module 和 decoder，只训练 stitching module、eyes retargeting module 与 lip retargeting module #Guo-et-al.-2024#。这是 LivePortrait 工程感最强的地方：基础模型负责「会动」，小 MLP 负责「贴得稳、眼嘴可控」。</p>
+
+  <div class="photo">
+    <img src="media/images/liveportrait-2025/liveportrait-stitching-retargeting.webp" alt="LivePortrait second-stage stitching and retargeting pipeline" loading="lazy">
+    <div class="cap">图 3：第二阶段 stitching / retargeting 训练。基础模块冻结，只优化小型 MLP 控制模块（来源：arXiv source Figure 3）。</div>
+  </div>
+
+  <h4 class="ch-section">Stitching module</h4>
+
+  <p>Stitching module $\mathcal{S}$ 接收源/驱动隐式关键点，预测 driving keypoints 的 deformation offset：</p>
+
+$$\Delta_{st}=\mathcal{S}(x_s,x_d), \quad x'_{d,st}=x_d+\Delta_{st}$$
+
+  <p>它的目的不是让脸更像，而是让生成头像贴回原始图像空间时肩膀、脖子、背景边界不产生明显错位。论文还特别使用 cross-id motion 增加训练难度，以提升跨身份 stitching 泛化 #Guo-et-al.-2024#。</p>
+
+  <h4 class="ch-section">Eyes / lip retargeting modules</h4>
+
+  <p>Eyes retargeting 解决「小眼睛驱动大眼睛时闭眼不完整」的问题；lip retargeting 类似，还支持把输入源图先规范到闭嘴状态，便于后续驱动 #Guo-et-al.-2024#。两者都输出 $K\times3$ 的关键点偏移，并且论文指出 eyes / lip 的 deformation offsets 可以解耦并线性叠加。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">Inference Pipeline：从源图、驱动视频到可贴回的视频</div>
+
+  <p>论文中的 inference 公式把第 0 帧驱动作为 anchor，用相对姿态、相对表情和相对平移组合出第 $i$ 帧 driving keypoints #Guo-et-al.-2024#：</p>
+
+$$x_{d,i}=s_s\cdot\frac{s_{d,i}}{s_{d,0}}\cdot\bigl(x_{c,s}(R_{d,i}R_{d,0}^{-1}R_s)+(\delta_s+\delta_{d,i}-\delta_{d,0})\bigr)+(t_s+t_{d,i}-t_{d,0})$$
+
+  <h3 class="section-title">官方代码里的实际流程</h3>
+
+  <p>官方 GitHub README 声明仓库是论文的 official PyTorch implementation，并提供推理代码和模型下载入口 #LivePortrait-GitHub#。在 `src/live_portrait_pipeline.py` 中，`make_motion_template()` 会逐帧收集 `scale`、`R`、`exp`、`t`、`kp`、`x_s`、`c_eyes`、`c_lip`；`execute()` 则负责源图/视频加载、驱动视频或 `.pkl` motion template 加载、裁剪、关键点提取、相对运动组合、retargeting、stitching、paste-back 与视频输出 #LivePortrait-Code#。</p>
+
+  <ol>
+    <li><strong>源输入处理</strong>：源可以是图片或视频；图片会裁剪并 resize 到 256×256，必要时保留 crop-to-original 的 paste-back 变换。</li>
+    <li><strong>驱动处理</strong>：驱动可以是视频、图片或预先生成的 `.pkl` motion template；README 也说明 motion template 可加速推理并保护隐私 #LivePortrait-GitHub#。</li>
+    <li><strong>运动模板</strong>：逐帧提取 motion extractor 输出，并计算眼睛/嘴巴开合 ratio。</li>
+    <li><strong>相对运动组合</strong>：默认 `flag_relative_motion=True`，用驱动首帧作为相对参考。</li>
+    <li><strong>控制与贴回</strong>：默认 `flag_stitching=True`、`flag_pasteback=True`、`flag_normalize_lip=True`，而 `flag_eye_retargeting` 和 `flag_lip_retargeting` 默认关闭，可按需开启 #LivePortrait-Code#。</li>
+  </ol>
+
+  <div class="callout"><strong>工程启发</strong>：LivePortrait 的推理接口把「驱动运动」抽象成可缓存 template，这让同一个 driving motion 可以重复用于不同源图；同时它把 crop、paste-back、stitching 放进默认路径，说明论文非常重视真实产品场景里的边界错位问题。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">实验配置：哪些披露了，哪些没有披露？</div>
+
+  <p>系统/工程型方法最怕只看效果图不看配置。论文披露了主要训练硬件、时间、输入输出、优化器和 MLP 结构，但完整训练代码、私有数据与所有 loss 权重并未完全公开 #Guo-et-al.-2024#。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead>
+        <tr><th>项目</th><th>披露状态</th><th>值 / 说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Stage I 硬件</td><td>已披露</td><td>8 NVIDIA A100 GPUs</td></tr>
+        <tr><td>Stage I 时间</td><td>已披露</td><td>约 10 天，从零训练</td></tr>
+        <tr><td>Stage II 时间</td><td>已披露</td><td>约 2 天，只训练 stitching / retargeting 模块</td></tr>
+        <tr><td>输入 crop</td><td>已披露</td><td>256×256 aligned crop</td></tr>
+        <tr><td>输出分辨率</td><td>已披露</td><td>512×512</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>104</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>Adam, lr=2e-4, beta1=0.5, beta2=0.999</td></tr>
+        <tr><td>Stitching MLP</td><td>已披露</td><td>[126, 128, 128, 64, 65]</td></tr>
+        <tr><td>Eyes retargeting MLP</td><td>已披露</td><td>[66, 256, 256, 128, 128, 64, 63]</td></tr>
+        <tr><td>Lip retargeting MLP</td><td>已披露</td><td>[65, 128, 128, 64, 63]</td></tr>
+        <tr><td>完整训练数据</td><td>部分未披露</td><td>包含私有 LightStage 与内部收集视频，无法完整复现</td></tr>
+        <tr><td>完整 loss 权重</td><td>部分未披露</td><td>主文给出损失项与符号，部分权重未在已检查文本中完整列出</td></tr>
+        <tr><td>训练代码</td><td>未披露 / 公开仓库偏推理</td><td>官方 GitHub 提供推理代码和预训练权重入口</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">结果怎么读？</h3>
+
+  <p>Self-reenactment 中，论文在 TalkingHead-1KH 和 VFHQ 上报告 LivePortrait 在 PSNR、SSIM、LPIPS、$\mathcal{L}_1$、CSIM 和 eye direction MAE 上整体领先；例如 TalkingHead-1KH 上 Ours 的 PSNR 为 32.0082、SSIM 为 0.8193、LPIPS 为 0.0664、CSIM 为 0.9125、MAE 为 7.0535 #Guo-et-al.-2024#。</p>
+
+  <div class="photo">
+    <img src="media/images/liveportrait-2025/liveportrait-qualitative.webp" alt="LivePortrait qualitative self-reenactment comparison" loading="lazy">
+    <div class="cap">图 4：Self-reenactment 定性比较。论文强调 LivePortrait 对嘴部运动、眼神、大姿态与身份保持更稳定（来源：arXiv source Figure 4）。</div>
+  </div>
+
+  <p>Cross-reenactment 中，论文也承认并非所有指标都第一：LivePortrait 在多数生成质量和运动准确性指标上优于先前 diffusion / non-diffusion 方法，但 TalkingHead-1KH 的 FID 由 diffusion-based AniPortrait 更好，两个数据集上的 CSIM 由 X-Portrait 更好 #Guo-et-al.-2024#。这反而说明论文没有把结果包装成全方位碾压，而是更强调可控、稳定和速度的工程平衡。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">局限与我的判断</div>
+
+  <h3 class="section-title">论文局限</h3>
+
+  <ul>
+    <li><strong>复现门槛高</strong>：核心训练数据包含私有和内部收集部分，完整复现 6900 万帧训练并不现实。</li>
+    <li><strong>训练侧公开不足</strong>：官方仓库重点是推理；训练代码、完整 loss 权重和数据清洗细节需要进一步核验。</li>
+    <li><strong>隐式控制仍是经验性的</strong>：论文说隐式关键点可作为 implicit blendshapes，但这主要是实验观察，不是显式可解释的 3D blendshape basis。</li>
+    <li><strong>伦理风险存在</strong>：官方 README 明确提示 portrait animation 有 deepfake 滥用风险，并声明生成结果可能包含有助于检测的视觉 artifacts #LivePortrait-GitHub#。</li>
+  </ul>
+
+  <h3 class="section-title">为什么它值得放进数字人系列？</h3>
+
+  <p>如果把数字人分成「高质量生成」和「实时可控工程」两条线，LivePortrait 明显属于后者。它不是用扩散模型暴力生成每一帧，而是把源图外观特征缓存起来，用运动表征驱动 warping，再用 decoder 还原。这种路线天然适合实时、交互、低延迟和多端部署。</p>
+
+  <div class="callout"><strong>最终判断</strong>：LivePortrait 的关键不是「隐式关键点」这个名词，而是把隐式关键点变成一个可训练、可缓存、可贴回、可局部控制的产品化 motion interface。对数字人系统来说，这比单纯提升离线视频质量更重要。</div>
+</div>
+
+<div class="sources">
+  <h3>Sources</h3>
+  <ol>
+    <li data-cite-key="Guo-et-al.-2024">Guo, Jianzhu et al. (2024). <em>LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control</em>. arXiv:2407.03168. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv</a> · <a href="https://arxiv.org/html/2407.03168v1" target="_blank">HTML</a> · <a href="https://arxiv.org/pdf/2407.03168" target="_blank">PDF</a></li>
+    <li data-cite-key="LivePortrait-Project">LivePortrait Official Project Page. <a href="https://liveportrait.github.io/" target="_blank">liveportrait.github.io</a></li>
+    <li data-cite-key="LivePortrait-GitHub">KlingAIResearch / KwaiVGI. <em>LivePortrait official PyTorch implementation README</em>. <a href="https://github.com/KlingAIResearch/LivePortrait" target="_blank">GitHub</a></li>
+    <li data-cite-key="LivePortrait-Code">LivePortrait official inference implementation: `src/live_portrait_pipeline.py` and `src/config/inference_config.py`, downloaded from the official GitHub repository on 2026-06-09.</li>
+  </ol>
+</div>

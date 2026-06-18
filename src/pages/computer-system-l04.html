@@ -1,0 +1,137 @@
+---
+title: "存储层级与编程 · L04"
+description: "存储层级、局部性原理、缓存映射、缓存友好编程。西安交通大学课程笔记。"
+created_at: 2026-05-25T12:00:00
+updated_at: 2026-05-25T12:00:00
+tags: ["存储层级", "缓存", "课程笔记", "局部性", "性能优化"]
+categories: ["课程"]
+subcategory: "计算机系统"
+mathjax: true
+hero_title: "存储层级与编程"
+hero_sub: "嵌入式智能系统与新型计算架构 · L04"
+hero_tagline: "为什么遍历二维数组时，行优先比列优先快 10 倍？"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">CH01 · 存储层级金字塔</div>
+  <div class="ch-title">从寄存器到硬盘的速度谱系</div>
+  <p>处理器越来越快，但内存跟不上。这个差距被称为<strong>存储墙（Memory Wall）</strong>。为了缓解它，计算机采用了<strong>存储层级（Memory Hierarchy）</strong>：用速度换容量，用容量换速度，在成本和性能之间找平衡。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层级</th><th>典型容量</th><th>访问延迟</th><th>技术</th></tr></thead>
+      <tbody>
+        <tr><td>寄存器</td><td>~1 KB</td><td>~0.3 ns</td><td>触发器</td></tr>
+        <tr><td>L1 缓存</td><td>32-64 KB</td><td>~1 ns</td><td>SRAM</td></tr>
+        <tr><td>L2 缓存</td><td>256 KB-1 MB</td><td>~4 ns</td><td>SRAM</td></tr>
+        <tr><td>L3 缓存</td><td>8-64 MB</td><td>~10-20 ns</td><td>SRAM</td></tr>
+        <tr><td>DRAM</td><td>8-512 GB</td><td>~100 ns</td><td>电容</td></tr>
+        <tr><td>SSD</td><td>256 GB-8 TB</td><td>~10-100 μs</td><td>NAND Flash</td></tr>
+        <tr><td>HDD</td><td>1-20 TB</td><td>~5-10 ms</td><td>磁性盘片</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>人类时间尺度类比</strong>
+    <p>如果把 L1 缓存的 1 秒类比为 1 秒：L2 约 4 秒，L3 约 15 秒，DRAM 约 1.5 分钟，SSD 约 1-2 天，HDD 约 1-2 个月。差距触目惊心。</p>
+  </div>
+
+  <p>存储层级的两个核心原理：</p>
+  <ul>
+    <li><strong>时间局部性（Temporal Locality）</strong>：最近访问的数据很可能再次被访问。缓存利用这一点保留最近使用过的数据。</li>
+    <li><strong>空间局部性（Spatial Locality）</strong>：访问某个地址后，其邻近地址很可能被访问。缓存利用这一点以块（Cache Line，通常 64 字节）为单位加载数据。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH02 · 缓存映射策略</div>
+  <div class="ch-title">直接映射、组相联与全相联</div>
+  <p>缓存如何知道一个内存地址对应的数据是否在缓存中？这需要<strong>地址映射</strong>机制。</p>
+
+  <p><strong>直接映射（Direct-Mapped）</strong>：每个内存块只能映射到一个固定的缓存行。地址的某些位直接决定缓存行索引。</p>
+  <p>优点：实现简单、查找快（无需比较）。缺点：容易冲突——如果程序频繁访问映射到同一缓存行的不同内存块，会导致<strong>冲突失效（Conflict Miss）</strong>。</p>
+
+  <p><strong>全相联（Fully Associative）</strong>：每个内存块可以放入缓存的任意位置。</p>
+  <p>优点：无冲突失效。缺点：查找需要并行比较所有缓存行的 Tag，硬件成本高、功耗大。</p>
+
+  <p><strong>组相联（Set-Associative）</strong>：折中方案。缓存被分为若干组（Set），每个内存块映射到一个固定组，但在组内可以放入任意行（Way）。</p>
+  <p>例如 4-way 组相联：每组有 4 个缓存行，查找时只需比较组内 4 个 Tag。现代 CPU 的 L1 通常是 8-way，L2/L3 是 16-way 或更高。</p>
+
+  <div class="callout">
+    <strong>地址划分</strong>
+    <p>一个内存地址在缓存查找中被划分为三部分：</p>
+    <p><strong>Tag | Set Index | Block Offset</strong></p>
+    <p>Offset 决定块内字节位置（如 64B 块需要 6 位），Set Index 决定映射到哪个组，Tag 用于比较判断是否命中。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH03 · 缓存替换策略</div>
+  <div class="ch-title">当缓存满了，该踢谁出去？</div>
+  <p>组相联缓存中，当一个组的所有 Way 都被占满，又有新数据要进来时，需要选择替换哪个缓存行。</p>
+
+  <ul>
+    <li><strong>LRU（Least Recently Used）</strong>：替换最久未被访问的行。最接近最优，但实现需要为每个缓存行维护访问时间戳，硬件开销大。</li>
+    <li><strong>FIFO（First In First Out）</strong>：替换最早进入缓存的行。实现简单，但忽略了访问频率。</li>
+    <li><strong>Random（随机）</strong>：随机选一个替换。出乎意料地有效——研究表明在高相联度下，随机替换与 LRU 的性能差距很小，但硬件实现简单得多。</li>
+    <li><strong>PLRU（Pseudo-LRU）</strong>：用树状结构近似 LRU，是实际处理器的常用选择。</li>
+  </ul>
+
+  <p>现代 CPU 的 L3 缓存通常采用 <strong>随机替换或 PLRU</strong>，因为巨大的缓存容量使得精确 LRU 的存储开销不可接受。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH04 · 缓存友好编程</div>
+  <div class="ch-title">写出让缓存开心的代码</div>
+  <p>缓存友好的代码本质上是在<strong>利用空间局部性和时间局部性</strong>。最常见的例子是二维数组遍历：</p>
+
+  <pre><code>// 行优先：缓存友好
+for (int i = 0; i < N; i++)
+    for (int j = 0; j < N; j++)
+        sum += a[i][j];      // 访问 a[i][0], a[i][1], a[i][2]... 连续
+
+// 列优先：缓存不友好
+for (int j = 0; j < N; j++)
+    for (int i = 0; i < N; i++)
+        sum += a[i][j];      // 访问 a[0][j], a[1][j], a[2][j]... 跨行跳跃</code></pre>
+
+  <p>C 语言的二维数组在内存中是<strong>行优先（Row-Major）</strong>存储的。行优先遍历时，每次访问的地址连续（相差 sizeof(element)），可以充分利用缓存行的空间局部性。列优先遍历时，每次跳跃一整行（N * sizeof(element)），几乎每个访问都导致缓存未命中。</p>
+
+  <div class="callout">
+    <strong>性能差距有多大？</strong>
+    <p>对于一个 4096×4096 的 double 数组（约 128 MB）：</p>
+    <p>• 行优先：几乎全部 L1 命中，耗时 ~50 ms</p>
+    <p>• 列优先：几乎全部 L1 未命中，耗时 ~500+ ms</p>
+    <p><strong>10 倍差距</strong>，完全相同的算法，只是遍历顺序不同。</p>
+  </div>
+
+  <p>另一个关键技术是<strong>分块（Tiling/Blocking）</strong>。当数据量超过缓存容量时，把大问题切成小块，让每个块能装进缓存：</p>
+
+  <pre><code>// 矩阵乘法分块
+for (int ii = 0; ii < N; ii += B)
+  for (int jj = 0; jj < N; jj += B)
+    for (int kk = 0; kk < N; kk += B)
+      // B×B 的小块在缓存中完成计算
+      for (int i = ii; i < ii+B; i++)
+        for (int j = jj; j < jj+B; j++)
+          for (int k = kk; k < kk+B; k++)
+            C[i][j] += A[i][k] * B[k][j];</code></pre>
+
+  <p>合适的块大小 B 让 A、B、C 的子矩阵都能驻留在 L1/L2 缓存中，大幅减少内存访问次数。配合 SIMD 向量化，分块矩阵乘法的性能可以达到峰值浮点性能的 80-90%。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH05 · 课后思考</div>
+  <div class="ch-title">思考与延伸</div>
+  <ol>
+    <li>为什么现代 CPU 的 L1 缓存通常是 32-64 KB，而不是更大？增大 L1 会有什么副作用？</li>
+    <li>设计一个实验：用 <code>perf stat -e cache-misses,cache-references</code> 测量行优先 vs 列优先遍历的缓存命中率差异。</li>
+    <li>链表（Linked List）的顺序访问 vs 数组的顺序访问，哪个对缓存更友好？为什么？如果链表节点在内存中随机分布，有什么优化方法？</li>
+    <li>ARM 的 big.LITTLE 架构中，大核和小核的缓存配置不同。为什么大核需要更大的 L2/L3？任务调度器如何决定线程放在大核还是小核上？</li>
+  </ol>
+</div>
+
+</div>

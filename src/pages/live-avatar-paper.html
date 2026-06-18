@@ -1,0 +1,366 @@
+---
+title: "数字人论文精读（十）：Live Avatar，14B 扩散模型的实时流式无限长数字人"
+description: "深度解读 Live Avatar 论文：算法-系统协同设计，将 14B 扩散模型蒸馏为 4 步流式生成，配合 History Corrupt、AAS、Rolling RoPE 三大长时策略实现 10,000+ 秒稳定推演，TPP 多卡并行达到 45 FPS 实时推理。"
+date: 2026-06-05T15:46:14
+created_at: 2026-06-05T15:46:14
+updated_at: 2026-06-05T16:30:00
+tags: [数字人, LiveAvatar, DMD, Self-Forcing, TPP, 流式推理]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1090
+toc: true
+mathjax: true
+notify: true
+hero_title: "Live Avatar 精读"
+hero_sub: "ECCV 2026 · 数字人 · 流式推理"
+hero_tagline: "14B 扩散模型实时流式无限长生成的算法-系统协同设计"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">14B</span><span class="label">模型规模</span></div>
+  <div class="stat"><span class="num b">45</span><span class="label g">FPS</span></div>
+  <div class="stat"><span class="num">10K+</span><span class="label">秒稳定推演</span></div>
+  <div class="stat"><span class="num b">5×</span><span class="label l">H800 GPU</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">为什么 14B 模型的实时流式这么难</div>
+
+  音频驱动的数字人生成——给一张人像照片和一段语音，合成会说话的逼真视频——在离线场景已经做得足够漂亮。但一旦要求它==边听边生成、长对话不崩==，就暴露出两个根本矛盾。#Huang et al., 2025#
+
+  第一个矛盾是<strong>实时与质量的对立</strong>。大模型（如 Wan-S2V 14B）画质好但天然慢——扩散模型的多次去噪是串行过程，单卡跑不到 5 FPS；想做到实时，要么把模型缩到很小（Ditto 仅 0.2B，21.8 FPS），要么大幅牺牲画质。#Gao et al., 2025# #Li et al., 2024#
+
+  第二个矛盾是<strong>长时一致性的崩塌</strong>。自回归生成越长，误差越累积——几分钟就会出现身份漂移、色差和视觉崩坏。Self-Forcing 修复了训练-推理的分布偏移，但推到分钟级仍然快速退化；LongLive 做了原生长视频训练，但仅适用于文本驱动且训练成本极高，无法扩展到 14B 量级。#Huang et al., 2025# #Yang et al., 2025#
+
+  <div class="callout"><strong>核心洞察</strong>：这两个矛盾不是独立的——实时化需要少步蒸馏，少步蒸馏又会放大误差累积；长时稳定性需要更精细的条件机制，但精细条件往往增加推理开销。必须<strong>算法和系统一起设计</strong>。</div>
+
+  Live Avatar 正是这样一个算法-系统协同设计的框架：它把 14B 双向扩散模型蒸馏成因果、4 步的流式模型，用三个互补策略消灭长时漂移，再通过 Timestep-forcing Pipeline Parallelism 把串行去噪变成异步流水线，最终在 5 张 H800 上实现 45 FPS 实时推理、10,000+ 秒稳定推演。#Huang et al., 2025#
+
+  论文链接：[[arxiv 2512.04677 abs | Live Avatar]]
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">三个长时漂移根因与实时推理瓶颈</div>
+
+  <h3 class="section-title">长时生成的三重崩塌</h3>
+
+  Live Avatar 的作者明确归因了长时自回归生成失败的三个内部现象：#Huang et al., 2025#
+
+  <div class="def-box">
+    <h3>长时漂移三因子</h3>
+    <ul>
+      <li><strong>(i) 条件漂移</strong>（conditioning drift）：推理时 sink 帧与当前块之间的 RoPE 相对位置持续增长，远超训练所见范围 → 注意力对 sink 帧的权重衰减 → 身份线索失效。</li>
+      <li><strong>(ii) 分布漂移</strong>（distribution drift）：用户提供的真实参考帧与模型生成帧处于不同分布 → 持续偏差推动后续生成偏离真实视频分布 → 色差、曝光、风格畸变累积。</li>
+      <li><strong>(iii) 误差累积</strong>（error accumulation）：clean KV cache 逐帧继承前序块的所有细节——包括瑕疵 → 误差像滚雪球一样指数级放大 → 快速质量崩塌。</li>
+    </ul>
+  </div>
+
+  一个关键实验：OmniAvatar 从短视频的 ASE 3.53 / IQA 4.49 降到长视频的 ASE 2.36 / IQA 2.86，Dino-S 从 0.95 跌到 0.66——这就是长时崩塌的典型数据。而 Live Avatar 在长视频上几乎不掉点（ASE 3.44→3.42，Dino-S 0.96→0.97），差异一目了然。#Gan et al., 2025#
+
+  <h3 class="section-title">实时推理的瓶颈在哪</h3>
+
+  即便做了 DMD 蒸馏把 80 步降到 5 步，14B 模型单卡仍然只有 3.66 FPS；加 4 卡序列并行也只有 4.50 FPS。这是因为每个 block 只有 3 个 latent 帧，注意力计算不是主要瓶颈——瓶颈在<strong>串行去噪步骤本身</strong>。5 步去噪意味着 5 次前向传播串行叠加，这才是延迟的来源。#Huang et al., 2025#
+
+  <div class="callout"><strong>瓶颈反直觉</strong>：序列并行在短序列（如 3 帧的 block）上收益极小。真正加速需要把"步骤维度"而非"序列维度"并行化。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">两阶段训练 + 三大长时策略 + TPP</div>
+
+  Live Avatar 的方法可以拆成三个层次：训练框架（如何把双向教师变成流式学生）、长时策略（如何抑制漂移让推演超过 10,000 秒）、推理并行（如何把串行去噪变成流水线）。
+
+  <h3 class="section-title">两阶段训练框架</h3>
+
+  <div class="photo">
+    <img src="media/images/live-avatar-2025/method1_v3.webp" loading="lazy">
+    <div class="cap">图 1：Live Avatar 两阶段训练框架。Stage 1 用加噪 motion frame 作为 scaffold 提供时间上下文；Stage 2 移除 motion frame，替换为 rolling KV cache，并执行 Self-Forcing DMD 蒸馏（来源：论文 Fig.2）。</div>
+  </div>
+
+  <strong>Stage 1：Diffusion Forcing 预训练</strong>。从 Wan-S2V 初始化权重，实施 block-wise 独立噪声调度 + 因果注意力掩码——block 内全注意力、跨 block 严格因果——用标准 flow-matching loss 训练。关键创新是引入<strong>motion frame 作为 scaffold</strong>：把 Wan-S2V 的 FramePack 编码器冻结，对 motion frame 注入随机噪声（\(t\sim\mathcal{U}[0,1000]\)），让它们充当"加噪的时间上下文"。#Huang et al., 2025#
+
+  为什么这样做？因为加噪 motion frame 和 Stage 2 的加噪 KV cache 功能类比——都是为续写生成提供带噪的历史上下文。这意味着 Stage 1 就在低成本地学习"动态-身份解耦"，不需要昂贵的 self-forcing rollout。Stage 2 把 motion frame 替换为 KV cache 时，模型已经学会了相似的条件模式，从而获得 ==5× 收敛加速==。#Huang et al., 2025#
+
+  <strong>Stage 2：Self-Forcing DMD 蒸馏</strong>。把双向教师蒸馏成因果、4 步的流式学生。关键修改是<strong>History Corrupt</strong>：去掉 Self-Forcing 原本的 clean-cache refresh 前向传播，让 KV cache 始终保持加噪状态。#Huang et al., 2025#
+
+  <div class="def-box">
+    <h3>核心自回归方程</h3>
+    \[
+    B_{t-1}^i = D_\theta\Bigl(B_t^i,\;\underbrace{B_t^{(i-w):(i-1)}}_{\text{KV cache}},\;I,\;a^i,\;t^i\Bigr)
+    \]
+    <p>其中 \(B\) 是 block（3 个 latent 帧），\(w=4\) 是 KV cache 窗口大小，\(I\) 是 sink 帧，\(a^i\) 是音频嵌入，\(t^i\) 是 prompt 嵌入。注意 KV cache 与当前 noisy block 共享相同噪声水平——这是 timestep-forcing 的核心设计。</p>
+  </div>
+
+  <h3 class="section-title">策略一：History Corrupt——加噪缓存实现动态-身份解耦</h3>
+
+  数字人场景有个天然先验：==主体和背景几乎不变==。这意味着 sink 帧可以为每一帧提供足够的身份和外观信息，而 KV cache 的角色缩减为只传递运动动态。#Huang et al., 2025#
+
+  History Corrupt 的核心操作极为简洁：只存储<strong>加噪</strong>表示在 KV cache 中。直觉上，高斯噪声充当低通滤波器——抑制高频细节（包括累积的瑕疵），保留低频运动结构。这迫使模型从加噪历史提取动态线索，从 clean sink 帧获取身份和外观，实现有效的<strong>动态-身份解耦</strong>。#Song et al., 2025#
+
+  更深层的意义：加噪 KV cache 还抑制了分布漂移。在更高噪声水平上，边际分布 \(p_t(\mathbf{x}_t)\) 向 Gaussian 先验收敛，占据 latent space 更紧凑的区域——加噪 cache 远比 clean cache 更不容易漂入 OOD 区域。#Song et al., 2019#
+
+  消融数据说话：去掉 History Corrupt，ASE 从 3.42 降到 2.90，Dino-S 从 0.97 降到 0.81——这是三个策略中==影响最严重==的一个。#Huang et al., 2025#
+
+  <h3 class="section-title">策略二：Adaptive Attention Sink（AAS）——用模型自己的生成帧替换参考帧</h3>
+
+  用户提供的真实参考帧和模型生成帧之间存在微妙的分布差异——这个持续偏差在长推演中累积为色差和曝光偏移。AAS 的做法是：第一个 block 生成完毕后，==立刻用模型自己的生成 latent 替换 sink 帧==，并作为后续所有 block 的持久身份锚点。#Huang et al., 2025#
+
+  关键工程细节：替换完全在 latent space 完成，不需要额外的 VAE 编码/解码。这让 sink 帧始终停留在模型的生成分布上，消除了真实数据和生成数据之间的分布鸿沟。
+
+  消融数据：去掉 AAS，ASE 从 3.42 降到 3.13，出现明显的灰化/去饱和现象。#Huang et al., 2025#
+
+  <h3 class="section-title">策略三：Rolling RoPE——动态位置对齐防止注意力衰减</h3>
+
+  标准 AR 推理中，sink 帧的 RoPE 位置固定在 0，而当前 block 的位置单调增长（1, 2, 3, ...）。随着生成推进，两者之间的相对位置距离变得任意大——远超训练所见——导致注意力对 sink 帧的权重退化。#Huang et al., 2025#
+
+  Rolling RoPE 的做法：在每个 block 步动态重设 sink 帧的 RoPE index，让它保持略超前于当前 noisy block 的 index（落在训练时的偏移范围内）。这通过重新计算 sink 缓存的 KV 条目的 RoPE 嵌入来实现，标记为 \(\Phi(\mathbf{Sink})\)。
+
+  消融数据：去掉 Rolling RoPE，Dino-S 从 0.97 骤降到 0.86，出现可见的头发细节和面部特征变化。#Huang et al., 2025#
+
+  <div class="photo">
+    <img src="media/images/live-avatar-2025/rsfm_ablation_visual.webp" loading="lazy">
+    <div class="cap">图 2：三大长时策略的消融可视化。去掉 History Corrupt 导致整体质量崩塌；去掉 AAS 出现灰化/去饱和；去掉 Rolling RoPE 出现身份漂移（来源：论文 Fig.7）。</div>
+  </div>
+
+  <h3 class="section-title">Timestep-forcing Pipeline Parallelism（TPP）</h3>
+
+  <div class="photo">
+    <img src="media/images/live-avatar-2025/method2.webp" loading="lazy">
+    <div class="cap">图 3：TPP 推理示意图。每个 GPU 固定负责一个去噪时间步，将串行扩散链变为异步空间流水线。各 GPU 维护本地 KV cache，只需传递 latent 到下一设备（来源：论文 Fig.3）。</div>
+  </div>
+
+  TPP 的核心思想极为优雅：==给每个 GPU 分配一个固定的去噪时间步==。4 步去噪需要 4 个 GPU（加 1 个做 VAE 解码），每张 GPU 反复执行 \(t_i \rightarrow t_{i-1}\) 的变换。#Huang et al., 2025#
+
+  这把串行扩散链变成了异步空间流水线：吞吐量由单个去噪前向传播决定，而非所有步骤之和。理想加速等于去噪步数——4 步就是 4× 加速。warm-up 期间第一个 block 串行流过所有步骤填充流水线，之后进入全流水线阶段：每张 GPU 同时处理不同 block 的不同步骤。
+
+  两个关键工程优势：
+  1. 每张 GPU 维护==本地== rolling KV cache，不需要跨 GPU 通信——timestep-forcing 的"相同噪声水平"约束天然对应到"相同 GPU"；
+  2. GPU 间只传递 compact latent，通信开销可忽略。
+
+  <div class="callout"><strong>反直觉发现</strong>：TPP 同时提高了吞吐量和时间一致性。因为每张 GPU 的 KV cache 只在固定噪声水平上累积，避免了混合噪声水平带来的闪烁——T.Flicker 从 0.891 提升到 0.971。#Huang et al., 2025#</div>
+
+  {{< mermaid >}}
+  flowchart LR
+    GPU0["GPU0<br/>t₃→t₂"] -->|latent| GPU1["GPU1<br/>t₂→t₁"]
+    GPU1 -->|latent| GPU2["GPU2<br/>t₁→t₀"]
+    GPU2 -->|latent| GPU3["GPU3<br/>VAE解码"]
+    GPU0 -.->|本地KV| KV0["KV₀"]
+    GPU1 -.->|本地KV| KV1["KV₁"]
+    GPU2 -.->|本地KV| KV2["KV₂"]
+  {{< /mermaid >}}
+
+  <p><em>图 4：TPP 流水线示意。各 GPU 独立维护本地 KV cache，只需传递 latent 到下游设备。warm-up 后所有 GPU 同时工作，吞吐量由单步延迟决定。</em></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 训练方法</div>
+  <div class="ch-title">数据、损失、算力成本</div>
+
+  <h3 class="section-title">训练数据与规模</h3>
+
+  训练数据来自 AVSpeech（大规模音视频数据集），沿用 OmniAvatar 的预处理，只保留 >10 秒的片段，最终得到 ==400K 训练样本==。#Gan et al., 2025#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>阶段</th><th>初始化来源</th><th>步数</th><th>GPU 数</th><th>学习率</th><th>batch/GPU</th></tr></thead>
+      <tbody>
+        <tr><td>Stage 1（Diffusion Forcing）</td><td>Wan-S2V 权重</td><td>25K</td><td>128 H800</td><td>student: 1e-5</td><td>1</td></tr>
+        <tr><td>Stage 2（Self-Forcing DMD）</td><td>Stage 1 → student, Wan-S2V → teacher/fake score</td><td>500</td><td>128 H800</td><td>student: 1e-5, fake score: 2e-6</td><td>1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">损失函数</h3>
+
+  Stage 1 使用标准 flow-matching loss：
+
+  \[
+  \mathcal{L} = \mathbb{E}_{x_0, x_T, t}\left[\|v_\theta(x_t, t, c) - (x_T - x_0)\|_2^2\right]
+  \]
+
+  Stage 2 使用 DMD loss，最小化学生与教师分布之间的反向 KL 散度：
+
+  \[
+  \nabla_\theta\mathcal{L}_{\mathrm{DMD}} = -\mathbb{E}_{t,\mathbf{z}}\left[(s_{\mathrm{real}}(\mathbf{x}_t,t) - s_{\mathrm{fake},\phi}(\mathbf{x}_t,t))^\top\frac{\partial G_\theta(\mathbf{z})}{\partial\theta}\right]
+  \]
+
+  其中 \(s_{\mathrm{real}}\) 来自教师模型，\(s_{\mathrm{fake},\phi}\) 是在学生输出上训练的 score 网络。两者都从 Wan-S2V 初始化。#Yin et al., 2024#
+
+  <h3 class="section-title">关键超参数</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Block size</td><td>3 latent 帧</td><td>每个 AR block 包含 3 个 latent 帧</td></tr>
+        <tr><td>KV cache 窗口 \(w\)</td><td>4 blocks</td><td>rolling cache 保留最近 4 个 block</td></tr>
+        <tr><td>Sink 帧</td><td>1 帧</td><td>单帧身份锚点</td></tr>
+        <tr><td>LoRA rank / alpha</td><td>128 / 64</td><td>蒸馏阶段用 LoRA 微调</td></tr>
+        <tr><td>分辨率</td><td>720×400</td><td>固定训练和推理分辨率</td></tr>
+        <tr><td>训练帧数</td><td>84</td><td>所有训练视频 clip 帧数</td></tr>
+        <tr><td>去噪步数</td><td>4</td><td>推理默认 4 步采样</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">算力成本</h3>
+
+  <div class="callout"><strong>训练成本</strong>：128 张 H800 GPU，Stage 1 25K 步 + Stage 2 500 步。Self-Forcing 训练对显存极度饥渴，采用 FSDP + block-wise 梯度累积来降低峰值显存。推理端 5×H800 达到 45.2 FPS / 1.21s TTFF，5×H20 也能跑 18 FPS / 3.12s TTFF。#Huang et al., 2025#</div>
+
+  推理侧的 kernel 优化组合：FP8 量化（~80GB → <48GB VRAM）、FlashAttention-3、cuDNN fused attention、torch.compile、LoRA weight merging、streaming VAE feature caching。这些优化带来约 ==2.5× 峰值和 3× 平均 FPS 提升==。#Huang et al., 2025#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 实验验证</div>
+  <div class="ch-title">GenBench 结果、消融与 10,000 秒推演</div>
+
+  <h3 class="section-title">GenBench：新的长视频评测基准</h3>
+
+  论文提出了 GenBench 评测集，用 Gemini-2.5 Pro、Qwen-Image 和 CosyVoice 生成多样化的测试样本。GenBench-Short 包含 100 个约 10 秒的样本；GenBench-Long 包含 15 个超过 5 分钟的样本，涵盖真人、卡通、拟人化角色、正面/侧面、半身/全身多种视角。#Huang et al., 2025#
+
+  <h3 class="section-title">主实验：短视频与长视频对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>模型</th><th>规模</th><th>ASE↑</th><th>IQA↑</th><th>Sync-C↑</th><th>Dino-S↑</th><th>FPS↑</th><th>长视频 ASE</th><th>长视频 Dino-S</th></tr></thead>
+      <tbody>
+        <tr><td>Ditto</td><td>0.2B</td><td>3.31</td><td>4.24</td><td>4.09</td><td>0.99</td><td>21.80</td><td>2.90</td><td>0.97</td></tr>
+        <tr><td>OmniAvatar</td><td>14B</td><td>3.53</td><td>4.49</td><td>6.77</td><td>0.95</td><td>0.16</td><td>2.36</td><td>0.66</td></tr>
+        <tr><td>Wan-S2V</td><td>14B</td><td>3.36</td><td>4.29</td><td>5.89</td><td>0.95</td><td>0.25</td><td>2.63</td><td>0.80</td></tr>
+        <tr><td><strong>Live Avatar</strong></td><td><strong>14B</strong></td><td><strong>3.44</strong></td><td><strong>4.51</strong></td><td><strong>7.03</strong></td><td><strong>0.96</strong></td><td><strong>45.2</strong></td><td><strong>3.42</strong></td><td><strong>0.97</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>几个值得指出的数字含义：</p>
+  <ul>
+    <li><strong>45.2 FPS vs 0.16 FPS</strong>：Live Avatar 比 OmniAvatar 快 ==282 倍==，但用的是同量级的 14B 模型。这证明蒸馏 + TPP + kernel 优化组合的威力。</li>
+    <li><strong>Dino-S 0.97 vs 0.66</strong>：OmniAvatar 在长视频上的身份一致性几乎崩塌；Live Avatar 短视频和长视频之间几乎不掉点。</li>
+    <li><strong>IQA 4.51 > 4.29</strong>：蒸馏后的学生反而超过了教师 Wan-S2V——这与 DMD 蒸馏模型的已知倾向一致：分布集中化有时带来更高的感知评分。#Luo et al., 2025#</li>
+  </ul>
+
+  <h3 class="section-title">推理效率消融</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>GPU</th><th>NFE</th><th>FPS↑</th><th>TTFF↓</th></tr></thead>
+      <tbody>
+        <tr><td>基线（无 DMD）</td><td>1</td><td>80</td><td>0.29</td><td>45.50</td></tr>
+        <tr><td>+DMD</td><td>1</td><td>5</td><td>3.66</td><td>4.56</td></tr>
+        <tr><td>+SP₄</td><td>4</td><td>5</td><td>4.50</td><td>3.94</td></tr>
+        <tr><td>+TPP</td><td>4</td><td>4</td><td>10.16</td><td>4.73</td></tr>
+        <tr><td>+VAE并行</td><td>5</td><td>4</td><td>20.88</td><td>2.89</td></tr>
+        <tr><td><strong>+Kernel优化</strong></td><td><strong>5</strong></td><td><strong>4</strong></td><td><strong>45.2</strong></td><td><strong>1.21</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>逐层解读：</p>
+  <ul>
+    <li>DMD 把 NFE 从 80 降到 5——这是==最大的单步加速==。</li>
+    <li>序列并行在短 block 上收益极小（4→4.5 FPS）——再次印证瓶颈不在注意力而在步骤维度。</li>
+    <li>TPP 在同 GPU 数下从 4.5 提升到 10.16 FPS——==步骤维度并行化才是真正的加速路径==。</li>
+    <li>Kernel 优化从 20.88 提升到 45.2 FPS——FP8 量化、FlashAttention-3 等底层优化对实际部署不可或缺。</li>
+  </ul>
+
+  <h3 class="section-title">10,000 秒超长推演</h3>
+
+  模型只在 5 秒短视频上训练，RoPE 位置只在几分钟范围内随机偏移。但推理被推到 ==10,000 秒==——RoPE index 达到约 40,000，比训练时大了两个数量级。结果令人震撼：#Huang et al., 2025#
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间片段</th><th>ASE↑</th><th>IQA↑</th><th>Sync-C↑</th><th>Dino-S↑</th></tr></thead>
+      <tbody>
+        <tr><td>0-10 秒</td><td>3.41</td><td>4.77</td><td>7.10</td><td>0.97</td></tr>
+        <tr><td>100-110 秒</td><td>3.43</td><td>4.75</td><td>7.22</td><td>0.96</td></tr>
+        <tr><td>1000-1010 秒</td><td>3.40</td><td>4.73</td><td>6.98</td><td>0.96</td></tr>
+        <tr><td>10000-10010 秒</td><td>3.42</td><td>4.76</td><td>7.14</td><td>0.96</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  四个时间片段的指标几乎完全一致——==没有任何可观测的质量衰减或身份不稳定==。相比之下，Self-Forcing++ 的最长推演大约 4 分钟，Live Avatar 把这个数字推到了近 3 小时。
+
+  <h3 class="section-title">去噪步数消融</h3>
+
+  TPP 的一个重要特性：FPS 与步数无关——因为流水线填充后每步都在并行执行。只有 TTFF 随步数增长。#Huang et al., 2025#
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>步数</th><th>ASE↑</th><th>Sync-C↑</th><th>TTFF↓</th><th>FPS↑</th></tr></thead>
+      <tbody>
+        <tr><td>2</td><td>3.37</td><td>6.41</td><td>0.68</td><td>45.2</td></tr>
+        <tr><td>3</td><td>3.41</td><td>6.58</td><td>0.95</td><td>45.2</td></tr>
+        <tr><td><strong>4</strong></td><td><strong>3.44</strong></td><td><strong>7.03</strong></td><td>1.21</td><td><strong>45.2</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  从 2 步到 4 步，画质提升有限，但音视同步显著改善（Sync-C 6.41→7.03）。4 步在运动关键去噪阶段留出了更多预算，因此默认选择 4 步。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 讨论与启发</div>
+  <div class="ch-title">在数字人地图上的位置</div>
+
+  <h3 class="section-title">与核心竞品的技术对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>维度</th><th>Ditto</th><th>OmniAvatar</th><th>Wan-S2V</th><th>LongLive</th><th><strong>Live Avatar</strong></th></tr></thead>
+      <tbody>
+        <tr><td>模型规模</td><td>0.2B</td><td>14B</td><td>14B</td><td>1.3B</td><td><strong>14B</strong></td></tr>
+        <tr><td>流式推理</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td><td><strong>✓</strong></td></tr>
+        <tr><td>实时</td><td>✓（21.8 FPS）</td><td>✗</td><td>✗</td><td>✓（低画质）</td><td><strong>✓（45.2 FPS）</strong></td></tr>
+        <tr><td>无限长</td><td>✗</td><td>✗</td><td>✗</td><td>✓</td><td><strong>✓（10,000+秒）</strong></td></tr>
+        <tr><td>蒸馏方法</td><td>无（原生轻量）</td><td>无</td><td>无</td><td>DMD</td><td><strong>DMD + Self-Forcing</strong></td></tr>
+        <tr><td>长时策略</td><td>无</td><td>无</td><td>无</td><td>attention sink</td><td><strong>History Corrupt + AAS + Rolling RoPE</strong></td></tr>
+        <tr><td>推理并行</td><td>单卡</td><td>SP</td><td>SP</td><td>SP</td><td><strong>TPP</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">局限性</h3>
+
+  论文明确承认两个局限：#Huang et al., 2025#
+
+  1. <strong>静态场景先验依赖</strong>：History Corrupt、AAS 和 Rolling RoPE 都依赖数字人场景的"主体和背景基本不变"先验。一旦场景发生剧烈变化（如全身动作场景切换），这些策略可能不再适用。
+  2. <strong>首帧延迟仍然偏高</strong>：TTFF 1.21 秒加上网络传输约 3 秒端到端延迟，距离双向实时交互的严苛要求仍有差距。
+
+  <h3 class="section-title">个人启发</h3>
+
+  <ul>
+    <li><strong>算法-系统协同设计的范式值得复制</strong>：很多团队把模型优化和推理优化分开做，但 Live Avatar 证明二者可以互相支撑——timestep-forcing 既是算法设计（改善闪烁），也是系统设计（自然映射到 GPU 流水线）。</li>
+    <li><strong>"加噪作为低通滤波"是一个通用思路</strong>：History Corrupt 的噪声注入本质上是在说"历史信息不需要全精度保留"。这个思路可以迁移到其他长序列生成场景——如长文本生成中的 KV cache 压缩。</li>
+    <li><strong>TPP 不只适用于蒸馏模型</strong>：论文指出 TPP 是 model-agnostic 的——任何因果扩散模型都可以用。这为非蒸馏场景（如原始多步推理）也提供了加速路径，只要步数和 GPU 数匹配。</li>
+    <li><strong>5×H20 的 18 FPS 说明部署门槛可以更低</strong>：不一定要顶级数据中心硬件。中端 GPU 集群也能跑出实用帧率，这对创业公司和小团队是好消息。</li>
+  </ul>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-streaming-distillation.html"><span class="nav-label">相关文章</span><span class="nav-title">实时流式与蒸馏</span></a>
+    <a class="nav-card current" href="digital-human-hub.html"><span class="nav-label">系列枢纽</span><span class="nav-title">数字人系列</span></a>
+    <a class="nav-card" href="infinitetalk-paper.html"><span class="nav-label">下一篇</span><span class="nav-title">InfiniteTalk 精读</span></a>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">参考来源</div>
+  <div class="ch-title">References</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Huang-et-al.-2025">Huang, Y. et al. (2025). Live Avatar: Streaming Real-time Audio-Driven Avatar Generation with Infinite Length. <a href="https://arxiv.org/abs/2512.04677" target="_blank">arXiv:2512.04677</a></li>
+      <li data-cite-key="Gao-et-al.-2025">Gao, X. et al. (2025). Wan-S2V: Audio-Driven Cinematic Video Generation. <a href="https://arxiv.org/abs/2508.18621" target="_blank">arXiv:2508.18621</a></li>
+      <li data-cite-key="Li-et-al.-2024">Li, T. et al. (2024). Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis. <a href="https://arxiv.org/abs/2411.19509" target="_blank">arXiv:2411.19509</a></li>
+      <li data-cite-key="Gan-et-al.-2025">Gan, Q. et al. (2025). OmniAvatar: Efficient Audio-Driven Avatar Video Generation with Adaptive Body Animation. <a href="https://arxiv.org/abs/2506.18866" target="_blank">arXiv:2506.18866</a></li>
+      <li data-cite-key="Yang-et-al.-2025">Yang, S. et al. (2025). LongLive: Real-time Interactive Long Video Generation. <a href="https://arxiv.org/abs/2509.22622" target="_blank">arXiv:2509.22622</a></li>
+      <li data-cite-key="Yin-et-al.-2024">Yin, T. et al. (2024). One-step Diffusion with Distribution Matching Distillation. <a href="https://arxiv.org/abs/2311.18828" target="_blank">arXiv:2311.18828</a></li>
+      <li data-cite-key="Luo-et-al.-2025">Luo, Y. et al. (2025). Learning Few-Step Diffusion Models by Trajectory Distribution Matching. <a href="https://arxiv.org/abs/2503.06674" target="_blank">arXiv:2503.06674</a></li>
+      <li data-cite-key="Song-et-al.-2025">Song, K. et al. (2025). History-Guided Video Diffusion. <a href="https://arxiv.org/abs/2502.06764" target="_blank">arXiv:2502.06764</a></li>
+      <li data-cite-key="Song-et-al.-2019">Song, Y. & Ermon, S. (2019). Generative Modeling by Estimating Gradients of the Data Distribution. <a href="https://arxiv.org/abs/1907.05600" target="_blank">arXiv:1907.05600</a></li>
+    </ul>
+  </div>
+</div>

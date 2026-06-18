@@ -1,0 +1,147 @@
+---
+title: "平台与治理：AI Infra 最终拼的是可控、可观测、可扩展"
+description: "从 Kubernetes、llm-d 到 OpenTelemetry 和成本治理，系统梳理 AI 系统的平台编排、可观测性与长期运营能力。"
+date: 2026-06-02T09:33:52
+created_at: 2026-06-02T09:33:52
+updated_at: 2026-06-02T09:42:20
+tags: [平台工程, 可观测性, OpenTelemetry, Kubernetes, llm-d, AI Infra, 治理]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: 平台与治理
+hero_sub: AI Infra 最终拼的是可控、可观测、可扩展
+hero_tagline: 模型跑起来只是开始，长期运营才是真正的考场
+mathjax: false
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">82%</span><span class="label">生产环境使用 K8s 的比例</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">OTel 观测支柱</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">治理核心维度</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列八</div>
+  <div class="ch-title">跑起来只是开始，长期运营才是真正的考场</div>
+
+  前面的文章覆盖了 AI Infra 的大部分层次：硬件与互联、系统运行时、训练与推理引擎、数据与知识。但一个现代 AI 系统要真正投入生产并长期稳定运行，还缺最后一层：<strong>平台编排、可观测性与治理</strong>。
+
+  这层之所以重要，是因为 AI workload 和传统 Web 服务有着本质不同：它是高状态的（KV cache 不能随意丢弃）、高成本的（每次请求都直接消耗 GPU 时间和显存）、延迟敏感的（用户无法容忍数秒等待），而且行为难以预测（同样的 prompt 可能产生截然不同的输出和耗时）#CNCF-llm-d-2026# #OpenTelemetry-2026#。
+
+  这些特性决定了：你不能只是把模型塞进容器然后交给 Kubernetes，而需要一整套面向 AI workload 的平台能力。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、Kubernetes 正在成为 AI workload 的平台底座</div>
+
+  根据 CNCF 的调查，82% 的容器用户已在生产环境使用 Kubernetes，而越来越多的 AI 团队也开始把训练任务、推理服务和 agent 工作流部署在 K8s 上 #CNCF-Kubernetes-AI-2026#。
+
+  但标准 K8s 并不是为 AI workload 设计的。传统 K8s 擅长管理无状态服务：一个请求进来，处理完就结束，pod 之间不共享状态。而 AI serving 是高度 stateful 的：KV cache 需要在请求之间保持，模型权重需要被稳定加载，推理节点的状态直接影响路由决策。
+
+  这催生了一批 K8s 之上的 AI 平台项目，其中 llm-d 是最有代表性的之一。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、llm-d：当 K8s 开始理解推理</div>
+
+  llm-d 被 CNCF 接纳为 Sandbox 项目，标志着云原生社区明确意识到：AI serving 需要新的平台抽象 #CNCF-llm-d-2026#。
+
+  llm-d 的核心设计围绕三个 AI serving 特有的问题展开：
+
+  <ul>
+    <li><strong>Prefill/Decode Disaggregation</strong>：把 prompt 处理和 token 生成拆成独立的 pod 池，各自独立扩缩容。因为 prefill 更吃算力，decode 更吃显存带宽，混在一起会导致资源利用率低下。</li>
+    <li><strong>Inference-Aware Routing</strong>：传统负载均衡只看 CPU/内存利用率，但 AI serving 需要考虑 KV cache locality、队列深度、模型加载状态等因素。llm-d 引入了 prefix-cache-aware routing，把请求路由到已经缓存了相关前缀的节点上。</li>
+    <li><strong>Hierarchical KV Cache Offloading</strong>：当 GPU 显存不够时，把 KV cache 按热度分层卸载到 CPU DRAM 甚至 NVMe 存储，以成本和延迟的权衡换取更大的上下文容量。</li>
+  </ul>
+
+  <div class="info-box">
+    <h3>关键信号</h3>
+    <p>llm-d 进入 CNCF 说明了一件事：AI 基础设施正在从“在 K8s 上跑 AI”走向“K8s 为 AI 而进化”。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、可观测性：AI 系统需要新的观测语言</div>
+
+  传统系统监控关注 CPU、内存、错误率和 QPS。但 AI 系统需要观测的对象完全不同：
+
+  <ul>
+    <li><strong>Token 用量</strong>：输入输出 token 数直接决定成本和延迟。</li>
+    <li><strong>模型调用链</strong>：一个用户请求可能触发多个模型调用、工具调用和检索操作，需要完整的分布式追踪。</li>
+    <li><strong>输出质量</strong>：响应是否忠实于检索内容？是否存在幻觉？毒性如何？</li>
+    <li><strong>成本波动</strong>：不同请求的成本差异巨大，需要精细的成本归因和预算控制。</li>
+  </ul>
+
+  OpenTelemetry 在 2026 年推动了 GenAI semantic conventions，标准化了如何记录模型名、token 计数、工具调用、finish reason 等信息 #OpenTelemetry-2026#。这让 AI 观测从“每个团队自己造轮子”走向了“跨工具、跨厂商的统一标准”。
+
+  <div class="callout">
+    <strong>观测即基础设施</strong>：在 AI 系统中，可观测性不是附加功能，而是决定系统能否被理解、调试和优化的核心能力。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、治理的三根支柱：成本、安全、合规</div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.1 成本治理</div>
+    GPU 时间是最昂贵的计算资源之一。一个未被妥善治理的 AI 系统可能产生惊人的账单：长上下文请求、无限循环的 agent 调用、低效的 cache 策略、以及未使用的预留实例。成本治理需要精细的配额管理、按用户/按请求的计费、以及自动化的资源回收策略。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.2 安全与访问控制</strong></div>
+    AI 系统面临独特的安全挑战：prompt injection、数据泄露、模型窃取、以及生成内容的合规风险。多租户环境中的隔离（不同客户的数据和模型不能互相访问）是基础要求，但实现起来比传统服务更复杂，因为模型权重和 KV cache 都可能成为信息泄露的通道。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.3 合规与审计</div>
+    随着 AI 监管框架的成熟（如 EU AI Act），企业需要证明其 AI 系统的决策过程是可解释的、数据使用是合规的、以及模型输出是可审计的。这要求系统从设计之初就内置追踪、日志和版本控制机制。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、平台层的核心使命：让 AI 系统从“能跑”到“敢跑”</div>
+
+  如果把 AI Infra 的六层地图拉通来看，平台与治理层处于最顶端，但它不是“装饰层”，而是决定整个系统能否从实验走向生产的决定性因素。
+
+  <ul>
+    <li>硬件和运行时层回答了“能不能算”；</li>
+    <li>训练和推理引擎层回答了“模型能不能工作”；</li>
+    <li>数据和知识层回答了“模型有没有足够的信息”；</li>
+    <li><strong>平台与治理层回答了“系统能不能长期、稳定、可控地服务真实用户”。</strong></li>
+  </ul>
+
+  一个训练得再好的模型，如果缺乏监控、没有成本约束、无法处理故障、不能隔离多租户，就无法真正投入生产。平台层的使命，就是让 AI 系统从“能跑”进化到“敢跑”。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">六、系列收束：一张更完整的 AI Infra 地图</div>
+
+  到这篇为止，这个系列已经覆盖了 AI Infra 的六个层次：
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>层次</th><th>核心问题</th><th>代表技术</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>硬件与互联</td><td>算力、显存、带宽、通信拓扑</td><td>GPU、NVLink、InfiniBand、NCCL</td></tr>
+        <tr><td>系统软件与运行时</td><td>怎么把硬件能力榨出来</td><td>CUDA、kernel、runtime、CUDA Graph</td></tr>
+        <tr><td>训练与推理引擎</td><td>模型怎么训练得动、服务得起</td><td>DeepSpeed、vLLM、SGLang、TensorRT-LLM</td></tr>
+        <tr><td>编排与平台</td><td>多节点、多租户下怎么调度与扩缩容</td><td>Kubernetes、llm-d、Ray</td></tr>
+        <tr><td>数据与知识</td><td>模型吃什么、上线时查什么</td><td>Embedding、Vector DB、RAG</td></tr>
+        <tr><td>可观测性与治理</td><td>跑得稳不稳、值不值、合不合规</td><td>OpenTelemetry、成本监控、安全策略</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  AI Infra 不是一份工具清单，而是一套围绕 AI workload 特性重构出来的生产系统。当基础设施开始真正“理解”模型状态、token 生成过程、显存约束和多模态流水线时，我们才可以说：AI Infra 作为一个独立工程领域，已经真正成立。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="CNCF-llm-d-2026">Costa, C., Coleman, C., & Shaw, R. <em>Welcome llm-d to the CNCF: Evolving Kubernetes into SOTA AI infrastructure</em>. 2026. <a href="https://www.cncf.io/blog/2026/03/24/welcome-llm-d-to-the-cncf-evolving-kubernetes-into-sota-ai-infrastructure" target="_blank">CNCF Blog</a></li>
+    <li data-cite-key="CNCF-Kubernetes-AI-2026">CNCF. <em>The great migration: Why every AI platform is converging on Kubernetes</em>. 2026. <a href="https://www.cncf.io/blog/2026/03/05/the-great-migration-why-every-ai-platform-is-converging-on-kubernetes" target="_blank">CNCF Blog</a></li>
+    <li data-cite-key="OpenTelemetry-2026">Newton-King, J. <em>Inside the LLM Call: GenAI Observability with OpenTelemetry</em>. 2026. <a href="https://opentelemetry.io/blog/2026/genai-observability" target="_blank">OpenTelemetry Blog</a></li>
+  </ul>
+</div>

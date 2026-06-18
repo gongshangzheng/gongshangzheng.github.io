@@ -1,0 +1,254 @@
+---
+title: "数字人工程解读（八）：LiteAvatar 源码，纯 CPU 实时 2D 数字人驱动引擎"
+description: "深度解析 HumanAIGC/lite-avatar 仓库：一个可在纯 CPU 上实现 30fps 实时推理的 2D 数字人 audio2face 库，涵盖 Paraformer 特征提取、ONNX 口型预测与轻量级面部生成器的完整调用链。"
+date: 2026-06-16T14:55:00
+created_at: 2026-06-16T14:55:00
+updated_at: 2026-06-16T14:55:00
+categories: [AI]
+tags: ["lite-avatar", "audio2face", "cpu-inference", "onnxruntime", "digital-human", "paraformer", "源码解读"]
+subcategory: "数字人"
+sub_id: 2310---
+
+<div class="ch">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">项目定位与核心能力</div>
+  
+  <p><strong>LiteAvatar</strong> 是由 HumanAIGC 开源的轻量级 2D 数字人驱动库，专为<strong>纯 CPU 环境</strong>设计，无需 GPU 加速即可实现 30fps 实时推理。它被广泛集成于 <a href="https://github.com/HumanAIGC-Engineering/OpenAvatarChat">OpenAvatarChat</a> 等交互式数字人系统中，作为默认的轻量级 Avatar 后端。</p>
+
+  <div class="callout">
+    <strong>核心价值：</strong>在消费级笔记本或边缘设备上，仅靠 CPU 即可驱动逼真的口型同步与面部动画，极大降低了数字人应用的部署门槛。
+  </div>
+
+  <h3 class="section-title">技术栈概览</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>模块</th><th>技术选型</th><th>作用</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>音频特征提取</td><td>Paraformer (FunASR)</td><td>将原始音频转换为语义/声学特征序列</td></tr>
+        <tr><td>口型参数预测</td><td>ONNX Runtime + model_1.onnx</td><td>根据音频特征预测 32 维面部参数</td></tr>
+        <tr><td>面部图像生成</td><td>PyTorch JIT (net_encode/net_decode)</td><td>将参数渲染为嘴部区域图像</td></tr>
+        <tr><td>视频合成</td><td>FFmpeg + OpenCV</td><td>帧拼接、音视频对齐、掩码融合</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">系统架构与主调用链</div>
+
+  <p>LiteAvatar 的推理流程是一个典型的<strong>三阶段 Pipeline</strong>：音频 → 特征 → 参数 → 图像。整个流程在 <code>lite_avatar.py</code> 的 <code>liteAvatar</code> 类中编排，核心推理逻辑封装在 <code>audio2mouth_cpu.py</code> 的 <code>Audio2Mouth</code> 类中。</p>
+
+  {{< mermaid >}}
+sequenceDiagram
+    participant User as 用户/调用方
+    participant LA as liteAvatar
+    participant A2M as Audio2Mouth
+    participant PF as Paraformer
+    participant ONNX as ONNX Model
+    participant GEN as Face Generator
+
+    User->>LA: handle(audio_file, result_dir)
+    LA->>LA: read_wav_to_bytes()
+    LA->>A2M: inference(input_audio)
+    A2M->>PF: extract_para_feature()
+    PF-->>A2M: au_data (声学特征)
+    A2M->>ONNX: run(input_au, input_ph)
+    ONNX-->>A2M: output (32维参数序列)
+    A2M->>A2M: mouth_smooth()
+    A2M-->>LA: param_res
+    LA->>LA: make_silence() / interp_param()
+    loop 每帧并行渲染
+        LA->>GEN: param2img(param, bg_frame_id)
+        GEN-->>LA: mouth_img
+        LA->>LA: merge_mouth_to_bg()
+    end
+    LA->>User: test_demo.mp4
+  {{< /mermaid >}}
+
+  <h3 class="section-title">关键入口文件</h3>
+  <ul>
+    <li><code>lite_avatar.py</code>：主控类，负责模型加载、数据预处理、多线程渲染调度与视频合成。</li>
+    <li><code>audio2mouth_cpu.py</code>：核心推理模块，封装 ONNX 会话与滑动窗口参数生成逻辑。</li>
+    <li><code>extract_paraformer_feature.py</code>：Paraformer 特征提取器，将原始波形转为模型输入特征。</li>
+    <li><code>download_model.sh</code>：从 ModelScope 下载 <code>lm.pb</code>、<code>model.pb</code> 和 <code>model_1.onnx</code> 三个权重文件。</li>
+  </ul>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">核心源码深读</div>
+
+  <h3 class="section-title">3.1 Audio2Mouth：滑动窗口推理与平滑</h3>
+  <p><code>Audio2Mouth.inference()</code> 是整个系统的“大脑”。它采用<strong>1秒滑动窗口</strong>策略处理长音频，避免显存/内存溢出，同时通过重叠区域加权融合保证时序连续性。</p>
+
+  <pre><code class="language-python"># audio2mouth_cpu.py - Audio2Mouth.inference() 核心片段
+interval = 1.0  # 每次处理1秒音频
+frag = int(interval * 30 / 5 + 0.5)  # 重叠帧数（约6帧）
+
+while True:
+    # 截取当前窗口的音频特征
+    input_au = au_data[start_frame:end_frame]
+    input_ph = ph_data[start_frame:end_frame]
+    
+    # ONNX 推理：输出32维面部参数
+    output, feat = self.audio2mouth_model.run(
+        ['output', 'feat'],
+        {'input_au': input_au, 'input_ph': input_ph, 
+         'input_sp': self.sp, 'w': self.w}
+    )
+    
+    # 重叠区域线性插值融合，消除拼接痕迹
+    if frame_id < len(param_res):
+        scale = min((len(param_res) - frame_id) / frag, 1.0)
+        value = (1 - scale) * new_value + scale * old_value
+        param_res[frame_id][key] = round(value, 3)
+</code></pre>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      工程亮点
+    </div>
+    <div class="admonition-content">
+      <p>滑动窗口的 <code>frag</code> 设计是关键：既保证了上下文连续性，又避免了全局推理的高延迟。最终还通过 <code>butter_lowpass_filtfilt</code> 四阶巴特沃斯低通滤波对参数序列做后处理，消除高频抖动，使口型运动更自然。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">3.2 liteAvatar：多线程渲染与静音处理</h3>
+  <p><code>liteAvatar.handle()</code> 是离线生成的入口。它将参数序列分发到多个工作线程（<code>face_gen_loop</code>），每个线程独立调用 <code>param2img()</code> 生成嘴部图像，再通过 <code>merge_mouth_to_bg()</code> 与背景帧融合。</p>
+
+  <pre><code class="language-python"># lite_avatar.py - 静音检测与参数抑制
+sil_scale = np.zeros(len(param_res))
+sound = AudioSegment.from_raw(...)
+start_end_list = detect_silence(sound, 500, -50)  # 检测静音段
+
+# 静音段内将参数向 neutral_pose 插值回归
+for ii in range(len(param_res)):
+    for key in param_res[ii]:
+        neu_value = bg_param[int(key)]
+        param_res[ii][key] = (
+            param_res[ii][key] * (1 - sil_scale[ii]) + 
+            neu_value * sil_scale[ii]
+        )
+</code></pre>
+
+  <p>这一机制确保了说话人在停顿时嘴巴自然闭合，而非保持上一个发音的口型，显著提升了视觉真实感。</p>
+
+  <h3 class="section-title">3.3 面部生成器：Encoder-Decoder 架构</h3>
+  <p>面部生成由两个 TorchScript 模型组成：<code>net_encode.pt</code> 和 <code>net_decode.pt</code>。Encoder 将参考帧编码为隐向量，Decoder 接收隐向量 + 32维参数，输出嘴部区域图像。这种解耦设计使得同一套参数可以适配不同风格的 Avatar。</p>
+
+  <div class="photo">
+    <img src="media/images/lite-avatar-source-code-analysis/paraformer_struct.webp" loading="lazy">
+    <div class="cap">Paraformer ASR 模型结构图（来源：LiteAvatar 仓库 weights 目录）</div>
+  </div>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">如何使用 LiteAvatar</div>
+
+  <h3 class="section-title">4.1 环境安装</h3>
+  <pre><code class="language-bash"># 推荐 Python 3.10 + CUDA 11.8（CPU 推理可不装 CUDA）
+pip install -r requirements.txt</code></pre>
+  <p>核心依赖包括 <code>onnxruntime</code>（推理引擎）、<code>funasr</code>（ASR 特征）、<code>torch</code>（面部生成）、<code>opencv-python</code> 和 <code>ffmpeg</code>（视频处理）。</p>
+
+  <h3 class="section-title">4.2 模型下载</h3>
+  <pre><code class="language-bash"># Linux / macOS
+bash download_model.sh
+
+# Windows
+download_model.bat</code></pre>
+  <p>脚本会从 ModelScope 下载三个文件并放置到 <code>./weights/</code> 目录：</p>
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>文件</th><th>用途</th><th>目标路径</th></tr></thead>
+      <tbody>
+        <tr><td><code>lm.pb</code></td><td>Paraformer 语言模型</td><td><code>weights/speech_paraformer-.../lm/</code></td></tr>
+        <tr><td><code>model.pb</code></td><td>Paraformer 声学模型</td><td><code>weights/speech_paraformer-.../</code></td></tr>
+        <tr><td><code>model_1.onnx</code></td><td>Audio2Mouth 口型预测模型</td><td><code>weights/</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.3 离线推理命令</h3>
+  <pre><code class="language-bash">python lite_avatar.py \
+  --data_dir /path/to/sample_data \
+  --audio_file /path/to/audio.wav \
+  --result_dir /path/to/result</code></pre>
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>参数</th><th>说明</th><th>示例</th></tr></thead>
+      <tbody>
+        <tr><td><code>--data_dir</code></td><td>Avatar 数据目录（含 bg_video.mp4、ref_frames/、net_encode.pt 等）</td><td><code>./data/sample_data</code></td></tr>
+        <tr><td><code>--audio_file</code></td><td>输入音频文件（WAV 格式，16kHz 单声道）</td><td><code>test.wav</code></td></tr>
+        <tr><td><code>--result_dir</code></td><td>输出目录，生成的 MP4 保存为 <code>test_demo.mp4</code></td><td><code>./output</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      注意事项
+    </div>
+    <div class="admonition-content">
+      <p>音频必须为 <strong>16kHz 单声道 WAV</strong>。若使用其他格式，需先用 ffmpeg 转换：<code>ffmpeg -i input.mp3 -ar 16000 -ac 1 output.wav</code>。更多 Avatar 风格可从 <a href="https://modelscope.cn/models/HumanAIGC-Engineering/LiteAvatarGallery">LiteAvatarGallery</a> 下载。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">4.4 在 OpenAvatarChat 中集成</h3>
+  <p>LiteAvatar 是 OpenAvatarChat 的默认 Avatar 后端。在配置文件中指定 handler 即可启用：</p>
+  <pre><code class="language-yaml"># config/chat_with_openai_compatible.yaml
+LiteAvatar:
+  module: avatar/liteavatar/avatar_handler_liteavatar
+  avatar_name: 20250408/sample_data
+  fps: 25
+  enable_fast_mode: false
+  use_gpu: true</code></pre>
+  <p>通过 <code>uv run scripts/download_models.py --handler liteavatar</code> 可一键下载所需模型权重。</p>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">性能、局限与工程启示</div>
+
+  <h3 class="section-title">5.1 性能表现</h3>
+  <ul>
+    <li><strong>CPU 推理</strong>：在主流笔记本 CPU 上可达 30fps，满足实时对话需求。</li>
+    <li><strong>GPU 加速</strong>：设置 <code>use_gpu=True</code> 可进一步降低延迟，适合高并发场景。</li>
+    <li><strong>内存占用</strong>：ONNX 模型 + TorchScript 生成器总计约 500MB，远低于全 3D 方案。</li>
+  </ul>
+
+  <h3 class="section-title">5.2 已知局限</h3>
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      适用范围
+    </div>
+    <div class="admonition-content">
+      <p>LiteAvatar 仅支持<strong>正面或微侧脸</strong>的 2D Avatar。大角度转头、表情剧烈变化或多人场景不在支持范围内。其设计目标是“轻量、实时、够用”，而非“照片级真实”。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">5.3 可迁移的工程经验</h3>
+  <ol>
+    <li><strong>滑动窗口 + 重叠融合</strong>是处理长序列推理的经典范式，兼顾了效率与时序连续性。</li>
+    <li><strong>静音检测回退到中性姿态</strong>是提升数字人自然度的低成本有效手段。</li>
+    <li><strong>ONNX + TorchScript 混合部署</strong>：推理密集的 ASR/A2M 用 ONNX 获得跨平台兼容性，生成器保留 PyTorch JIT 以利用动态形状优势。</li>
+    <li><strong>参数化面部表示</strong>（32维）比直接像素生成更易控制、更易插值、更易压缩，是实时数字人的优选中间表征。</li>
+  </ol>
+</div>
+
+<div class="sources">
+  <h3>参考资料</h3>
+  <ul>
+    <li data-cite-key="lite-avatar-repo"><a href="https://github.com/HumanAIGC/lite-avatar">HumanAIGC/lite-avatar GitHub 仓库</a></li>
+    <li data-cite-key="openavatarchat"><a href="https://github.com/HumanAIGC-Engineering/OpenAvatarChat">OpenAvatarChat 项目</a></li>
+    <li data-cite-key="liteavatar-gallery"><a href="https://modelscope.cn/models/HumanAIGC-Engineering/LiteAvatarGallery">LiteAvatarGallery ModelScope</a></li>
+    <li data-cite-key="paraformer"><a href="https://modelscope.cn/models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch">Paraformer ASR Model</a></li>
+    <li data-cite-key="ijcai22"><a href="https://www.ijcai.org/proceedings/2022/0826.pdf">Text/Speech-Driven Full-Body Animation (IJCAI 2022)</a></li>
+  </ul>
+</div>

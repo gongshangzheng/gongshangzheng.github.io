@@ -1,0 +1,205 @@
+---
+title: "Go 入门 05：并发、channel 与 context"
+description: "理解 goroutine、channel、sync.WaitGroup、pipeline、context 取消与超时，建立 Go 并发程序的基本心智模型。"
+created_at: 2026-06-11T17:45:00
+updated_at: 2026-06-11T17:45:00
+tags: [Go, Golang, 并发, goroutine, channel, context]
+categories: ["编程"]
+subcategory: "Go"
+sub_id: 50
+hub: go-language-beginner-guide
+mathjax: false
+notify: true
+hero_title: "Go 入门 05"
+hero_sub: "goroutine · channel · context"
+hero_tagline: "让并发代码能启动，也能结束"
+---
+
+<div class="wrap">
+
+<div class="stats">
+  <div class="stat"><span class="num">go</span><span class="label">启动任务</span></div>
+  <div class="stat"><span class="num b">chan</span><span class="label g">传递数据</span></div>
+  <div class="stat"><span class="num">ctx</span><span class="label">取消超时</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 05</div>
+  <div class="ch-title">并发不是“同时写更多代码”</div>
+  Go 的并发模型建立在 goroutine 和 channel 之上。<strong>goroutine</strong> 是由 Go 运行时调度的轻量执行单元；<strong>channel</strong> 是 goroutine 之间传递值的通道。官方文档强调 Go 显式支持并发编程，而官方博客用 pipeline、context 等模式说明并发代码还必须处理失败、取消和资源释放。
+
+  <div class="def-box">
+    <h3>定义：并发与并行</h3>
+    <p>并发是让多个任务在结构上可以独立推进；并行是多个任务在物理 CPU 上真正同时执行。Go 的写法关注并发结构，运行时和硬件决定其中多少工作能并行。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Goroutine</div>
+  <div class="ch-title">用 go 启动 goroutine</div>
+  在函数调用前加 <code>go</code>，就会启动一个新的 goroutine 执行它。主 goroutine 结束时，程序也会结束，所以示例里通常需要同步手段等待后台任务完成。
+
+  <pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+func main() {
+    var waitGroup sync.WaitGroup
+
+    waitGroup.Add(1)
+    go func() {
+        defer waitGroup.Done()
+        fmt.Println("work in goroutine")
+    }()
+
+    waitGroup.Wait()
+}</code></pre>
+
+  <code>sync.WaitGroup</code> 用于等待一组 goroutine 完成。标准库文档把 <code>sync</code> 定位为基础同步原语；更高层的同步通常优先通过 channel 和通信完成。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Channel</div>
+  <div class="ch-title">用 channel 传递结果</div>
+  channel 让 goroutine 之间通过发送和接收值协作。发送使用 <code>channel &lt;- value</code>，接收使用 <code>value := &lt;-channel</code>。
+
+  <pre><code class="language-go">func square(number int, results chan&lt;- int) {
+    results &lt;- number * number
+}
+
+func main() {
+    results := make(chan int)
+
+    go square(4, results)
+
+    result := &lt;-results
+    fmt.Println(result)
+}</code></pre>
+
+  channel 可以带方向标注。<code>chan&lt;- int</code> 表示只能发送 int 的 channel，<code>&lt;-chan int</code> 表示只能接收 int 的 channel。方向标注能让函数签名更清楚。
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      channel 不是队列魔法
+    </div>
+    <div class="admonition-content"><p>无缓冲 channel 的发送和接收会互相等待。如果没有对应接收者，发送方会阻塞；如果没有发送者，接收方会阻塞。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Pipeline</div>
+  <div class="ch-title">pipeline：把并发拆成阶段</div>
+  Go 官方博客把 pipeline 描述为由 channel 连接的一系列阶段。每个阶段接收上游数据，执行处理，再把结果发给下游。这个模型适合流式处理和分阶段计算。
+
+  <pre><code class="language-go">func generate(numbers ...int) &lt;-chan int {
+    output := make(chan int)
+    go func() {
+        defer close(output)
+        for _, number := range numbers {
+            output &lt;- number
+        }
+    }()
+    return output
+}
+
+func square(input &lt;-chan int) &lt;-chan int {
+    output := make(chan int)
+    go func() {
+        defer close(output)
+        for number := range input {
+            output &lt;- number * number
+        }
+    }()
+    return output
+}
+
+func main() {
+    for result := range square(generate(2, 3, 4)) {
+        fmt.Println(result)
+    }
+}</code></pre>
+
+  这个例子里，每个阶段都负责关闭自己创建的输出 channel。下游用 <code>range</code> 读取 channel，直到它被关闭。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Context</div>
+  <div class="ch-title">context：把取消、超时传下去</div>
+  很多真实服务不是“任务一定完成”，而是“用户取消了请求”“超时了”“上游已经失败”。<code>context</code> 包用于跨 API 边界传递截止时间、取消信号和请求范围的值。标准库文档要求需要 Context 的函数显式把它作为第一个参数，通常命名为 <code>ctx</code>。
+
+  <pre><code class="language-go">func fetchWithTimeout(ctx context.Context, url string) error {
+    request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    if err != nil {
+        return fmt.Errorf("create request: %w", err)
+    }
+
+    response, err := http.DefaultClient.Do(request)
+    if err != nil {
+        return fmt.Errorf("send request: %w", err)
+    }
+    defer response.Body.Close()
+
+    return nil
+}
+
+func main() {
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+
+    if err := fetchWithTimeout(ctx, "https://go.dev"); err != nil {
+        log.Println(err)
+    }
+}</code></pre>
+
+  <code>defer cancel()</code> 很重要。标准库文档说明，忘记调用 CancelFunc 会让相关资源停留到父 context 被取消；<code>go vet</code> 也会检查控制流上是否使用了 CancelFunc。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Practice</div>
+  <div class="ch-title">初学者的并发边界</div>
+  初学阶段不要把所有循环都改成 goroutine。并发适合 I/O 等待、独立任务、流水线处理和后台监听；不适合为了“看起来高级”而拆碎简单逻辑。判断是否需要并发，可以问三个问题：任务是否能独立推进？结果如何汇合？取消和错误如何传回？
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>问题</th><th>如果答不上来</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td>谁等待 goroutine 结束？</td><td>可能泄漏后台任务</td><td>使用 WaitGroup、channel 或 context 管理生命周期</td></tr>
+        <tr><td>错误传给谁？</td><td>失败会被静默丢弃</td><td>通过 error channel、返回值或上层聚合处理</td></tr>
+        <tr><td>如何取消？</td><td>超时后仍继续占资源</td><td>传入 context，并监听 <code>ctx.Done()</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 1：写并发代码前必须回答的生命周期问题。</em></p>
+</div>
+
+<div class="review-box">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>goroutine</strong>：用 <code>go</code> 启动的轻量执行单元。</li>
+    <li><strong>channel</strong>：goroutine 之间传递值的通道。</li>
+    <li><strong>WaitGroup</strong>：等待一组 goroutine 完成。</li>
+    <li><strong>pipeline</strong>：由 channel 连接的一系列处理阶段。</li>
+    <li><strong>context</strong>：跨 API 传递取消、超时和请求范围数据。</li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="go-beginner-04-collections-interfaces-tests.html"><span class="nav-label">上一章</span><span class="nav-title">集合、接口与测试</span></a>
+  <a class="nav-card current" href="go-language-beginner-guide.html"><span class="nav-label">系列 Hub</span><span class="nav-title">Go 入门教程</span></a>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Go-Pipelines">Ajmani, S. Go Concurrency Patterns: Pipelines and cancellation. <a href="https://go.dev/blog/pipelines" target="_blank">go.dev/blog/pipelines</a></li>
+    <li data-cite-key="Go-Context-Blog">Ajmani, S. Go Concurrency Patterns: Context. <a href="https://go.dev/blog/context" target="_blank">go.dev/blog/context</a></li>
+    <li data-cite-key="Context-Package">The Go Authors. Package context. <a href="https://pkg.go.dev/context" target="_blank">pkg.go.dev/context</a></li>
+    <li data-cite-key="Sync-Package">The Go Authors. Package sync. <a href="https://pkg.go.dev/sync" target="_blank">pkg.go.dev/sync</a></li>
+  </ul>
+</div>
+
+</div>

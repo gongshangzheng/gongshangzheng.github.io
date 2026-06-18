@@ -1,0 +1,114 @@
+---
+title: "脉动阵列架构 · L05"
+description: "脉动阵列原理、数据流模式、矩阵乘法映射、TPU 案例分析。西安交通大学课程笔记。"
+created_at: 2026-05-25T12:00:00
+updated_at: 2026-05-25T12:00:00
+tags: ["脉动阵列", "TPU", "课程笔记", "数据流", "AI加速器"]
+categories: ["课程"]
+subcategory: "计算机系统"
+mathjax: true
+hero_title: "脉动阵列架构"
+hero_sub: "嵌入式智能系统与新型计算架构 · L05"
+hero_tagline: "为什么 TPU 用脉动阵列做矩阵乘法，而不是直接用 GPU？"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">CH01 · 脉动阵列的起源</div>
+  <div class="ch-title">数据流驱动的专用计算</div>
+  <p>1979 年，H.T. Kung 在 CMU 提出了 <strong>脉动阵列（Systolic Array）</strong>的概念。名字来源于心脏的「收缩」——血液被心脏的节律性收缩泵入血管，在流动过程中完成氧气交换。类似地，脉动阵列中的数据像血液一样在处理器阵列中流动，每个处理单元（PE）在数据经过时执行一次简单操作，结果继续向前传递。</p>
+  <p>与冯·诺依曼架构「数据不动、程序驱动」不同，脉动阵列是 <strong>「数据流动、计算随行」</strong> 的范式。每个 PE 只与相邻的 PE 通信，没有复杂的寻址和内存访问——数据从一端流入，结果从另一端流出。</p>
+
+  <div class="callout">
+    <strong>核心特征</strong>
+    <p>• <strong>规则阵列</strong>：PE 排列成规则的一维/二维网格，结构简单可扩展</p>
+    <p>• <strong>本地通信</strong>：每个 PE 只与直接相邻的 PE 通信，无全局互连</p>
+    <p>• <strong>流水线执行</strong>：数据在阵列中逐拍流动，自然形成流水线</p>
+    <p>• <strong>简单控制</strong>：每个 PE 执行固定操作，无需复杂调度逻辑</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH02 · 矩阵乘法的脉动映射</div>
+  <div class="ch-title">如何在 PE 阵列上计算 C = A × B</div>
+  <p>矩阵乘法是 AI 计算的核心操作。对于 $C_{ij} = \sum_k A_{ik} \times B_{kj}$，脉动阵列提供了一种极其高效的映射方式。</p>
+  <p><strong>Weight-Stationary（权重固定）</strong>：把权重矩阵 B 的元素预加载到 PE 阵列中，每个 PE 保存一个 $B_{kj}$。输入激活 A 从左侧流入，部分和 C 从下方流出。每个 PE 在每一拍执行一次乘加：$C_{local} += A_{in} \times B_{local}$，然后把 $A_{in}$ 传给右边，$C_{local}$ 传给下方。</p>
+  <p><strong>Output-Stationary（输出固定）</strong>：把输出矩阵 C 的元素固定在 PE 中累加。权重 B 从上流入，激活 A 从左流入，结果 C 驻留在 PE 中不动。</p>
+  <p><strong>Row-Stationary（行固定）</strong>：每行 PE 负责计算输出矩阵的一行。这是 TPU 采用的数据流模式，在权重复用和激活复用之间取得平衡。</p>
+
+  <div class="callout">
+    <strong>形象类比</strong>
+    <p>想象一个工厂流水线：工人（PE）排成矩阵，每个工人面前有一个零件（权重）。原材料（激活）从传送带左侧进入，每个工人拿原材料和自己的零件组装一下，把半成品传给右边，自己继续等下一个原材料。最终产品在右下角收集。没有仓管员来回搬货——数据自然流动。</p>
+  </div>
+
+  <p>一个 $N \times N$ 的脉动阵列可以在 $2N$ 个周期内完成 $N \times N$ 矩阵乘法（忽略数据加载时间），而传统 CPU 需要 $O(N^3)$ 次运算且受限于内存带宽。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH03 · 数据流模式对比</div>
+  <div class="ch-title">Weight-Stationary vs Output-Stationary vs Row-Stationary</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据流</th><th>权重移动</th><th>激活移动</th><th>部分和移动</th><th>最佳场景</th></tr></thead>
+      <tbody>
+        <tr><td>Weight-Stationary</td><td>不动</td><td>横向流动</td><td>纵向流动</td><td>权重小、激活大的推理</td></tr>
+        <tr><td>Output-Stationary</td><td>纵向流动</td><td>横向流动</td><td>不动</td><td>输出复用高的训练</td></tr>
+        <tr><td>Row-Stationary</td><td>部分复用</td><td>部分复用</td><td>部分流动</td><td>通用平衡，TPU 选择</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>选择哪种数据流，取决于工作负载的特征：
+  • <strong>推理（Inference）</strong>：权重固定，激活逐层流动 → Weight-Stationary 最优
+  • <strong>训练（Training）</strong>：权重和激活都在更新，需要双向数据流 → Output-Stationary 或更复杂的混合流
+  • <strong>卷积层</strong>：滤波器权重复用高，激活滑动窗口 → Row-Stationary 的变体</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH04 · Google TPU 案例</div>
+  <div class="ch-title">脉动阵列的商业化巅峰</div>
+  <p>2016 年 Google 发布 TPU v1，专门用于数据中心推理加速。其心脏是一个 65536 个 MAC（乘加单元）的 256×256 脉动阵列，采用 Row-Stationary 数据流。</p>
+  <p>TPU v1 的架构特点：</p>
+  <ul>
+    <li><strong>超大片上内存</strong>：24 MB 权重内存 + 累加器内存，避免 DRAM 访问</li>
+    <li><strong>确定性执行</strong>：没有缓存、没有分支预测、没有乱序执行——纯数据流，延迟完全可预测</li>
+    <li><strong>低精度计算</strong>：8-bit 整数乘加，能效远高于浮点</li>
+    <li><strong>PCIe 接口</strong>：作为协处理器挂在 CPU 旁边，CPU 负责调度，TPU 负责计算</li>
+  </ul>
+
+  <div class="callout">
+    <strong>为什么不用 GPU？</strong>
+    <p>GPU 的灵活性和通用性是其优势，但也是其功耗劣势。矩阵乘法在 GPU 上需要：显存加载 → L2 缓存 → SM 共享内存 → 寄存器 → Tensor Core → 写回。每一步都有控制和数据移动的能耗。</p>
+    <p>TPU 的脉动阵列把控制逻辑压缩到几乎为零，数据流动完全由硬件布线决定，没有指令解码、没有调度、没有缓存查找。在特定 workload（矩阵乘法为主）上，能效比 GPU 高 30-80 倍。</p>
+  </div>
+
+  <p>TPU 的演进：v1（2016，推理专用）→ v2（2017，加入 bfloat16 训练）→ v3（2018，更大阵列）→ v4（2021，3D Torus 互连）→ v5（2023）。每一代都在阵列规模和互连带宽上扩张，核心设计哲学未变。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH05 · 脉动阵列的局限</div>
+  <div class="ch-title">专用性的代价</div>
+  <p>脉动阵列不是银弹。它的优势来自于 <strong>专用性</strong>，而专用性的代价是 <strong>灵活性丧失</strong>：</p>
+  <ul>
+    <li><strong>只擅长规则计算</strong>：矩阵乘法、卷积、FIR 滤波器等数据流规则的操作。对于不规则内存访问、复杂控制流、稀疏计算，脉动阵列表现很差。</li>
+    <li><strong>阵列尺寸固定</strong>：实际矩阵尺寸不一定匹配阵列尺寸，需要用「填充」或「分块」适配，带来额外开销。</li>
+    <li><strong>编程困难</strong>：数据流映射需要算法与硬件结构深度匹配，编译器自动化程度远不如 GPU。</li>
+    <li><strong>数据加载瓶颈</strong>：虽然片上计算高效，但权重和激活的加载仍受限于片外带宽。</li>
+  </ul>
+  <p>因此，现代 AI 加速器通常采用 <strong>混合架构</strong>：脉动阵列负责 GEMM（通用矩阵乘法）核心，可编程引擎处理不规则操作，DMA 负责数据搬运，形成「专用 + 灵活」的组合。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH06 · 课后思考</div>
+  <div class="ch-title">思考与延伸</div>
+  <ol>
+    <li>脉动阵列的「数据流动」与 GPU 的「线程网格」有什么本质区别？为什么脉动阵列的控制开销可以几乎为零？</li>
+    <li>Transformer 的大矩阵乘法（如 Attention 中的 Q×K^T）是否适合脉动阵列？有哪些具体挑战？</li>
+    <li>现代 AI 加速器（如 NVIDIA H100 的 Tensor Core、AMD MI300 的 XCD）是否在内部使用了类似脉动阵列的结构？搜索其微架构细节。</li>
+    <li>如果让你设计一个面向稀疏矩阵乘法的加速器，脉动阵列需要哪些改造？数据流模式会有何不同？</li>
+  </ol>
+</div>
+
+</div>

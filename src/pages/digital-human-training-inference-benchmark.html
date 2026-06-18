@@ -1,0 +1,615 @@
+---
+title: "数字人系列（九）：评测指标、数据集、训练算力与产品选型"
+description: "深入拆解数字人五大评测指标族的计算原理与失败模式，汇总主流数据集，按六条路线总结训练算力与推理资源，设计跨路线四模型对比协议，给出产品选型与落地检查清单。"
+date: 2026-06-09T13:01:47
+created_at: 2026-06-09T13:01:47
+updated_at: 2026-06-17T15:00:00
+tags: [数字人, Benchmark, 算力, Evaluation, 产品选型, Survey, FID, FVD, SyncNet, CSIM, Dataset, 评测指标]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 90
+toc: true
+mathjax: true
+notify: true
+hero_title: "评测指标、算力与产品选型"
+hero_sub: "从公式直觉到可执行协议：指标怎么算、数据集用什么、算力要多少、怎么落地"
+hero_tagline: "系列（九）· Metrics · Datasets · Compute · Benchmark · 产品选型"
+---
+<div class="stats">
+  <div class="stat"><span class="num">5</span><span class="label">指标族深度拆解</span></div>
+  <div class="stat"><span class="num b">12+</span><span class="label g">评测数据集</span></div>
+  <div class="stat"><span class="num">6</span><span class="label">技术路线算力</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label l">模型对比协议</span></div>
+  <div class="stat"><span class="num">20+</span><span class="label">代表论文</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列位置</div>
+  <div class="ch-title">这一篇回答"实验和部署到底要准备什么"</div>
+
+  前面几篇已经把数字人的任务边界和技术路线拆开：换嘴、运动空间、3DGS/NeRF、扩散基模、整帧/全身生成和实时流式蒸馏。本文把评测方法论、数据集、训练资源、推理资源和产品选型放到同一张坐标系里。
+
+  本文回答五个问题：
+  <ul>
+    <li><strong>Part 1</strong>：五大评测指标（画质、时序、同步、身份、效率）到底怎么算、什么时候会骗人、用什么代码库复现？</li>
+    <li><strong>Part 2</strong>：六条路线的训练算力、推理资源和 benchmark 重点分别是什么？</li>
+    <li><strong>Part 3-6</strong>：每条路线的 loss、指标和数据集细节。</li>
+    <li><strong>Part 7</strong>：主流训练与评测数据集的规模、License、偏差和适用场景。</li>
+    <li><strong>Part 8</strong>：FlashHead / LAM / UIKA / LiteAvatar 四个类型完全不同的模型，怎么设计标准化对比协议？</li>
+    <li><strong>Part 9</strong>：指标陷阱与反模式清单。</li>
+    <li><strong>Part 10-11</strong>：如何设计自己的 benchmark？产品怎么选？PoC/MVP/规模化怎么落地？</li>
+  </ul>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-avatar-survey.html"><span class="nav-label">上一篇 · 第八章</span><span class="nav-title">Avatar 类型数字人总报告</span></a>
+    <a class="nav-card current" href="digital-human-training-inference-benchmark.html"><span class="nav-label">本文</span><span class="nav-title">评测指标 / 算力 / 选型</span></a>
+    <a class="nav-card" href="voice-ai-digital-human-landscape.html"><span class="nav-label">下一篇</span><span class="nav-title">产业图谱</span></a>
+  </div>
+
+  <div class="callout"><strong>读法提示</strong>：本文是参考材料，不是线性叙事。做实验复现先看 Part 1 找指标代码库；选型对比直接跳 Part 8 看对比协议；设计自己的 benchmark 从 Part 7 的数据集表开始；关心成本和落地看 Part 2 和 Part 10-11。</div>
+</div>
+
+<!-- ============================================================
+  Part 1: 五大指标族深度拆解（原 S12 Part 1）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">五大指标族：从公式直觉到失败模式</div>
+
+  <p>数字人的 evaluation 至少有五个维度：画质、时序、同步、身份、效率。FID、FVD 只能回答"生成分布像不像测试集"，不能单独回答嘴型准不准、身份稳不稳、首帧延迟能不能接受。本节对每个维度做三件事：解释计算原理（直觉，不是推导），列出失败模式（什么时候数字在骗你），给出可复现的代码库。#Heusel-et-al.-2017# #Unterthiner-et-al.-2018# #Chung-et-al.-2017# #Deng-et-al.-2019# #Zhang-et-al.-2018#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>指标族</th><th>常见指标</th><th>回答的问题</th><th>容易误读的地方</th></tr></thead>
+      <tbody>
+        <tr><td>图像质量</td><td>FID、PSNR、SSIM、LPIPS、FaceIQA、IQA</td><td>单帧是否清晰、是否像真实图像</td><td>局部换嘴保留原视频大部分区域，FID/FVD 可能天然更好</td></tr>
+        <tr><td>视频时序</td><td>FVD、temporal consistency、Dino-S</td><td>跨帧是否稳定，长视频是否漂移</td><td>短视频好不代表 5 分钟以上稳定</td></tr>
+        <tr><td>音画同步</td><td>LSE-D、LSE-C、Sync-C、Sync-D、LMD</td><td>嘴型和音频是否对齐</td><td>同步高不等于表情自然，也不等于身份稳定</td></tr>
+        <tr><td>身份保持</td><td>CSIM、ArcFace similarity、Dino-S、人工 identity score</td><td>生成过程是否仍像同一个人</td><td>长时生成里身份漂移通常比短片更严重</td></tr>
+        <tr><td>系统效率</td><td>FPS、RTF、TTFF、FFD、显存、吞吐</td><td>能否实时、能否流式、能否并发</td><td>离线 FPS、批量 FPS 和单路交互延迟不是一回事</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">1.1 图像质量：FID、PSNR、SSIM、LPIPS</h3>
+
+  <p><strong>FID（Frechet Inception Distance）</strong> 把生成图像和真实图像分别送入 Inception-v3，取 pool3 层 2048 维特征，假设两组特征都服从多元高斯分布，然后算两个分布之间的 Frechet 距离：</p>
+
+  \[
+  \text{FID} = \|\mu_r - \mu_g\|^2 + \text{Tr}\left(\Sigma_r + \Sigma_g - 2(\Sigma_r \Sigma_g)^{1/2}\right)
+  \]
+
+  <p>直觉上，FID 同时比较均值（"平均长什么样"）和协方差（"多样性如何"）。FID 越低，生成分布越接近真实分布。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      FID 的失败模式
+    </div>
+    <div class="admonition-content">
+      <ul>
+        <li><strong>样本量敏感</strong>：少于 1000 张样本时 FID 方差大，不同论文用不同样本量算出的 FID 不可比。</li>
+        <li><strong>奖励 mode collapse</strong>：如果生成分布很窄但恰好在真实分布的高密度区域，FID 可能很低，但多样性为零。</li>
+        <li><strong>不测时序</strong>：FID 是逐帧计算的，完全忽略视频的时间连续性。</li>
+        <li><strong>局部换嘴路线的虚假优势</strong>：Wav2Lip、MuseTalk 这类方法只改嘴部区域，其余像素来自原视频，FID 天然接近原视频分布。</li>
+        <li><strong>特征提取器依赖</strong>：Inception-v3 在 ImageNet 上训练，对人脸细节的判别力有限。clean-fid 库提供了更一致的预处理。</li>
+      </ul>
+    </div>
+  </div>
+
+  <p><strong>PSNR / SSIM</strong> 是像素级和结构级的重建质量指标。PSNR 直接衡量像素误差的对数比，SSIM 同时考虑亮度、对比度和结构相似性。它们都需要 ground truth 对齐帧，因此只适用于 self-reenactment 或有 GT 的重建任务（LAM、UIKA 的论文主实验）。PSNR 的失败模式是对空间位移敏感：一张完美但偏移 1 像素的图像 PSNR 会很低。</p>
+
+  <p><strong>LPIPS</strong> 用预训练 VGG/AlexNet 的特征空间计算感知距离，与人眼判断的相关性比 PSNR 更强。对生成模型来说，LPIPS 通常比 PSNR 更可靠。#Zhang-et-al.-2018#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>指标</th><th>回答什么</th><th>不能回答什么</th><th>代码库</th><th>跨路线适用</th></tr></thead>
+      <tbody>
+        <tr><td>FID</td><td>生成分布是否像真实分布</td><td>单帧质量、时序稳定、同步</td><td><code>pytorch-fid</code>、<code>clean-fid</code></td><td>视频生成模型；3DGS 需先渲染为视频</td></tr>
+        <tr><td>PSNR</td><td>像素级重建精度</td><td>感知质量、分布相似度</td><td>scikit-image、torchmetrics</td><td>需要 GT 对齐帧</td></tr>
+        <tr><td>SSIM</td><td>结构相似性</td><td>时序、同步、身份</td><td>scikit-image、pytorch-msssim</td><td>同 PSNR</td></tr>
+        <tr><td>LPIPS</td><td>感知相似度</td><td>绝对质量、时序</td><td><code>lpips</code> pip 包</td><td>需要 GT，但比 PSNR 更接近人判</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">1.2 视频时序：FVD、Dino-S</h3>
+
+  <p><strong>FVD（Frechet Video Distance）</strong> 是 FID 的视频版：用 I3D 在视频片段上抽取时空特征，再算 Frechet 距离。与 FID 的关键区别是 FVD 同时评估时间连续性——闪烁、跳帧和动作不连贯都会拉高 FVD。#Unterthiner-et-al.-2018#</p>
+
+  <p>FVD 的最大陷阱是 <strong>clip length 敏感性</strong>。16 帧和 32 帧算出的 FVD 差异可以超过 50%，不同论文用不同 clip length 的结果不可直接比。</p>
+
+  <p><strong>Dino-S</strong> 用 DINOv2 的自监督特征衡量相邻帧的语义一致性。它不需要 ground truth，适合评估长视频的时间稳定性。但 Dino-S 测的是特征稳定而非语义正确——一个静态画面也能得高分。</p>
+
+  <h3 class="section-title">1.3 唇音同步：Sync-C / Sync-D / LSE-C / LSE-D</h3>
+
+  <p><strong>SyncNet</strong> 是唇音同步评测的核心工具。它用双流 CNN 分别处理嘴部 ROI 视频片段和音频梅尔频谱，输出两组 embedding 后算余弦相似度（Sync-C，越高越好）和欧氏距离（Sync-D，越低越好）。SyncNet 在 VoxCeleb2 上训练，主要覆盖英语、正面人脸。#Chung-et-al.-2017#</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      SyncNet 的失败模式
+    </div>
+    <div class="admonition-content">
+      <ul>
+        <li><strong>非英语退化</strong>：SyncNet 在英语上训练，对中文、日语等语言的同步判断可能不准。</li>
+        <li><strong>极端姿态</strong>：侧脸、低头、遮挡会导致嘴部 ROI 裁剪失败。</li>
+        <li><strong>高分 ≠ 自然表情</strong>：SyncNet 只判断"嘴型和音频是否一致"，不判断"表情是否自然"。</li>
+        <li><strong>"一致但错误"</strong>：如果模型学到了错误的嘴型模式但音画仍然同步，SyncNet 无法区分。</li>
+      </ul>
+    </div>
+  </div>
+
+  <p><strong>LSE-C / LSE-D</strong> 是 Wav2Lip 论文引入的变体，计算方式类似但使用不同的 SyncNet 模型版本。复现时务必确认使用的是哪个 SyncNet checkpoint。#Prajwal-et-al.-2020#</p>
+
+  <h3 class="section-title">1.4 身份保持：CSIM、ArcFace</h3>
+
+  <p><strong>CSIM（Cosine Similarity of Identity embedding）</strong> 用 ArcFace 等人脸识别模型提取参考图和生成帧的身份 embedding，计算余弦相似度。CSIM 的关键陷阱是<strong>判别性嵌入和生成质量的脱节</strong>：ArcFace 是为身份判别训练的，一张模糊但"像同一个人"的图像可以得高分。此外，静态面部（几乎没有表情变化）的 CSIM 通常很高——不代表模型的表情生成能力好。#Deng-et-al.-2019#</p>
+
+  <h3 class="section-title">1.5 系统效率：FPS、RTF、TTFF、VRAM</h3>
+
+  <p>系统效率指标看起来最直接，却也是最容易被论文和 demo 误导的维度。FPS 必须区分离线批量、单路流式和多路并发；RTF &lt; 1 表示实时；TTFF（Time To First Frame）对实时交互场景比 FPS 更重要；VRAM 决定了单卡能跑什么模型。</p>
+
+  <div class="callout"><strong>工程实测参考</strong>：<a href="digital-human-engineering-benchmark.html">工程 Benchmark 汇总页</a> 记录了 A10 GPU 上的真实推理数据：LiteAvatar 25.19 FPS / 7507 MiB，LAM 30 FPS / 1725 MiB，FlashHead Lite 46.7 FPS，FlashHead Pro 4.8 FPS / 7839 MiB。</div>
+
+  {{< mermaid >}}
+flowchart TD
+  Q1{"模型输出类型？"}
+  Q1 -->|"视频帧序列"| Q2{"评估什么？"}
+  Q1 -->|"3D 资产"| Q3{"渲染后评估 还是资产评估？"}
+  Q1 -->|"参数化面部"| Q4{"驱动精度 还是外观质量？"}
+  Q2 -->|"画质"| M1["FID / LPIPS"]
+  Q2 -->|"时序稳定"| M2["FVD / Dino-S"]
+  Q2 -->|"唇音同步"| M3["Sync-C/D"]
+  Q2 -->|"身份保持"| M4["CSIM / ArcFace"]
+  Q3 -->|"渲染后"| M5["同视频帧指标"]
+  Q3 -->|"几何资产"| M6["Chamfer / F-Score"]
+  Q4 -->|"驱动精度"| M7["AED / AKD"]
+  Q4 -->|"外观"| M8["PSNR / SSIM / LPIPS"]
+  {{< /mermaid >}}
+
+  <p><em>图 1：指标选择决策树。从模型输出类型出发，引导到适合的评测指标。</em></p>
+</div>
+
+<!-- ============================================================
+  Part 2: 六条路线的算力量级总表（S09 原文）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">六条路线的算力量级总表</div>
+
+  <div class="table-wrap wide benchmark-table">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>训练算力量级</th><th>推理算力量级</th><th>Benchmark 重点</th></tr></thead>
+      <tbody>
+        <tr><td>轻量换嘴 /<br>局部重绘</td><td>Wav2Lip<br>MuseTalk</td><td>8×V100 约 3 天<br>8×H20 两阶段数十小时</td><td>单 V100<br>30–40 FPS 量级</td><td>LRS2、ReSyncED<br><a href="/blog/hdtf-source-code-analysis">HDTF</a>、<a href="/blog/vfhq-deep-dive">VFHQ</a><br>口型同步<br>身份保持<br>局部画质 / artifact</td></tr>
+        <tr><td>运动空间 /<br>隐式关键点</td><td>SadTalker、LivePortrait<br>VASA-1、Ditto、Teller</td><td>4×A6000 / 8×A100<br>8×8 A800 等中高配训练</td><td>RTX 4090 或 A100 可达实时<br>Teller 用 4×H800 做 200ms chunk</td><td>VoxCeleb2、Talk9、HDTF100<br><a href="/blog/hdtf-source-code-analysis">HDTF</a>、RAVDESS<br>口型同步<br>身份保持<br>头动 / 表情<br>实时性 / 延迟</td></tr>
+        <tr><td>NeRF<br>talking portrait</td><td>AD-NeRF<br>RAD-NeRF<br>ER-NeRF</td><td>早期 AD-NeRF 可到天级 / 百小时级<br>ER-NeRF 降到小时级</td><td>从低 FPS 到十几 FPS<br>取决于 ray sampling 与加速结构</td><td>person-specific 短视频<br>画质：PSNR / LPIPS<br>运动：LMD<br>同步：LSE-C<br>效率：FPS</td></tr>
+        <tr><td>3DGS<br>talking head</td><td>TalkingGaussian、GaussianTalker<br>GSTalker、EGSTalker</td><td>小时级到几十分钟级</td><td>数十到百 FPS 量级</td><td>person-specific 3–5 分钟视频<br>运动：LMD<br>同步：LSE-C<br>身份保持<br>FPS / 长时稳定</td></tr>
+        <tr><td>扩散肖像 /<br>音频驱动 portrait</td><td>EMO、Hallo<br>AniPortrait、FLAP</td><td>单卡到 8×A100<br>EMO 更披露 250h+ 数据而非 GPU</td><td>多步扩散偏离线<br>部分模型未披露标准推理耗时</td><td><a href="/blog/hdtf-source-code-analysis">HDTF</a>、CelebV、<a href="/blog/vfhq-deep-dive">VFHQ</a><br>CelebV-HQ、Wild<br>画质：FID / FVD<br>同步 / 身份<br>表情 / 时序稳定</td></tr>
+        <tr><td>整帧 / 全身 /<br>流式基模</td><td>Animate Anyone、OmniAvatar<br>InfiniteTalk、Live Avatar<br>StreamAvatar、LLIA</td><td>14B 视频基座<br>64×H100 或 128×H800 量级</td><td>离线 DiT 很慢<br>蒸馏后可到 5×H800 45 FPS<br>或 4090D 45–78 FPS</td><td><a href="/blog/hdtf-source-code-analysis">HDTF</a>、CelebV-HQ、EMTD<br>GenBench、TikTok、UBC<br>长时稳定<br>全身动作 / 手势<br>TTFF / 延迟 / FPS</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      算力数字只能同口径比较
+    </div>
+    <div class="admonition-content"><p>训练时长受数据量、分辨率、batch size、混合精度、并行策略和是否从预训练模型微调影响；推理速度受分辨率、采样步数、是否 batch、是否 TensorRT/FP8/INT8、是否包含音频编码和媒体链路影响。本文把它们作为路线量级，不把不同论文的数字直接排成绝对榜单。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 3: 轻量换嘴和局部重绘（S09 原文）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">轻量换嘴和局部重绘：最低成本验证同步链路</div>
+
+  轻量换嘴路线的基本假设是：原视频的大部分内容已经足够好，模型只需要改嘴部或脸部局部区域。Wav2Lip 的代表性设计是先训练一个强唇形同步专家，再用 L1、VGG perceptual、Sync loss 和 adversarial loss 约束生成器；论文级实验报告 8 张 V100 训练约 3 天、单 V100 约 40 FPS，训练和测试基准围绕 LRS2 与 ReSyncED 展开。#Wav2Lip#
+
+  MuseTalk 把问题放进 latent inpainting：先用 L1 + VGG perceptual 学局部重建，再加入 face / lip adversarial discriminator 和 SyncNet 同步约束；本地精读记录的配置是 Stage 1 用 8 张 H20、200k steps、约 60 小时，Stage 2 约 30 小时，推理在 V100 上 256×256、preloaded data 条件下约 30 FPS。#MuseTalk#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>常见 loss</th><th>常见指标</th><th>常用 benchmark / 数据集</th><th>适合判断</th></tr></thead>
+      <tbody>
+        <tr><td>Wav2Lip</td><td>L1 重构、VGG perceptual、SyncNet sync、GAN adversarial</td><td>LSE-D、LSE-C、FID、人评</td><td>LRS2、ReSyncED</td><td>已有视频配音是否对口型</td></tr>
+        <tr><td>MuseTalk</td><td>L1、VGG、face/lip adversarial、SyncNet sync</td><td>FID、CSIM、LSE-C、用户研究</td><td><a href="/blog/hdtf-source-code-analysis">HDTF</a>、<a href="/blog/vfhq-deep-dive">VFHQ</a></td><td>局部重绘能否兼顾同步和身份</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这条路线的 benchmark 要特别注意"保留原视频"的优势。因为背景、头部姿态和大部分脸部纹理来自原视频，FID/FVD 往往不会暴露模型真实的可控性短板；相反，LSE-C/LSE-D、CSIM、嘴部边界 artifact 和用户研究更接近产品风险。
+</div>
+
+<!-- ============================================================
+  Part 4: 运动空间路线（S09 原文）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">运动空间路线：把像素生成改成可缓存的运动生成</div>
+
+  运动空间路线先把脸部、头部或身体动作压到更低维的表示里，再由渲染器把运动转成视频。SadTalker 使用 3DMM 运动系数，把表情和姿态拆给 ExpNet 与 PoseVAE。#SadTalker#
+
+  LivePortrait 用隐式关键点、stitching 和 retargeting 做快速肖像动画；Stage I 在 8 张 A100 上从零训练约 10 天，Stage II 约 2 天，推理在 RTX 4090 + PyTorch 上约 12.8ms。#LivePortrait#
+
+  VASA-1 把面部潜在空间和 diffusion transformer 分开：面部潜在空间模型用 4 张 RTX A6000 训练 7 天，扩散 Transformer 训练 3 天；推理在单 RTX 4090 上达到 512×512 在线 40 FPS、启动延迟约 170ms。VASA-1 评估 SC、SD、FVD25、CAPP、ΔP。#VASA1#
+
+  Ditto 和 Teller 更直接面向流式系统。Ditto 用 8 张 A100、batch size 1024、500 epochs 训练 motion-space diffusion，推理报告 RTF 与 FFD；Teller 则把 motion 进一步 token 化，Stage 1 / SFT / ETM 使用 8×8 A800 量级训练，推理在 4 张 H800 上按 200ms chunk 运行。#Ditto# #Teller#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>子路线</th><th>代表方法</th><th>loss 重点</th><th>metrics 重点</th><th>benchmark</th></tr></thead>
+      <tbody>
+        <tr><td>3DMM / 参数运动</td><td>SadTalker</td><td>表情系数重构、Sync loss、VAE ELBO、KL</td><td>同步、身份、头动自然度</td><td>VoxCeleb、talking head 对比集</td></tr>
+        <tr><td>隐式关键点</td><td>LivePortrait</td><td>GAN、perceptual、face identity、landmark guide、stitching/retargeting</td><td>PSNR、SSIM、LPIPS、L1、CSIM、eye direction MAE、FID</td><td>TalkingHead-1KH、<a href="/blog/vfhq-deep-dive">VFHQ</a></td></tr>
+        <tr><td>motion diffusion</td><td>VASA-1、Ditto</td><td>clean motion MSE、速度/加速度 temporal loss、initial loss、adaptive weights</td><td>FVD、CSIM、Sync-C/D、RTF、FFD、CAPP、ΔP</td><td>VoxCeleb2、Talk9、HDTF100</td></tr>
+        <tr><td>motion token AR</td><td>Teller</td><td>RVQ reconstruction + commitment、AR token prediction、region mask reconstruction</td><td>FID、FVD、Sync-C、Sync-D、Time</td><td>AVSpeech、<a href="/blog/vfhq-deep-dive">VFHQ</a>、<a href="/blog/hdtf-source-code-analysis">HDTF</a>、RAVDESS</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 5: NeRF 与 3DGS（S09 原文）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">NeRF 与 3DGS：专人资产的训练成本和渲染效率</div>
+
+  3D/显式可渲染表示路线的 benchmark 和通用视频生成很不一样：它通常是 person-specific，先用某个目标人物的几分钟到几小时视频训练一个资产，再用新音频或新 motion 驱动它。AD-NeRF 把头和躯干建成 NeRF，后续论文汇总里出现过 167.6 小时训练、0.04 FPS 的量级；ER-NeRF 通过区域感知和高效表示把训练降到 8.9 小时、推理到 15.21 FPS。#ADNeRF# #ERNeRF# #DigitalHuman3DGS#
+
+  3D Gaussian Splatting 把渲染瓶颈从体渲染的 ray marching 转成显式 Gaussian rasterization。TalkingGaussian 的训练约 1.5 小时、推理 70.42 FPS；GaussianTalker 训练 4.5 小时、59.24 FPS；GSTalker 训练 40 分钟、实时 125 FPS；EGSTalker 训练 3.7 小时、68.51 FPS。#TalkingGaussian# #GaussianTalker# #GSTalker# #EGSTalker#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>路线</th><th>常见 loss</th><th>常见指标</th><th>数据 / benchmark 形态</th><th>实验解读</th></tr></thead>
+      <tbody>
+        <tr><td>NeRF talking portrait</td><td>RGB 重建、感知/结构、嘴部或 landmark 约束、同步约束</td><td>PSNR、SSIM、LPIPS、FID、LMD、LSE-D/C、训练时间、FPS</td><td>Obama、May 等 person-specific 短视频</td><td>画质指标不能替代同步指标；体渲染是推理瓶颈</td></tr>
+        <tr><td>3DGS talking head</td><td>L1、D-SSIM、LPIPS、lip reconstruction、audio-lip latent consistency、smoothness</td><td>PSNR、SSIM、LPIPS、FID、LMD、LSE-D/C、FPS</td><td>3–5 分钟目标人物视频，held-out frames / audio</td><td>小时级训练和实时渲染让专人 avatar 更接近可用</td></tr>
+        <tr><td>motion controller</td><td>motion token reconstruction、masked infill、prosody alignment、temporal continuity</td><td>R@1、FID、ESD、Diversity、FGD、BC、人评</td><td>SuSuInterActs、BEATv2</td><td>生成的是 motion，不应和最终视频 FPS 直接比较</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  SentiAvatar 属于 motion controller：它用 8 张 A100 训练 R-VQVAE、Motion Foundation Model、SFT 和 Infill Transformers，报告约 0.3 秒生成 6 秒 motion 输出，benchmark 是 SuSuInterActs 与 BEATv2，指标包括 R@1、FID、ESD、Diversity、FGD、BC 和用户研究。#SentiAvatar#
+</div>
+
+<!-- ============================================================
+  Part 6: 扩散肖像、整帧全身和流式基模（S09 原文）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">扩散肖像、整帧全身和流式基模：从离线质量到实时系统</div>
+
+  扩散肖像路线的优势是表情和画面质量，代价是多步采样。Hallo 使用 8 张 A100、两阶段各 30,000 steps、512×512 训练，benchmark 覆盖 <a href="/blog/hdtf-source-code-analysis">HDTF</a>、CelebV 和 Wild，指标包括 FID、FVD、Sync-C、Sync-D、E-FID；AniPortrait 的 Audio2Lmk 在单张 A100 上训练，Lmk2Video 用 4 张 A100、每阶段约 2 天。#Hallo# #AniPortrait# #EMO#
+
+  整帧与全身路线把背景、身体和场景也纳入生成。Animate Anyone 用内部 5K character video clips，评测 UBC fashion video 和 TikTok；OmniAvatar 基于 Wan2.1-T2V-14B 做 LoRA 音频适配；InfiniteTalk 基于 Wan2.1-I2V-14B，使用约 2000 小时数据和 64 张 H100 80G 训练。#AnimateAnyone# #OmniAvatar# #InfiniteTalk#
+
+  实时流式路线的关键不是"换一个更快采样器"，而是把训练目标、因果注意力、蒸馏、量化、流水线和缓存一起改。Live Avatar 用 14B Wan-S2V 初始化，Stage 1 用 128×H800 训练 25K steps，推理默认 4-step，5×H800 达到 45.2 FPS / 1.21s TTFF。StreamAvatar 把双向扩散改为 block-wise causal attention 并蒸馏；LLIA 则用 consistency model、INT8 和 pipeline parallelism，在 RTX 4090D 上 512×512 45 FPS。#LiveAvatar# #StreamAvatar# #LLIA#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>路线</th><th>常见训练目标</th><th>评估重点</th><th>benchmark / 数据集</th><th>典型风险</th></tr></thead>
+      <tbody>
+        <tr><td>音频扩散肖像</td><td>diffusion denoising、latent reconstruction、L1 landmark / mesh、audio-visual attention alignment</td><td>FID、FVD、Sync-C/D、E-FID、用户研究</td><td><a href="/blog/hdtf-source-code-analysis">HDTF</a>、CelebV、Wild、<a href="/blog/vfhq-deep-dive">VFHQ</a>、CelebV-HQ</td><td>推理慢、短片好但交互延迟高</td></tr>
+        <tr><td>整帧 / 全身 DiT</td><td>flow matching / diffusion denoising、LoRA 适配、reference / pose / audio condition</td><td>FID、FVD、Sync-C/D、CSIM、人评、长时一致性</td><td>UBC、TikTok、<a href="/blog/hdtf-source-code-analysis">HDTF</a>、CelebV-HQ、EMTD</td><td>FID/FVD 对局部编辑和整帧重生成不公平</td></tr>
+        <tr><td>流式蒸馏</td><td>flow matching、DMD / self-forcing、AR distillation、adversarial refinement、consistency training</td><td>FPS、TTFF、ASE、IQA、Sync-C、Dino-S、长视频身份</td><td>GenBench、AVSpeech、long / short split</td><td>只优化短视频会漏掉长时身份漂移和首帧延迟</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 7: 数据集全景（原 S12 Part 2）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">数据集全景：训练、评测与偏差</div>
+
+  <p>数字人的数据集大致分三类：训练数据（用于学参数）、评测数据（用于算指标）和两用数据。选择数据集时不只看规模，还要看 License 是否允许商用、人口统计学偏差是否匹配目标场景、分辨率和帧率是否与实验设置对齐。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>规模</th><th>分辨率</th><th>License</th><th>训练 / 评测</th><th>使用它的模型</th><th>局限性 / 偏差</th></tr></thead>
+      <tbody>
+        <tr><td><a href="/blog/hdtf-source-code-analysis"><strong>HDTF</strong></a></td><td>362 speakers, 10K clips, 15.8h</td><td>512p</td><td>Research only</td><td>两者</td><td>FlashHead、LAM、UIKA、SadTalker、Hallo</td><td>正面为主、studio 光照、英语为主</td></tr>
+        <tr><td><a href="/blog/vfhq-deep-dive"><strong>VFHQ</strong></a></td><td>15,204 clips, ~3M frames</td><td>512p</td><td>CC-BY-NC-SA</td><td>两者</td><td>LAM、UIKA、FlashHead、LivePortrait、MuseTalk</td><td>访谈场景，多身份，但非商业</td></tr>
+        <tr><td><strong>VoxCeleb2</strong></td><td>6,112 speakers, 1M+ utterances</td><td>多分辨率</td><td>CC-BY</td><td>训练为主</td><td>SyncNet 预训练、VASA-1、Ditto</td><td>YouTube 提取，噪声多，多人种</td></tr>
+        <tr><td><strong>CelebV-HQ</strong></td><td>35,666 clips, 多属性标注</td><td>512p+</td><td>Research</td><td>评测为主</td><td>Hallo、AniPortrait、OmniAvatar、InfiniteTalk</td><td>名人视频，属性标注丰富</td></tr>
+        <tr><td><strong>LRS2 / LRS3</strong></td><td>LRS2: 150K+ clips (TED)</td><td>256p-512p</td><td>LRS2: CC-BY</td><td>两者</td><td>Wav2Lip</td><td>TED 演讲场景，英语，正面</td></tr>
+        <tr><td><strong>MEAD</strong></td><td>60 speakers, 281K clips, 39h</td><td>384p</td><td>Research</td><td>训练</td><td>FlashHead（VividHead 组成）</td><td>多视角、多情绪，studio 环境</td></tr>
+        <tr><td><strong>NeRSemble-v2</strong></td><td>多视角 studio 采集</td><td>高分辨率</td><td>Research</td><td>评测</td><td>UIKA</td><td>studio 光照，身份数少但 3D 一致性监督强</td></tr>
+        <tr><td><strong>VividHead</strong></td><td>60K speakers, 330K clips, 782h</td><td>512p</td><td>未公开</td><td>训练</td><td>FlashHead</td><td>从 10K 小时清洗，15 种语言</td></tr>
+        <tr><td><strong>AVSpeech</strong></td><td>290K clips (YouTube)</td><td>多分辨率</td><td>CC-BY</td><td>训练</td><td>Live Avatar、Teller</td><td>噪声大，YouTube 提取，质量参差</td></tr>
+        <tr><td><strong>RAVDESS</strong></td><td>24 actors, 多情绪</td><td>HD</td><td>CC-BY-NC-SA</td><td>评测</td><td>Teller</td><td>表演情绪，规模小但受控</td></tr>
+        <tr><td><strong>UIKA Synthetic</strong></td><td>7500+ 身份 × 9 视角 × 13K+ 帧</td><td>512p</td><td>自建</td><td>训练</td><td>UIKA</td><td>SphereHead + LivePortrait 合成，与真实分布有偏移</td></tr>
+        <tr><td><strong>EMTD</strong></td><td>情绪丰富的 talking head</td><td>HD</td><td>Research</td><td>评测</td><td>InfiniteTalk</td><td>侧重情绪表达</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><em>表：数字人主流数据集汇总。</em></p>
+
+  <h3 class="section-title">数据集-模型交叉矩阵</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>FlashHead</th><th>LAM</th><th>UIKA</th><th>LiteAvatar</th></tr></thead>
+      <tbody>
+        <tr><td><a href="/blog/hdtf-source-code-analysis">HDTF</a></td><td>T + E</td><td>E</td><td>T</td><td>—</td></tr>
+        <tr><td><a href="/blog/vfhq-deep-dive">VFHQ</a></td><td>T + E</td><td>T + E</td><td>T + E</td><td>—</td></tr>
+        <tr><td>VoxCeleb2</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>CelebV-HQ</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>MEAD</td><td>T (VividHead)</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>NeRSemble-v2</td><td>—</td><td>—</td><td>T + E</td><td>—</td></tr>
+        <tr><td>VividHead</td><td>T</td><td>—</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><em>表：数据集-模型交叉矩阵。T = 训练使用，E = 评测使用。LiteAvatar 是工程工具，不使用学术数据集。</em></p>
+
+  <div class="callout"><strong>License 警示</strong>：<a href="/blog/hdtf-source-code-analysis">HDTF</a> 和 CelebV-HQ 仅限研究使用；<a href="/blog/vfhq-deep-dive">VFHQ</a> 为 CC-BY-NC-SA（非商业）；VoxCeleb2 为 CC-BY（可商用）。如果目标是产品选型，评测集的法律风险要单独评估。</div>
+</div>
+
+<!-- ============================================================
+  Part 8: 四模型对比协议（原 S12 Part 3）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 8</div>
+  <div class="ch-title">苹果和橘子怎么比：四模型标准化对比协议</div>
+
+  <p>FlashHead、LAM、UIKA 和 LiteAvatar 是四种类型完全不同的数字人模型。它们各自的论文用不同的指标、在不同的数据集上报告结果。直接比较 FlashHead 的 FID 和 LAM 的 PSNR，就像比较汽车的风阻系数和自行车的链条效率。</p>
+
+  <h3 class="section-title">8.1 模型定位</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>模型</th><th>类型</th><th>输入</th><th>输出</th><th>论文自报指标</th><th>设计意图</th></tr></thead>
+      <tbody>
+        <tr><td><strong>FlashHead</strong></td><td>2D 视频 DiT</td><td>参考图 + 音频流</td><td>视频帧序列</td><td>FID, FVD, Sync-C, Sync-D, FPS</td><td>消费级 GPU 实时流式数字人</td></tr>
+        <tr><td><strong>LAM</strong></td><td>3DGS 重建</td><td>单张图像</td><td>可动画 3D Gaussian 资产</td><td>PSNR, SSIM, LPIPS, CSIM, AED, AKD</td><td>单图→可驱动 3D 资产，跨平台实时</td></tr>
+        <tr><td><strong>UIKA</strong></td><td>3DGS 重建</td><td>1-N 张 pose-free 图像</td><td>可动画 3D Gaussian 资产</td><td>PSNR, SSIM, LPIPS, CSIM, AED, APD</td><td>任意输入→高质量 3D 头部资产</td></tr>
+        <tr><td><strong>LiteAvatar</strong></td><td>2D 参数化面部</td><td>音频（16kHz WAV）</td><td>面部动画帧</td><td>无学术指标</td><td>纯 CPU 实时，工程部署工具</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">8.2 桥接策略：输出归一化 + 两层指标</h3>
+
+  <p>对比的前提是让四个模型的输出进入同一格式：所有模型统一输出 25fps、512×512 的视频帧序列。LAM/UIKA 用测试音频驱动 FLAME 参数 → 固定虚拟相机渲染视频；FlashHead/LiteAvatar 直接使用原生输出。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>层次</th><th>指标</th><th>适用模型</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Tier 1（通用）</strong></td><td>Sync-C, Sync-D, CSIM, FPS, VRAM</td><td>全部四个模型</td><td>任何音频驱动的面部动画都能算。Sync-C/D 测唇音同步，CSIM 测身份保持，FPS/VRAM 测系统效率。</td></tr>
+        <tr><td><strong>Tier 2（类型专属）</strong></td><td>FID, FVD</td><td>FlashHead, LiteAvatar</td><td>视频生成模型可直接算；LAM/UIKA 渲染后也可算但受渲染器影响。</td></tr>
+        <tr><td></td><td>PSNR, SSIM, LPIPS, AED, AKD</td><td>LAM, UIKA</td><td>需要 GT 对齐帧，仅 self-reenactment 可算。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>两层分开报告，不合成单一分数。</strong></p>
+
+  <h3 class="section-title">8.3 测试集与人评</h3>
+
+  <p><strong>测试集</strong>：标准集（<a href="/blog/hdtf-source-code-analysis">HDTF</a> 75 videos + <a href="/blog/vfhq-deep-dive">VFHQ</a> 50 clips）与论文对齐；压力集（长音频 >60s、非英语、极端姿态、歌唱）测边界；身份集（20 身份 × 3 张参考图）测稳定性。</p>
+
+  <p><strong>人评</strong>：30 人，within-subject 设计，4 维度 1-5 分 MOS（唇音同步、身份匹配、自然度、整体偏好），Latin Square 随机化，Krippendorff's alpha + Wilcoxon signed-rank test + Bonferroni correction。</p>
+
+  {{< mermaid >}}
+flowchart LR
+  subgraph Inputs["统一输入"]
+    A["参考图像"] --> B["测试音频"]
+  end
+  subgraph Models["四模型推理"]
+    B --> C["FlashHead\n→ 视频帧"]
+    B --> D["LAM\n→ 3DGS → 渲染视频"]
+    B --> E["UIKA\n→ 3DGS → 渲染视频"]
+    B --> F["LiteAvatar\n→ 视频帧"]
+  end
+  subgraph Normalize["输出归一化"]
+    C --> G["512×512, 25fps"]
+    D --> G
+    E --> G
+    F --> G
+  end
+  subgraph Metrics["统一评测"]
+    G --> H["Tier 1: Sync + CSIM + FPS"]
+    G --> I["Tier 2: FID/FVD 或 PSNR/AED"]
+    G --> J["人评 MOS"]
+  end
+  {{< /mermaid >}}
+
+  <p><em>图 2：四模型标准化对比流程。</em></p>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      解读注意事项
+    </div>
+    <div class="admonition-content">
+      <ul>
+        <li><strong>LiteAvatar 的低画质是设计取舍</strong>：纯 CPU 30 FPS 的工程工具，不是研究模型。</li>
+        <li><strong>LAM/UIKA 的独特优势不体现在 Tier 1</strong>：一次建模、无限驱动的 3D 资产复用能力是视频生成模型做不到的。</li>
+        <li><strong>FPS 口径不同</strong>：FlashHead 96 FPS 在 RTX 4090 上，LiteAvatar 30 FPS 在纯 CPU 上，跨硬件只看 FPS 会误导。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 9: 指标陷阱与反模式（原 S12 Part 4）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 9</div>
+  <div class="ch-title">指标陷阱：什么时候数字在骗你</div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>反模式</th><th>为什么是陷阱</th><th>正确做法</th></tr></thead>
+      <tbody>
+        <tr><td>只报 FID 不报 Sync</td><td>FID 不测唇音同步</td><td>lip-sync 模型必须同时报告 Sync-C/D</td></tr>
+        <tr><td>跨分辨率比 PSNR</td><td>256×256 和 512×512 的 PSNR 没有可比性</td><td>统一分辨率后再算 PSNR</td></tr>
+        <tr><td>SyncNet 在非英语上未校准</td><td>SyncNet 训练数据是英语+正面</td><td>跨语言用同一版本 SyncNet + 同一 face detector；补充人评</td></tr>
+        <tr><td>FPS 不标口径</td><td>论文 FPS 可能排除预处理、后处理和音频编码</td><td>标注：模型 forward / 端到端 / 含音频管线</td></tr>
+        <tr><td>CSIM 高 = 模型好</td><td>静态面部 CSIM 天然高</td><td>CSIM + AED（表情距离）联合报告</td></tr>
+        <tr><td>短视频 FVD 好 = 长视频稳定</td><td>16 帧 FVD 看不出 1 分钟后的漂移</td><td>补充 30s/60s 长视频 Dino-S 和定性检查</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 10: Benchmark 设计与产品选型（S09 原文合并）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 10</div>
+  <div class="ch-title">怎样设计自己的 benchmark 和产品选型</div>
+
+  如果目标是复现实验，benchmark 可以沿论文设置走；如果目标是产品选型，建议把测试集拆成四组。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>评测包</th><th>应该包含</th><th>推荐指标</th><th>适用路线</th></tr></thead>
+      <tbody>
+        <tr><td>公开复现包</td><td>LRS2 / <a href="/blog/hdtf-source-code-analysis">HDTF</a> / <a href="/blog/vfhq-deep-dive">VFHQ</a> / VoxCeleb2 / CelebV-HQ 子集</td><td>FID、FVD、Sync-C/D、CSIM、LPIPS</td><td>所有论文复现</td></tr>
+        <tr><td>业务样本包</td><td>真实客户形象、真实话术、真实音频设备</td><td>人工 MOS、身份保持、失败率、可审核性</td><td>产品选型</td></tr>
+        <tr><td>压力样本包</td><td>长音频、侧脸、遮挡、强表情、唱歌、跨语言</td><td>长时 Dino-S、Sync、artifact rate、重试率</td><td>实时和长视频路线</td></tr>
+        <tr><td>系统延迟包</td><td>ASR/TTS、avatar、编码、推流、网络、队列</td><td>TTFF、RTF、p50/p95 latency、GPU memory、吞吐</td><td>实时交互系统</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{< mermaid >}}
+flowchart TD
+  Q1{"目标是离线内容还是实时交互？"}
+  Q1 -->|"离线内容"| A1["优先 FID / FVD / CSIM / 人评"]
+  Q1 -->|"实时交互"| Q2{"是否要长时稳定？"}
+  Q2 -->|"否，短对话"| A2["Sync-C/D + RTF + TTFF + p95 latency"]
+  Q2 -->|"是，长直播"| A3["长视频身份 + Dino-S + Sync + drift rate + 重置策略"]
+  Q1 -->|"专人资产"| A4["训练时间 + FPS + LMD + LSE-C + held-out frames"]
+  {{< /mermaid >}}
+
+  <p><em>图 3：数字人 benchmark 设计决策树。论文指标解决"能否复现"，业务指标解决"能否上线"。</em></p>
+
+  <h3 class="section-title">从 benchmark 回到产品选型</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>业务目标</th><th>优先路线</th><th>核心评估</th><th>主要风险</th></tr></thead>
+      <tbody>
+        <tr><td>已有视频多语言配音</td><td>Wav2Lip / MuseTalk<br>轻量换嘴</td><td>LSE-C / LSE-D<br>边界 artifact<br>局部画质</td><td>口型边界<br>情绪不一致<br>素材授权</td></tr>
+        <tr><td>客服 / 会议 avatar</td><td>LivePortrait / VASA-1 / Ditto<br>运动空间 talking head</td><td>RTF / FFD / TTFF<br>身份保持<br>长时稳定</td><td>表情僵硬<br>身份漂移<br>故障降级</td></tr>
+        <tr><td>专人高保真形象</td><td>3DGS / NeRF<br>专人资产路线</td><td>训练小时数<br>FPS<br>LMD / LSE-C</td><td>采集成本<br>跨姿态泛化<br>资产维护</td></tr>
+        <tr><td>虚拟主播短视频</td><td>Hallo / AniPortrait / EMO / OmniAvatar<br>整帧或全身生成</td><td>FVD / CSIM / Sync<br>动作自然度<br>人评</td><td>生成失败率<br>审核成本<br>重试成本</td></tr>
+        <tr><td>实时互动讲解 / 直播</td><td>Live Avatar / StreamAvatar<br>流式基模 + 蒸馏</td><td>FPS / TTFF / p95 latency<br>长视频 identity<br>并发吞吐</td><td>首帧延迟<br>长时漂移<br>多卡调度</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>选型口径</strong>：离线内容生产可以优先追求表现力和人评质量；实时交互必须把首帧延迟、端到端延迟、长时稳定和降级策略放在画质之前。</div>
+</div>
+
+<!-- ============================================================
+  Part 11: PoC、MVP 与规模化（S09 原文）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 11</div>
+  <div class="ch-title">PoC、MVP 与规模化的落地检查</div>
+
+  <p>数字人项目的失败经常不是模型不可用，而是阶段错配：PoC 阶段追求生产级画质，MVP 阶段没有监控和降级，规模化阶段才发现许可证、肖像权、声音权或单位经济模型不成立。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>阶段</th><th>验证目标</th><th>退出条件</th><th>不该过早投入</th></tr></thead>
+      <tbody>
+        <tr><td>PoC</td><td>链路能否跑通</td><td>口型 / 身份 / 延迟达标<br>许可证无明显阻塞<br>目标用户不反感</td><td>大规模多卡训练<br>全身高真实生成<br>复杂运营后台</td></tr>
+        <tr><td>MVP</td><td>是否有人持续使用</td><td>留存和会话时长稳定<br>故障率可控<br>单路成本有基线</td><td>盲目扩并发<br>绑定单一供应商<br>忽略内容审核</td></tr>
+        <tr><td>规模化</td><td>是否能持续赚钱</td><td>单位经济为正<br>合规审计通过<br>监控、调度、降级完备</td><td>无授权形象商用<br>无备用路线<br>只按 demo FPS 估成本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>上线前还要单独检查许可证。Wav2Lip README 提示存在商业 API；MuseTalk 主许可证为 MIT；LivePortrait 主仓库为 MIT，但部分 InsightFace 相关模型仅限非商业研究；SadTalker 使用 Apache-2.0。代码许可证、模型权重许可证、依赖模型条款和训练数据授权要分开看。#Wav2Lip-GitHub# #MuseTalk-License# #LivePortrait-License# #SadTalker-License#</p>
+</div>
+
+<!-- ============================================================
+  Conclusion（合并）
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Conclusion</div>
+  <div class="ch-title">指标是工具，不是答案</div>
+
+  <p>数字人没有一个统一 benchmark 能覆盖所有路线。轻量换嘴的核心是同步和边界质量；运动空间的核心是低维运动是否稳定、可控、实时；NeRF/3DGS 的核心是专人资产训练成本和渲染效率；扩散肖像和整帧全身路线的核心是表现力、长时一致性和采样成本；流式基模则必须把 FPS、TTFF、长视频身份和系统链路一起评估。</p>
+
+  <p>跨路线对比（如 FlashHead vs LAM vs UIKA vs LiteAvatar）需要输出归一化和两层指标体系，不能合成单一分数排名。产品选型时，先把业务目标翻译成评测维度，再从本文的指标族和数据集表中选择合适的工具。</p>
+
+  <div class="review-box">
+    <h3>一页速查</h3>
+    <ul>
+      <li><strong>五大指标族</strong>：画质（FID/PSNR/SSIM/LPIPS）、时序（FVD/Dino-S）、同步（Sync-C/D）、身份（CSIM）、效率（FPS/RTF/TTFF/VRAM）。</li>
+      <li><strong>跨路线对比</strong>：Sync-C/D + CSIM + FPS + VRAM 是通用指标。FID/FVD 仅适用于视频输出；PSNR/SSIM 仅适用于有 GT 的重建任务。</li>
+      <li><strong>最低成本验证</strong>：Wav2Lip / MuseTalk，看 LSE-C、CSIM、FID 和真实素材边界。</li>
+      <li><strong>实时 talking head</strong>：LivePortrait / VASA-1 / Ditto / Teller，看 RTF、FFD、Sync-C/D 和首帧。</li>
+      <li><strong>专人高保真资产</strong>：3DGS 优先于传统 NeRF，看训练小时数、FPS、LMD 和 LSE-C。</li>
+      <li><strong>离线高表现力</strong>：Hallo / AniPortrait / EMO / InfiniteTalk，看 FVD、Sync、CSIM、人评和失败样本。</li>
+      <li><strong>实时大模型路线</strong>：Live Avatar / StreamAvatar / LLIA，看 TTFF、FPS、长时 identity 和并发成本。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-avatar-survey.html"><span class="nav-label">上一篇 · 第八章</span><span class="nav-title">Avatar 类型数字人总报告</span></a>
+    <a class="nav-card current" href="digital-human-hub.html"><span class="nav-label">系列目录</span><span class="nav-title">数字人系列总览</span></a>
+    <a class="nav-card" href="voice-ai-digital-human-landscape.html"><span class="nav-label">下一篇</span><span class="nav-title">产业图谱</span></a>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Heusel-et-al.-2017">Heusel, M. et al. (2017). GANs Trained by a Two Time-Scale Update Rule Converge to a Local Nash Equilibrium (FID). <a href="https://arxiv.org/abs/1706.08500" target="_blank">arXiv:1706.08500</a></li>
+      <li data-cite-key="Unterthiner-et-al.-2018">Unterthiner, T. et al. (2018). Towards Accurate Generative Models of Video (FVD). <a href="https://arxiv.org/abs/1812.01717" target="_blank">arXiv:1812.01717</a></li>
+      <li data-cite-key="Chung-et-al.-2017">Chung, J. S. et al. (2017). Out of Time: Automated Lip Sync in the Wild (SyncNet). <a href="https://arxiv.org/abs/1611.01599" target="_blank">arXiv:1611.01599</a></li>
+      <li data-cite-key="Prajwal-et-al.-2020">Prajwal, K. R. et al. (2020). Wav2Lip: Accurately Lip-syncing Videos In The Wild (LSE-C/D). <a href="https://arxiv.org/abs/2008.10010" target="_blank">arXiv:2008.10010</a>；本系列精读：<a href="paper-wav2lip.html">Wav2Lip</a></li>
+      <li data-cite-key="Deng-et-al.-2019">Deng, J. et al. (2019). ArcFace: Additive Angular Margin Loss for Deep Face Recognition (CSIM). <a href="https://arxiv.org/abs/1801.07698" target="_blank">CVPR 2019</a></li>
+      <li data-cite-key="Zhang-et-al.-2018">Zhang, R. et al. (2018). The Unreasonable Effectiveness of Deep Features as a Perceptual Metric (LPIPS). <a href="https://arxiv.org/abs/1801.03924" target="_blank">CVPR 2018</a></li>
+      <li data-cite-key="Wav2Lip">本系列精读：<a href="paper-wav2lip.html">Wav2Lip</a></li>
+      <li data-cite-key="MuseTalk">本系列精读：<a href="paper-musetalk.html">MuseTalk</a></li>
+      <li data-cite-key="SadTalker">Zhang, W. et al. (2023). SadTalker. <a href="https://arxiv.org/abs/2211.12194" target="_blank">arXiv:2211.12194</a>；本系列精读：<a href="paper-sadtalker.html">SadTalker</a></li>
+      <li data-cite-key="LivePortrait">Guo, J. et al. (2024). LivePortrait. 本系列精读：<a href="paper-liveportrait.html">LivePortrait</a></li>
+      <li data-cite-key="VASA1">Xu, S. et al. (2024). VASA-1. 本系列精读：<a href="paper-vasa1.html">VASA-1</a></li>
+      <li data-cite-key="Ditto">本系列精读：<a href="paper-ditto.html">Ditto</a></li>
+      <li data-cite-key="Teller">本系列精读：<a href="paper-teller.html">Teller</a></li>
+      <li data-cite-key="DigitalHuman3DGS">本系列专题：<a href="digital-human-3dgs-nerf-avatar.html">3DGS 与 NeRF 数字人路线</a></li>
+      <li data-cite-key="ADNeRF">Guo, Y. et al. (2021). AD-NeRF. <a href="https://arxiv.org/abs/2103.11078" target="_blank">arXiv:2103.11078</a></li>
+      <li data-cite-key="ERNeRF">Li, J. et al. (2023). ER-NeRF. <a href="https://arxiv.org/abs/2307.09323" target="_blank">arXiv:2307.09323</a></li>
+      <li data-cite-key="TalkingGaussian">TalkingGaussian. <a href="https://arxiv.org/html/2404.15264" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="GaussianTalker">GaussianTalker. <a href="https://arxiv.org/html/2404.14037" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="GSTalker">GSTalker. <a href="https://arxiv.org/html/2404.19040" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="EGSTalker">EGSTalker. <a href="https://arxiv.org/html/2510.08587v1" target="_blank">arXiv HTML</a>；本系列精读：<a href="paper-egstalker.html">EGSTalker</a></li>
+      <li data-cite-key="SentiAvatar">SentiAvatar. <a href="https://arxiv.org/abs/2604.02908" target="_blank">arXiv:2604.02908</a>；本系列精读：<a href="paper-sentiavatar.html">SentiAvatar</a></li>
+      <li data-cite-key="Hallo">本系列精读：<a href="paper-hallo.html">Hallo</a></li>
+      <li data-cite-key="AniPortrait">本系列精读：<a href="paper-aniportrait.html">AniPortrait</a></li>
+      <li data-cite-key="EMO">EMO: Emote Portrait Alive. <a href="https://arxiv.org/html/2402.17485v1" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="AnimateAnyone">Animate Anyone. <a href="https://arxiv.org/html/2311.17117v2" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="OmniAvatar">OmniAvatar. <a href="https://arxiv.org/html/2506.18866v1" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="InfiniteTalk">本系列精读：<a href="infinitetalk-paper.html">InfiniteTalk</a></li>
+      <li data-cite-key="LiveAvatar">本系列精读：<a href="live-avatar-paper.html">Live Avatar</a></li>
+      <li data-cite-key="StreamAvatar">StreamAvatar. <a href="https://arxiv.org/html/2512.22065v2" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="LLIA">本系列专题：<a href="digital-human-diffusion-foundation-avatar.html">扩散基模与整帧数字人路线</a></li>
+      <li data-cite-key="Yu-et-al.-2026">Yu, T. et al. (2026). SoulX-FlashHead. <a href="https://arxiv.org/pdf/2602.07449" target="_blank">arXiv:2602.07449</a>；本系列精读：<a href="paper-soulx-flashhead.html">FlashHead</a></li>
+      <li data-cite-key="He-et-al.-2025">He, Y. et al. (2025). LAM: Large Avatar Model. <a href="https://arxiv.org/abs/2502.17796" target="_blank">arXiv:2502.17796</a>；本系列精读：<a href="lam-2025.html">LAM</a></li>
+      <li data-cite-key="Wu-et-al.-2026">Wu, Z. et al. (2026). UIKA: Fast Universal Head Avatar. <a href="https://arxiv.org/abs/2601.07603" target="_blank">arXiv:2601.07603</a>；本系列精读：<a href="uika-2026.html">UIKA</a></li>
+      <li data-cite-key="LiteAvatar">HumanAIGC/lite-avatar. <a href="https://github.com/HumanAIGC/lite-avatar" target="_blank">GitHub</a>；本系列源码解读：<a href="lite-avatar-source-code-analysis.html">LiteAvatar</a></li>
+      <li data-cite-key="Wav2Lip-GitHub">Rudrabha/Wav2Lip official repository. <a href="https://github.com/Rudrabha/Wav2Lip" target="_blank">GitHub</a></li>
+      <li data-cite-key="MuseTalk-License">TMElyralab/MuseTalk LICENSE. <a href="https://github.com/TMElyralab/MuseTalk/blob/main/LICENSE" target="_blank">MIT License</a></li>
+      <li data-cite-key="LivePortrait-License">KwaiVGI/LivePortrait LICENSE and README. <a href="https://github.com/KwaiVGI/LivePortrait" target="_blank">GitHub</a></li>
+      <li data-cite-key="SadTalker-License">OpenTalker/SadTalker LICENSE. <a href="https://github.com/OpenTalker/SadTalker/blob/main/LICENSE" target="_blank">Apache-2.0</a></li>
+    </ul>
+  </div>
+</div>

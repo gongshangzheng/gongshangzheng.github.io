@@ -1,0 +1,223 @@
+---
+title: "图像压缩论文精读（四）：DDCM，把扩散模型的高斯噪声换成可传输代码簿"
+description: "深读 ICML 2025 Denoising Diffusion Codebook Models：为什么扩散采样的连续高斯空间高度冗余，如何用固定噪声代码簿同时生成图像和压缩 bitstream。"
+date: 2026-06-03T10:09:10
+created_at: 2026-06-03T10:09:10
+updated_at: 2026-06-03T10:15:00
+tags: ["image-compression", "diffusion-model", "generative-compression", "codebook", "DDCM"]
+categories: [AI]
+subcategory: "图像压缩"
+sub_id: 1300
+mathjax: true
+notify: true
+hero_title: "DDCM"
+hero_sub: "Compressed Image Generation with Denoising Diffusion Codebook Models"
+hero_tagline: "每一步不再采连续高斯噪声，而是在固定代码簿里选一个索引：生成轨迹因此天然变成 bitstream"
+---
+<div class="stats">
+  <div class="stat"><span class="num">ICML</span><span class="label">2025</span></div>
+  <div class="stat"><span class="num b">64</span><span class="label g">接近 DDPM 的代码簿规模</span></div>
+  <div class="stat"><span class="num">0.022</span><span class="label">BPP 示例</span></div>
+  <div class="stat"><span class="num b">4096</span><span class="label l">恢复任务代码簿规模</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">扩散模型的“无限噪声空间”可能太浪费了</div>
+
+  <p>DDCM 这篇论文的切入点非常漂亮：扩散模型反向采样时，每一步都从连续高斯分布里抽一个新噪声；但如果我们提前固定一组高斯噪声代码簿，每一步只在代码簿里选一个索引，会不会仍然能生成高质量图像？作者 Guy Ohayon、Hila Manor、Tomer Michaeli 和 Michael Elad 给出的答案是：可以，而且这个索引序列天然就是一个可复现、可传输的 bitstream。#Ohayon et al., 2025#</p>
+
+  <p>论文的完整题目是 <em>Compressed Image Generation with Denoising Diffusion Codebook Models</em>，发表于 ICML 2025。它不是重新训练一个专用压缩模型，而是改造预训练 DDPM / Stable Diffusion 的采样过程：把每一步的连续高斯噪声替换成固定代码簿中的离散噪声。这样生成出来的图像不只是一张图，还附带一串代码簿索引；解码端只要共享同样的模型和代码簿，就能用同一串索引重放完全相同的生成轨迹。#Ohayon et al., 2025#</p>
+
+  <div class="photo">
+    <img src="media/images/ddcm-2025/teaser.png" alt="DDCM 压缩生成示例" loading="lazy">
+    <div class="cap">图 1：DDCM 在生成图像的同时得到高压缩比的索引表示。（来源：Ohayon et al., Fig. 1）</div>
+  </div>
+
+  <div class="callout"><strong>一句话概括</strong>：DDCM 把“采一个连续高斯噪声”改成“从固定代码簿里选一个噪声索引”，于是扩散模型的随机轨迹变成了可以传输、可以复现的离散语言。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">为什么两个噪声也可能撑起巨大的生成空间</div>
+
+  <p>标准 DDPM 的反向过程可以写成 $x_{i-1}=\mu_i(x_i)+\sigma_i z_i$，其中 $z_i\sim\mathcal{N}(0,I)$。这里的 $z_i$ 是连续随机变量，理论上每一步都有无限多种取值。DDCM 的关键判断是：这个连续空间高度冗余，真正需要传输的可能不是完整噪声向量，而是“在有限候选中选哪个方向”。#Ho et al., 2020# #Ohayon et al., 2025#</p>
+
+  <p>论文给了一个很有说服力的数量级直觉：如果一个扩散模型有 $T=1000$ 个采样步，即便每一步只允许在两个固定噪声之间二选一，也已经有 $2^{1000}$ 条可能轨迹。这个数远远超过宇宙中原子数量的常见估计。换句话说，从组合容量看，连续高斯空间并不是覆盖自然图像分布的必要条件；一个离散但足够长的索引序列，理论上也可以非常密集地覆盖图像流形。#Ohayon et al., 2025#</p>
+
+  <div class="def-box">
+    <h3>DDCM 的核心对象</h3>
+    <p><strong>代码簿链</strong> 是每个采样步一组固定高斯向量：$\mathcal{C}_i=[z_i^{(1)},\ldots,z_i^{(K)}]$。这些向量一次性从 $\mathcal{N}(0,I)$ 中采样，并在模型生命周期内保持不变。生成时传输的不是向量本身，而是每一步选择的索引 $k_i$。</p>
+  </div>
+
+  <p>这也解释了 DDCM 为什么天然适合压缩。传统压缩要把图像转成码流；DDCM 则反过来：它先把生成过程离散化，让码流本身定义生成轨迹。随机生成时，索引可以随机选；压缩真实图像时，索引可以按某个准则选，使生成轨迹尽量靠近目标图像。这个视角非常接近“用生成模型的先验重写编码空间”。#Ohayon et al., 2025#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">把采样噪声换成代码簿索引</div>
+
+  <p>DDCM 的基础生成式很简单。对每个反向步 $i=2,\ldots,T+1$，预先固定一个包含 $K$ 个高斯向量的代码簿 $\mathcal{C}_i$；采样时不再抽 $z_i$，而是选择代码簿中的第 $k_i$ 个向量：</p>
+
+  <p style="text-align:center">\[x_{i-1}=\mu_i(x_i)+\sigma_i\mathcal{C}_i(k_i).\]</p>
+
+  <p>如果是无条件随机生成，$k_i$ 可以从 $\{1,\ldots,K\}$ 中均匀随机抽取；如果是压缩或条件生成，$k_i$ 就由目标函数选择。注意这里没有改训练，也没有改 denoiser 网络，只是把采样过程中的随机源替换为离散代码簿。因此它可以套在像 ImageNet pixel-space DDPM、Stable Diffusion 2.1 这样的预训练模型上。#Ohayon et al., 2025# #Rombach et al., 2022#</p>
+
+  <div class="photo">
+    <img src="media/images/ddcm-2025/overview.png" alt="DDCM 方法总览" loading="lazy">
+    <div class="cap">图 2：DDCM 用预定义代码簿替换标准 DDPM 中的高斯噪声，并通过不同选择规则服务于生成、压缩和条件生成。（来源：Ohayon et al., Fig. 2）</div>
+  </div>
+
+  <h3 class="section-title">从随机生成到图像压缩</h3>
+
+  <p>压缩真实图像时，DDCM 不再随机挑索引，而是让每一步的代码簿噪声尽量推动当前预测图靠近目标图像。论文使用 denoiser 在第 $i$ 步对干净图像的预测 $\hat{x}_{0|i}$，计算残差 $x_0-\hat{x}_{0|i}$，然后选择与残差内积最大的代码簿向量：</p>
+
+  <p style="text-align:center">\[k_i=\arg\max_k \langle \mathcal{C}_i(k),x_0-\hat{x}_{0|i}\rangle.\]</p>
+
+  <p>这个规则很朴素，却抓住了方向性：当前生成结果哪里还不像原图，就选一个最能把它往目标方向推的噪声。最终保存的就是 $\{k_i\}_{i=2}^{T+1}$。解码时不需要目标图像，只需要按这些索引重新执行 DDCM 采样。#Ohayon et al., 2025#</p>
+
+  <h3 class="section-title">码率由步数和代码簿大小直接决定</h3>
+
+  <p>如果每一步都使用同样大小的代码簿，bitstream 长度就是 $(T-1)\log_2K$。这让 DDCM 的码率控制非常透明：减少采样步数、减小 $K$，或者让一部分时间步使用 $K=1$，都可以降低码率。论文指出，即使在 $K=8192$、$T=1000$、图像尺寸 $768\times768$ 的设置下，码率也大约只有 0.022 BPP。#Ohayon et al., 2025#</p>
+
+  <div class="def-box">
+    <h3>高码率时的 Matching Pursuit</h3>
+    <p>单个索引的码率只随 $\log_2K$ 增长，继续提高 $K$ 会很耗计算。DDCM 因此在高码率区间引入 matching pursuit：每一步不只选一个噪声，而是贪心选择多个代码簿向量并用量化系数组合，让同一时间步携带更多可控信息。#Ohayon et al., 2025#</p>
+  </div>
+
+  {{< mermaid >}}
+  graph LR
+    A[目标图像 x0] --> B[当前扩散状态 xi]
+    B --> C[denoiser 预测 x0_hat]
+    C --> D[残差 x0 - x0_hat]
+    D --> E[遍历代码簿 C_i]
+    E --> F[选择内积最大的索引 k_i]
+    F --> G[写入 bitstream]
+    F --> H[更新到 x_{i-1}]
+    H --> B
+  {{< /mermaid >}}
+
+  <h3 class="section-title">为什么它不只是一个 codec</h3>
+
+  <p>DDCM 更大的价值是把压缩和条件生成统一了。对任意条件 $y$，只要定义一个损失 $\mathcal{L}(y,x_i,\mathcal{C}_i,k)$，使得“更好的代码簿向量”带来更低损失，就能把条件生成直接做成压缩生成。论文进一步给出一个后验采样解释：当损失近似于条件似然梯度方向时，$K\to\infty$ 时这个过程可以视为后验分布概率流 ODE 的离散化。#Song et al., 2020# #Ohayon et al., 2025#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 训练与实现</div>
+  <div class="ch-title">几乎不训练，主要改采样和搜索</div>
+
+  <p>DDCM 最容易被误解的一点是：它不是训练一个新的压缩网络。论文的主线实验都依赖已有扩散模型：ImageNet $256\times256$ 场景使用 Dhariwal 和 Nichol 的 pixel-space diffusion；$512\times512$ 和 $768\times768$ 图像压缩则使用 Stable Diffusion 2.1 的 latent diffusion。DDCM 的工作量主要在采样阶段：构造固定代码簿、根据任务选择索引、把索引序列保存为二进制表示。#Dhariwal and Nichol, 2021# #Rombach et al., 2022# #Ohayon et al., 2025#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>任务</th><th>模型/设置</th><th>关键超参数</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>随机生成</td><td>ImageNet pixel DDM / SD 2.1</td><td>$K\in\{2,4,8,16,64\}$</td><td>验证有限代码簿能否保持生成质量</td></tr>
+        <tr><td>图像压缩</td><td>ImageNet DDM / SD 2.1</td><td>$T,K,M,C$ 控制码率</td><td>在 Kodak、DIV2K、CLIC、ImageNet 上评估</td></tr>
+        <tr><td>后验采样恢复</td><td>ImageNet $256\times256$ DDM</td><td>$K=4096$，约 0.183 BPP</td><td>超分、上色等线性逆问题</td></tr>
+        <tr><td>盲人脸恢复</td><td>FFHQ $512\times512$ DDM</td><td>$T=1000,K=4096$</td><td>优化 NIQE、CLIP-IQA+、TOPIQ 等无参考质量指标</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>官方仓库也延续了这个思路：压缩入口是 `latent_compression.py compress|decompress|roundtrip`，主要参数包括 `--model_id`、`--timesteps`、`--num_noises` 和 `--input_dir`；恢复任务则提供 `compressed_posterior_sampling.py` 与 `compressed_blind_face_restoration.py`。README 标注环境以 Python 3.8.10、PyTorch 2.5.0、diffusers 0.31.0 等为基础，并提供 Hugging Face demo。#DDCM GitHub, 2025#</p>
+
+  <div class="admonition tip">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>读代码时的抓手</div>
+    <div class="admonition-content"><p>先看 `latent_compression.py` 如何把 `T` 和 `K` 写入二进制文件名，再看每一步如何根据目标残差选择代码簿索引。这样比从扩散模型训练代码切入更快。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 实验验证</div>
+  <div class="ch-title">小代码簿仍能生成，低码率压缩尤其强</div>
+
+  <p>第一个实验验证的是“离散代码簿会不会毁掉生成质量”。论文比较标准 DDPM 和 DDCM 在不同 $K$ 下的 FID，覆盖 ImageNet pixel-space 模型和 Stable Diffusion 2.1 latent-space 模型。结果最关键的一句话是：当 $K=64$ 时，DDCM 的 FID 已经接近 DDPM；附录还显示在部分指标上 $K=16$ 也能接近标准采样。#Ohayon et al., 2025#</p>
+
+  <div class="photo">
+    <img src="media/images/ddcm-2025/generation_fid_inception.png" alt="DDCM 与 DDPM FID 对比" loading="lazy">
+    <div class="cap">图 3：不同代码簿大小下 DDCM 与 DDPM 的生成质量对比。$K=64$ 已接近标准 DDPM。（来源：Ohayon et al., Fig. 3）</div>
+  </div>
+
+  <h3 class="section-title">图像压缩：在感知质量和失真之间占到好位置</h3>
+
+  <p>压缩实验覆盖 Kodak24、DIV2K、ImageNet 1K 和 CLIC2020。作者把 DDCM 与 BPG、HiFiC、PSC、PerCo、ILML、CRDR 等方法比较，指标包括 PSNR、LPIPS 和 FID。主结论是：在较低码率区间，DDCM 在 rate-perception-distortion tradeoff 上占优，FID 通常更低，同时失真指标也优于 PerCo、PSC-P 这类偏感知的扩散压缩方法。#Mentzer et al., 2020# #Theis et al., 2022# #Elata et al., 2024# #Ohayon et al., 2025#</p>
+
+  <div class="photo">
+    <img src="media/images/ddcm-2025/compression_graphs.png" alt="DDCM 压缩定量曲线" loading="lazy">
+    <div class="cap">图 4：DDCM 在 Kodak、CLIC、DIV2K、ImageNet 上的 rate-distortion 与 rate-perception 曲线。（来源：Ohayon et al., Fig. 4）</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集/设置</th><th>DDCM 示例结果</th><th>对照观察</th></tr></thead>
+      <tbody>
+        <tr><td>ImageNet $256\times256$</td><td>0.183 BPP 时 FID 31.977、LPIPS 0.102、PSNR 26.765</td><td>同码率附近优于 PSC-P 的 FID/LPIPS，同时 PSNR 更高</td></tr>
+        <tr><td>Kodak24 $512\times512$</td><td>0.050 BPP 时 FID 25.647、LPIPS 0.161、PSNR 23.013</td><td>明显优于 BPG 的 FID 和 LPIPS，并优于 PerCo 低码率点的 PSNR</td></tr>
+        <tr><td>CLIC2020 $512\times512$</td><td>0.050 BPP 时 FID 7.755、LPIPS 0.137、PSNR 23.748</td><td>低码率 FID 优于 PerCo、PSC-P 和 BPG</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>不过，高码率区间 DDCM 并非无敌。论文明确指出，使用 Stable Diffusion 这类 latent diffusion 时，压缩的是 VAE latent，而不是原始像素；VAE 编码再解码本身会带来失真上限，所以高码率下 PSNR/LPIPS 会被 SD 2.1 encoder-decoder bound 卡住。这个限制对所有 latent-space 压缩方法都存在，不是 DDCM 独有问题。#Rombach et al., 2022# #Ohayon et al., 2025#</p>
+
+  <div class="photo">
+    <img src="media/images/ddcm-2025/Kodak24_512_extreme.png" alt="DDCM Kodak 极低码率压缩示例" loading="lazy">
+    <div class="cap">图 5：Kodak24 极低码率压缩示例。DDCM 更倾向于保留自然纹理和整体语义。（来源：Ohayon et al., Fig. 5）</div>
+  </div>
+
+  <h3 class="section-title">压缩恢复：不是先恢复再压缩，而是直接生成压缩结果</h3>
+
+  <p>DDCM 还把同一套框架用于压缩条件生成。例如在线性逆问题中，给定退化观测 $y=Ax_0$，每一步选择使 $A(\mu_i(x_i)+\sigma_i\mathcal{C}_i(k))$ 更接近 $y$ 的索引。论文在 $4\times$ 超分和上色任务中与 DPS、DDNM 比较，发现 DDCM 生成的结果感知质量更好，同时输出天然带压缩 bitstream；相比“先用 DPS/DDNM 恢复，再另行压缩”，端到端压缩条件生成更直接。#Kawar et al., 2022# #Chung et al., 2023# #Wang et al., 2023# #Ohayon et al., 2025#</p>
+
+  <div class="photo">
+    <img src="media/images/ddcm-2025/posterior_sampling.png" alt="DDCM 压缩后验采样恢复" loading="lazy">
+    <div class="cap">图 6：DDCM 用于压缩后验采样恢复，在生成高质量恢复图的同时得到压缩表示。（来源：Ohayon et al., Fig. 6）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 讨论与启发</div>
+  <div class="ch-title">DDCM 像是在给图像发明一门离散语言</div>
+
+  <p>DDCM 最有启发的地方，不只是“又一个扩散压缩 codec”。它把扩散采样的每一步随机选择变成离散符号，得到的是一串自回归选择的图像 token。论文讨论中也明确指出，这些代码簿索引可以被看作一种离散图像 tokenization，未来甚至可以训练一个 Transformer，根据文本预测对应的 DDCM 索引序列，再由无条件扩散模型解码成图像。#Ohayon et al., 2025#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>传输什么</th><th>优点</th><th>主要风险</th></tr></thead>
+      <tbody>
+        <tr><td>传统/学习式 VAE 压缩</td><td>量化 latent + 熵编码</td><td>率失真优化成熟，解码快</td><td>极低码率容易过度平滑</td></tr>
+        <tr><td>GAN 感知压缩</td><td>latent + 生成式解码器</td><td>低码率视觉质量强</td><td>训练不稳定，可能幻觉细节</td></tr>
+        <tr><td>扩散后处理压缩</td><td>传统码流 + 扩散恢复</td><td>感知质量好，可复用预训练模型</td><td>采样开销大，码流与生成轨迹未必统一</td></tr>
+        <tr><td>DDCM</td><td>每步代码簿索引</td><td>生成轨迹本身就是 bitstream，可用于压缩条件生成</td><td>搜索开销、latent VAE 上限、理论解释仍不完整</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>它的局限也很清楚。第一，作者承认目前还没有完全解释为什么这么小的代码簿和这么简单的索引选择规则就能有效工作。第二，高码率区间受 latent VAE 上限影响明显。第三，当前 bitstream 还没有对索引序列做熵编码，理论上还有进一步压缩空间。第四，代码簿是随机固定的；如果未来用 dictionary learning 或任务自适应方式优化代码簿，可能会进一步提高码率效率。#Ohayon et al., 2025#</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>生成式压缩的边界</div>
+    <div class="admonition-content"><p>DDCM 在低码率下的强项来自生成先验，但这也意味着它可能生成“合理但不忠实”的细节。用于自然图像浏览很有吸引力；用于医学、法务、遥感证据等高保真场景时，必须额外评估幻觉风险。</p></div>
+  </div>
+
+  <p>如果把它放回生成式压缩的研究地图，DDCM 提供了一条很干净的路线：不把扩散模型当后处理器，而是把扩散模型的随机源本身编码化。它把“压缩图像”变成“选择一条可复现的生成轨迹”。这条思路未来可以和更快的一步/少步扩散、更强的视觉 tokenizer、以及文本到索引序列的自回归模型结合，继续逼近“用少量符号描述一张自然图像”的目标。</p>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Ohayon-et-al.-2025">Ohayon, G., Manor, H., Michaeli, T., & Elad, M. (2025). <em>Compressed Image Generation with Denoising Diffusion Codebook Models</em>. ICML 2025. <a href="https://arxiv.org/abs/2502.01189" target="_blank">arXiv:2502.01189</a></li>
+      <li data-cite-key="DDCM-GitHub-2025">DDCM-2025. (2025). Official implementation of DDCM. <a href="https://github.com/DDCM-2025/ddcm-compressed-image-generation" target="_blank">GitHub repository</a></li>
+      <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models. <em>NeurIPS</em>. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv</a></li>
+      <li data-cite-key="Song-et-al.-2020">Song, Y. et al. (2020). Score-Based Generative Modeling through Stochastic Differential Equations. <a href="https://arxiv.org/abs/2011.13456" target="_blank">arXiv</a></li>
+      <li data-cite-key="Rombach-et-al.-2022">Rombach, R. et al. (2022). High-Resolution Image Synthesis with Latent Diffusion Models. <em>CVPR</em>. <a href="https://arxiv.org/abs/2112.10752" target="_blank">arXiv</a></li>
+      <li data-cite-key="Dhariwal-and-Nichol-2021">Dhariwal, P., & Nichol, A. (2021). Diffusion Models Beat GANs on Image Synthesis. <em>NeurIPS</em>. <a href="https://arxiv.org/abs/2105.05233" target="_blank">arXiv</a></li>
+      <li data-cite-key="Mentzer-et-al.-2020">Mentzer, F. et al. (2020). High-Fidelity Generative Image Compression. <em>NeurIPS</em>. <a href="https://arxiv.org/abs/2006.09965" target="_blank">arXiv</a></li>
+      <li data-cite-key="Theis-et-al.-2022">Theis, L. et al. (2022). Lossy Compression with Gaussian Diffusion. <em>ICML</em>. <a href="https://proceedings.mlr.press/v162/theis22a.html" target="_blank">PMLR</a></li>
+      <li data-cite-key="Elata-et-al.-2024">Elata, N. et al. (2024). Zero-Shot Image Compression with Diffusion-Based Posterior Sampling. <a href="https://proceedings.mlr.press/v235/manor24a.html" target="_blank">PMLR</a></li>
+      <li data-cite-key="Kawar-et-al.-2022">Kawar, B. et al. (2022). Denoising Diffusion Restoration Models. <em>NeurIPS</em>. <a href="https://arxiv.org/abs/2201.11793" target="_blank">arXiv</a></li>
+      <li data-cite-key="Chung-et-al.-2023">Chung, H. et al. (2023). Diffusion Posterior Sampling for General Noisy Inverse Problems. <em>ICLR</em>. <a href="https://arxiv.org/abs/2209.14687" target="_blank">arXiv</a></li>
+      <li data-cite-key="Wang-et-al.-2023">Wang, Y. et al. (2023). Zero-Shot Image Restoration Using Denoising Diffusion Null-Space Model. <em>ICLR</em>. <a href="https://arxiv.org/abs/2212.00490" target="_blank">arXiv</a></li>
+    </ul>
+  </div>
+</div>

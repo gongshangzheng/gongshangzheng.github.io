@@ -1,0 +1,249 @@
+---
+title: "等几何分析中的计算域参数化"
+date: 2026-05-20T14:00:00
+description: "GAMES302 第 4 讲课程笔记：计算域参数化的质量标准、Coons 构造、优化参数化、多块分解及其在 CAD-IGA 管线中的核心地位。"
+created_at: 2026-05-20T13:25:00
+updated_at: 2026-05-22T13:52:00
+tags: ["等几何分析", "参数化", "NURBS", "B样条", "几何建模", "课程笔记"]
+categories: [课程]
+mathjax: true
+hero_title: "等几何分析中的计算域参数化"
+hero_sub: "GAMES302 · 课程笔记"
+hero_tagline: "从 CAD 边界到可分析的计算域：单射、均匀、正交与 Coons + 优化范式"
+subcategory: "等几何分析"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">5</span><span class="label">技术路线</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">质量标准</span></div>
+  <div class="stat"><span class="num">2</span><span class="label">例题</span></div>
+  <div class="stat"><span class="num b">IGA</span><span class="label">核心前处理</span></div>
+</div>
+
+<div class="wrap">
+
+<div class="info-box">
+  <h3>前置知识回顾</h3>
+  <p>本讲讨论的是 IGA 管线中最容易被低估的一步：如何从 CAD 边界构造一个能用于数值分析的计算域。进入这一讲之前，建议先回顾：</p>
+  <ul>
+    <li><strong>NURBS / B-spline</strong>：曲线和曲面由控制点、节点矢量、基函数和权重共同决定。可回看 <a href="games302-intro-cae-geometry-fea.html">L01-03 入口笔记</a>。</li>
+    <li><strong>控制网格</strong>：控制点不是普通采样点，而是决定几何映射 $F(\xi,\eta)$ 的设计变量。</li>
+    <li><strong>单射映射</strong>：参数域中不同点不能映到物理域同一点，否则计算域翻折，单元雅可比会变号。</li>
+    <li><strong>雅可比行列式</strong>：$J=\det \frac{\partial F}{\partial(\xi,\eta)}$ 衡量参数域面积如何映射到物理域面积。$J>0$ 是分析适用性的底线。</li>
+    <li><strong>FEA 网格生成</strong>：传统有限元可以先生成网格再局部修网格；IGA 中几何映射本身就是分析空间，参数化质量直接进入刚度矩阵。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 背景动机</div>
+  <div class="ch-title">从 FEA 到 IGA：为什么参数化突然变得关键</div>
+  <p>传统<strong>有限元分析</strong>（FEA）中，CAD 几何和计算网格是两套表示。CAD 负责描述设计边界，前处理工具把几何离散成三角形、四边形、四面体或六面体网格。网格质量不好时，可以重剖分、局部加密或手动修补。</p>
+  <p>等几何分析（IGA）的目标不同。Hughes 等人在 2005 年提出 IGA，希望让 CAD 与 CAE 使用同一种数学表示，例如 NURBS / B-spline，从而消除几何近似误差。但这带来了一个新难题：CAD 通常只精确描述边界，数值分析却需要整个体域上的光滑映射。</p>
+  <p>也就是说，IGA 的计算域不是一堆离散单元，而是一个从规则参数域到物理域的映射：</p>
+  <p style="text-align:center">\[
+F:\hat\Omega\rightarrow\Omega,\qquad (\xi,\eta)\mapsto (x,y).
+\]</p>
+  <p>如果这个映射局部翻折、过度拉伸或严重倾斜，后面的弱形式、数值积分和矩阵求解都会受影响。因此在 IGA 中，参数化不是美观问题，而是<strong>分析能不能稳定进行</strong>的问题。</p>
+</div>
+
+<div class="photo">
+  <img src="media/images/games302-04-parameterization/L04-p8.jpg" alt="参数化结果对比" loading="lazy">
+  <div class="cap">不同参数化方法会产生不同的等参线分布；等参线越均匀、越少扭曲，后续分析越稳定。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 质量标准</div>
+  <div class="ch-title">Analysis-suitable Parameterization 到底在要求什么</div>
+  <p>给定边界 B-spline 曲线或曲面，内部控制点应该如何布置？课程中强调三个最基本的质量标准：单射性、均匀性和正交性。</p>
+
+  <h3>1. 单射性：不能翻折</h3>
+  <p>映射 $F(\xi,\eta)$ 必须保持局部方向一致。二维情况下，关键量是雅可比行列式：</p>
+  <p style="text-align:center">\[
+J(\xi,\eta)=\det\begin{bmatrix}
+\frac{\partial x}{\partial \xi} & \frac{\partial x}{\partial \eta}\\
+\frac{\partial y}{\partial \xi} & \frac{\partial y}{\partial \eta}
+\end{bmatrix}.
+\]</p>
+  <p>若某处 $J\le 0$，参数域中的小面积块会被压扁或翻折，数值积分和刚度矩阵都会失去物理意义。Xu 等人的分析适用参数化工作中，常通过控制网格层面的充分条件来保证 $J>0$。</p>
+
+  <h3>2. 均匀性：不要极端拉伸</h3>
+  <p>即使 $J>0$，映射仍可能很差。例如某些区域被极度压缩，另一些区域被拉得很长。这会造成单元尺度差异巨大，使数值积分误差和矩阵条件数恶化。均匀性要求等参线分布尽量平滑，不出现局部拥挤。</p>
+
+  <h3>3. 正交性：两族等参线尽量垂直</h3>
+  <p>理想情况下，$\frac{\partial F}{\partial \xi}$ 和 $\frac{\partial F}{\partial \eta}$ 尽量接近正交。若两方向夹角过小，物理单元会变成狭长斜片，基函数梯度映射后被放大，刚度矩阵条件数变差。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>标准</th><th>数学信号</th><th>坏情况</th><th>后果</th></tr></thead>
+      <tbody>
+        <tr><td>单射性</td><td>$J>0$</td><td>翻折、自交</td><td>积分无效，分析失败</td></tr>
+        <tr><td>均匀性</td><td>$J$ 分布平稳</td><td>局部过密或过疏</td><td>误差集中，条件数变差</td></tr>
+        <tr><td>正交性</td><td>$F_\xi\cdot F_\eta\approx 0$</td><td>等参线斜交</td><td>刚度矩阵病态</td></tr>
+        <tr><td>边界一致性</td><td>$F|_{\partial\hat\Omega}$ 匹配 CAD 边界</td><td>边界漂移</td><td>几何失真</td></tr>
+        <tr><td>分析适用性</td><td>连续性、光滑性、可积性满足要求</td><td>块间不连续或奇异</td><td>高阶基函数优势消失</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 核心困难</div>
+  <div class="ch-title">CAD 边界并不会自动给出好计算域</div>
+  <p>从边界构造内部参数化有四个困难：</p>
+  <ul>
+    <li><strong>修剪曲面</strong>：CAD 模型大量使用 trimmed surfaces，边界是裁剪出来的，不一定天然适合张成一个规则参数域。</li>
+    <li><strong>复杂拓扑</strong>：孔洞、凹角、分叉和奇异点会让单块参数化变得困难。</li>
+    <li><strong>分析适配性</strong>：几何上看起来顺滑，不代表数值分析上稳定。必须同时满足单射、均匀、正交等要求。</li>
+    <li><strong>多块连续性</strong>：复杂区域往往要分解成多个 B-spline 块，相邻块之间还要处理 $C^0$、$G^1$ 或更高连续性。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · Coons 构造</div>
+  <div class="ch-title">用四条边界曲线先搭一个初始面</div>
+  <p><strong>Coons patch</strong> 是课程中最重要的初始构造方法。它回答一个简单问题：如果四条边界曲线已经给定，怎样用插值方式填充内部？</p>
+  <p>设四条边界曲线为：</p>
+  <p style="text-align:center">\[
+C_0(v)=F(0,v),\quad C_1(v)=F(1,v),\quad D_0(u)=F(u,0),\quad D_1(u)=F(u,1).
+\]</p>
+  <p>先沿 $u$ 方向线性混合左右边界：</p>
+  <p style="text-align:center">\[
+L_u(u,v)=(1-u)C_0(v)+uC_1(v).
+\]</p>
+  <p>再沿 $v$ 方向线性混合上下边界：</p>
+  <p style="text-align:center">\[
+L_v(u,v)=(1-v)D_0(u)+vD_1(u).
+\]</p>
+  <p>如果直接把 $L_u+L_v$ 相加，四个角点会被重复计算，所以需要减去双线性角点混合项：</p>
+  <p style="text-align:center">\[
+B(u,v)=(1-u)(1-v)P_{00}+u(1-v)P_{10}+(1-u)vP_{01}+uvP_{11}.
+\]</p>
+  <p>于是 Coons 曲面为：</p>
+  <p style="text-align:center">\[
+F(u,v)=L_u(u,v)+L_v(u,v)-B(u,v).
+\]</p>
+  <div class="callout"><strong>为什么要减 $B$：</strong>四个角点既在左右边界混合中出现，又在上下边界混合中出现。减去双线性角点项，正好把重复贡献抵消掉。</div>
+</div>
+
+<div class="photo">
+  <img src="media/images/games302-04-parameterization/L04-p6.jpg" alt="Coons 构造示意" loading="lazy">
+  <div class="cap">Coons 构造用四条边界曲线生成内部参数化，是很多优化方法的初始猜测。</div>
+</div>
+
+<div class="example-box">
+  <h3>例题 1：单位正方形的 Coons patch 为什么退化成恒等映射</h3>
+  <p><strong>题目：</strong>设边界为 $C_0(v)=(0,v)$、$C_1(v)=(1,v)$、$D_0(u)=(u,0)$、$D_1(u)=(u,1)$。求 Coons patch。</p>
+  <ol>
+    <li>左右混合：$L_u=(1-u)(0,v)+u(1,v)=(u,v)$。</li>
+    <li>上下混合：$L_v=(1-v)(u,0)+v(u,1)=(u,v)$。</li>
+    <li>角点双线性混合也是 $B(u,v)=(u,v)$。</li>
+    <li>所以 $F=L_u+L_v-B=(u,v)$。</li>
+  </ol>
+  <p><strong>答案：</strong>单位正方形边界的 Coons patch 是恒等映射。</p>
+  <div class="callout"><strong>易错点：</strong>Coons patch 不是简单把两个方向插值相加，还必须减去角点双线性项。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 优化参数化</div>
+  <div class="ch-title">Coons 只是初始猜测，真正质量靠约束优化</div>
+  <p>Coons 构造快速、简单，但它只保证插值边界，不保证内部质量。因此 Xu 等人的经典工作采用“两阶段范式”：先用 Coons 或离散 Coons 构造初始控制网格，再通过约束优化改善质量。</p>
+  <p>典型优化问题可以写成：</p>
+  <p style="text-align:center">\[
+\min_{P_{ij}} E(P)=\lambda_1E_{\text{uniform}}+\lambda_2E_{\text{orthogonal}}+\lambda_3E_{\text{smooth}}
+\]</p>
+  <p>约束为：</p>
+  <p style="text-align:center">\[
+J(\xi_q,\eta_q)>0,\quad F|_{\partial\hat\Omega}=\partial\Omega_{CAD},
+\]</p>
+  <p>其中 $P_{ij}$ 是内部控制点，$\xi_q,\eta_q$ 是采样检查点。求解上常用序列二次规划（SQP）：每一步把非线性目标和约束局部近似成二次规划问题，求出控制点更新量，再迭代直到收敛。</p>
+  <p>这类方法的难点在于约束不能太弱。只在少量采样点上检查 $J>0$，可能漏掉局部翻折；检查过密又会让优化规模变大。因此课程里强调，参数化问题看似是几何构造，实质上是几何、优化和数值分析的交叉问题。</p>
+</div>
+
+<div class="example-box">
+  <h3>例题 2：如何判断一个参数化是否翻折</h3>
+  <p><strong>题目：</strong>给定平面参数化 $F(u,v)=(u+0.2\sin \pi v,\; v+0.1\sin \pi u)$，判断它是否存在局部翻折的风险。</p>
+  <ol>
+    <li>计算偏导：$F_u=(1,0.1\pi\cos\pi u)$，$F_v=(0.2\pi\cos\pi v,1)$。</li>
+    <li>雅可比为
+      \[
+      J=1-0.02\pi^2\cos\pi u\cos\pi v.
+      \]
+    </li>
+    <li>因为 $\cos\pi u\cos\pi v\in[-1,1]$，所以 $J\ge 1-0.02\pi^2\approx0.803>0$。</li>
+    <li>因此这个映射在该估计下没有翻折风险。</li>
+  </ol>
+  <p><strong>答案：</strong>$J$ 始终为正，局部单射性较安全。</p>
+  <div class="callout"><strong>易错点：</strong>只看边界不够，内部也可能翻折。IGA 参数化必须检查整个计算域的雅可比。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 其他技术路线</div>
+  <div class="ch-title">从调和映射到多块分解</div>
+  <h3>调和映射法</h3>
+  <p>调和映射希望通过能量最小化得到平滑参数化。直觉上，它像把边界固定后，让内部等参线自然放松。优点是理论清晰，缺点是复杂凹边界附近可能产生非均匀或低质量区域。</p>
+  <div class="photo">
+    <img src="media/images/games302-04-parameterization/L04-p5.jpg" alt="调和映射示意" loading="lazy">
+    <div class="cap">调和映射把参数化看成能量最小化问题，强调内部等参线的平滑分布。</div>
+  </div>
+
+  <h3>Möbius 重参数化</h3>
+  <p>Möbius 重参数化不改变几何形状，而是调整边界曲线的参数分布。对于同一条 CAD 边界，参数点分布不同，内部 Coons 和优化结果也会不同。这条路线说明：参数化质量不仅取决于内部控制点，也取决于边界参数如何被安排。</p>
+
+  <h3>多块分解</h3>
+  <p>复杂拓扑通常无法用一个规则四边形或六面体参数域覆盖。此时必须把区域分成多个拓扑简单的块，再分别参数化，并处理块间连续性。常见方法包括骨架分解、标架场分解和 Polycube / Polysquare 结构。</p>
+  <div class="photo">
+    <img src="media/images/games302-04-parameterization/L04-p4.jpg" alt="多块参数化或复杂拓扑示意" loading="lazy">
+    <div class="cap">复杂拓扑往往需要先分块，再对每个块构造分析适用参数化。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 与 CAD / IGA 的深层关系</div>
+  <div class="ch-title">参数化质量直接决定分析质量</div>
+  <p>参数化处于 CAD-IGA 管线的核心位置：</p>
+  <ul>
+    <li>CAD 提供边界表示，但并不保证内部体参数化适合分析。</li>
+    <li>IGA 使用同一套 B-spline / NURBS 基函数表示几何和场变量，因此几何映射质量会直接进入刚度矩阵。</li>
+    <li>坏参数化会导致雅可比接近 0、基函数梯度异常放大、数值积分误差和线性系统病态。</li>
+    <li>复杂拓扑下，多块结构和块间连续性比单块质量更关键。</li>
+  </ul>
+  <p>这就是 CAD-CAE 无缝集成中的本质障碍：CAD 的设计目标是造型和制造表达，CAE 的设计目标是稳定求解 PDE。参数化是把这两个目标接起来的桥。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 8 · 后续衔接</div>
+  <div class="ch-title">从参数化走向骨架分解与 Polycube</div>
+  <p>本讲解决的是“给定边界，如何构造可分析的计算域”。但当几何拓扑复杂时，单块参数化常常无能为力。下一讲 <a href="games302-05-skeleton-polycube.html">骨架分解与 Polycube 参数化</a> 会进一步讨论：如何先把复杂区域分解成拓扑简单的块，再在每个块上应用 Coons、优化或调和映射等方法。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 9 · 复习速查</div>
+  <div class="ch-title">参数化方法与判断入口</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>概念</th><th>核心公式/条件</th><th>作用</th><th>常见误区</th></tr></thead>
+      <tbody>
+        <tr><td>单射性</td><td>$J>0$</td><td>防止翻折</td><td>只检查边界，不检查内部</td></tr>
+        <tr><td>均匀性</td><td>$J$ 分布平稳</td><td>控制尺度畸变</td><td>认为无翻折就足够</td></tr>
+        <tr><td>正交性</td><td>$F_\xi\cdot F_\eta\approx0$</td><td>改善矩阵条件数</td><td>忽略等参线夹角</td></tr>
+        <tr><td>Coons patch</td><td>$F=L_u+L_v-B$</td><td>快速初始构造</td><td>忘记减双线性角点项</td></tr>
+        <tr><td>SQP 优化</td><td>目标函数 + $J>0$ 约束</td><td>提升内部质量</td><td>采样约束过稀</td></tr>
+        <tr><td>多块分解</td><td>复杂域 → 简单块</td><td>处理复杂拓扑</td><td>忽略块间连续性</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><strong>本地材料：</strong>GAMES302 第 4 讲 PPT `GAMES302-04.pdf`；本地源笔记 `games302-04-parameterization.md`。</li>
+    <li>Hughes, T. J. R. et al. (2005). Isogeometric analysis: CAD, finite elements, NURBS, exact geometry and mesh refinement. <em>CMAME</em>.</li>
+    <li>Xu, G. et al. (2011). Analysis-suitable parameterization of computational domain in isogeometric analysis. <em>CMAME</em>.</li>
+    <li>Xu, G. et al. (2013). Constructing analysis-suitable parameterization of computational domain from CAD boundary. <em>CAD</em>.</li>
+    <li><a href="https://mathworld.wolfram.com/CoonsPatch.html" target="_blank">Wolfram MathWorld · Coons Patch</a>：用于核对 Coons patch 的插值公式和角点修正思想。</li>
+    <li><a href="https://en.wikipedia.org/wiki/Isogeometric_analysis" target="_blank">Isogeometric Analysis overview</a>：用于补充 IGA 中 CAD-CAE 统一表示的背景。</li>
+  </ul>
+</div>
+
+</div>

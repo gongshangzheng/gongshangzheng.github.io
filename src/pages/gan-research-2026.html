@@ -1,0 +1,309 @@
+---
+title: GAN 研究脉络：从极小极大博弈到稳定训练与高保真生成
+description: 系统梳理 GAN 的起源、发展、应用，以及 WGAN、WGAN-GP、谱归一化、渐进增长、BigGAN、StyleGAN 等稳定训练与生成质量改进路线。
+date: 2026-06-02T15:42:22
+created_at: 2026-06-02T15:42:22
+updated_at: 2026-06-02T17:09:39
+tags: [GAN, generative-models, adversarial-training, WGAN, StyleGAN]
+categories: [AI]
+subcategory: "GAN"
+mathjax: true
+notify: true
+hero_title: GAN 研究脉络
+hero_sub: 从 Goodfellow 的极小极大博弈，到 WGAN、谱归一化、BigGAN 与 StyleGAN
+hero_tagline: 一篇面向机器学习读者的 GAN 起源、发展、应用与稳定训练综述
+page_style: |
+  .hero { min-height: 48vh; }
+  .metric-table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 0.94rem; }
+  .metric-table th, .metric-table td { border: 1px solid var(--border-color, #ddd); padding: 8px 10px; vertical-align: top; }
+  .metric-table th { background: var(--bg-block); font-weight: 700; }
+  .term-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+  .term-card { padding: 14px 16px; border: 1px solid var(--border-color, #ddd); border-radius: 14px; background: var(--bg-block); }
+  .term-card strong { display: block; margin-bottom: 6px; }
+  .sources li { margin-bottom: 8px; }
+  @media (max-width: 760px) { .term-grid { grid-template-columns: 1fr; } }
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">17</span><span class="label">核心论文</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">技术范式</span></div>
+  <div class="stat"><span class="num">10+</span><span class="label">稳定技巧</span></div>
+  <div class="stat"><span class="num b">2014→2020</span><span class="label l">主线时间窗</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">导言</div>
+  <div class="ch-title">GAN 为什么曾经是生成模型的“爆点”</div>
+
+  <p>如果只用一句话概括 GAN，它不是“一个会画图的网络”，而是一种把生成建模改写成博弈的训练框架：生成器 $G$ 试图把噪声 $z$ 变成以假乱真的样本，判别器 $D$ 试图区分真实样本和生成样本，二者在同一个目标函数中互相推动。Goodfellow 等人在 2014 年提出这一框架时，强调它不需要 Markov chain，也不需要在生成阶段做近似推断，整个系统可以用反向传播训练 #Goodfellow et al., 2014#。</p>
+
+  <p>这个设计的吸引力在于：它把一个原本很难手写的“真实感损失”交给判别器去学习。对于图像来说，像素级均方误差很容易得到模糊结果，因为它鼓励平均化；GAN 则让判别器学习“什么看起来像真实图片”。这解释了为什么 GAN 在图像合成、图像翻译、超分辨率、风格迁移、人脸生成、医学图像合成等方向迅速扩散。</p>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/gan-minimax.svg" alt="GAN minimax game" loading="lazy">
+    <div class="cap">图 1：GAN 的极小极大博弈。生成器和判别器不是两个独立模型，而是通过同一个判别信号耦合训练。</div>
+  </div>
+
+  <div class="callout"><strong>本文主线：</strong>GAN 的发展不是“换一堆网络名字”，而是围绕三个问题展开：如何让博弈有可用梯度，如何把条件信息接入生成过程，如何在大规模数据上稳定地产生高保真、多样的样本。</div>
+
+  <div class="term-grid">
+    <div class="term-card"><strong>模式崩塌（mode collapse）</strong>生成器只覆盖少数模式，例如无论输入噪声如何都生成相似图像。</div>
+    <div class="term-card"><strong>梯度消失（vanishing gradient）</strong>判别器过强时，生成器拿不到有用的改进方向。</div>
+    <div class="term-card"><strong>Lipschitz 约束</strong>限制判别器或 critic 的函数变化速度，使训练信号更平滑。</div>
+    <div class="term-card"><strong>FID / IS</strong>常用生成质量指标。FID 越低越好，Inception Score 通常越高越好，但二者都不是完美的人类感知替代。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">起源：从密度建模到“让两个网络互相较劲”</div>
+
+  <p>GAN 出现之前，深度生成模型的主流困难在于概率密度和采样过程。显式似然模型需要计算或近似复杂概率，早期神经生成模型常常依赖 Markov chain、变分下界或近似推断。GAN 的反常识之处是：它不直接写出数据分布的密度，而是让一个判别器来估计“真实样本”和“生成样本”的可分性 #Goodfellow et al., 2014#。</p>
+
+  <div class="def-box">
+    <h3>原始 GAN 目标</h3>
+    <p>原始 GAN 可写作一个极小极大目标：</p>
+    <p style="text-align:center">\[\min_G \max_D V(D,G)=\mathbb{E}_{x\sim p_{data}}[\log D(x)] + \mathbb{E}_{z\sim p_z}[\log(1-D(G(z)))].\]</p>
+    <p>直觉上，$D$ 想把真实样本判为 1、生成样本判为 0；$G$ 想让 $D(G(z))$ 尽可能接近真实。论文证明，在无限容量和理想优化条件下，均衡点对应 $p_g=p_{data}$，此时 $D$ 到处输出 $1/2$ #Goodfellow et al., 2014#。</p>
+  </div>
+
+  <p>但这个漂亮理论很快遇到工程现实。原始 GAN 的目标很容易出现不稳定训练：判别器如果太强，生成器收到的梯度会变差；生成器如果找到判别器的局部漏洞，又可能集中生成少数样本。Goodfellow 的 NIPS 2016 tutorial 已经把这些问题列为 GAN 的研究前沿，包含评估、训练稳定性、离散数据、半监督学习与图像模型等方向 #Goodfellow, 2016#。</p>
+
+  <p>因此，GAN 的第一条发展线并不是“生成更漂亮的图”本身，而是“怎样让这场博弈能训起来”。这条线后来分化成目标函数改造、判别器正则化、归一化、优化器设置、架构约束和采样策略等一整套工具箱。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">第一轮工程化：DCGAN 把架构约束变成训练技巧</div>
+
+  <p>DCGAN 是 GAN 从概念走向计算机视觉工程实践的关键一步。Radford、Metz 和 Chintala 没有提出新的博弈理论，而是给出一组卷积架构约束：用 strided convolution / fractional-strided convolution 替代 pooling，去掉深层全连接层，在生成器和判别器中使用 batch normalization，生成器用 ReLU 和 Tanh，判别器用 LeakyReLU #Radford et al., 2015#。</p>
+
+  <p>这些规则看似朴素，却解决了早期 GAN “能不能稳定生成自然图像”的实际问题。DCGAN 在 LSUN、CelebA 等数据上展示了更稳定的图像生成，还把判别器特征拿去做无监督表征学习：在 CIFAR-10 上，DCGAN + L2-SVM 达到 82.8% accuracy，SVHN 上达到 22.48% test error，说明判别器不只是一个训练辅助器，也学习到了可复用视觉特征 #Radford et al., 2015#。</p>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>技巧</th><th>DCGAN 做法</th><th>解决的问题</th><th>后续影响</th></tr></thead>
+      <tbody>
+        <tr><td>卷积化</td><td>用卷积/反卷积替代 MLP 与 pooling</td><td>给图像生成加入空间归纳偏置</td><td>成为图像 GAN 的基础模板</td></tr>
+        <tr><td>BatchNorm</td><td>生成器和判别器都归一化中间激活</td><td>缓解内部统计漂移，稳定训练</td><td>后续又被谱归一化、实例归一化等替代或补充</td></tr>
+        <tr><td>激活函数</td><td>G 用 ReLU/Tanh，D 用 LeakyReLU</td><td>避免判别器死区，改善梯度传播</td><td>成为许多 GAN baseline 的默认设置</td></tr>
+        <tr><td>优化超参</td><td>batch size 128，Adam，学习率 0.0002，$\beta_1=0.5$</td><td>降低训练震荡</td><td>被大量开源实现沿用</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这给后来的 GAN 研究留下一个重要启发：GAN 的稳定性不只由目标函数决定，也由架构归纳偏置决定。很多论文表面上在比较损失函数，实际效果常常被网络深度、归一化、优化器和数据预处理共同影响。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">条件 GAN 与应用扩散：从“生成图片”到“按任务生成”</div>
+
+  <p>GAN 真正变成通用视觉工具，是从条件化开始的。Mirza 和 Osindero 在 2014 年提出 Conditional GAN，把标签或其他条件 $y$ 同时喂给生成器和判别器，使模型不再只是从噪声生成任意样本，而是生成“满足给定条件”的样本 #Mirza and Osindero, 2014#。这个改动很小，但意义很大：一旦条件可以是标签、图像、边缘图、语义分割图、低分辨率图像或另一个域的图像，GAN 就从无条件生成模型变成了任务建模框架。</p>
+
+  <p>pix2pix 是条件 GAN 应用最清晰的一次展示。Isola 等人把 image-to-image translation 统一成“输入图像 $x$ 到输出图像 $y$ 的条件生成”问题，让生成器学习映射，同时让判别器学习一个任务相关的损失函数。论文展示了从语义标签到街景、边缘到物体、黑白到彩色等任务，强调不再为每个任务手写不同损失 #Isola et al., 2016#。</p>
+
+  <p>CycleGAN 则解决了另一个更常见的问题：很多图像翻译任务没有成对数据。Zhu 等人引入两个映射 $G:X\rightarrow Y$ 和 $F:Y\rightarrow X$，并加入 cycle consistency loss，让 $F(G(x))\approx x$、$G(F(y))\approx y$。这相当于给高度欠约束的映射加了“翻译过去再翻译回来应该回到原点”的结构先验 #Zhu et al., 2017#。</p>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/application-map.svg" alt="GAN application map" loading="lazy">
+    <div class="cap">图 2：GAN 应用扩散的共同模式：把不可手写的感知损失交给判别器学习。</div>
+  </div>
+
+  <p>超分辨率中的 SRGAN 则展示了 GAN 为什么适合“感知质量”任务。Ledig 等人指出，单纯优化 MSE 会得到 PSNR 高但纹理模糊的结果；SRGAN 使用 adversarial loss 加 VGG feature space 上的 content loss，目标不再是像素平均误差最小，而是生成更接近自然图像流形的纹理。论文声称这是第一个能在 $4\times$ 上采样中生成 photo-realistic natural images 的框架，并通过 MOS 测试显示感知质量明显优于传统方法 #Ledig et al., 2016#。</p>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>应用路线</th><th>代表工作</th><th>条件信息</th><th>核心约束</th><th>解决的痛点</th></tr></thead>
+      <tbody>
+        <tr><td>标签条件生成</td><td>cGAN</td><td>类别标签、属性</td><td>条件同时输入 G 与 D</td><td>让生成结果可控</td></tr>
+        <tr><td>成对图像翻译</td><td>pix2pix</td><td>输入图像，如边缘/分割图</td><td>conditional adversarial loss + 重建项</td><td>不用为每个任务手写感知损失</td></tr>
+        <tr><td>非成对图像翻译</td><td>CycleGAN</td><td>两个无配对图像集合</td><td>cycle consistency</td><td>在无成对标注时学习跨域映射</td></tr>
+        <tr><td>超分辨率</td><td>SRGAN</td><td>低分辨率图像</td><td>adversarial loss + perceptual/content loss</td><td>提升纹理真实感而非只追求 PSNR</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这几条应用线说明了 GAN 的真正贡献：它提供了一种“学习任务损失”的方式。只要某个任务的输出质量很难用像素误差、交叉熵或人工规则描述，而真实数据又能给出分布参考，判别器就可能成为有效的学习信号。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">稳定训练主线：从 WGAN 到梯度惩罚与谱归一化</div>
+
+  <p>GAN 最大的工程痛点一直是训练不稳定。Arjovsky、Chintala 和 Bottou 的 WGAN 把问题重新表述为分布距离选择：传统 GAN 与 Jensen-Shannon divergence 等目标相关，当真实分布和生成分布支撑集几乎不重叠时，梯度信号可能很差；WGAN 改用 Wasserstein-1 distance，并把判别器替换成 critic，目标是提供更平滑、更有意义的学习曲线 #Arjovsky et al., 2017#。</p>
+
+  <p>WGAN 的理论直觉很漂亮：即便两个分布没有重叠，Wasserstein 距离仍能反映“把一堆质量搬到另一堆质量”的成本，因此比纯粹判断可分性更适合提供生成器梯度。论文报告称 WGAN 的 critic loss 与样本质量更相关，并且在实验中没有观察到明显 mode collapse #Arjovsky et al., 2017#。但 WGAN 的第一版用 weight clipping 强行施加 Lipschitz 约束，这会带来 critic 容量受限和梯度异常。</p>
+
+  <p>WGAN-GP 修复的正是这个问题。Gulrajani 等人指出，weight clipping 常导致低质量样本或不收敛，于是改用 gradient penalty：惩罚 critic 对输入梯度范数偏离 1 的程度。论文称这种方法在多种 GAN 架构上几乎不需要调参即可稳定训练，包括 101-layer ResNets 和离散语言模型，并在 CIFAR-10 与 LSUN bedrooms 上得到高质量生成 #Gulrajani et al., 2017#。</p>
+
+  <div class="def-box">
+    <h3>WGAN-GP 的核心惩罚项</h3>
+    <p>WGAN-GP 在 critic loss 中加入：</p>
+    <p style="text-align:center">\[\lambda\,\mathbb{E}_{\hat{x}}\left[(\lVert\nabla_{\hat{x}}D(\hat{x})\rVert_2-1)^2\right].\]</p>
+    <p>直觉是：与其把所有权重粗暴裁剪到一个区间，不如直接约束 critic 在样本空间附近的局部变化速度。</p>
+  </div>
+
+  <p>谱归一化（Spectral Normalization）进一步把 Lipschitz 控制变成轻量级工程组件。Miyato 等人提出对判别器权重矩阵按最大奇异值归一化，从而控制每层的 Lipschitz 常数。相比 gradient penalty，谱归一化不需要额外对输入求梯度，计算开销小，容易接入现有实现。论文在 CIFAR-10、STL-10、ILSVRC2012 上验证 SN-GAN 生成质量优于或不差于先前稳定训练技巧 #Miyato et al., 2018#。</p>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/stability-toolkit.svg" alt="GAN stability toolkit" loading="lazy">
+    <div class="cap">图 3：稳定 GAN 训练的四类工具箱：目标函数、Lipschitz 约束、架构归纳偏置、采样与尺度控制。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>方法</th><th>主要对象</th><th>核心机制</th><th>优点</th><th>风险或代价</th></tr></thead>
+      <tbody>
+        <tr><td>WGAN</td><td>目标函数</td><td>用 Wasserstein distance 替代传统可分性目标</td><td>学习曲线更有意义，缓解 mode collapse</td><td>原版 weight clipping 粗糙</td></tr>
+        <tr><td>WGAN-GP</td><td>critic 输入梯度</td><td>惩罚梯度范数偏离 1</td><td>比 clipping 更稳定，适合深层架构</td><td>额外梯度计算开销</td></tr>
+        <tr><td>SN-GAN</td><td>判别器权重</td><td>按最大奇异值做权重归一化</td><td>轻量、易实现、超参少</td><td>主要约束最大方向，不能解决所有不稳定</td></tr>
+        <tr><td>TTUR / R1 等</td><td>优化动态</td><td>调整 G/D 学习率或惩罚真实样本梯度</td><td>改善收敛行为</td><td>依赖具体架构和数据规模</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>一个重要结论是：稳定训练没有银弹。WGAN 改目标，WGAN-GP 改约束方式，SN-GAN 改权重归一化，它们解决的是同一个博弈系统的不同病灶。实践中常见的高质量 GAN 往往组合多种技巧，而不是只靠一个损失函数。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">高保真生成主线：PGGAN、SAGAN、BigGAN、StyleGAN</div>
+
+  <p>当稳定性工具逐渐成熟后，GAN 的竞争焦点转向高分辨率、高保真和可控性。PGGAN 的思路非常直观：不要一开始就让模型生成高分辨率图像，而是从低分辨率开始，同时逐步增加生成器和判别器层数。Karras 等人称这种 progressive growing 能显著稳定训练，并生成 1024×1024 的 CelebA 图像；在无监督 CIFAR-10 上还报告了 8.80 的 Inception Score #Karras et al., 2017#。</p>
+
+  <p>SAGAN 则把注意力机制引入图像 GAN。传统卷积 GAN 的局部感受野让远距离结构一致性难以建模，例如动物头部和身体、物体不同部位之间的关系。Zhang 等人用 self-attention 让生成器和判别器都能利用远距离依赖，并结合谱归一化改进训练动态。论文在 ImageNet 上把当时最佳 Inception Score 从 36.8 提升到 52.52，FID 从 27.62 降到 18.65 #Zhang et al., 2018#。</p>
+
+  <p>BigGAN 展示了规模化带来的跃迁。Brock、Donahue 和 Simonyan 把 class-conditional GAN 放大到当时最大规模，使用更大 batch、更大模型、谱归一化、正交正则和 truncation trick。论文在 ImageNet 128×128 上把 IS 从 SAGAN 的 52.52 提升到 166.5，把 FID 从 18.65 降到 7.4；在 256×256 上达到 IS 232.5、FID 8.1，在 512×512 上达到 IS 241.5、FID 11.5 #Brock et al., 2018#。</p>
+
+  <p>StyleGAN 的突破点则不是简单扩大模型，而是重写生成器结构。Karras、Laine 和 Aila 从 style transfer 借鉴思想，引入 mapping network 和 style-based modulation，让高层属性与随机细节更可控。论文在 CelebA-HQ 和 FFHQ 上展示了更好的 FID 与潜空间可分解性，例如从 Progressive GAN baseline 的 FFHQ FID 8.04 逐步改进到 4.40 左右 #Karras et al., 2018#。StyleGAN2 又分析并修复水滴状伪影，重新设计生成器归一化，加入 path length regularization，使潜空间到图像的映射条件更好 #Karras et al., 2019#。</p>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/gan-timeline.svg" alt="GAN timeline" loading="lazy">
+    <div class="cap">图 4：GAN 从 2014 到 2020 的主线：目标函数、条件应用、稳定训练和高保真生成交替推进。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>工作</th><th>年份</th><th>核心创新</th><th>关键数值</th><th>意义</th></tr></thead>
+      <tbody>
+        <tr><td>PGGAN</td><td>2017</td><td>渐进增长分辨率</td><td>CIFAR-10 IS 8.80；CelebA 1024²</td><td>让高分辨率训练变得可控</td></tr>
+        <tr><td>SAGAN</td><td>2018</td><td>self-attention + 谱归一化</td><td>ImageNet IS 52.52，FID 18.65</td><td>引入长程依赖建模</td></tr>
+        <tr><td>BigGAN</td><td>2018</td><td>大模型、大 batch、truncation trick</td><td>ImageNet 128² IS 166.5，FID 7.4</td><td>证明 GAN 可从规模化中获益</td></tr>
+        <tr><td>StyleGAN</td><td>2018</td><td>style-based generator</td><td>FFHQ FID 从 8.04 改至约 4.40</td><td>把质量与可控性结合起来</td></tr>
+        <tr><td>StyleGAN2</td><td>2019</td><td>修复伪影、path length regularization</td><td>改进 FID、P/R 与可逆性分析</td><td>成为后续人脸生成和编辑的重要基础</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">方法重组：GAN 稳定训练到底在稳定什么</div>
+
+  <p>把这些论文放在一起看，GAN 稳定训练并不是一个单一问题，而是四个问题叠在一起。第一是目标函数是否给生成器可用梯度；第二是判别器是否过强或过不平滑；第三是生成器是否有足够合适的图像归纳偏置；第四是训练和采样是否在保真度与多样性之间取得合理平衡。Kurach 等人的大规模研究也指出，GAN 训练依赖大量超参、架构工程和 tricks，单看某个损失函数很容易误判可复现性 #Kurach et al., 2018#。</p>
+
+  <p>Li 等人的 regularization / normalization survey 则从更系统的角度把这些技巧归类：正则化和归一化本质上是在给 GAN 加入先验，限制判别器、生成器或优化轨迹的自由度，从而减少 non-convergence、mode collapse、gradient vanishing 等问题 #Li et al., 2020#。这也解释了为什么谱归一化、梯度惩罚、R1 正则、路径长度正则、正交正则虽然形式不同，却都在处理“博弈太自由导致动态不可控”的问题。</p>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>层面</th><th>典型方法</th><th>控制对象</th><th>适合场景</th><th>一句话判断</th></tr></thead>
+      <tbody>
+        <tr><td>目标函数</td><td>non-saturating、WGAN、hinge loss</td><td>生成器收到的梯度</td><td>基础 GAN 训练不动或 loss 不可解释</td><td>先保证信号方向有意义</td></tr>
+        <tr><td>判别器约束</td><td>WGAN-GP、R1、谱归一化</td><td>判别器/critic 的局部变化速度</td><td>D 太强、梯度爆炸或消失</td><td>限制 D，不是削弱 D 的表达能力</td></tr>
+        <tr><td>架构约束</td><td>DCGAN、PGGAN、SAGAN</td><td>生成器与判别器的归纳偏置</td><td>图像分辨率提升、长程结构建模</td><td>把难优化问题变成更合适的搜索空间</td></tr>
+        <tr><td>尺度与采样</td><td>BigGAN scaling、truncation trick</td><td>模型容量、batch、潜变量分布</td><td>大规模类别条件图像生成</td><td>质量提升常伴随多样性-稳定性代价</td></tr>
+        <tr><td>潜空间可控</td><td>StyleGAN、StyleGAN2</td><td>latent mapping 与逐层风格注入</td><td>人脸、编辑、可解释生成</td><td>高质量之后，控制性成为核心指标</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      实践配方：如果今天还要训练一个 GAN
+    </div>
+    <div class="admonition-content">
+      <p>从强 baseline 开始，而不是从原始 GAN 目标开始。图像任务优先考虑 hinge loss 或 non-saturating loss + 谱归一化判别器；如果训练震荡明显，再尝试 R1 或 gradient penalty。高分辨率任务不要一上来追求最大分辨率，先在低分辨率闭环验证数据、归一化、增强和评估指标。</p>
+    </div>
+  </div>
+
+  <p>需要强调的是，GAN 的“稳定”不等于 loss 单调下降。GAN 是双人博弈，生成器和判别器的 loss 都可能不具备普通监督学习中的解释方式。WGAN 的一个贡献就是让 critic loss 更接近样本质量的调试信号；BigGAN 的经验又提醒我们，即使达到非常高的 IS/FID，大规模训练仍可能存在突然崩溃，完全稳定有时要以显著性能损失为代价 #Arjovsky et al., 2017# #Brock et al., 2018#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">时间线：三次范式迁移</div>
+
+  <h3 class="section-title">2014–2015：从概念到可训练图像架构</h3>
+  <p>第一阶段的关键词是“证明这个博弈能用”。原始 GAN 给出极小极大框架，cGAN 让生成过程接入条件，DCGAN 则用卷积架构和一组训练约束把自然图像生成推向可复现实验 #Goodfellow et al., 2014# #Mirza and Osindero, 2014# #Radford et al., 2015#。这一阶段的共识是：GAN 的理论目标很优雅，但必须依赖合适架构才能在图像上跑起来。</p>
+
+  <h3 class="section-title">2016–2017：从无条件生成到任务化应用与稳定目标</h3>
+  <p>第二阶段出现两个并行方向。一边是 pix2pix、SRGAN、CycleGAN 把 GAN 变成图像翻译和感知质量工具，解决“怎样按输入条件生成输出”；另一边是 WGAN、WGAN-GP 重新审视 GAN 的分布距离和 Lipschitz 约束，解决“为什么训练常常没有梯度或崩掉” #Ledig et al., 2016# #Isola et al., 2016# #Arjovsky et al., 2017# #Zhu et al., 2017# #Gulrajani et al., 2017#。</p>
+
+  <h3 class="section-title">2018–2020：从稳定训练到高保真、可控和规模化</h3>
+  <p>第三阶段的核心是质量上限。PGGAN 解决高分辨率训练路径，SN-GAN 给出轻量稳定判别器，SAGAN 引入长程依赖，BigGAN 证明大模型和大 batch 能显著抬升 ImageNet 生成质量，StyleGAN/StyleGAN2 则把潜空间可控性、伪影分析和图像质量推到新的阶段 #Karras et al., 2017# #Miyato et al., 2018# #Zhang et al., 2018# #Brock et al., 2018# #Karras et al., 2018# #Karras et al., 2019#。</p>
+
+  <div class="callout"><strong>跨阶段转变：</strong>GAN 先解决“能不能生成”，再解决“能不能按条件生成”，最后解决“能不能稳定、可控、高保真地生成”。每一步都不是单个技巧胜出，而是目标函数、网络结构、正则化和数据规模共同推动。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第八章</div>
+  <div class="ch-title">开放问题：为什么 GAN 后来被扩散模型盖过，但仍然重要</div>
+
+  <p>今天谈生成模型，扩散模型和自回归模型占据更多注意力。但 GAN 的研究遗产并没有消失。它留下了对抗式损失、感知质量优化、判别器学习评价函数、潜空间编辑和高效单步生成等一整套思想。很多图像压缩、超分辨率、视频增强和 3D/神经渲染系统仍会引入 adversarial loss，因为它能补足像素损失在高频纹理上的不足。</p>
+
+  <h3 class="section-title">五个仍值得追问的问题</h3>
+  <ol>
+    <li><strong>评价指标仍不完美。</strong>FID 和 IS 能快速比较模型，但它们依赖预训练分类器特征，未必准确反映人类对结构、语义和细节的感知。StyleGAN2 已经指出 classifier-based metric 可能偏向纹理而非形状 #Karras et al., 2019#。</li>
+    <li><strong>训练稳定性仍是系统问题。</strong>谱归一化、梯度惩罚和 R1 能改善局部问题，但大规模 GAN 仍可能突然崩溃。BigGAN 的经验说明，完全稳定有时与最高性能存在冲突 #Brock et al., 2018#。</li>
+    <li><strong>多样性和保真度难以同时最大化。</strong>truncation trick 可以提升样本保真度，但本质上是缩小潜变量分布，可能牺牲覆盖度。实际应用必须明确更看重真实感还是多样性。</li>
+    <li><strong>条件控制不等于语义理解。</strong>cGAN、pix2pix、CycleGAN 都能接入条件，但条件是否被完整遵守、是否出现捷径、是否在域外输入上可靠，仍需要任务级验证。</li>
+    <li><strong>与扩散模型的互补关系仍有价值。</strong>扩散模型训练稳定、覆盖度强，但采样通常更慢；GAN 单步生成速度快，适合实时或低延迟场景。未来更可能是混合系统，而不是简单替代。</li>
+  </ol>
+
+  <p>如果把 GAN 放进生成模型历史，它最重要的贡献不是某一个模型，而是一个问题意识：当我们无法手写“好样本”的损失函数时，能不能训练一个网络来学习这个损失？这个思想已经远远超出原始 GAN 图像生成本身，进入了表征学习、强化学习、隐式模型、图像质量评估和生成式编辑的很多角落。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结语</div>
+  <div class="ch-title">一张总表读懂 GAN 的研究脉络</div>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>研究问题</th><th>代表论文</th><th>关键答案</th><th>留下的影响</th></tr></thead>
+      <tbody>
+        <tr><td>生成建模能否不写显式似然？</td><td>GAN</td><td>用生成器-判别器博弈学习隐式分布</td><td>开创对抗式生成框架</td></tr>
+        <tr><td>GAN 能否稳定生成自然图像？</td><td>DCGAN</td><td>卷积架构约束 + 归一化 + 合适优化超参</td><td>奠定图像 GAN baseline</td></tr>
+        <tr><td>GAN 能否服务具体视觉任务？</td><td>cGAN、pix2pix、CycleGAN、SRGAN</td><td>把标签、图像、域约束、感知损失接入训练</td><td>推动图像翻译与感知质量优化</td></tr>
+        <tr><td>为什么训练不稳定？</td><td>WGAN、WGAN-GP、SN-GAN</td><td>目标函数与 Lipschitz 约束决定梯度质量</td><td>形成稳定训练工具箱</td></tr>
+        <tr><td>如何达到高保真高分辨率？</td><td>PGGAN、SAGAN、BigGAN、StyleGAN</td><td>渐进训练、注意力、规模化、style-based generator</td><td>把 GAN 推向可控、高质量图像合成</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>因此，学习 GAN 不应该只背“生成器骗判别器”。更有用的理解是：GAN 是一套围绕“学习损失函数”的方法论；它的历史，是研究者不断约束、改造和工程化这场博弈的历史。WGAN 让信号更可解释，WGAN-GP 和 SN-GAN 让判别器更可控，PGGAN 与 BigGAN 让模型尺度上去，StyleGAN 则让潜空间成为可编辑对象。理解这些迁移，比记住每个缩写更重要。</p>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Goodfellow-et-al.-2014">Goodfellow, I. et al. (2014). Generative Adversarial Networks. <a href="https://arxiv.org/abs/1406.2661" target="_blank">arXiv:1406.2661</a>.</li>
+      <li data-cite-key="Mirza-and-Osindero-2014">Mirza, M. and Osindero, S. (2014). Conditional Generative Adversarial Nets. <a href="https://arxiv.org/abs/1411.1784" target="_blank">arXiv:1411.1784</a>.</li>
+      <li data-cite-key="Radford-et-al.-2015">Radford, A. et al. (2015). Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks. <a href="https://arxiv.org/abs/1511.06434" target="_blank">arXiv:1511.06434</a>.</li>
+      <li data-cite-key="Ledig-et-al.-2016">Ledig, C. et al. (2016). Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network. <a href="https://arxiv.org/abs/1609.04802" target="_blank">arXiv:1609.04802</a>.</li>
+      <li data-cite-key="Isola-et-al.-2016">Isola, P. et al. (2016). Image-to-Image Translation with Conditional Adversarial Networks. <a href="https://arxiv.org/abs/1611.07004" target="_blank">arXiv:1611.07004</a>.</li>
+      <li data-cite-key="Goodfellow-2016">Goodfellow, I. (2016). NIPS 2016 Tutorial: Generative Adversarial Networks. <a href="https://arxiv.org/abs/1701.00160" target="_blank">arXiv:1701.00160</a>.</li>
+      <li data-cite-key="Arjovsky-et-al.-2017">Arjovsky, M. et al. (2017). Wasserstein GAN. <a href="https://arxiv.org/abs/1701.07875" target="_blank">arXiv:1701.07875</a>.</li>
+      <li data-cite-key="Zhu-et-al.-2017">Zhu, J.-Y. et al. (2017). Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks. <a href="https://arxiv.org/abs/1703.10593" target="_blank">arXiv:1703.10593</a>.</li>
+      <li data-cite-key="Gulrajani-et-al.-2017">Gulrajani, I. et al. (2017). Improved Training of Wasserstein GANs. <a href="https://arxiv.org/abs/1704.00028" target="_blank">arXiv:1704.00028</a>.</li>
+      <li data-cite-key="Karras-et-al.-2017">Karras, T. et al. (2017). Progressive Growing of GANs for Improved Quality, Stability, and Variation. <a href="https://arxiv.org/abs/1710.10196" target="_blank">arXiv:1710.10196</a>.</li>
+      <li data-cite-key="Miyato-et-al.-2018">Miyato, T. et al. (2018). Spectral Normalization for Generative Adversarial Networks. <a href="https://arxiv.org/abs/1802.05957" target="_blank">arXiv:1802.05957</a>.</li>
+      <li data-cite-key="Zhang-et-al.-2018">Zhang, H. et al. (2018). Self-Attention Generative Adversarial Networks. <a href="https://arxiv.org/abs/1805.08318" target="_blank">arXiv:1805.08318</a>.</li>
+      <li data-cite-key="Kurach-et-al.-2018">Kurach, K. et al. (2018). A Large-Scale Study on Regularization and Normalization in GANs. <a href="https://arxiv.org/abs/1807.04720" target="_blank">arXiv:1807.04720</a>.</li>
+      <li data-cite-key="Brock-et-al.-2018">Brock, A. et al. (2018). Large Scale GAN Training for High Fidelity Natural Image Synthesis. <a href="https://arxiv.org/abs/1809.11096" target="_blank">arXiv:1809.11096</a>.</li>
+      <li data-cite-key="Karras-et-al.-2018">Karras, T. et al. (2018). A Style-Based Generator Architecture for Generative Adversarial Networks. <a href="https://arxiv.org/abs/1812.04948" target="_blank">arXiv:1812.04948</a>.</li>
+      <li data-cite-key="Karras-et-al.-2019">Karras, T. et al. (2019). Analyzing and Improving the Image Quality of StyleGAN. <a href="https://arxiv.org/abs/1912.04958" target="_blank">arXiv:1912.04958</a>.</li>
+      <li data-cite-key="Li-et-al.-2020">Li, Z. et al. (2020). A Systematic Survey of Regularization and Normalization in GANs. <a href="https://arxiv.org/abs/2008.08930" target="_blank">arXiv:2008.08930</a>.</li>
+    </ul>
+  </div>
+</div>

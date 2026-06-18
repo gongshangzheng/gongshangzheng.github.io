@@ -1,0 +1,358 @@
+---
+title: "基于等几何分析的泊松问题求解"
+date: 2026-05-20T14:00:00
+description: "GAMES302 第 6 讲课程笔记：泊松方程强形式到弱形式推导，NURBS Galerkin 离散、刚度矩阵装配、r-细化与 Winslow 自适应。"
+created_at: 2026-05-20T14:00:00
+updated_at: 2026-05-20T14:00:00
+tags: ["等几何分析", "泊松方程", "Galerkin", "NURBS", "课程笔记"]
+categories: [课程]
+mathjax: true
+hero_title: "基于等几何分析的泊松问题求解"
+hero_sub: "GAMES302 · 课程笔记"
+hero_tagline: "GAMES302 第 6 讲课程笔记：泊松方程强形式到弱形式推导，NURBS Galerkin 离散、刚度矩阵装配、r-..."
+subcategory: "等几何分析"
+---
+
+<p><strong>GAMES302 · 高级图形学与增强现实</strong></p>
+<p><strong>授课教师：徐岗 · 杭州电子科技大学</strong></p>
+
+<div class="ch fade-in"><div class="ch-title">引言：为什么用 IGA 求解偏微分方程</div>
+
+<p>传统有限元方法（FEM）求解偏微分方程（PDE）时，几何表示（网格）与物理场近似（基函数）通常来自<strong>两套相互独立的模型</strong>——这导致两个根本性问题：</p>
+
+<ul><li><strong>几何精度受限于网格分辨率</strong>：加密网格可以提升精度，但网格生成本身成本极高。</li></ul>
+<ul><li><strong>几何-物理不一致误差</strong>：CAD 几何与离散网格之间的差异会在边界条件处理上引入额外误差。</li></ul>
+
+<p><strong>等几何分析（Isogeometric Analysis, IGA）</strong> 提出了一个统一方案：用 <strong>NURBS 基函数</strong>同时表示几何体和物理场——几何建模用 NURBS，物理场近似也用相同的 NURBS 基函数展开。几何与物理共享同一种数学表示，彻底消除了两套模型之间的不一致性。</p>
+
+<p>本讲以<strong>泊松方程（Poisson Equation）</strong>——热传导方程的稳态形式——为模型问题，完整推导 IGA 求解流程，包括<strong>强形式 → 弱形式 → Galerkin 离散 → 矩阵装配 → 代码实现</strong>，最后介绍 <strong>$h$、$p$、$r$ 细化策略</strong>。</p>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">泊松方程的强形式</div>
+
+<p>设区域 $\Omega \subset \mathbb{R}^2$ 由 NURBS 曲面定义，边界 $\Gamma = \partial\Omega$ 分三类：</p>
+
+<ul><li><strong>$\Gamma_D$</strong>（迪利克雷边界）：温度场 $u$ 固定，$u|_{\Gamma_D} = g$</li></ul>
+<ul><li><strong>$\Gamma_N$</strong>（纽曼边界）：热通量固定，$K\nabla u \cdot n|_{\Gamma_N} = h$</li></ul>
+<ul><li><strong>$\Gamma_R$</strong>（罗宾边界）：对流换热条件，$K\nabla u \cdot n + \beta(u - U_\infty) = 0$</li></ul>
+
+<p>强形式为：找到 $u : \Omega \to \mathbb{R}$，使得</p>
+
+<p style="text-align:center">\[
+\begin{cases} -\nabla \cdot (K \nabla u) = f, & \text{in } \Omega \\ u = g, & \text{on } \Gamma_D \\ K\nabla u \cdot n = h, & \text{on } \Gamma_N \\ K\nabla u \cdot n + \beta(u - U_\infty) = 0, & \text{on } \Gamma_R \end{cases}
+\]</p>
+
+<p>其中：</p>
+
+<ul><li>$K > 0$：热传导率（标量或张量）</li></ul>
+<ul><li>$f$：热源密度函数</li></ul>
+<ul><li>$g, h, \beta, U_\infty$：边界数据，均为已知</li></ul>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">从强形式到弱形式</div>
+
+<h3>1 试探函数空间与测试函数空间</h3>
+
+<p>定义<strong>试探空间</strong>（trial space）：</p>
+
+<p style="text-align:center">\[
+\Phi = \{ v \in H^1(\Omega) \mid v = g \text{ on } \Gamma_D \}
+\]</p>
+
+<p>其中 $H^1(\Omega)$ 是<strong>索伯列夫空间</strong>，即一阶偏导数平方可积的函数空间。</p>
+
+<p>定义<strong>测试空间</strong>（test space）：</p>
+
+<p style="text-align:center">\[
+\Psi = \{ w \in H^1(\Omega) \mid w = 0 \text{ on } \Gamma_D \}
+\]</p>
+
+<p>注意测试函数在迪利克雷边界上必须<strong>强制为零</strong>，这是弱形式推导的要点。</p>
+
+<h3>2 乘以测试函数并分部积分</h3>
+
+<p>将 PDE 两边同乘 $w \in \Psi$，在 $\Omega$ 上积分：</p>
+
+<p style="text-align:center">\[
+\int_\Omega w(-\nabla \cdot (K\nabla u)) d\Omega = \int_\Omega wf d\Omega
+\]</p>
+
+<p>对左端做<strong>分部积分</strong>（Green 第一公式）：</p>
+
+<p style="text-align:center">\[
+\int_\Omega K\nabla w \cdot \nabla u \, d\Omega - \int_{\partial\Omega} w K\nabla u \cdot n \, d\Gamma = \int_\Omega wf d\Omega
+\]</p>
+
+<h3>3 代入三类边界条件</h3>
+
+<p>对三类边界分别处理：</p>
+
+<ul><li><strong>罗宾边界</strong>（$\Gamma_R$）：代入 $K\nabla u \cdot n = -\beta(u - U_\infty)$，得到</li></ul>
+<p style="text-align:center">\[
+\int_{\Gamma_R} w \cdot [-\beta(u - U_\infty)] d\Gamma = -\beta \int_{\Gamma_R} w u \, d\Gamma + \beta U_\infty \int_{\Gamma_R} w \, d\Gamma
+\]</p>
+<ul><li><strong>纽曼边界</strong>（$\Gamma_N$）：已知 $K\nabla u \cdot n = h$，保留</li></ul>
+<p style="text-align:center">\[
+\int_{\Gamma_N} w h \, d\Gamma
+\]</p>
+<ul><li><strong>迪利克雷边界</strong>（$\Gamma_D$）：$w = 0$，自动消除</li></ul>
+
+<h3>4 最终弱形式</h3>
+
+<p>整理后得到标准的<strong>变分形式</strong>：找到 $u \in \Phi$，使得</p>
+
+<p style="text-align:center">\[
+a(w, u) = L(w), \quad \forall w \in \Psi
+\]</p>
+
+<p>其中</p>
+
+<p style="text-align:center">\[
+a(w, u) = \int_\Omega K \nabla w \cdot \nabla u \, d\Omega + \beta \int_{\Gamma_R} w u \, d\Gamma
+\]</p>
+
+<p style="text-align:center">\[
+L(w) = \int_\Omega w f \, d\Omega + \int_{\Gamma_N} w h \, d\Gamma + \beta U_\infty \int_{\Gamma_R} w \, d\Gamma
+\]</p>
+
+<p>弱形式的<strong>核心价值</strong>：导数阶次降低一阶——原方程含二阶导，弱形式只要求 $u \in H^1$，允许分片多项式作为基函数。</p>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">Galerkin 方法：将无限维转为有限维</div>
+
+<h3>1 有限维子空间构造</h3>
+
+<p>在 IGA 中，NURBS 基函数同时构成试探空间和测试空间的离散近似：</p>
+
+<p style="text-align:center">\[
+\Phi_h = \text{span}\{N_i\}_{i=1}^{n}, \quad \Psi_h = \text{span}\{N_i\}_{i=1}^{n_{eq}}
+\]</p>
+
+<p>其中 $n_{eq} < n$，体现<strong>迪利克雷边界条件</strong>的约束。</p>
+
+<p>Galerkin 方法要求近似解 $u_h$ 满足：</p>
+
+<p style="text-align:center">\[
+u_h = v_h + g_h, \quad v_h \in \Psi_h, \ g_h \text{ 逼近边界条件}
+\]</p>
+
+<p>将 $u_h = \sum_{i=1}^{n} c_i N_i$ 代入弱形式，利用 $v_h$ 的任意性，得到线性系统：</p>
+
+<p style="text-align:center">\[
+\underbrace{\mathbf{K}}_{n_{eq} \times n_{eq}} \underbrace{\mathbf{d}}_{n_{eq} \times 1} = \underbrace{\mathbf{F}}_{n_{eq} \times 1}
+\]</p>
+
+<p>其中：</p>
+
+<ul><li><strong>$\mathbf{K}$</strong>：<strong>刚度矩阵</strong>（stiffness matrix），$K_{ij} = a(N_j, N_i)$</li></ul>
+<ul><li><strong>$\mathbf{d}$</strong>：<strong>位移/温度矢量</strong>（待求未知数）</li></ul>
+<ul><li><strong>$\mathbf{F}$</strong>：<strong>力矢量</strong>（load vector），$F_i = L(N_i)$</li></ul>
+
+<h3>2 边界条件的处理策略</h3>
+
+<p>由于 NURBS 基函数是<strong>高度局部化</strong>的，在迪利克雷边界 $\Gamma_D$ 上非零的基函数极少。因此存在整数 $n_{eq} < n$，使得前 $n_{eq}$ 个基函数在 $\Gamma_D$ 上满足齐次边界条件（$g_i = 0$）。</p>
+
+<p>对每个基函数引入 <strong>BC 函数</strong>：</p>
+
+<p style="text-align:center">\[
+\text{BC}[i] = \begin{cases} 1, & N_i \text{ 在 } \Gamma_D \text{ 上非零} \\ 0, & \text{其他} \end{cases}
+\]</p>
+
+<p>装配全局矩阵时：</p>
+
+<ul><li>若 $\text{BC}[i] = 1$：将第 $i$ 行/列化为单位矩阵，$d_i = g_i$（直接赋值）</li></ul>
+<ul><li>若 $\text{BC}[i] = 0$ 但 $\text{BC}[j] = 1$：不更新 $K_{ij}$，将 $F_i$ 减去 $K_{ij} g_j$</li></ul>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">单元刚度矩阵与力向量的构造</div>
+
+<h3>1 参考域到物理域的映射</h3>
+
+<p>将物理域单元 $\Omega^e \subset \Omega$ 通过映射 $(x^e(\xi), y^e(\eta))$ 映射到参考单元 $\hat{\Omega} = [0,1]^2$，引入以下关键量：</p>
+
+<ul><li><strong>雅可比矩阵</strong>：$DF = \begin{pmatrix} x_\xi & y_\xi \\ x_\eta & y_\eta \end{pmatrix}$</li></ul>
+<ul><li><strong>雅可比行列式</strong>：$J = \det(DF) = x_\xi y_\eta - x_\eta y_\xi$</li></ul>
+<ul><li><strong>单位外法向量</strong> $\mathbf{n}$、<strong>单位切向量</strong> $\mathbf{t}$</li></ul>
+<ul><li><strong>表面行列式</strong>：$J_s = |\mathbf{n} \cdot (x_\xi, y_\xi) \times (x_\eta, y_\eta)|$</li></ul>
+
+<p>物理域积分可转化为参考域积分：</p>
+
+<p style="text-align:center">\[
+\int_{\Omega^e} \nabla w \cdot \nabla u \, d\Omega = \int_{\hat\Omega} (DF^{-T} \hat\nabla w)^T (DF^{-T} \hat\nabla u) |J| \, d\hat\Omega
+\]</p>
+
+<h3>2 单元矩阵与单元力向量表达式</h3>
+
+<p style="text-align:center">\[
+K^e_{ab} = \int_{\hat\Omega} (B_a)^T D B_b \cdot |J| \, d\hat\xi d\hat\eta
+\]</p>
+
+<p style="text-align:center">\[
+f^e_a = \int_{\Omega^e} N_a f \, d\Omega = \int_{\hat\Omega} R_a \cdot f(x(\xi), y(\eta)) \cdot |J| \, d\hat\xi d\hat\eta
+\]</p>
+
+<p>其中 $B_a$ 是 $N_a$ 的<strong>梯度在参考域中的表示</strong>，$D$ 是材料属性（这里 $D = K$）。</p>
+
+<h3>3 基函数求值与高斯积分</h3>
+
+<p><strong>问题 1：如何计算基函数 $N_i$ 及其导数？</strong></p>
+
+<div class="photo">
+  <img src="media/images/games302-06-iga-poisson/L06-p7.jpg" alt="高斯积分" loading="lazy">
+  <div class="cap">高斯积分点与权系数</div>
+</div>
+
+
+<p>利用 B 样条基函数与 Bernstein 基函数的关系，通过<strong>链式求导法则</strong>：</p>
+
+<p style="text-align:center">\[
+\frac{\partial N_i}{\partial \xi} = \sum_k \frac{\partial B_k}{\partial \xi} \cdot \text{weights}_k, \quad \frac{\partial N_i}{\partial x} = \frac{\partial N_i}{\partial \xi} \cdot \frac{\partial \xi}{\partial x}
+\]</p>
+
+<p><strong>问题 2：如何在参考单元上计算积分？</strong></p>
+
+<p>使用<strong>高斯-勒让德数值积分</strong>。对于 $M$ 阶积分精度，取 $N$ 个高斯点 $\{\xi_i\}$ 和权系数 $\{w_i\}$：</p>
+
+<p style="text-align:center">\[
+\int_{-1}^{1} f(\xi) d\xi \approx \sum_{i=1}^{N} f(\xi_i) w_i
+\]</p>
+
+<p>常用配置表：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>阶次 $M$</th><th>精度 $N$</th><th>高斯点位置 $\xi_i$</th><th>权系数 $w_i$</th></tr></thead>
+<tbody>
+<tr><td>2</td><td>3</td><td>$\pm 0.577$</td><td>$1$</td></tr>
+<tr><td>3</td><td>5</td><td>$0, \pm 0.775$</td><td>$0.889, 0.556$</td></tr>
+<tr><td>4</td><td>7</td><td>$\pm 0.340, \pm 0.861$</td><td>$0.652, 0.348$</td></tr>
+</tbody>
+</table>
+</div>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">代码实现框架（C++ / Eigen）</div>
+
+<p>IGA 求解泊松问题的整体流程：</p>
+
+<p><code>`</code>cpp</p>
+<p>// 1. 初始化几何数据（控制点、节点矢量、权因子）</p>
+<p>initial();</p>
+
+<p>// 2. 构造单元连接矩阵（IEN 数组）</p>
+<p>buildConn();</p>
+
+<p>// 3. 装配全局刚度矩阵 A 和全局力向量 b</p>
+<p>this->A = assembleA();</p>
+<p>this->b = assembleb();</p>
+
+<p>// 4. 处理迪利克雷边界条件</p>
+<p>exeBC();</p>
+
+<p>// 5. 稀疏矩阵求解（Cholesky 分解）</p>
+<p>Eigen::SimplicialCholesky<SpMat> chol(A);</p>
+<p>this->x = chol.solve(b);</p>
+<p><code>`</code></p>
+
+<p><strong> assembleA 的核心</strong>：遍历所有单元，对每个高斯积分点调用 <code>getIntegralA()</code>，计算 $K^e_{ab}$，根据 IEN 数组更新全局矩阵 $\mathbf{A}$。</p>
+
+<p><strong>exeBC 的核心</strong>：遍历边界上的控制点，将对应行/列清零后将对角线置 1，右端项设为边界值（如 $g = 0$ 对应齐次迪利克雷条件）。</p>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">等几何分析中的 $h$、$p$、$r$ 细化</div>
+
+<h3>1 $h$-细化（knot insertion）</h3>
+
+<p><strong>不加新控制点，不改变几何形状</strong>，仅在节点矢量中插入新的节点值。插入后基函数支撑域变小，<strong>网格局部加密</strong>，整体自由度增加。</p>
+
+<h3>2 $p$-细化（order elevation）</h3>
+
+<p><strong>不改变几何形状</strong>，将 B 样条基函数的阶数提升（一次提升一个）。阶数升高后，基函数的表达能力增强，在不加密网格的情况下<strong>提高精度</strong>。</p>
+
+<h3>3 $r$-细化（本讲重点）</h3>
+
+<p>$h$-细化和 $p$-细化都通过<strong>增加自由度</strong>来提升精度。$r$-细化则是<strong>固定自由度数量</strong>，只优化<strong>内部控制点的位置</strong>：</p>
+
+<div class="photo">
+  <img src="media/images/games302-06-iga-poisson/L06-p8.jpg" alt="r-细化示意" loading="lazy">
+  <div class="cap">$r$-细化方法示意</div>
+</div>
+
+
+<blockquote><p>给定初始控制点布局，在边界几何固定的前提下，寻找最优的内部控制点位置，使 IGA 求解误差最小。</p></blockquote>
+
+<p>这一思想源自<strong>形状优化（shape optimization）</strong>——区别在于形状优化调整边界控制点，$r$-细化只调整内部控制点，因此<strong>不改变边界几何</strong>。</p>
+
+<h4>3.1 残差函数与后验误差估计</h4>
+
+<p>设 $u_h$ 为 IGA 解，$U$ 为精确解，误差 $e = U - u_h$。残差函数为：</p>
+
+<p style="text-align:center">\[
+r = f - \Delta u_h
+\]</p>
+
+<p>后验误差指示子（K 单元上）为：</p>
+
+<p style="text-align:center">\[
+\eta_K = h_K \| r \|_{L^2(K)}
+\]</p>
+
+<p>$J$（残差能量模的平方）为：</p>
+
+<p style="text-align:center">\[
+J = \sum_{K \in \mathcal{T}_h} h_K^2 \int_K (f - \Delta u_h)^2 dK
+\]</p>
+
+<h4>3.2 $r$-细化算法</h4>
+
+<ol><li>在给定参数化域上求解 IGA 问题，得到初始解 $u_h$。</li></ol>
+<ol><li>计算 $J = \sum_K h_K^2 \int_K (f - \Delta u_h)^2 dK$。</li></ol>
+<ol><li>计算 $\Delta u_h$（利用 $u_h = T(\xi, \eta)$ 和 $J = x_\xi y_\eta - x_\eta y_\xi$ 推导链式公式）。</li></ol>
+<ol><li>以 $J$ 为目标函数，用<strong>最速下降法</strong>重排内部控制点：搜索方向 $d_k = -\nabla J$，沿方向做回溯线搜索找到最优步长。</li></ol>
+<ol><li>返回第 1 步，迭代至收敛。</li></ol>
+
+<h4>3.3 Winslow 映射方法</h4>
+
+<p>[Wang et al., JCAM 2019] 提出了基于 <strong>Winslow 映射与监测函数（monitor function）</strong>的 $r$-自适应 IGA：</p>
+
+<p><strong>核心思想</strong>：利用解的<strong>主曲率</strong>分布作为监测函数，引导内部控制点向高曲率区域聚集，从而在解变化剧烈的区域获得更高分辨率。</p>
+
+<p style="text-align:center">\[
+G_1(\xi, \eta) = |k_1| + |k_2|
+\]</p>
+
+<p>其中 $k_1, k_2$ 是解曲面的两个主曲率。监测函数大的区域对应解的梯度大，因此需要更密的控制点覆盖。</p>
+
+<p>算法流程：</p>
+
+<ol><li>在初始参数化域上用 IGA 求解 PDE。</li></ol>
+<ol><li>基于当前解计算监测函数 $G_1$。</li></ol>
+<ol><li>用 Winslow 映射 $x(\xi,\eta)$ 建立新参数化，使新参数化的网格密度与 $G_1$ 成正比。</li></ol>
+<ol><li>回到第 1 步，迭代直至 $G_1$ 收敛。</li></ol>
+
+<p>该方法在<strong>精度和效率</strong>上均优于固定网格 IGA，尤其当解具有尖锐特征（边界层、奇点）时优势显著。</p>
+
+</div>
+<div class="ch fade-in"><div class="ch-title">小结</div>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>主题</th><th>核心内容</th></tr></thead>
+<tbody>
+<tr><td><strong>泊松方程强形式</strong></td><td>热传导稳态方程 + 三类边界条件（迪利克雷/纽曼/罗宾）</td></tr>
+<tr><td><strong>弱形式推导</strong></td><td>分部积分 → 变分形式 $a(w,u)=L(w)$</td></tr>
+<tr><td><strong>Galerkin 离散</strong></td><td>NURBS 基函数构成有限维子空间 → 线性系统 $Kd=F$</td></tr>
+<tr><td><strong>单元矩阵装配</strong></td><td>雅可比变换 + 高斯积分</td></tr>
+<tr><td><strong>$r$-细化</strong></td><td>固定自由度，优化内部控制点位置，最小化残差能量模</td></tr>
+<tr><td><strong>Winslow 方法</strong></td><td>以解主曲率为监测函数，通过映射引导网格自适分布</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>IGA 的核心理念在于<strong>几何与物理的统一表示</strong>：NURBS 既是最精确的几何建模语言，也是最自然的物理场近似基底。本讲以泊松方程为载体，展示了从 PDE 弱形式推导到矩阵系统装配、再到自适应细化的完整管线，为后续更复杂的 <strong>NURBS 有限元分析</strong>和<strong>等几何拓扑优化</strong>奠定了基础。</p>
+
+<p><strong>参考论文</strong>：</p>
+
+<ul><li>Xu et al., <em>Parameterization of computational domain in IGA: Methods and comparison</em>, CMAME 2011</li></ul>
+<ul><li>Xu et al., <em>Efficient r-adaptive IGA with Winslow's mapping</em>, JCAM 2019</li></ul>
+</div>

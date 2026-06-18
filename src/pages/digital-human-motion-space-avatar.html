@@ -1,0 +1,260 @@
+---
+title: "数字人系列（三）：运动空间路线，从 SadTalker 到 VASA-1 与 Ditto"
+description: "解释数字人中的 motion space / 运动空间路线：为什么 SadTalker、VASA-1、Ditto 不直接生成像素，而是在 3DMM 系数、面部潜在空间或 motion representation 中预测运动，再由渲染器还原成说话视频。"
+date: 2026-06-08T14:41:06
+created_at: 2026-06-08T14:41:06
+updated_at: 2026-06-09T09:37:27
+tags: [数字人, Motion Space, SadTalker, VASA-1, Ditto, Talking Head]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 30
+toc: true
+mathjax: true
+notify: true
+hero_title: "运动空间数字人路线"
+hero_sub: "从 3DMM 运动系数到 motion-space diffusion"
+hero_tagline: "系列（三）· Motion Space · 3DMM · Facial Dynamics · Realtime Talking Head"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3DMM</span><span class="label">显式运动系数</span></div>
+  <div class="stat"><span class="num b">40</span><span class="label g">FPS 样例</span></div>
+  <div class="stat"><span class="num">265D</span><span class="label">Ditto 运动表示</span></div>
+  <div class="stat"><span class="num b">385ms</span><span class="label l">首帧延迟样例</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter Map</div>
+  <div class="ch-title">本篇在系列中的位置</div>
+
+  上一篇讨论的是局部换嘴与视频配音：模型主要保留原视频，只在嘴部或脸部局部区域重绘。运动空间路线把问题向前推进一步：它不满足于“让嘴型同步”，而是先把人脸或头像表示成一组可生成、可控制、可渲染的运动变量，再预测这些变量随音频变化的时间序列。SadTalker 使用 3DMM motion coefficients，VASA-1 在整体面部动力学 latent space 中生成运动，Ditto 则明确提出 motion-space diffusion。#Zhang-et-al.-2023-SadTalker# #Xu-et-al.-2024-VASA# #Li-et-al.-2025-Ditto#
+
+  <div class="info-box">
+    <h3>阅读目标</h3>
+    <ul>
+      <li><strong>前情回顾</strong>：局部换嘴稳定、便宜，但表达力被原视频动作限制。</li>
+      <li><strong>本篇问题</strong>：为什么把音频先映射到运动空间，比直接生成像素或视频 latent 更适合实时 talking head。</li>
+      <li><strong>下一篇衔接</strong>：运动空间路线强调低维、可控和实时；扩散基模路线则依赖通用视频生成先验，换取更高自由度和更强画面表现。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-lip-sync-video-dubbing.html"><span class="nav-label">上一篇</span><span class="nav-title">换嘴与视频配音</span></a>
+    <a class="nav-card current" href="digital-human-motion-space-avatar.html"><span class="nav-label">本文</span><span class="nav-title">运动空间数字人路线</span></a>
+    <a class="nav-card" href="digital-human-3dgs-nerf-avatar.html"><span class="nav-label">下一篇</span><span class="nav-title">3DGS 与 NeRF 数字人路线</span></a>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">路线定义：什么叫在 motion space 里操作</div>
+
+  “在 motion space 里操作”不是指模型一定不用扩散，也不是指一定使用 3DMM。它描述的是一种任务分解：数字人系统先把人物外观、身份纹理和背景从“运动”里拆出去，再让生成模型只预测“怎么动”。运动可以是 3DMM 的表情系数和头姿，可以是解耦面部 latent，可以是 keypoints、expression deformation、rotation、translation 组成的 motion representation。渲染器再把这些运动变量作用到参考身份上，得到最终视频。#Zhang-et-al.-2023-SadTalker# #Xu-et-al.-2024-VASA# #Li-et-al.-2025-Ditto#
+
+  <div class="def-box">
+    <h3>3DMM（3D Morphable Model，三维可变形人脸模型）</h3>
+    <p>3DMM 是一种用低维参数表示三维人脸的统计模型。它把“这张脸是谁”“脸上是什么表情”“头朝哪个方向”拆成几组系数：身份系数描述脸型和五官比例，表情系数描述张嘴、皱眉、微笑等形变，头姿系数描述旋转和平移。SadTalker 关注的不是重新生成整张脸，而是根据音频预测随时间变化的表情系数和头姿系数，再交给渲染器还原成视频。#Zhang-et-al.-2023-SadTalker#</p>
+  </div>
+
+  <div class="def-box">
+    <h3>运动空间生成形式</h3>
+    <p>给定参考身份 \(I_{ref}\)、音频 \(A_{1:T}\)、运动编码器 \(E_m\)、运动生成器 \(G_m\) 与渲染器 \(R\)，motion space 路线可以抽象为：</p>
+\[
+\hat{m}_{1:T}=G_m(A_{1:T}, E_m(I_{ref}), C), \qquad \hat{X}_{1:T}=R(I_{ref}, \hat{m}_{1:T})
+\]
+    <p>关键点在于：生成模型的主要目标是 \(\hat{m}_{1:T}\)，也就是低维运动序列，而不是完整像素帧。</p>
+  </div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>路线</th><th>生成目标</th><th>身份与纹理</th><th>优势</th><th>主要限制</th></tr></thead>
+      <tbody>
+        <tr><td>局部换嘴</td><td>嘴部/脸部 ROI</td><td>来自原视频</td><td>稳定、便宜、易落地</td><td>表情、头动、手势受限</td></tr>
+        <tr><td>运动空间</td><td>表情、头姿、眼神、关键点或面部 latent</td><td>由参考图像和渲染器保留</td><td>低维、实时、可控</td><td>上限受运动表示和渲染器限制</td></tr>
+        <tr><td>视频扩散基模</td><td>视频 latent / frames / tokens</td><td>由视频基座和参考条件共同生成</td><td>表现自由度高，能生成身体和背景</td><td>成本高，长时稳定和实时化困难</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这条路线的技术判断很清楚：如果业务目标是单图 talking head、实时客服头像、会议 avatar、直播助手，模型没有必要每一帧都重新生成身份纹理、头发、背景和衣服。更合理的做法是让生成模型负责运动，让渲染器负责外观。这样不仅降低计算量，也让系统更容易做控制、编辑和失败兜底。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">SadTalker：3DMM 运动系数把“说话”拆成表情和头姿</div>
+
+  SadTalker 是这条路线中最典型的显式表示方案。它把单图说话人生成转化为“从音频预测 3DMM 运动系数”：ExpNet 负责预测与音频强相关的表情系数，PoseVAE 负责生成与音频弱相关但影响自然度的头部姿态。两组运动系数再驱动 3D-aware face render，从源图像合成说话视频。#Zhang-et-al.-2023-SadTalker#
+
+  <div class="photo">
+    <img src="media/images/digital-human-motion-space-avatar/sadtalker-pipeline.webp" loading="lazy">
+    <div class="cap">图 1：SadTalker 的整体架构。音频分两路预测表情系数与头姿系数，再通过 3D-aware face render 合成视频（来源：Zhang et al., 2023, Fig.2）。</div>
+  </div>
+
+  SadTalker 的关键不是“使用 3DMM”这个名词，而是它把音频驱动问题拆成两个统计性质不同的子问题。嘴型和部分表情与音素强相关，适合确定性回归；头部运动与语义、情绪、说话习惯和节奏弱相关，同一句话可以点头说，也可以摇头说，因此更适合用生成模型建模分布。这个拆分解释了为什么很多只回归嘴型的方法看起来同步却不自然：真实说话不是一条嘴唇轨迹，而是一组协同运动。
+
+  <div class="callout"><strong>方法边界</strong>：3DMM motion coefficients 可解释、可控、便于调试，但也会把面部运动压进预定义参数空间。强情绪、眼神细节、细粒度肌肉变化和复杂风格化形象，都会受 3DMM 表示上限约束。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">VASA-1：把整体面部动力学放进 latent space</div>
+
+  VASA-1 延续了“先生成运动，再渲染视频”的思路，但它不再满足于显式 3DMM 系数。论文提出 holistic facial dynamics generation，将唇部、非唇部表情、眼神、眨眼和头部姿态作为整体面部动力学来建模，并在面部潜在空间中用 diffusion transformer 生成运动序列。公开信息显示，VASA-1 在 512×512 分辨率下报告 40 FPS，启动延迟约 170ms。#Xu-et-al.-2024-VASA#
+
+  <div class="photo">
+    <img src="media/images/digital-human-motion-space-avatar/vasa1-pipeline.webp" loading="lazy">
+    <div class="cap">图 2：VASA-1 的整体 pipeline。模型先构建解耦面部潜在空间，再用扩散 Transformer 生成整体面部动力学与头动，最后渲染为 512×512 说话人脸视频（来源：Xu et al., 2024, Fig.2）。</div>
+  </div>
+
+  VASA-1 对 motion space 路线的推进在于“整体性”。SadTalker 把表情和头姿拆开建模，有利于可解释和稳定；VASA-1 则强调真实对话中的脸部运动不是独立部件拼接。一个人在强调某个词时，嘴部开合、眉眼、眨眼、头动距离和情绪偏移会一起变化。若每个部件分开生成，再在视频里拼起来，可能每个局部都合理，但整体节奏仍然僵硬。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>维度</th><th>SadTalker</th><th>VASA-1</th><th>变化含义</th></tr></thead>
+      <tbody>
+        <tr><td>运动表示</td><td>3DMM 表情系数 + 头姿</td><td>整体面部动力学 latent + head movement</td><td>从显式参数走向更高容量的潜在表示</td></tr>
+        <tr><td>生成目标</td><td>分路预测表情和头动</td><td>统一生成脸部整体动态</td><td>从解耦稳定性走向整体自然性</td></tr>
+        <tr><td>实时性声明</td><td>偏方法基线，实时性不是核心卖点</td><td>512×512、40 FPS、约 170ms 启动延迟</td><td>motion space 开始支撑实时产品指标</td></tr>
+        <tr><td>可控性</td><td>系数可解释，便于局部调试</td><td>支持姿态、表情等控制，但表示更隐式</td><td>控制粒度与表示容量之间需要折中</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这也带来新的边界：latent space 的表达能力更强，但解释性弱于 3DMM；扩散模型能生成更自然的分布，但如果没有足够快的采样和高效渲染，就会丢掉实时优势。VASA-1 的意义在于证明 motion-space diffusion 可以同时追求自然度和实时性，而不是只能在低维系数里做简单回归。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Ditto：把扩散明确搬进 motion space</div>
+
+  Ditto 把 motion space 这个判断讲得最直接：扩散模型不应在冗余的视频/图像潜空间里同时处理身份纹理、背景、头发、牙齿和运动，而应只生成低维、可控、接近语义的面部运动。论文使用 LivePortrait 风格的 motion extractor，单帧图像被分解为 canonical keypoints、expression deformation、head rotation 和 translation；Conditional DiT 生成 motion sequence，one-shot renderer 再把运动渲染回目标身份。#Li-et-al.-2025-Ditto#
+
+  <div class="photo">
+    <img src="media/images/digital-human-motion-space-avatar/ditto-framework.webp" loading="lazy">
+    <div class="cap">图 3：Ditto 的 motion-space diffusion 框架。左侧构建运动空间与训练流程，右侧将生成的运动序列交给 one-shot renderer 渲染目标身份（来源：Li et al., 2025, Fig.1）。</div>
+  </div>
+
+  Ditto 与 VASA-1 的关系可以理解为“同一方向的工程化推进”。VASA-1 证明了整体面部动力学 latent + diffusion transformer 能做到高质量实时；Ditto 则更强调可控、开源和流式推理。它报告 Online RTF 0.895、首帧延迟 385ms、10 步 DiT 去噪和 265D 运动表示，并围绕 gaze correction、emotion control、initial motion conditioning 和 streaming inference 做系统优化。#Li-et-al.-2025-Ditto#
+
+  {{< mermaid >}}
+flowchart TD
+  A["参考人像"] --> B["Motion Extractor"]
+  B --> C["identity-agnostic motion space<br/>expression / rotation / translation"]
+  D["音频流"] --> E["Audio Encoder"]
+  F["控制信号<br/>gaze / emotion / initial motion"] --> G["Conditional DiT"]
+  C --> G
+  E --> G
+  G --> H["motion sequence"]
+  A --> I["Appearance Feature"]
+  H --> J["One-shot Renderer"]
+  I --> J
+  J --> K["realtime talking-head video"]
+  {{< /mermaid >}}
+
+  <p><em>图 4：运动空间路线的共同链路。参考图像提供身份与外观，音频和控制信号生成运动序列，渲染器负责把运动还原成目标身份的视频。</em></p>
+
+  <div class="callout"><strong>核心判断</strong>：Ditto 说明 motion space 不只是中间表示，而是一种产品化取舍。把生成目标压缩到运动空间，模型更容易实时、更容易控制，也更容易把失败限定在表情、眼神或头姿层面，而不是整帧身份和背景一起漂移。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Taxonomy：运动空间路线内部也不是一类方法</div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>子路线</th><th>代表工作</th><th>运动空间是什么</th><th>生成模型</th><th>适合场景</th></tr></thead>
+      <tbody>
+        <tr><td>显式 3DMM 系数</td><td>SadTalker</td><td>表情系数、头姿系数</td><td>ExpNet + PoseVAE</td><td>可解释 baseline、单图说话头、低成本研究复现</td></tr>
+        <tr><td>整体面部动力学 latent</td><td>VASA-1</td><td>唇部、表情、眼神、眨眼和头动的整体潜变量</td><td>Diffusion Transformer</td><td>高质量实时 talking face、视频会议 avatar</td></tr>
+        <tr><td>显式 motion representation + DiT</td><td>Ditto</td><td>keypoints、expression deformation、rotation、translation</td><td>Conditional DiT</td><td>可控实时数字人、开源推理链路、交互场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这张 taxonomy 也解释了为什么 SadTalker、VASA-1 和 Ditto 可以放在同一篇里。它们并不是都用了同一种模型，而是都遵循同一个任务分解：音频不直接生成最终像素，而是先驱动运动表示；身份和纹理由参考图像/渲染器保留。模型升级的主线，是从显式但容量有限的 3DMM，走向容量更高的面部 latent，再走向既可控又可实时部署的 motion representation + diffusion。
+
+  <h3 class="section-title">时间线</h3>
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>阶段</th><th>代表工作</th><th>关键变化</th><th>对数字人系统的意义</th></tr></thead>
+      <tbody>
+        <tr><td>2023</td><td>SadTalker</td><td>从音频生成 3DMM motion coefficients</td><td>把单图 talking head 变成可解释运动预测问题</td></tr>
+        <tr><td>2024</td><td>VASA-1</td><td>在整体面部动力学 latent 中做扩散生成</td><td>证明 motion-space diffusion 可以支撑 512×512 实时生成</td></tr>
+        <tr><td>2025</td><td>Ditto</td><td>用显式 motion representation、Conditional DiT 和流式推理</td><td>把 motion-space diffusion 推向可控、开源、实时系统</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">算力资源：训练成本和推理成本不能混在一起看</div>
+
+  对 motion space 路线做工程选型时，不能只看生成质量，也不能只看“实时”两个字。更关键的问题是：训练阶段需要多少 GPU，推理阶段能不能单卡实时，首帧延迟能不能撑住交互体验。公开论文和项目页对这些信息披露并不均匀，因此下面只记录论文或官方项目明确给出的数字；未披露的地方不做猜测。#Zhang-et-al.-2023-SadTalker# #Xu-et-al.-2024-VASA# #Li-et-al.-2025-Ditto# #OpenTalker-SadTalker# #Microsoft-VASA-Project# #AntGroup-Ditto#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>代表工作</th><th>训练资源披露</th><th>推理硬件披露</th><th>推理性能披露</th><th>工程含义</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>论文与官方 README 未系统给出训练 GPU 规模</td><td>官方 README 提供本地、Colab、HuggingFace、WebUI 等推理入口，但未给统一 benchmark 硬件</td><td>没有把实时 FPS/RTF 作为核心指标报告</td><td>更适合作为低门槛 baseline 和可解释方案；上线时需要自己重测目标机器上的吞吐和延迟</td></tr>
+        <tr><td>VASA-1</td><td>论文披露数据规模和训练设置细节，但未给出完整训练 GPU 规模</td><td>项目页披露在线流式模式在单张 NVIDIA RTX 4090 桌面 GPU 上评估</td><td>512×512 在线生成最高约 40 FPS，启动延迟约 170ms</td><td>证明 latent motion diffusion 可以单卡实时，但由于代码和模型未完整开放，复现成本不能只按推理数字估计</td></tr>
+        <tr><td>Ditto</td><td>论文披露使用 8 张 NVIDIA A100 训练，batch size 1024，500 epochs</td><td>论文推理环境为 12 核 Intel Xeon Platinum 8369B、1 张 NVIDIA A100、100G 内存；官方仓库测试环境也标注 A100 与 TensorRT 8.6.1</td><td>512×512 head region：离线 RTF 0.635；在线 RTF 0.895，FFD 385ms；full-body 在线 RTF 0.914，FFD 392ms</td><td>训练侧仍是多 A100 研究/工业成本，推理侧通过 motion space、10-step DiT、TensorRT 和流式模块优化压到单 A100 实时</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>读数字的方式</strong>：训练资源回答“复现或继续训练要花多少钱”，推理资源回答“产品服务要部署在哪类机器上”。Motion space 的优势主要体现在推理侧：它把扩散从高维视频 latent 收缩到低维运动表示，因此更容易做到单卡实时；但这不等于训练阶段也便宜。</div>
+
+  Ditto 的数字尤其能说明这个差别。论文训练用了 8 张 A100，这是典型工业训练预算；但在线推理只报告 1 张 A100，且 RTF 小于 1、首帧延迟低于 400ms。换句话说，motion space 并不是把所有计算都消掉，而是把大部分不可实时的学习成本放到离线训练，把在线阶段压缩成“音频特征提取 → 运动生成 → 快速渲染”的流式链路。#Li-et-al.-2025-Ditto# #AntGroup-Ditto#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">选型：什么时候该选 motion space 路线</div>
+
+  Motion space 路线适合“身份固定、背景相对稳定、交互实时、需要可控表情/眼神/头姿”的数字人任务。客服头像、视频会议 avatar、在线讲解员、直播助理和移动端轻量数字人，都更关心低延迟、稳定身份和可控失败，而不是每帧都重新生成复杂背景。此时，运动空间路线通常比视频扩散基模更容易上线。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>业务目标</th><th>推荐路线</th><th>原因</th><th>风险</th></tr></thead>
+      <tbody>
+        <tr><td>低成本单图说话人</td><td>SadTalker/3DMM 系数</td><td>表示清楚、依赖少、适合作为 baseline</td><td>表情和头动自然度有限</td></tr>
+        <tr><td>高质量实时头像</td><td>VASA-1 类整体动力学 latent</td><td>更强整体表情和头动建模</td><td>复现与部署取决于模型/代码可用性</td></tr>
+        <tr><td>可控实时产品</td><td>Ditto 类 motion-space diffusion</td><td>低维目标、可控信号、流式推理更适合产品</td><td>运动表示和 renderer 决定视觉上限</td></tr>
+        <tr><td>全身、背景、场景生成</td><td>视频扩散基模</td><td>需要更大画面自由度</td><td>成本、长时稳定和实时化难度更高</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      选型边界
+    </div>
+    <div class="admonition-content"><p>运动空间路线不是“低端方案”。它是一种把生成问题收缩到可控空间的系统设计。若产品核心是实时对话和稳定头像，它往往比整帧视频生成更合适；若产品核心是固定身份资产、高 FPS 渲染和三维一致性，就需要进入下一篇的 3DGS/NeRF 路线。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Summary</div>
+  <div class="ch-title">小结与下一篇衔接</div>
+
+  SadTalker、VASA-1 和 Ditto 可以共同归入 motion space 路线，因为它们都把数字人生成拆成“运动生成”和“外观渲染”两层。SadTalker 选择显式 3DMM motion coefficients，VASA-1 选择整体面部动力学 latent，Ditto 选择更工程化的 motion representation + Conditional DiT。三者的共同逻辑是：音频先驱动运动，运动再驱动视频。#Zhang-et-al.-2023-SadTalker# #Xu-et-al.-2024-VASA# #Li-et-al.-2025-Ditto#
+
+  这条路线解决的是实时 talking head 的核心矛盾：既要自然运动，又要低延迟和可控性。下一篇讨论 3DGS/NeRF 显式可渲染表示：当目标人物固定时，系统可以先训练一个可复用的三维头像资产，再用音频实时驱动它。
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-lip-sync-video-dubbing.html"><span class="nav-label">上一篇</span><span class="nav-title">换嘴与视频配音</span></a>
+    <a class="nav-card current" href="digital-human-motion-space-avatar.html"><span class="nav-label">本文</span><span class="nav-title">运动空间数字人路线</span></a>
+    <a class="nav-card" href="digital-human-3dgs-nerf-avatar.html"><span class="nav-label">下一篇</span><span class="nav-title">3DGS 与 NeRF 数字人路线</span></a>
+  </div>
+</div>
+
+<ul class="sources">
+  <li data-cite-key="Zhang-et-al.-2023-SadTalker">Zhang et al., “SadTalker: Learning Realistic 3D Motion Coefficients for Stylized Audio-Driven Single Image Talking Face Animation,” CVPR 2023. <a href="https://arxiv.org/abs/2211.12194" target="_blank">arXiv</a></li>
+  <li data-cite-key="Xu-et-al.-2024-VASA">Xu et al., “VASA-1: Lifelike Audio-Driven Talking Faces Generated in Real Time,” NeurIPS 2024. <a href="https://arxiv.org/abs/2404.10667" target="_blank">arXiv</a></li>
+  <li data-cite-key="Li-et-al.-2025-Ditto">Li et al., “Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis,” ACM MM 2025. <a href="https://arxiv.org/abs/2411.19509" target="_blank">arXiv</a></li>
+  <li data-cite-key="OpenTalker-SadTalker">OpenTalker/SadTalker official repository. <a href="https://github.com/OpenTalker/SadTalker" target="_blank">GitHub</a></li>
+  <li data-cite-key="Microsoft-VASA-Project">Microsoft Research VASA-1 project page. <a href="https://www.microsoft.com/en-us/research/project/vasa-1/" target="_blank">Project page</a></li>
+  <li data-cite-key="AntGroup-Ditto">Ant Group Ditto official repository. <a href="https://github.com/antgroup/ditto-talkinghead" target="_blank">GitHub</a></li>
+</ul>

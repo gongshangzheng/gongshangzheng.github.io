@@ -1,0 +1,127 @@
+---
+title: "从 vLLM 到 SGLang：推理框架的设计分歧到底在哪里"
+description: "vLLM 和 SGLang 不是简单的速度竞赛，而是面向不同 workload 特性的系统设计取舍。从 KV 复用、调度、路由到结构化执行，梳理两大框架的差异化路径。"
+date: 2026-06-02T00:05:18
+created_at: 2026-06-02T00:05:18
+updated_at: 2026-06-02T00:12:30
+tags: [vLLM, SGLang, 推理框架, 模型服务, AI Infra, 调度器]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: 从 vLLM 到 SGLang
+hero_sub: 推理框架的设计分歧到底在哪里
+hero_tagline: 不是谁更快，而是谁在为哪一种 workload 优化
+mathjax: false
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">vLLM</span><span class="label">通用吞吐优化</span></div>
+  <div class="stat"><span class="num b">SGLang</span><span class="label g">结构化执行 & KV 复用</span></div>
+  <div class="stat"><span class="num">2</span><span class="label">核心设计范式</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列四</div>
+  <div class="ch-title">推理框架不是速度竞赛，而是设计取舍</div>
+
+  前面两篇已经建立了推理系统的基本语言：prefill/decode、KV cache、continuous batching、scheduler。当这些概念被掌握之后，一个很自然的问题就会浮现：市面上有那么多推理框架——vLLM、SGLang、TensorRT-LLM、TGI——它们到底在竞争什么？是不是只要看谁跑得快就够了？
+
+  答案是：不。Inference framework 之间的核心差异，通常不是单纯的 benchmark 数字，而是<strong>它们各自选择优化了哪一类 workload 矛盾</strong>。vLLM 和 SGLang 就是这个判断最好的例子：它们不是在做同一件事然后比快慢，而是在解决有交集但不相同的问题 #vLLM-2023# #SGLang-Guide-2025# #SGLang-Omni-2026#。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、vLLM：把 KV cache 管理做到极致</div>
+
+  vLLM 最大的系统贡献，是把推理引擎的设计重心明确地压在了 KV cache 的显存效率上。
+
+  它通过 PagedAttention 把 KV cache 切成固定大小的块，按需分配、回收和共享，从而把传统系统里 60%–80% 的显存浪费压到 4% 以下。这带来的直接后果是：同样一张 GPU，vLLM 可以塞进更多并发请求，吞吐因此成倍提升 #vLLM-2023# #vLLM-PagedAttention-Docs#。
+
+  从设计哲学上看，vLLM 更像是围绕一个通用 LLM serving 场景做最大化吞吐优化。它的假设是：请求来源多样、长度不均、共享机会存在但不保证，系统必须在最宽的分布上保持稳定和高效。
+
+  这个定位决定了 vLLM 的几个典型特征：
+
+  <ul>
+    <li><strong>通用性强</strong>：支持绝大多数 HuggingFace 模型，部署门槛低。</li>
+    <li><strong>优化目标明确</strong>：减少 KV cache 浪费 → 提升并发 → 提升吞吐。</li>
+    <li><strong>生态活跃</strong>：社区贡献多、集成广、文档和工具链成熟。</li>
+  </ul>
+
+  如果你需要一个“把开源模型跑起来、同时压榨 GPU 利用率”的方案，vLLM 往往是默认选择。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、SGLang：从 KV 复用走向结构化执行</div>
+
+  SGLang 并不是在 vLLM 的基础上“再加一点功能”。它从设计起点就瞄准了另一个问题：<strong>如何让推理系统不只是“跑模型”，而是能高效地执行结构化的生成程序。</strong>
+
+  这个差异看似 subtle，实际上很重要。在很多真实应用里，模型输出不是一段自由文本，而是带有约束的结构——JSON、代码、多步决策链、甚至多轮 agent 交互。SGLang 提出的前端语言（SGLang Runtime Language）允许用户把生成过程写成结构化程序，然后由后端 runtime 自动做并行化、KV cache 复用和调度优化 #SGLang-Guide-2025#。
+
+  SGLang 的另一个关键差异是 RadixAttention。和 vLLM 的 PagedAttention 类似，它也在优化 KV cache，但侧重点不同：RadixAttention 更主动地识别和复用不同请求之间的共享前缀，把 KV cache 从“按需分配”推进到“主动复用”。这在系统 prompt 固定、多轮对话密集的场景下效果显著 #SGLang-HiCache-2025#。
+
+  SGLang 的设计特征可以概括为：
+
+  <ul>
+    <li><strong>结构化生成优先</strong>：不只是跑模型，而是跑带有约束的生成程序。</li>
+    <li><strong>KV 复用更激进</strong>：RadixAttention 主动识别跨请求共享机会。</li>
+    <li><strong>调度与路由更灵活</strong>：zero-overhead scheduler 和 cache-aware router 是其特色。</li>
+    <li><strong>多模态扩展性</strong>：SGLang Omni 进一步把这套思路扩展到 multi-stage pipeline #SGLang-Omni-2026#。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、核心分歧：优化目标不一样</div>
+
+  如果把两个框架的优化目标抽象出来，它们分别回答了不同的问题：
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>vLLM</th><th>SGLang</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>核心问题</td><td>通用 serving 吞吐最大化</td><td>结构化生成 + KV 复用效率</td></tr>
+        <tr><td>KV cache 策略</td><td>PagedAttention：按需分配，减少碎片</td><td>RadixAttention：主动识别共享前缀</td></tr>
+        <tr><td>调度侧重</td><td>continuous batching，通用队列</td><td>zero-overhead scheduler，cache-aware</td></tr>
+        <tr><td>生成控制</td><td>通过 sampling params 控制</td><td>前端语言直接表达结构化程序</td></tr>
+        <tr><td>多模态</td><td>支持中，核心仍是文本 serving</td><td>SGLang Omni 主动推进 multi-stage pipeline</td></tr>
+        <tr><td>最佳场景</td><td>通用 chat API、高并发 open-ended 生成</td><td>多轮对话、agent 链、结构化输出、prefix 密集场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这不是一张“谁更好”的对比表，而是一张“谁更适合什么场景”的映射表。在很多生产环境里，两者甚至不是替代关系，而是互补：vLLM 负责通用高并发 serving，SGLang 负责结构化、多轮、需要精细 cache 复用的 workload。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、为什么这个分歧对 AI Infra 很重要</div>
+
+  从更宏观的视角看，vLLM 和 SGLang 的分歧其实揭示了一个更普遍的 infra 设计原则：
+
+  <div class="info-box">
+    <h3>设计原则</h3>
+    <p>推理框架的竞争从来不是单维速度竞赛，而是对 <strong>workload 特性</strong>的理解深度决定了系统优化的方向。</p>
+  </div>
+
+  vLLM 的 workload 假设是“来源多样、分布不均、共享不确定”，所以它选择把资源放在通用吞吐上。SGLang 的 workload 假设是“结构化、多轮、前缀可共享、生成过程可编程”，所以它选择把资源放在结构化执行和 KV 复用上。
+
+  两者都没有错，只是面向了 AI serving 光谱上的不同区间。这也说明：随着 AI 应用从简单的 chatbot 走向 agent、多模态和复杂工作流，推理基础设施的版图不会收敛到“一个框架统治一切”，而会分化出更多面向特定 workload 的系统。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、为下一篇铺路：当推理变成 multi-stage</div>
+
+  文本 LLM 的推理系统已经足够复杂，但多模态尤其是语音输入输出模型，又把复杂度推到了另一个层级。当 decode 不再是单一的 autoregressive loop，而是一条由多个异构 stage 组成的流水线时，框架需要回答的问题就从“怎么优化一个 engine”变成了“怎么协调多个异构 engine”。
+
+  下一篇就会从这里切入，以 SGLang Omni 为例，看 multi-stage inference 如何迫使推理系统重新定义自己的边界。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="vLLM-2023">Kwon, W. et al. <em>vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention</em>. 2023. <a href="https://vllm.ai/blog/2023-06-20-vllm" target="_blank">vLLM Blog</a></li>
+    <li data-cite-key="vLLM-PagedAttention-Docs">vLLM Documentation. <em>Paged Attention</em>. <a href="https://docs.vllm.ai/en/latest/design/paged_attention" target="_blank">Docs</a></li>
+    <li data-cite-key="SGLang-Guide-2025">SGLang Team. <em>SGLang: The Complete Guide to High-Performance LLM Inference</em>. 2025. <a href="https://docs.sglang.ai/" target="_blank">SGLang Docs</a></li>
+    <li data-cite-key="SGLang-HiCache-2025">SGLang Team. <em>SGLang HiCache: Fast Hierarchical KV Caching</em>. 2025. <a href="https://lmsys.org/blog/2025-09-10-sglang-hicache/" target="_blank">lmsys.org</a></li>
+    <li data-cite-key="SGLang-Omni-2026">sgl-project. <em>SGLang-Omni</em>. 2026. <a href="https://github.com/sgl-project/sglang-omni" target="_blank">GitHub</a></li>
+  </ul>
+</div>

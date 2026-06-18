@@ -1,0 +1,383 @@
+---
+title: "从自身 Latents 学习，而非 Tokens：样本复杂度理论深度解读"
+description: "一篇理论工作证明：在层次化数据上，从自身潜在表示学习的样本复杂度为 O(m³)，相比 token-level SSL 的 O(m^(L+1)) 实现指数级改进，且 data2vec 已隐式执行层次化 latent prediction。"
+created_at: 2026-06-01T23:52:36
+updated_at: 2026-06-02T09:40:00
+tags: ["自监督学习", "样本复杂度", "data2vec", "JEPA", "RHM"]
+categories: ["AI"]
+subcategory: "架构"
+mathjax: true
+hero_title: "从自身 Latents 学习，而非 Tokens"
+hero_sub: "arXiv 2025 · EPFL & Cambridge & Johns Hopkins"
+hero_tagline: "latent prediction 的样本复杂度理论：从指数到常数的跨越"
+---
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">~m³</span><span class="label">Latent Prediction<br>样本复杂度</span></div>
+  <div class="stat"><span class="num b">~m^(L+1)</span><span class="label g">Token-Level SSL<br>样本复杂度</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">方法验证<br>(ILC / SLC / data2vec)</span></div>
+  <div class="stat"><span class="num b">L</span><span class="label l">树深度<br>(无关性证明)</span></div>
+</div>
+
+<!-- ============================================================
+  Part 1 · 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">生物学习者用更少数据做到更多</div>
+
+  扩散模型能生成以假乱真的图像，大语言模型能掌握语法、世界知识与推理能力。但这两类生成模型共享同一个配方：在原始信号的层面——像素或 token——进行大规模预测。这个配方带来的成功，伴随着一个生物学习者无需付出的代价：前沿 LLM 的训练数据量达到 $10^{13}$–$10^{14}$ 个 token，比儿童在达到成人水平前接触到的语言输入多出超过五个数量级；SOTA 扩散模型 likewise 依赖数十亿张图像。
+
+  这个差距指向一个根本性问题：<strong>token-level 预训练在样本效率上远非最优</strong>。一个自然假设是，学习可能不是在原始 token 层面最高效地发生，而是在更抽象的潜在空间中。事实上，近年来一系列方法——从 BYOL、DINO 到 data2vec 和 JEPA——都在践行同一个思想：让网络预测<strong>自身的潜在表示</strong>（latent representations），而非原始输入的重建。这与计算神经科学中的预测编码理论不谋而合：皮层所寻求的，是预测其自身的未来活动。
+
+  <div class="callout"><strong>核心问题</strong>：latent prediction 究竟能在多大程度上提升样本效率？将这类方法显式堆叠成多尺度层次结构（如 H-JEPA），是否真能带来额外收益？</div>
+
+  本文解读的是 Korchinski、Favero 与 Wyart 于 2025 年 5 月发表在 arXiv 上的理论工作 #Korchinski et al., 2025#。作者选择了一个可精确解析的合成数据模型——<strong>Random Hierarchy Model (RHM)</strong>——来定量回答上述问题。核心结论极具冲击力：对于具有层次潜在结构的数据，监督学习需要 $\sim m^L$ 样本，token-level 自监督学习需要 $\sim m^{L+1}$ 样本，而从自身 latents 学习仅需 $\sim m^3$ 样本——与树深度 $L$ 无关，仅含对数因子。这意味着 latent prediction 在理论上可以将样本复杂度从<strong>指数级降低到常数级</strong>。
+
+  论文还通过分析 data2vec 首次证明：单个 latent-prediction 模块已隐式执行多尺度层次发现，从而对显式堆叠架构（如 H-JEPA）的必要性提出了根本性质疑。
+</div>
+
+<!-- ============================================================
+  Part 2 · 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">一个玩具模型看清问题：Random Hierarchy Model</div>
+
+  要理解为什么 token-level 学习样本效率低，我们需要一个能精确控制层次结构的合成数据模型。作者沿用了他们此前提出的 <strong>Random Hierarchy Model (RHM)</strong> #Cagnetta et al., 2024#，一个简化的概率上下文无关文法（PCFG）。
+
+  <h3 class="section-title">RHM 的生成规则</h3>
+
+  RHM 定义在一棵固定的正则树上：深度为 $L$，分支因子为 $s$，每一层 $\ell = 0, 1, \ldots, L$ 都有一个大小为 $v$ 的词汇表 $\mathcal{V}_\ell$。第 0 层是可见层（visible tokens），第 1 到 $L$ 层是潜在层（latent symbols）。可见序列长度为 $s^L$。
+
+  生成过程自上而下：根节点 $h_1^{(L)}$ 从 $\mathcal{V}_L$ 均匀采样；若父节点 $h_u^{(\ell+1)} = a$，则其子元组 $T_u^{(\ell)} = (h_{(u-1)s+1}^{(\ell)}, \ldots, h_{us}^{(\ell)})$ 从规则集 $\mathcal{R}_{\ell,a}$ 中均匀采样。每个规则集包含 $m$ 个不同的 $s$-元组，整个文法通过从 $\mathcal{V}_\ell^s$ 中无放回地选取 $vm$ 个元组并划分为 $v$ 个大小为 $m$ 的组来随机生成。关键参数 $f = m / v^{s-1}$ 表示合法元组在所有可能元组中的比例。
+
+  <div class="def-box">
+    <h3>同义词（Synonyms）</h3>
+    若两个 grammatical 元组 $\nu, \nu' \in \mathcal{S}_\ell$ 具有相同的父节点，则称它们为同义词。由于规则映射是单射，文法是无歧义的：每个合法元组有唯一的父节点。学习 RHM 的本质，就是学习对<strong>同义词交换</strong>的不变性。
+  </div>
+
+  <h3 class="section-title">统计信号：Connected Correlation</h3>
+
+  学习同义词不变性的统计信号来自 <strong>connected correlation</strong>。设 $T^{(\ell)}$ 是一个层级-$\ell$ 的 $s$-元组，$Z$ 是树中另一位置的可观测量：
+
+  <p style="text-align:center">
+  \[ C_Z(\nu, z) := \mathbb{P}[T^{(\ell)} = \nu, Z = z] - \mathbb{P}[T^{(\ell)} = \nu] \, \mathbb{P}[Z = z] \]
+  </p>
+
+  核心观察来自 #Cagnetta et al., 2024#：若 $\nu, \nu'$ 是同义词，则对任何仅通过父节点依赖该元组的观测 $Z$，都有 $C_Z(\nu, \cdot) = C_Z(\nu', \cdot)$。这意味着<strong>同义词对相同的上下文具有完全相同的统计关联模式</strong>，因此可以通过聚类恢复。
+
+  <h3 class="section-title">信号衰减定律</h3>
+
+  相关性的强度取决于 $Z$ 相对于 $T^{(\ell)}$ 的树距离。信号必须从 $T^{(\ell)}$ 的父节点传播到 $Z$ 所在位置，沿路径上每个<strong>未解析</strong>的产生式规则都会在 $m$ 个同义词选择上取平均，从而衰减信号强度 $1/m$。在样本复杂度术语中，<strong>每多一层未解析的规则，代价为一个 $m$ 的因子</strong>。
+
+  这个简单的几何直觉解释了三种学习目标的样本复杂度差异：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>学习目标</th><th>预测目标 $Z$</th><th>树距离</th><th>样本复杂度</th></tr></thead>
+      <tbody>
+        <tr><td>监督学习</td><td>根节点标签</td><td>$L - \ell$</td><td>$\sim m^L$</td></tr>
+        <tr><td>Token-level SSL</td><td>被掩码的 token</td><td>$L - \ell + 1$</td><td>$\sim m^{L+1}$</td></tr>
+        <tr><td><strong>Latent prediction</strong></td><td><strong>Cousin tuple 中的 latent</strong></td><td><strong>2（固定）</strong></td><td><strong>$\sim m^3$</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>反直觉发现</strong>：token-level SSL 的样本复杂度不仅随 $L$ 指数增长，甚至比监督学习更差（$m^{L+1}$ vs $m^L$）。原因在于预测 token 需要额外穿越一层 descendant 通道——从 latent 尺度向下到叶节点的信号平均。</div>
+
+  那么，latent prediction 如何避免这个困境？答案是：它始终使用树距离最小的相关 observable——与目标元组共享祖父节点的 <strong>cousin tuple</strong> 中的元素——从而使信号传播距离固定为 2，与 $L$ 无关。
+</div>
+
+<!-- ============================================================
+  Part 3 · 模型结构与创新
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">ILC、SLC 与 data2vec 的层次化发现</div>
+
+  论文围绕 latent prediction 建立了三个层面的结果：一个纯粹统计的迭代聚类算法（ILC）、一个端到端可训练的神经网络（SLC），以及对现有方法 data2vec 的首个样本复杂度分析。三者从算法到网络再到理论解释，构成了一条完整的证据链。
+
+  <h3 class="section-title">ILC：逐层聚类恢复层次树</h3>
+
+  <strong>Iterative Latent Clustering (ILC)</strong> 是一个自底向上的分层聚类算法，其目标是从仅包含可见 token 的样本中，恢复完整的非根潜在树 $h^{(1)}, \ldots, h^{(L-1)}$。
+
+  算法流程极为简洁：
+  <ol>
+    <li><strong>初始化</strong>：将可见 token 直接作为第 0 层潜在表示，$\hat{h}_i^{(0)} = x_i$。</li>
+    <li><strong>迭代上升</strong>：对每层 $\ell = 0, \ldots, L-2$：
+      <ul>
+        <li>从当前层估计值构造所有层级-$\ell$ 的 $s$-元组 $\hat{T}_u^{(\ell)}$</li>
+        <li>将观察到的元组集合作为合法元组支持集 $\hat{\mathcal{S}}_\ell$ 的估计</li>
+        <li>对 $\hat{\mathcal{S}}_\ell$ 中每个元组 $\nu$，统计其出现次数 $N(\nu)$，并计算 <strong>empirical cousin context vector</strong>：
+          <p style="text-align:center">
+          \[ \hat{\phi}_\ell(\nu) := \frac{1}{N(\nu)} \sum_{p=1}^{P} \mathbf{1}\{\hat{T}_\ell^{(p)} = \nu\} \, e_{\hat{Z}_\ell^{(p)}} \]
+          </p>
+          其中 $\hat{Z}_\ell^{(p)}$ 是与 $\hat{T}_\ell^{(p)}$ 共享祖父节点的 cousin tuple 中的固定元素。
+        </li>
+        <li>使用聚类模块将上下文向量聚为 $v$ 类</li>
+        <li>将聚类身份作为下一层潜在标签：$\hat{h}_u^{(\ell+1)} = a \iff \hat{T}_u^{(\ell)} \in \hat{\mathcal{S}}_{\ell,a}$</li>
+      </ul>
+    </li>
+    <li><strong>输出</strong>：估计的非根层次结构 $\hat{h}^{(1)}, \ldots, \hat{h}^{(L-1)}$。</li>
+  </ol>
+
+  <div class="callout"><strong>核心设计直觉</strong>：同义词在条件于其共同父节点时，其 cousin 分支的统计分布完全相同，因此它们的上下文向量完全一致。聚类可以将同义词类识别出来，从而重建父节点标签。关键在于始终使用 cousin tuple（树距离=2）作为观测目标，信号衰减被控制在 $1/m$。</div>
+
+  <h3 class="section-title">SLC：端到端的 Latent Prediction 网络</h3>
+
+  ILC 证明了 latent prediction 在算法层面的样本效率优势，但一个自然的问题是：这个优势能否通过标准的端到端梯度下降训练获得？<strong>Stacked Latent Clustering (SLC)</strong> 给出了肯定的答案。
+
+  SLC 由 $L-1$ 个堆叠的 predictor-clusterer 模块组成，每个模块对应 RHM 的一个层级：
+
+  <!-- SLC 架构 Mermaid 图 -->
+  {{< mermaid >}}
+  graph TD
+    A["Input Tokens h(0)"] --> M0["Module 0"]
+    M0 -->|"h(1)"| M1["Module 1"]
+    M1 -->|"h(2)"| M2["..."]
+    M2 -->|"h(L-2)"| ML["Module L-2"]
+    ML -->|"h(L-1)"| OUT["Output"]
+
+    subgraph SLC["Module l Structure"]
+      IN["s tokens, dim d_h"] --> PRED["Predictor CNN1-CNN2-CNN3"]
+      PRED --> PHI["Prediction phi(l)"]
+      PHI --> CLUST["Clusterer CNN4-CNN5-Softmax"]
+      CLUST --> Q["Soft Assignment q(l+1), v classes"]
+    end
+  {{< /mermaid >}}
+
+  <strong>Predictor 子模块</strong>：输入是前一层（或原始 token）的 $s$ 个 $d_h$ 维表示，通过三层 1D 卷积（CNN₁  stride-s，CNN₂ 和 CNN₃  stride-1，中间插入 ReLU+BatchNorm），最终输出对 cousin patch 中 token 身份的预测分布。形式化地：
+
+  <p style="text-align:center">
+  \[ \text{Pred}^{(\ell)}(x) = \text{SM} \circ \text{CNN}_3 \circ A \circ \text{CNN}_2 \circ A \circ \text{CNN}_1(x) \]
+  </p>
+  其中 $A = \text{ReLU} \circ \text{BN}$，SM 为 softmax。
+
+  <strong>Clusterer 子模块</strong>：将 predictor 输出 flattened 后映射为 $v$ 维软聚类分配：
+
+  <p style="text-align:center">
+  \[ q^{(\ell+1)} = \text{SM}\bigl( \text{Clust}^{(\ell)}(\hat{\phi}^{(\ell)}) \bigr) = \text{SM}\bigl( \text{CNN}_5 \circ A \circ \text{CNN}_4(\hat{\phi}^{(\ell)}) \bigr) \]
+  </p>
+
+  这里的关键设计是 <strong>sparse assignment</strong>：在 softmax 约束 $\|q_i\|_1 = 1$ 下，通过最大化 $\|q_i\|_2^2$ 鼓励稀疏（one-hot-like）分配，提升训练稳定性和可解释性。
+
+  <h3 class="section-title">data2vec 隐式执行层次化 Latent Prediction</h3>
+
+  论文的第三个结果是对 data2vec #Baevski et al., 2022# 的首个样本复杂度分析。data2vec 的标准架构包括：学生编码器处理掩码输入（mask probability 0.15），教师编码器处理完整输入（EMA decay $\mu = 0.99$），取顶部 $K=4$ 层表示平均作为目标。
+
+  作者的核心发现是：在 RHM 数据上训练时，data2vec 的编码器各层会<strong>逐层发现</strong> RHM 的潜在层次结构——较低层先学会表示较低层的潜在变量，较高层再在此基础上表示更高层的潜在变量。这与 SLC 的显式层次化设计在功能上等价，只是隐式地发生在单个深度网络的内部各层中。
+
+  <div class="callout"><strong>核心结论</strong>：data2vec 在 RHM 上的样本复杂度同样为 $\sim m^3$，与深度 $L$ 无关。这意味着单个 latent-prediction 模块已隐式实现多尺度层次发现，削弱了 H-JEPA 等显式堆叠架构的必要性。</div>
+
+  作者通过对 data2vec 编码器各层施加线性探针（linear probe）来验证这一发现。探针分析显示：随着训练进行，编码器的低层先获得区分 level-1 同义词的能力，中层随后解锁 level-2，以此类推——一种"自底向上、逐层解锁"的动态与 SLC 的显式模块训练在功能上等价。
+</div>
+
+<!-- ============================================================
+  Part 4 · 训练方法
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">如何训练一个预测自身 Latents 的网络</div>
+
+  三种方法在训练层面呈现出一个有趣的谱系：ILC 是纯粹的无参数统计估计，SLC 是多目标优化的神经网络训练，data2vec 则是标准自蒸馏框架的特例。
+
+  <h3 class="section-title">ILC：无参数统计估计</h3>
+
+  ILC 没有可学习的神经网络参数。其"训练"纯粹是统计估计：计算经验上下文向量和聚类。论文假设存在一个稳定的聚类模块 $\text{Cluster}_v$（假设 2），在扰动不超过 $\Delta/8$ 时能完美恢复真实划分。每个合法元组的出现概率约为 $1/(vm)$，因此要保证 $vm$ 个元组都被充分采样，需要 $P \gtrsim vm \log(vm)$ 样本。结合上下文向量的分离尺度 $\Delta \sim \sqrt{(1-f)/m}$，最终得到样本复杂度界。
+
+  <h3 class="section-title">SLC：多目标梯度优化</h3>
+
+  SLC 的训练涉及三个同时优化的目标，作者使用 <strong>Jacobian descent</strong> 结合 <strong>UPGrad</strong> 算法处理多目标冲突：
+
+  <div class="def-box">
+    <h3>SLC 损失函数</h3>
+    <p style="text-align:center">
+    \[ \mathcal{L} = \mathcal{L}_{\text{pred}} + \mathcal{L}_{\text{sim}} + \lambda_{\text{sep}} \mathcal{L}_{\text{sep}} + \lambda_{\text{spars}} \mathcal{L}_{\text{spars}} \]
+    </p>
+    <ul>
+      <li><strong>$\mathcal{L}_{\text{pred}}$</strong>：预测损失，对 cousin patches 中真实 token 的负对数似然</li>
+      <li><strong>$\mathcal{L}_{\text{sim}}$</strong>：相似性损失。若两个预测向量的余弦相似度 $S_{ij} > S_m = 0.8$ 但被分到不同簇，则惩罚</li>
+      <li><strong>$\mathcal{L}_{\text{sep}}$</strong>：分离损失。若两个预测向量不相似但聚类分配重叠，则惩罚（$\lambda_{\text{sep}} = 0.5$）</li>
+      <li><strong>$\mathcal{L}_{\text{spars}}$</strong>：稀疏性奖励。最大化聚类分配的 $L_2$ 范数，鼓励 one-hot-like 分配（$\lambda_{\text{spars}} = 10^{-2}$）</li>
+    </ul>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>超参数</th><th>取值</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>优化器</td><td>AdamW</td><td>—</td></tr>
+        <tr><td>学习率</td><td>$3 \times 10^{-3}$</td><td>常数，无 warmup/decay</td></tr>
+        <tr><td>权重衰减</td><td>$10^{-3}$</td><td>—</td></tr>
+        <tr><td>Batch size</td><td>32</td><td>—</td></tr>
+        <tr><td>EMA 衰减 $\alpha_{\text{ema}}$</td><td>0.015</td><td>teacher 更新速率</td></tr>
+        <tr><td>Predictor 隐藏宽度</td><td>150</td><td>CNN 中间层</td></tr>
+        <tr><td>聚类维度 $d_h$</td><td>128</td><td>默认 $d_h \gg v$（最难情况）</td></tr>
+        <tr><td>相似度边界 $S_m$</td><td>0.8</td><td>similarity loss margin</td></tr>
+        <tr><td>训练 epoch</td><td>30</td><td>验证集 2000 样本 early stopping</td></tr>
+        <tr><td>对比采样数 $N_{\text{compare}}$</td><td>300</td><td>每批次随机选取</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      训练技巧：防止表示坍塌
+    </div>
+    <div class="admonition-content">
+      <p>SLC 使用 EMA teacher-student 框架防止坍塌：教师权重 $W^{(T)} \leftarrow (1-\alpha_{\text{ema}}) W^{(T)} + \alpha_{\text{ema}} W^{(S)}$，其中 $\alpha_{\text{ema}} = 0.015$。消融实验表明，即使禁用全局 EMA teacher，只要在 predictor 和 clusterer 之间加入 stop-gradient，就能防止坍塌——这使得 SLC 可以用完全局部的学习规则训练。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">data2vec：标准自蒸馏</h3>
+
+  data2vec 的训练配置在论文中以完整表格给出（Table 1）。关键参数：8 层 Transformer，$d_{\text{model}} = 2048$，32 头注意力，FFN 维度 8192；AdamW 优化器，学习率 $10^{-4}$（常数），batch size 512，训练 262,144 步；mask probability 0.15，span length 1；smooth L1 损失 ($\beta = 4$)。
+</div>
+
+<!-- ============================================================
+  Part 5 · 实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">指数级改进的实验确认</div>
+
+  论文通过三个互补的实验来验证理论预测：ILC/SLC 的样本复杂度缩放、SLC 的 L-scaling 行为、以及 data2vec 的隐式层次化发现。
+
+  <h3 class="section-title">主实验：样本复杂度 ~m³ 缩放</h3>
+
+  图 3（clustering_and_ptc_m_sweeps）展示了 ILC 和 SLC 在不同 $m$ 值下的样本复杂度。对于固定的 $L=4, v=16$，当 $m$ 从 6 增加到 10 时，恢复完整层次结构所需的样本数与 $m^3$ 成正比——与理论预测一致。SLC 的端到端训练完全复现了 ILC 的统计优势。
+
+  <div class="photo">
+    <img src="media/images/arxiv-2605-27734/clustering_and_ptc_m_sweeps.png" alt="Clustering and PTC m sweeps" loading="lazy">
+    <div class="cap">图 3：ILC 与 SLC 的样本复杂度随 $m$ 的缩放行为。两条曲线均与 $m^3$ 成正比，验证了理论预测（来源：论文, Fig. 3）。</div>
+  </div>
+
+  <h3 class="section-title">L-scaling：与深度无关</h3>
+
+  图 12（ptc_L_scaling）验证了最关键的理论预测：样本复杂度与树深度 $L$ 无关。作者在 $L = 4, 5, 6, 7$ 上测试 SLC，发现所有深度的曲线都 collapse 到同一条 $m^3$ 缩放线上。这意味着即使数据的层次结构越来越深，latent prediction 的样本效率也不会恶化——这与监督学习和 token-level SSL 形成鲜明对比。
+
+  <div class="photo">
+    <img src="media/images/arxiv-2605-27734/ptc_L_scaling.png" alt="PTC L scaling" loading="lazy">
+    <div class="cap">图 12：SLC 在不同树深度 $L$ 下的样本复杂度。所有深度 collapse 到同一条 $m^3$ 曲线上，证明样本复杂度与 $L$ 无关（来源：论文, Fig. 12）。</div>
+  </div>
+
+  <h3 class="section-title">data2vec：逐层解锁动态</h3>
+
+  图 5（d2vec_main_online_with_pstar）展示了 data2vec 训练过程中的在线学习曲线。随着训练进行，编码器各层依次获得区分不同层级潜在变量的能力——低层先解锁 level-1，中层随后解锁 level-2，以此类推。这与 SLC 的显式逐层训练在动态上等价。
+
+  <div class="photo">
+    <img src="media/images/arxiv-2605-27734/d2vec_main_online_with_pstar.png" alt="data2vec online learning curves" loading="lazy">
+    <div class="cap">图 5：data2vec 训练过程中的在线学习曲线。编码器各层依次解锁不同层级的潜在变量，验证了隐式层次化发现（来源：论文, Fig. 5）。</div>
+  </div>
+
+  图 4（d2vec_clustering_scores，Appendix D / Figure 13）进一步量化了 data2vec 各层的聚类分数。一个反直觉的观察是：深层对低层潜在变量的聚类能力反而更强（"Deeper layers exhibit stronger clustering of low-level latents"），呈现出 encoder-decoder 式的倒置现象。
+
+  <div class="photo">
+    <img src="media/images/arxiv-2605-27734/d2vec_clustering_scores.png" alt="data2vec clustering scores" loading="lazy">
+    <div class="cap">图 4（Appendix D / Fig. 13）：data2vec 编码器各层对 RHM 不同层级潜在变量的聚类分数。深层对低层 latent 的聚类能力反而更强（来源：论文, Appendix D Fig. 13）。</div>
+  </div>
+
+  <h3 class="section-title">消融实验与失败案例</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>消融设置</th><th>结果</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td>禁用 EMA teacher，保留 stop-gradient</td><td>训练成功</td><td>局部学习规则即可防止坍塌</td></tr>
+        <tr><td>禁用 EMA + 禁用 stop-gradient</td><td>表示坍塌</td><td>聚类损失压倒预测损失</td></tr>
+        <tr><td>$d_h \geq mv$</td><td>聚类失效</td><td>码本过大导致每个输入获唯一标签</td></tr>
+        <tr><td>$f = 1$（所有规则存在）</td><td>自监督完全失效</td><td>输入等概率，相关性消失</td></tr>
+        <tr><td>Token-level SSL $m^{L+1}$ 缩放</td><td>准确率显著劣化</td><td>证实理论预测的根本性劣势</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：当 $f = 1$ 时（所有可能的产生式规则都存在），RHM 的所有句子等概率出现，内部相关性完全消失，此时自监督方法无法学习任何规则。这是自监督学习的一个根本性极限：它依赖于数据中的统计结构，当结构退化为均匀分布时，学习不可能发生。</div>
+</div>
+
+<!-- ============================================================
+  Part 6 · 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">H-JEPA 是冗余的吗？</div>
+
+  论文的核心结论——latent prediction 的样本复杂度为 $\sim m^3$，与层次深度 $L$ 无关——在理论上具有重大意义。但更有趣的或许是第二个结论：data2vec 已隐式执行层次化 latent prediction，这暗示 <strong>H-JEPA 等显式堆叠架构可能很大程度上是冗余的</strong>。
+
+  <h3 class="section-title">技术对比：三种范式的定位</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>监督学习</th><th>Token-level SSL</th><th>Latent Prediction</th></tr></thead>
+      <tbody>
+        <tr><td>核心表示</td><td>端到端判别式</td><td>原始 token 重建</td><td>自身潜在表示预测</td></tr>
+        <tr><td>训练目标</td><td>交叉熵分类</td><td>掩码 token 预测</td><td>latent 回归 + 聚类</td></tr>
+        <tr><td>样本复杂度</td><td>$\sim m^L$</td><td>$\sim m^{L+1}$</td><td>$\sim m^3$</td></tr>
+        <tr><td>与 $L$ 关系</td><td>指数</td><td>指数（更差）</td><td>无关（常数）</td></tr>
+        <tr><td>层次发现</td><td>隐式</td><td>无</td><td>显式/隐式</td></tr>
+        <tr><td>生物学关联</td><td>弱（需标签）</td><td>弱</td><td>强（预测编码）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">局限性与边界条件</h3>
+
+  论文明确承认了若干局限性。首先，分析仅在 RHM 这一合成数据上进行，真实世界数据的层次结构并非严格的树形 PCFG。其次，所有方法都无法恢复根节点 $h^{(L)}$，因为不存在可用于区分根 synonym 的外部信号。第三，当 $f = 1$ 时自监督完全失效。第四，作者未公开官方代码实现——论文中仅提供伪代码与超参数表，复现需自行实现 ILC/SLC/data2vec 训练流程。
+
+  一个需要谨慎对待的推论是：论文认为 H-JEPA 的显式堆叠"很大程度上冗余"，但 2025-2026 年出现的 V-JEPA 2.1 和 Bootleg 仍报告了 SOTA 性能。论文在 Appendix A 中分析了这些架构与 SLC 的关键区别：V-JEPA 2.1 和 Bootleg 都引入了从高层 latent 到低层目标的 <strong>high→low 预测路径</strong>，而标准 H-JEPA 缺少这一路径。Figure 6 直观展示了四种架构（H-JEPA / V-JEPA 2.1 / Bootleg / SLC）在损失目标结构上的差异。因此，"显式堆叠冗余"或许更准确地应理解为"naive 的逐层独立预测是冗余的"，但精心设计的跨层交互（尤其是 high→low 路径）仍可能有价值。
+
+  <h3 class="section-title">可操作的启发</h3>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      对研究与工程实践的启发
+    </div>
+    <div class="admonition-content">
+      <ol>
+        <li><strong>样本效率的本质是统计距离</strong>：在设计自监督目标时，预测目标与上下文之间的"统计距离"（而非语义距离）决定了样本复杂度。latent prediction 的优势在于始终维持最小的树距离。</li>
+        <li><strong>单层网络可能已足够</strong>：如果 data2vec 这样的单层 latent-prediction 模块已隐式执行多尺度发现，那么在设计新架构时，或许应优先探索如何增强单层网络的层次化能力，而非急于堆叠模块。</li>
+        <li><strong>跨层交互是关键</strong>：如果确实需要显式层次结构，应引入 high→low 的预测路径（如 V-JEPA 2.1），而非仅做自底向上的逐层预测。</li>
+        <li><strong>合成数据的理论价值</strong>：RHM 虽然简化，但提供了可精确计算的样本复杂度基准。在探索新的学习范式时，先用合成模型验证理论直觉，再迁移到真实数据，是一条高效的研究路径。</li>
+      </ol>
+    </div>
+  </div>
+
+  <h3 class="section-title">总结</h3>
+
+  这篇论文的价值不仅在于证明了 latent prediction 的指数级样本效率优势，更在于它提供了一个<strong>可计算的理论框架</strong>，让我们能够定量比较不同学习范式的数据效率。在生成式 AI 训练成本日益高昂的今天，理解"为什么某些方法需要更多数据"与"如何在潜在空间中更高效地学习"，具有越来越重要的现实意义。
+
+  最终，论文向我们提出的问题是：如果生物大脑确实通过预测自身潜在表示来学习，那么我们的深度学习系统是否也应该更认真地对待这一范式——不仅仅是作为工程技巧，而是作为关于学习本质的一个基本假设？
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Korchinski-et-al.-2025">
+      Korchinski, D. J., Favero, A., & Wyart, M. (2025). Learn from your own latents and not from tokens: A sample-complexity theory. <em>arXiv:2605.27734v1</em> (2025-05).
+      <a href="https://arxiv.org/abs/2605.27734" target="_blank">arXiv:2605.27734</a> — 当前为 arXiv 预印本，尚未标注会议或期刊接收状态。
+    </li>
+    <li data-cite-key="Cagnetta-et-al.-2024">
+      Cagnetta, F., Petrini, L., Tomasini, U. M., Favero, A., & Wyart, M. (2024). How deep neural networks learn compositional data: The random hierarchy model. <em>Physical Review X, 14</em>, 031001.
+      <a href="https://arxiv.org/abs/2307.02129" target="_blank">arXiv:2307.02129</a>
+    </li>
+    <li data-cite-key="Baevski-et-al.-2022">
+      Baevski, A., Hsu, W. N., Xu, Q., Babu, A., Gu, J., & Auli, M. (2022). Data2vec: A general framework for self-supervised learning in speech, vision and language. <em>ICML 2022</em>.
+      <a href="https://arxiv.org/abs/2202.03555" target="_blank">arXiv:2202.03555</a>
+    </li>
+    <li data-cite-key="LeCun-2022">
+      LeCun, Y. (2022). A path towards autonomous machine intelligence. <em>OpenReview</em>.
+      <a href="https://openreview.net/forum?id=BZ5a1r-kVsf" target="_blank">OpenReview</a>
+    </li>
+    <li data-cite-key="Van-Assel-et-al.-2025">
+      Van Assel, H., Ibrahim, M., Biancalani, T., Regev, A., & Balestriero, R. (2025). Joint embedding vs reconstruction: Provable benefits of latent space prediction for self-supervised learning. <em>arXiv:2505.12477</em>.
+      <a href="https://arxiv.org/abs/2505.12477" target="_blank">arXiv:2505.12477</a>
+    </li>
+  </ul>
+</div>

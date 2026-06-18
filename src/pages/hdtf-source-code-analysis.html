@@ -1,0 +1,424 @@
+---
+title: "数字人工程解读（九）：HDTF 源码，流引导的单样本高分辨率说话人脸生成"
+description: "深度解析 MRzzm/HDTF 仓库：CVPR 2021 的流引导单样本说话人脸生成系统，涵盖 F_app 近似稠密光流构建、特征级扭曲 + Matting 混合策略、前景抠图修正、VideoGenerator 完整调用链与 HDTF 高分辨率数据集。"
+date: 2026-06-17T15:00:00
+created_at: 2026-06-17T15:00:00
+updated_at: 2026-06-17T15:00:00
+categories: [AI]
+tags: ["HDTF", "talking-face", "one-shot", "dense-flow", "CVPR-2021", "源码解读", "digital-human", "foreground-matting"]
+subcategory: "数字人"
+sub_id: 2320
+---
+
+<div class="ch">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">项目定位与背景</div>
+
+  <p><strong>HDTF</strong>（High-resolution Talking Face Dataset）是 CVPR 2021 论文 <em>"Flow-Guided One-Shot Talking Face Generation With a High-Resolution Audio-Visual Dataset"</em> 的官方代码与数据集仓库。#hdtf-repo#</p>
+
+  <div class="callout">
+    <strong>核心任务：</strong>给定一张人脸参考图片 + 一段驱动信号（3DMM 投影点序列），生成对应的说话视频。所谓"One-Shot"意味着只需一张参考图，不需要多视角或注册视频。
+  </div>
+
+  <p>仓库包含两大模块：<strong>①</strong> CPU 端的 F_app（近似稠密光流）构建代码，<strong>②</strong> GPU 端的 animation-to-video 推理代码；同时发布了包含 ~368 个高分辨率视频的 <strong>HDTF 数据集</strong>及其元数据。#hdtf-repo#</p>
+
+  <h3 class="section-title">仓库基本信息</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>属性</th><th>值</th></tr></thead>
+      <tbody>
+        <tr><td>Stars / Forks</td><td>432 ⭐ / 80 🍴（截至 2026-06）</td></tr>
+        <tr><td>License</td><td>GNU GPLv3（代码）/ CC BY 4.0（数据集）</td></tr>
+        <tr><td>主要语言</td><td>Python（PyTorch 1.0 + numpy/scipy）</td></tr>
+        <tr><td>创建时间</td><td>2021-03-28</td></tr>
+        <tr><td>论文</td><td>CVPR 2021, Zhang Zhimeng et al.</td></tr>
+        <tr><td>预训练权重</td><td>Google Drive（需下载）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">HDTF 数据集</div>
+
+  <p>HDTF 数据集包含从 YouTube 采集的 ~368 个高分辨率说话人头视频，分为三个子集：<strong>RD</strong>（57 个，Radio 类）、<strong>WDA</strong>（182 个）、<strong>WRA</strong>（129 个）。视频分辨率为 720P 或 1080P，最终统一 resize 到 512×512。#hdtf-repo#</p>
+
+  <h3 class="section-title">元数据文件结构</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文件</th><th>格式</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>xx_video_url.txt</code></td><td><code>视频名 | YouTube URL</code></td><td>视频来源</td></tr>
+        <tr><td><code>xx_resolution.txt</code></td><td><code>视频名.mp4 | 分辨率</code></td><td>参考下载分辨率</td></tr>
+        <tr><td><code>xx_annotion_time.txt</code></td><td><code>视频名.mp4 | 00:30-01:00 | 01:30-02:30 | ...</code></td><td>说话头时间段标注</td></tr>
+        <tr><td><code>xx_crop_wh.txt</code></td><td><code>视频名_片段.mp4 | min_w | w | min_h | h</code></td><td>面部裁剪窗口</td></tr>
+        <tr><td><code>xx_crop_ratio.txt</code></td><td><code>视频名_片段.mp4 | 缩放比例</code></td><td>裁剪窗口缩放系数</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">数据处理流程</h3>
+  <p>README 描述了两种裁剪方式：#hdtf-repo#</p>
+  <ol>
+    <li><strong>方式一</strong>（作者方法）：按 <code>xx_resolution.txt</code> 下载视频 → 用 <code>xx_crop_wh.txt</code> 固定窗口裁剪面部。</li>
+    <li><strong>方式二</strong>（@universome 改进）：下载最高分辨率 → 检测面部 landmark → 统计所有帧的面部区域 → 用 <code>xx_crop_ratio.txt</code> 放大窗口 → 裁剪。</li>
+  </ol>
+  <p>社区提供了自动化处理脚本（<a href="https://github.com/universome/HDTF">@universome/HDTF</a>），方便复现数据集。#universome-hdtf#</p>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">系统架构与主调用链</div>
+
+  <p>整个系统是一个两阶段 Pipeline：先在 CPU 端从 3DMM 投影点构建近似稠密光流 F_app，再在 GPU 端用 VideoGenerator 逐帧生成视频。</p>
+
+  {{< mermaid >}}
+flowchart TD
+    subgraph "阶段 1: F_app 构建 (CPU)"
+        F1["np.load 投影点"] --> F2["稀疏位移 = ref - drive"]
+        F2 --> F3["scipy griddata 最近邻插值"]
+        F3 --> F4["躯干区域 = 平均运动"]
+        F4 --> F5["+ 坐标网格 = Fapp.npy"]
+    end
+    subgraph "阶段 2: Animation2Video (GPU)"
+        V0["VideoGenerator"] --> V1["Encoder<br/>参考图特征提取"]
+        V0 --> V2["ForegroundMatting<br/>Hourglass U-Net"]
+        V1 --> V3["warp + matting blend<br/>特征级扭曲 + 混合"]
+        V2 --> V3
+        V3 --> V4["Bottleneck<br/>ResBlock 精炼"]
+        V4 --> V5["Decoder → RGB"]
+        V5 --> V6["VideoWriter + ffmpeg"]
+    end
+    F5 -.->|输入| V0
+  {{< /mermaid >}}
+
+  <h3 class="section-title">仓库目录结构</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>目录</th><th>职责</th><th>关键文件</th></tr></thead>
+      <tbody>
+        <tr><td><code>code_constructing_Fapp/</code></td><td>CPU 端构建近似稠密光流</td><td><code>inference.py</code></td></tr>
+        <tr><td><code>code_animation2video/</code></td><td>GPU 端动画转视频推理</td><td><code>inference.py</code>, <code>models.py</code>, <code>opts.py</code></td></tr>
+        <tr><td><code>HDTF_dataset/</code></td><td>数据集元数据（368 视频）</td><td><code>RD_*/WDA_*/WRA_*.txt</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">主调用链时序图</h3>
+
+  {{< mermaid >}}
+sequenceDiagram
+    participant User as 用户
+    participant Fapp as F_app 构建
+    participant Infer as inference.py
+    participant VG as VideoGenerator
+    participant Enc as Encoder
+    participant FM as ForegroundMatting
+    participant BN as Bottleneck
+    participant Dec as Decoder
+    participant VW as VideoWriter
+
+    User->>Fapp: 提供 ref/drive 投影点
+    Fapp-->>User: Fapp.npy (T×512×512×2)
+    User->>Infer: image + Fapp + audio
+    Infer->>VG: 加载 checkpoint
+    loop 每帧
+        Infer->>VG: forward(ref_tensor, Fapp_i)
+        VG->>Enc: encoder(ref) → feature_map
+        VG->>FM: foreground_matting(ref, Fapp)
+        FM-->>VG: warped_image, fg_mask, matting_mask, matting_img
+        VG->>VG: warp(feature, revised_flow) * matting + (1-matting) * matting_img
+        VG->>BN: bottleneck(warped_feature)
+        VG->>Dec: decoder(bottleneck_out)
+        Dec-->>VG: synthetic_image
+        VG-->>Infer: res_out
+        Infer->>VW: write(synthetic_frame)
+    end
+    Infer->>VW: ffmpeg merge audio
+    VW-->>User: video_add_audio.mp4
+  {{< /mermaid >}}
+</div>
+
+<div class="ch">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">关键设计点深读</div>
+
+  <h3 class="section-title">设计点 1：F_app 近似稠密光流</h3>
+  <p>直接训练光流网络计算 dense flow 计算量大且需要额外标注。HDTF 的方案是用 3DMM 投影的稀疏网格点（约 50 个点）通过 scipy 最近邻插值生成 512×512 的稠密光流。#hdtf-repo#</p>
+
+  <pre><code class="language-python"># code_constructing_Fapp/inference.py :: construct_Fapp
+reference_projected_mesh_points = (reference_projected_mesh_points / image_size * 2) - 1
+drive_projected_mesh_points = (drive_projected_mesh_points / image_size * 2) - 1
+drive_projected_mesh_points_yx = drive_projected_mesh_points[:, [1, 0]]
+
+# 稀疏光流 = 参考点 - 驱动点
+sparse_dense_flow = reference_projected_mesh_points - drive_projected_mesh_points
+mean_dense_flow = np.mean(sparse_dense_flow, axis=0)
+
+# 面部区域：最近邻插值稀疏流
+dense_foreground_flow_x = griddata(
+    drive_projected_mesh_points_yx,
+    sparse_dense_flow[:, 0],
+    (grid_y, grid_x), method='nearest')
+# 躯干区域：全局平均运动
+dense_foreground_flow_x[face_max_h:, :] = mean_dense_flow[0]
+
+Fapp = np.stack([dense_foreground_flow_x, dense_foreground_flow_y], 2)
+Fapp = grid_mesh + Fapp  # 加坐标网格变成绝对采样坐标</code></pre>
+
+  <div class="callout">
+    <strong>设计洞察：</strong>面部区域用最近邻插值得到局部变形场，躯干（下巴以下）用全局平均运动——这种"分区策略"在计算效率和物理合理性之间取得了平衡。最终 Fapp 不是位移场，而是加了坐标网格后的绝对采样坐标，可直接用于 <code>F.grid_sample</code>。
+  </div>
+
+  <h3 class="section-title">设计点 2：VideoGenerator 主模型架构</h3>
+  <p>VideoGenerator 的核心思想是<strong>在特征空间扭曲，而非像素空间</strong>。先用 Encoder 提取参考图特征，再用 ForegroundMatting 修正光流并预测 matting mask，最后扭曲特征图 + matting 混合 + Bottleneck 精炼 + Decoder 重建。</p>
+
+  <pre><code class="language-python"># code_animation2video/models.py :: VideoGenerator.forward
+def forward(self, reference_image, dense_flow):
+    feature_map = self.encoder(reference_image)
+    res_out = self.foreground_matting(reference_image, dense_flow)
+
+    # 扭曲特征图 + matting 混合
+    warped_feature_map = warp_image(feature_map, res_out['dense_flow_foreground'])
+    warped_feature_map = (warped_feature_map * res_out['matting_mask']
+                          + (1 - res_out['matting_mask']) * res_out['matting_image'])
+
+    warped_feature_map = self.bottleneck(warped_feature_map)
+    synthetic_image = self.decoder(warped_feature_map)
+    res_out['synthetic_image'] = synthetic_image
+    return res_out</code></pre>
+
+  <p><code>matting_mask</code> 和 <code>matting_image</code> 是 Hourglass 预测的修复信号——当光流扭曲不够准确时，matting 通路提供"修补"，使得最终特征图是扭曲结果和修复结果的加权混合。</p>
+
+  <h3 class="section-title">设计点 3：ForegroundMatting 前景修正</h3>
+  <p>直接用 F_app 扭曲整张图像会导致背景也跟着移动，产生严重伪影。ForegroundMatting 模块通过 Hourglass U-Net 预测前景 mask，只扭曲前景区域，背景保持坐标网格（即不扭曲）。</p>
+
+  <pre><code class="language-python"># code_animation2video/models.py :: ForegroundMatting.forward
+def forward(self, reference_image, dense_flow):
+    if self.scale_factor != 1:
+        reference_image = self.down_sample_image(reference_image)
+        dense_flow = self.down_sample_flow(dense_flow.permute(0,3,1,2)).permute(0,2,3,1)
+
+    warped_image = warp_image(reference_image, dense_flow)
+    # Hourglass 输入：[原图, 光流, 扭曲图] 三通道拼接
+    hourglass_input = torch.cat(
+        [reference_image, dense_flow.permute(0,3,1,2), warped_image], dim=1)
+    hourglass_out = self.hourglass(hourglass_input)
+
+    foreground_mask = self.sigmoid(self.foreground_mask(hourglass_out))
+    matting_mask = self.sigmoid(self.matting_mask(hourglass_out))
+    matting_image = self.matting(hourglass_out)
+
+    # 修正光流：前景用光流，背景用坐标网格（不扭曲）
+    grid_flow = make_coordinate_grid((h, w), dense_flow.type())
+    dense_flow_foreground = (dense_flow * foreground_mask
+                             + (1 - foreground_mask) * grid_flow.unsqueeze(0))
+    return res_out</code></pre>
+
+  <p>Hourglass 输入拼接了三个信号：原图、光流、扭曲后的图，让网络同时"看到"输入、运动意图和扭曲结果，从而预测出合理的前景 mask。输出三件套（foreground_mask、matting_mask、matting_image）分别解决"哪里该动"、"扭曲结果和修复结果如何混合"、"修复成什么样"三个子问题。</p>
+
+  <h3 class="section-title">设计点 4：AntiAliasInterpolation2d</h3>
+  <p>ForegroundMatting 在 128×128 分辨率工作（相比输入 512×512），需要下采样。直接双线性下采样会产生锯齿伪影，因此先做高斯模糊滤除高频，再下采样：</p>
+
+  <pre><code class="language-python"># code_animation2video/models.py :: AntiAliasInterpolation2d
+class AntiAliasInterpolation2d(nn.Module):
+    def __init__(self, channels, scale):
+        sigma = (1 / scale - 1) / 2
+        kernel_size = 2 * round(sigma * 4) + 1
+        # 构建高斯核，注册为 buffer
+        kernel = gaussian_kernel(kernel_size, sigma)
+        self.register_buffer('weight', kernel)
+
+    def forward(self, input):
+        if self.scale == 1.0:
+            return input
+        out = F.pad(input, (self.ka, self.kb, self.ka, self.kb))
+        out = F.conv2d(out, weight=self.weight, groups=self.groups)
+        out = F.interpolate(out, scale_factor=(self.scale, self.scale))
+        return out</code></pre>
+
+  <p>这是信号处理的标准做法（Nyquist-Shannon 采样定理），但在 GAN 图像生成中常被忽略。这里的实现用 depthwise convolution + 高斯核，开销极小。</p>
+
+  <h3 class="section-title">设计点 5：Hourglass U-Net</h3>
+  <p>Hourglass 是标准的编码器-解码器结构，带 skip connection：</p>
+
+  <pre><code class="language-python"># code_animation2video/models.py :: HourglassEncoder.forward
+def forward(self, x):
+    outs = [x]
+    for down_block in self.down_blocks:
+        outs.append(down_block(outs[-1]))
+    return outs  # 返回所有层级特征用于 skip connection
+
+# HourglassDecoder.forward
+def forward(self, x):
+    out = x.pop()
+    for up_block in self.up_blocks:
+        out = up_block(out)
+        skip = x.pop()
+        out = torch.cat([out, skip], dim=1)
+    return out</code></pre>
+
+  <p>默认 5 层 Hourglass（<code>houglass_num_blocks=5</code>），block_expansion=64，max_features=512。下采样路径：输入通道 → 64 → 128 → 256 → 512，上采样路径反向并拼接 skip connection。</p>
+
+  <h3 class="section-title">设计点 6：推理循环与多路调试输出</h3>
+  <p>推理脚本同时输出 6 路视频，便于分析模型各模块的效果：</p>
+
+  <pre><code class="language-python"># code_animation2video/inference.py :: main loop
+for i in range(frame_length):
+    Fapp_i = Fapp[i,:,:]
+    with torch.no_grad():
+        Fapp_i = torch.from_numpy(Fapp_i).float().cuda().unsqueeze(0)
+        res_out = video_generator(reference_tensor, Fapp_i)
+        # 写入 6 路视频：
+        # synthetic_video, Fapp 可视化, matting_mask,
+        # revised_dense, foreground_mask, warped_image
+        synthetic_video_i = res_out['synthetic_image'] * 255
+        videowriter_synthetic_video.write(synthetic_video_i)
+        # ... 其他 5 路
+
+# 可选：ffmpeg 合并音频
+if os.path.exists(opt.audio_path):
+    cmd = 'ffmpeg -i {} -i {} -c:v copy -c:a aac ...'
+    subprocess.call(cmd, shell=True)</code></pre>
+
+  <p>这种"全中间结果可视化"策略对调试生成模型非常有价值——可以直接看到光流在哪扭曲了、mask 在哪预测错了、matting 在哪修复了。</p>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">如何使用</div>
+
+  <h3 class="section-title">前置准备</h3>
+  <p>从 <a href="https://drive.google.com/drive/folders/1OM3AE6rjZKY1v6PVDnv-YwlmkBZOhw1L">Google Drive</a> 下载以下文件：#hdtf-repo#</p>
+  <ul>
+    <li><code>checkpoint_animation2video.pth</code> — 预训练模型，放入 <code>./checkpoints/</code></li>
+    <li><code>taile_Fapp.npy</code> / <code>mengnalisa_Fapp.npy</code> — 预计算 F_app，放入 <code>./test_data/</code></li>
+    <li>投影点 <code>.npy</code> 文件（如需自行构建 F_app）</li>
+  </ul>
+
+  <h3 class="section-title">步骤 1：构建 F_app</h3>
+  <pre><code class="language-bash">cd code_constructing_Fapp
+python inference.py \
+  --reference_projected_mesh_points_path=./test_data/taile_source_points.npy \
+  --drive_projected_mesh_points_path=./test_data/taile_drive_points.npy \
+  --image_size=512 \
+  --res_dir=./result</code></pre>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>参数</th><th>作用</th><th>输入/输出含义</th><th>如何替换</th></tr></thead>
+      <tbody>
+        <tr><td><code>--reference_projected_mesh_points_path</code></td><td>参考人脸 3DMM 投影点</td><td>输入：<code>.npy</code> (N×2)</td><td>替换为自己的参考帧投影点</td></tr>
+        <tr><td><code>--drive_projected_mesh_points_path</code></td><td>驱动帧投影点序列</td><td>输入：<code>.npy</code> (T×N×2)</td><td>替换为驱动序列投影点</td></tr>
+        <tr><td><code>--image_size</code></td><td>图像尺寸</td><td>默认 512</td><td>需与模型训练尺寸一致</td></tr>
+        <tr><td><code>--res_dir</code></td><td>输出目录</td><td>输出：<code>taile_Fapp.npy</code></td><td>指定结果保存路径</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">步骤 2：动画转视频</h3>
+  <pre><code class="language-bash">cd code_animation2video
+python inference.py \
+  --model_path=./checkpoints/checkpoint_animation2video.pth \
+  --image_path=./test_data/taile.jpg \
+  --dense_flow_path=./test_data/taile_Fapp.npy \
+  --audio_path=./test_data/chuanpu.wav \
+  --res_path=./result</code></pre>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>参数</th><th>作用</th><th>输入/输出含义</th><th>如何替换</th></tr></thead>
+      <tbody>
+        <tr><td><code>--model_path</code></td><td>预训练模型</td><td><code>.pth</code> 文件</td><td>下载后放入 checkpoints/</td></tr>
+        <tr><td><code>--image_path</code></td><td>参考人脸图片</td><td>512×512 RGB 图片</td><td>替换为任意正面人脸</td></tr>
+        <tr><td><code>--dense_flow_path</code></td><td>F_app 稠密光流</td><td><code>.npy</code> (T×512×512×2)</td><td>步骤 1 的输出或预计算文件</td></tr>
+        <tr><td><code>--audio_path</code></td><td>输入音频</td><td><code>.wav</code> 文件</td><td>替换为目标音频</td></tr>
+        <tr><td><code>--res_path</code></td><td>输出目录</td><td>视频输出路径</td><td>指定结果保存路径</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">网络配置参数</h3>
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>--encoder_num_down_blocks</code></td><td>2</td><td>Encoder 下采样层数</td></tr>
+        <tr><td><code>--encoder_block_expansion</code></td><td>64</td><td>Encoder 基础通道数</td></tr>
+        <tr><td><code>--encoder_max_features</code></td><td>512</td><td>Encoder 最大通道数</td></tr>
+        <tr><td><code>--houglass_num_blocks</code></td><td>5</td><td>Hourglass U-Net 层数</td></tr>
+        <tr><td><code>--houglass_block_expansion</code></td><td>64</td><td>Hourglass 基础通道数</td></tr>
+        <tr><td><code>--houglass_max_features</code></td><td>512</td><td>Hourglass 最大通道数</td></tr>
+        <tr><td><code>--num_bottleneck_blocks</code></td><td>2</td><td>Bottleneck ResBlock 数量</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">训练与评估</h3>
+  <p>仓库<strong>未提供</strong>训练代码和评估脚本。README 中 <code>code of audio-to-animation</code> 和 <code>code of reproducing other works</code> 标注为 "coming soon"，至今未开源。#hdtf-repo# 推理仅依赖预训练权重，无法自行训练。</p>
+</div>
+
+<div class="ch">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">工程评价与可迁移经验</div>
+
+  <h3 class="section-title">优点</h3>
+  <ul>
+    <li><strong>F_app 方法轻量有效</strong>：纯 CPU numpy/scipy 计算，无需训练光流网络，推理速度快</li>
+    <li><strong>特征级扭曲优于像素级</strong>：在 Encoder 特征空间扭曲保留更多细节</li>
+    <li><strong>前景/背景分离策略</strong>：预测前景 mask，只扭曲前景区域，避免背景伪影</li>
+    <li><strong>多路调试输出</strong>：6 路中间结果视频，便于分析模型各模块效果</li>
+    <li><strong>代码结构清晰</strong>：模块化好，每个 <code>nn.Module</code> 职责单一</li>
+  </ul>
+
+  <h3 class="section-title">已知局限</h3>
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      复现风险
+    </div>
+    <div class="admonition-content">
+      <ul>
+        <li><strong>依赖版本极老</strong>：torch 1.0（2018 年发布），与现代 Python 3.8+ 不兼容，需降级到 Python 3.6 或使用 Docker</li>
+        <li><strong>audio-to-animation 模块未开源</strong>：README 标注 "coming soon" 多年未更新，无法从音频端到端推理</li>
+        <li><strong>无训练代码</strong>：只有推理代码，无法在自有数据上训练</li>
+        <li><strong>3DMM 模型不可分享</strong>：源码注释明确说明 "It is not allowed to share the 3DMM model"，需自行准备</li>
+        <li><strong>GPU 需求</strong>：推理需要 CUDA GPU，模型加载到 <code>.cuda()</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 class="section-title">可迁移经验</h3>
+  <ol>
+    <li><strong>稀疏→稠密光流插值</strong>：用少量关键点 + 最近邻插值生成稠密光流，比训练光流网络轻量得多，适用于有 3DMM 或 landmark 的场景</li>
+    <li><strong>特征级扭曲 + matting 修复</strong>：在 encoder 特征空间扭曲比像素级扭曲保留更多细节；matting mask 混合扭曲结果和修复结果，平滑过渡</li>
+    <li><strong>前景/背景分离</strong>：预测前景 mask 只扭曲前景区域，避免背景伪影——这对任何基于光流的图像生成方法都适用</li>
+    <li><strong>抗锯齿下采样</strong>：高斯模糊 + 下采样避免锯齿，开销极小（depthwise conv + 高斯核）</li>
+    <li><strong>全中间结果可视化</strong>：输出所有中间产物（光流、mask、扭曲图）便于调试，是生成模型开发的实用策略</li>
+  </ol>
+</div>
+
+<div class="ch">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">读完这个仓库能带走什么</div>
+  <div class="review-box">
+    <h3>复习速查</h3>
+    <ul>
+      <li><strong>项目定位</strong>：CVPR 2021 流引导单样本说话人脸生成，含高分辨率数据集</li>
+      <li><strong>核心路径</strong>：<code>code_constructing_Fapp/inference.py</code> → <code>code_animation2video/inference.py</code> → <code>VideoGenerator</code></li>
+      <li><strong>关键设计</strong>：F_app 稀疏→稠密插值、特征级扭曲 + matting 混合、前景 mask 修正、抗锯齿下采样</li>
+      <li><strong>迁移价值</strong>：轻量光流替代方案、特征级扭曲策略、前景/背景分离模式</li>
+    </ul>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考资料</h3>
+  <ul>
+    <li data-cite-key="hdtf-repo"><a href="https://github.com/MRzzm/HDTF">MRzzm/HDTF — Flow-guided One-shot Talking Face Generation with a High-resolution Audio-visual Dataset (GitHub)</a></li>
+    <li data-cite-key="hdtf-paper"><a href="https://openaccess.thecvf.com/content/CVPR2021/papers/Zhang_Flow-Guided_One-Shot_Talking_Face_Generation_With_a_High-Resolution_Audio-Visual_Dataset_CVPR_2021_paper.pdf">Zhang et al., "Flow-Guided One-Shot Talking Face Generation With a High-Resolution Audio-Visual Dataset", CVPR 2021</a></li>
+    <li data-cite-key="universome-hdtf"><a href="https://github.com/universome/HDTF">@universome/HDTF — HDTF 数据集自动化处理脚本</a></li>
+    <li data-cite-key="hdtf-demo"><a href="https://www.youtube.com/watch?v=uJdBgWYBTww">HDTF Demo Video (YouTube)</a></li>
+  </ul>
+</div>

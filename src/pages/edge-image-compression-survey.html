@@ -1,0 +1,462 @@
+---
+title: "边缘图像压缩调研：面向红外轮廓图与二值边缘图的算法谱系"
+description: "系统调研面向红外轮廓图、二值边缘图和稀疏结构图的压缩算法：从 CCITT G4、JBIG/JBIG2，到链码、线段几何编码、结构保持近无损压缩与 Coding for Machines。"
+date: 2026-06-15T11:17:48
+created_at: 2026-06-15T11:17:48
+updated_at: 2026-06-15T22:53:14
+tags: ["边缘图像压缩", "红外图像", "二值图像", "链码", "Coding for Machines"]
+categories: ["AI"]
+subcategory: "图像压缩"
+sub_id: 800
+mathjax: false
+hero_title: "边缘图像压缩调研"
+hero_sub: "红外轮廓图 · 二值边缘图 · 稀疏结构编码"
+hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，而是结构、连通性与任务可用性"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">5</span><span class="label">技术谱系</span></div>
+  <div class="stat"><span class="num b">17</span><span class="label">关键来源</span></div>
+  <div class="stat"><span class="num g">1-bit</span><span class="label">核心数据形态</span></div>
+  <div class="stat"><span class="num">1961–2026</span><span class="label">时间跨度</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 0 · 问题定义</div>
+  <div class="ch-title">为什么红外边缘图不能按普通图像压缩来理解</div>
+
+  <p>这里讨论的“边缘图像压缩”不是普通 RGB 或灰度图像压缩的一个小分支，而是一类数据形态发生改变后的编码问题：红外图像中可用信息主要表现为目标轮廓、热边界、稀疏边缘或近二值结构，图像内容从“纹理—颜色—亮度场”退化或抽象为“背景—边缘—连通结构”。因此，压缩器真正需要保留的并不总是每个像素的精确灰度，而是轮廓的连通性、拓扑关系、几何形状和下游检测/跟踪任务可用性。</p>
+
+  <p>传统图像压缩的默认目标通常是在人眼视觉质量、PSNR/MS-SSIM、感知质量和码率之间折中；JPEG、JPEG2000、BPG、WebP、HEVC/VVC intra 以及现代 learned image compression 都默认图像存在丰富纹理、高频细节、颜色或灰度梯度。可是红外轮廓图经常更像一张稀疏的 1-bit 图：大部分区域为空背景，少量边缘像素组成线、曲线、闭合边界、断裂边界或噪声毛刺。对这类数据，继续使用面向自然图像纹理的 transform coding，可能并不是最优选择。</p>
+
+  <div class="callout"><strong>核心判断：</strong>红外边缘图像应优先被看作“稀疏结构图 / 二值语义图 / 轮廓集合”，而不是普通灰度图像。压缩目标也应从“像素误差最小”转向“结构保持、连通性保持、任务性能保持”。</div>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 360" role="img" aria-label="红外边缘图像压缩任务定义示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <defs>
+        <linearGradient id="irGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#151b2d"/><stop offset="1" stop-color="#2b1220"/></linearGradient>
+        <marker id="arrowEdgeIntro" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#9bdcff"/></marker>
+      </defs>
+      <rect x="25" y="44" width="190" height="220" rx="18" fill="url(#irGrad)" stroke="#53627c"/>
+      <circle cx="100" cy="120" r="45" fill="#ffb35c" opacity="0.35"/>
+      <ellipse cx="142" cy="178" rx="42" ry="68" fill="#ff6b3a" opacity="0.28"/>
+      <path d="M72 154 C98 80,164 88,172 174 C178 238,95 247,72 154" fill="none" stroke="#ffd17a" stroke-width="5" opacity="0.9"/>
+      <text x="120" y="300" text-anchor="middle" fill="#e8edf7" font-size="18">红外灰度 / 弱纹理</text>
+      <line x1="230" y1="154" x2="325" y2="154" stroke="#9bdcff" stroke-width="3" marker-end="url(#arrowEdgeIntro)"/>
+      <text x="277" y="130" text-anchor="middle" fill="#9bdcff" font-size="15">边缘提取</text>
+      <rect x="345" y="44" width="190" height="220" rx="18" fill="#080d18" stroke="#53627c"/>
+      <path d="M392 158 C414 88,488 88,496 176 C500 231,414 242,392 158" fill="none" stroke="#79f2ff" stroke-width="5"/>
+      <path d="M390 90 L505 245" stroke="#79f2ff" stroke-width="3" opacity="0.75"/>
+      <circle cx="458" cy="154" r="5" fill="#f7e37a"/><circle cx="490" cy="197" r="4" fill="#f7e37a"/>
+      <text x="440" y="300" text-anchor="middle" fill="#e8edf7" font-size="18">二值边缘 / 轮廓图</text>
+      <line x1="550" y1="154" x2="645" y2="154" stroke="#9bdcff" stroke-width="3" marker-end="url(#arrowEdgeIntro)"/>
+      <text x="597" y="130" text-anchor="middle" fill="#9bdcff" font-size="15">结构编码</text>
+      <rect x="665" y="44" width="270" height="220" rx="18" fill="#101827" stroke="#53627c"/>
+      <text x="800" y="90" text-anchor="middle" fill="#e8edf7" font-size="20" font-weight="700">压缩码流</text>
+      <text x="705" y="130" fill="#9bdcff" font-size="16">• 空白块 skip</text>
+      <text x="705" y="162" fill="#9bdcff" font-size="16">• 链码 / 线段</text>
+      <text x="705" y="194" fill="#9bdcff" font-size="16">• 字典模板 + 残差</text>
+      <text x="705" y="226" fill="#9bdcff" font-size="16">• 熵编码</text>
+      <text x="800" y="300" text-anchor="middle" fill="#e8edf7" font-size="18">保留结构而非纹理</text>
+    </svg>
+    <div class="cap">图 1：红外边缘图像压缩的任务抽象。与自然图像压缩不同，这里首先要把灰度热辐射场转化为稀疏轮廓结构，再围绕空白块、轮廓曲线、重复边缘模式和下游任务进行编码。</div>
+  </div>
+
+  <p>这个问题同时连接五条技术线索：第一，传真和文档时代形成的二值图像压缩标准，如 CCITT Group 4、JBIG1 和 JBIG2；第二，计算机图形学和形状分析中的链码与轮廓编码；第三，结构保持的二值图像有损压缩，例如基于 Markov Random Field 的规格传输与重建；第四，语义分割图、占用图和地图轮廓压缩；第五，面向机器视觉任务的 Coding for Machines。下面按这五条线索展开。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据特征</th><th>普通自然图像</th><th>红外边缘 / 轮廓图</th><th>压缩启发</th></tr></thead>
+      <tbody>
+        <tr><td>像素取值</td><td>RGB / 灰度连续值</td><td>二值或少量离散值</td><td>可用二值图像标准与标签图压缩</td></tr>
+        <tr><td>空间分布</td><td>纹理、平滑区、高频细节混合</td><td>背景占绝大多数，边缘稀疏</td><td>空白区域跳过、RLE、四叉树</td></tr>
+        <tr><td>关键信息</td><td>视觉质量与感知真实性</td><td>连通性、轮廓形状、拓扑结构</td><td>链码、线段、结构保持指标</td></tr>
+        <tr><td>失真容忍</td><td>轻微纹理变化可接受</td><td>断裂、拓扑变化可能致命</td><td>不能只看 PSNR，应看 Chamfer / connectivity / task accuracy</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 二值标准</div>
+  <div class="ch-title">像素级二值图像压缩：从 RLE 到 JBIG2</div>
+
+  <p>如果把红外边缘图直接看作 1-bit 图像，最自然的第一批 baseline 是传真、扫描文档和 bi-level image 领域的经典标准。它们并不理解“红外”或“目标轮廓”，但非常擅长处理黑白图、长背景游程和局部像素相关性。</p>
+
+  <h3 class="section-title">Run-Length Encoding：最小但必要的基线</h3>
+
+  <p>Run-Length Encoding, RLE 的基本思想是把连续相同像素表示为“值 + 长度”。对红外边缘图而言，背景通常占绝大多数，一条扫描线上往往出现很长的 0 游程和少数 1 边缘点，因此 RLE 是必须实现的最小 baseline。它的优点是编码解码极快、复杂度极低、适合嵌入式设备；缺点也同样明显：斜线、曲线和孤立噪声点会不断打断长游程，导致效率下降。</p>
+
+  <div class="example-box">
+    <h3>一个直观例子</h3>
+    <p>扫描线 <code>000000000111000000</code> 可以写成 <code>0×9, 1×3, 0×6</code>。如果边缘非常稀疏，RLE 会很有效；如果噪声点很多，原本的长背景游程就会被切碎。</p>
+  </div>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 260" role="img" aria-label="Run-Length Encoding 游程编码示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <rect x="40" y="56" width="720" height="46" rx="10" fill="#111a2b" stroke="#53627c"/>
+      <g transform="translate(62,68)">
+        <rect x="0" y="0" width="26" height="24" fill="#1b263b"/><rect x="26" y="0" width="26" height="24" fill="#1b263b"/><rect x="52" y="0" width="26" height="24" fill="#1b263b"/><rect x="78" y="0" width="26" height="24" fill="#1b263b"/><rect x="104" y="0" width="26" height="24" fill="#1b263b"/><rect x="130" y="0" width="26" height="24" fill="#1b263b"/><rect x="156" y="0" width="26" height="24" fill="#1b263b"/><rect x="182" y="0" width="26" height="24" fill="#1b263b"/><rect x="208" y="0" width="26" height="24" fill="#1b263b"/>
+        <rect x="234" y="0" width="26" height="24" fill="#79f2ff"/><rect x="260" y="0" width="26" height="24" fill="#79f2ff"/><rect x="286" y="0" width="26" height="24" fill="#79f2ff"/>
+        <rect x="312" y="0" width="26" height="24" fill="#1b263b"/><rect x="338" y="0" width="26" height="24" fill="#1b263b"/><rect x="364" y="0" width="26" height="24" fill="#1b263b"/><rect x="390" y="0" width="26" height="24" fill="#1b263b"/><rect x="416" y="0" width="26" height="24" fill="#1b263b"/><rect x="442" y="0" width="26" height="24" fill="#1b263b"/>
+      </g>
+      <text x="400" y="36" text-anchor="middle" fill="#e8edf7" font-size="18">扫描线：000000000111000000</text>
+      <path d="M170 120 L170 155" stroke="#9bdcff" stroke-width="2"/><path d="M321 120 L321 155" stroke="#9bdcff" stroke-width="2"/><path d="M452 120 L452 155" stroke="#9bdcff" stroke-width="2"/>
+      <rect x="95" y="160" width="150" height="46" rx="10" fill="#132033" stroke="#53627c"/><text x="170" y="190" text-anchor="middle" fill="#e8edf7" font-size="18">0 × 9</text>
+      <rect x="270" y="160" width="105" height="46" rx="10" fill="#143444" stroke="#79f2ff"/><text x="322" y="190" text-anchor="middle" fill="#e8edf7" font-size="18">1 × 3</text>
+      <rect x="405" y="160" width="120" height="46" rx="10" fill="#132033" stroke="#53627c"/><text x="465" y="190" text-anchor="middle" fill="#e8edf7" font-size="18">0 × 6</text>
+      <text x="760" y="125" fill="#9bdcff" font-size="16">背景越长，RLE 越高效；</text>
+      <text x="760" y="153" fill="#9bdcff" font-size="16">孤立噪声会切碎游程。</text>
+    </svg>
+    <div class="cap">图 2：RLE 的基本工作方式。红外边缘图中的大片背景适合游程编码，但斜线、曲线和孤立噪声会不断制造短游程。</div>
+  </div>
+
+  <h3 class="section-title">CCITT Group 3 / Group 4：传真图像的成熟无损路线</h3>
+
+  <p>CCITT Group 3 与 Group 4 是传真和文档扫描时代形成的二值压缩标准。Group 3 对应 ITU-T T.4，Group 4 对应 ITU-T T.6。Group 3 的一维模式使用 Modified Huffman 对每条扫描线做游程编码，二维模式 Modified READ 参考上一扫描线编码当前行；Group 4 使用 Modified Modified READ，去除面向传真同步的部分机制，更适合存档型二值图像压缩 #ITU-T-T6#。</p>
+
+  <p>美国国会图书馆的格式说明将 Group 4 描述为 bitonal / bi-level 图像的无损压缩方法，典型应用包括黑白扫描文档和 TIFF 图像，常见压缩比可达到约 15:1，具体取决于图像内容 #LOC-G4#。对红外边缘图来说，Group 4 的优势来自两点：一是背景长游程，二是相邻扫描线之间的轮廓位置通常变化不大。它对水平或近水平边缘尤其友好；但对斜线、曲线和孤立噪声点不如轮廓级方法自然。</p>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 310" role="img" aria-label="CCITT Group 4 行间预测示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <defs><marker id="arrowG4" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#f7e37a"/></marker></defs>
+      <text x="80" y="55" fill="#e8edf7" font-size="17">参考行</text>
+      <text x="80" y="135" fill="#e8edf7" font-size="17">当前行</text>
+      <line x1="170" y1="50" x2="860" y2="50" stroke="#53627c" stroke-width="18" stroke-linecap="round"/>
+      <line x1="305" y1="50" x2="455" y2="50" stroke="#79f2ff" stroke-width="18" stroke-linecap="round"/>
+      <line x1="170" y1="130" x2="860" y2="130" stroke="#53627c" stroke-width="18" stroke-linecap="round"/>
+      <line x1="326" y1="130" x2="478" y2="130" stroke="#79f2ff" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="305" cy="50" r="7" fill="#f7e37a"/><circle cx="455" cy="50" r="7" fill="#f7e37a"/>
+      <circle cx="326" cy="130" r="7" fill="#f7e37a"/><circle cx="478" cy="130" r="7" fill="#f7e37a"/>
+      <path d="M305 66 C306 95,320 101,326 116" stroke="#f7e37a" stroke-width="3" fill="none" marker-end="url(#arrowG4)"/>
+      <path d="M455 66 C456 95,472 101,478 116" stroke="#f7e37a" stroke-width="3" fill="none" marker-end="url(#arrowG4)"/>
+      <rect x="160" y="200" width="700" height="55" rx="12" fill="#111a2b" stroke="#53627c"/>
+      <text x="510" y="234" text-anchor="middle" fill="#e8edf7" font-size="18">当前行不重新描述整行，只编码相对参考行变化点的偏移 / pass / vertical / horizontal mode</text>
+      <text x="510" y="285" text-anchor="middle" fill="#9bdcff" font-size="15">适合相邻扫描线相似的二值文档与水平延伸轮廓；斜向曲线会产生更多变化点。</text>
+    </svg>
+    <div class="cap">图 3：CCITT Group 4 的二维直觉。当前扫描线参考上一行的变化点，而不是完全独立编码整行；这解释了它为何适合文档与水平延伸的二值结构。</div>
+  </div>
+
+  <h3 class="section-title">JBIG1：上下文模板与自适应算术编码</h3>
+
+  <p>JBIG1 对应 ITU-T T.82 / ISO/IEC 11544，是面向 bi-level image data 的无损压缩标准。它的核心不只是扫描线 RLE，而是利用邻域上下文模板预测当前像素，再用自适应算术编码接近熵极限；同时支持 progressive coding，可以先传低分辨率版本，再逐步细化到完整图像 #ITU-T-T82#。JBIG-KIT 的说明也指出，JBIG1 被广泛用于传真、打印机固件、文档管理和 imaging software #JBIG-KIT#。</p>
+
+  <p>对红外边缘图而言，JBIG1 的意义在于它可以自动学习局部像素模式：曲线、角点、短断裂、孤立点都会通过上下文概率反映到码长中。它仍然是像素级方法，但比单纯 RLE 或 Group 4 更能处理不规则局部结构。渐进编码也很适合带宽受限链路：先传粗轮廓，必要时继续传细节。</p>
+
+  <h3 class="section-title">JBIG2：最值得迁移思想的二值图像标准</h3>
+
+  <p>JBIG2 对应 ITU-T T.88 / ISO/IEC 14492，标准标题即为 lossy/lossless coding of bi-level images。ITU-T T.88 明确说明 JBIG2 支持 lossy、lossless 和 lossy-to-lossless 的 bi-level image coding #ITU-T-T88#。开源 jbig2enc 项目概括了 JBIG2 的几个关键能力：generic region encoding、symbol extraction、classification and text region coding、refinement coding 和 multi-page document compression #jbig2enc#。</p>
+
+  <p>JBIG2 的关键思想是把二值图像分成 text、halftone 和 generic regions。对 text region，它会提取重复符号并建立字典，后续相似符号只需要编码字典索引与位置；如果要无损，则再通过 refinement coding 编码实例和模板之间的差异。这个思想虽然最初服务于文档和字符，但对红外边缘图非常有启发：建筑边缘、道路边界、机械轮廓、车辆轮廓中可能存在重复局部结构，它们可以像“符号”一样被提取、聚类、字典化，然后只编码变换参数与残差。</p>
+
+  <div class="info-box">
+    <h3>JBIG2 对红外轮廓图的迁移方式</h3>
+    <p>可以把红外边缘 patch 或连通组件看成“非文本符号”：编码字典 ID、位置、方向、尺度，以及少量修正 mask。无法匹配的复杂区域则回退到 generic binary arithmetic coding。这会形成一种“JBIG2-style infrared edge dictionary codec”。</p>
+  </div>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 350" role="img" aria-label="JBIG2 字典压缩迁移到红外边缘 patch 示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <defs><marker id="arrowJbig2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#9bdcff"/></marker></defs>
+      <text x="150" y="42" text-anchor="middle" fill="#e8edf7" font-size="18">重复边缘 patch</text>
+      <g stroke="#79f2ff" stroke-width="5" fill="none">
+        <rect x="60" y="70" width="90" height="80" rx="8" stroke="#53627c" stroke-width="2"/><path d="M82 132 L108 92 L134 132"/>
+        <rect x="175" y="70" width="90" height="80" rx="8" stroke="#53627c" stroke-width="2"/><path d="M197 134 L224 94 L247 130"/>
+        <rect x="60" y="175" width="90" height="80" rx="8" stroke="#53627c" stroke-width="2"/><path d="M83 130"/><path d="M82 235 L109 195 L135 234"/>
+        <rect x="175" y="175" width="90" height="80" rx="8" stroke="#53627c" stroke-width="2"/><path d="M199 237 L222 198 L248 236"/>
+      </g>
+      <line x1="295" y1="165" x2="405" y2="165" stroke="#9bdcff" stroke-width="3" marker-end="url(#arrowJbig2)"/>
+      <text x="350" y="140" text-anchor="middle" fill="#9bdcff" font-size="15">聚类 / 匹配</text>
+      <rect x="430" y="70" width="150" height="185" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <text x="505" y="105" text-anchor="middle" fill="#e8edf7" font-size="18">字典</text>
+      <rect x="470" y="130" width="70" height="70" rx="8" fill="#0b1020" stroke="#53627c"/>
+      <path d="M486 186 L506 144 L526 186" stroke="#79f2ff" stroke-width="6" fill="none"/>
+      <text x="505" y="225" text-anchor="middle" fill="#f7e37a" font-size="16">Template #7</text>
+      <line x1="610" y1="165" x2="720" y2="165" stroke="#9bdcff" stroke-width="3" marker-end="url(#arrowJbig2)"/>
+      <rect x="745" y="70" width="185" height="185" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <text x="837" y="105" text-anchor="middle" fill="#e8edf7" font-size="18">实例编码</text>
+      <text x="775" y="145" fill="#9bdcff" font-size="16">ID = 7</text>
+      <text x="775" y="177" fill="#9bdcff" font-size="16">pos = (x,y)</text>
+      <text x="775" y="209" fill="#9bdcff" font-size="16">scale / rotate</text>
+      <text x="775" y="241" fill="#9bdcff" font-size="16">residual mask</text>
+      <text x="490" y="310" text-anchor="middle" fill="#e8edf7" font-size="16">JBIG2 的文本符号字典思想可以迁移为“红外边缘 patch 字典”。</text>
+    </svg>
+    <div class="cap">图 4：JBIG2-style 字典压缩的迁移方式。文档中的重复字符可以变成字典符号；红外轮廓图中的重复局部边缘结构也可以被模板化，只传实例位置、几何变换和残差。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 轮廓编码</div>
+  <div class="ch-title">从像素图到曲线：链码、顶点码与线段几何编码</div>
+
+  <p>二值标准仍然把图像看成像素矩阵，而红外边缘图的真实信息更像曲线集合。因此，第二条更自然的路线是先从边缘图中提取连通轮廓，再编码轮廓的运动方向或几何参数。</p>
+
+  <h3 class="section-title">Freeman Chain Code：给轮廓写“行走日记”</h3>
+
+  <p>Freeman 在 1961 年提出 chain code，用于计算机描述任意平面曲线 #Freeman-1961#。其基本做法是：找到轮廓起点，沿边界逐像素追踪，每一步只记录移动方向。4 邻域链码每步需要 2 bit，8 邻域链码每步需要 3 bit。相比直接存储每个边缘点的二维坐标，链码显著减少码长，并且显式保留轮廓连通性。</p>
+
+  <p>进一步地，差分链码不编码绝对方向，而编码当前方向相对前一方向的变化。真实轮廓通常方向连续，方向变化分布高度集中，因此差分链码再接 Huffman、Markov 或 arithmetic coding 可以继续降低码率。</p>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 380" role="img" aria-label="Freeman 8方向链码示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <defs><marker id="arrowChain" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79f2ff"/></marker></defs>
+      <rect x="45" y="45" width="300" height="260" rx="14" fill="#111a2b" stroke="#53627c"/>
+      <g transform="translate(95,88)" stroke="#334155" stroke-width="1">
+        <path d="M0 0 H200 M0 40 H200 M0 80 H200 M0 120 H200 M0 160 H200 M0 200 H200"/><path d="M0 0 V200 M40 0 V200 M80 0 V200 M120 0 V200 M160 0 V200 M200 0 V200"/>
+      </g>
+      <polyline points="115,248 155,208 195,168 235,168 275,128" fill="none" stroke="#79f2ff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="115" cy="248" r="8" fill="#f7e37a"/><circle cx="155" cy="208" r="6" fill="#f7e37a"/><circle cx="195" cy="168" r="6" fill="#f7e37a"/><circle cx="235" cy="168" r="6" fill="#f7e37a"/><circle cx="275" cy="128" r="6" fill="#f7e37a"/>
+      <text x="195" y="335" text-anchor="middle" fill="#e8edf7" font-size="17">轮廓路径 → 方向序列</text>
+      <g transform="translate(465,70)">
+        <circle cx="90" cy="90" r="10" fill="#f7e37a"/>
+        <line x1="90" y1="90" x2="160" y2="90" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="175" y="96" fill="#e8edf7" font-size="18">0</text>
+        <line x1="90" y1="90" x2="140" y2="40" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="148" y="38" fill="#e8edf7" font-size="18">1</text>
+        <line x1="90" y1="90" x2="90" y2="20" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="84" y="15" fill="#e8edf7" font-size="18">2</text>
+        <line x1="90" y1="90" x2="40" y2="40" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="20" y="38" fill="#e8edf7" font-size="18">3</text>
+        <line x1="90" y1="90" x2="20" y2="90" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="4" y="96" fill="#e8edf7" font-size="18">4</text>
+        <line x1="90" y1="90" x2="40" y2="140" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="20" y="154" fill="#e8edf7" font-size="18">5</text>
+        <line x1="90" y1="90" x2="90" y2="160" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="84" y="183" fill="#e8edf7" font-size="18">6</text>
+        <line x1="90" y1="90" x2="140" y2="140" stroke="#79f2ff" stroke-width="4" marker-end="url(#arrowChain)"/><text x="148" y="154" fill="#e8edf7" font-size="18">7</text>
+      </g>
+      <rect x="650" y="238" width="260" height="64" rx="12" fill="#111a2b" stroke="#53627c"/>
+      <text x="780" y="264" text-anchor="middle" fill="#e8edf7" font-size="17">示例码流</text>
+      <text x="780" y="290" text-anchor="middle" fill="#9bdcff" font-size="18">起点 + 1, 1, 0, 1 ...</text>
+    </svg>
+    <div class="cap">图 5：Freeman 8 方向链码。轮廓不再以像素矩阵保存，而是保存起点和沿边界行走的方向序列；方向变化再做熵编码，可以进一步利用曲线平滑性。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>表示方式</th><th>编码对象</th><th>优点</th><th>缺点</th></tr></thead>
+      <tbody>
+        <tr><td>点坐标列表</td><td>所有边缘像素坐标</td><td>简单、无损</td><td>每点成本高，不利用连续性</td></tr>
+        <tr><td>Freeman F4/F8</td><td>起点 + 方向序列</td><td>保留轮廓连通性，码率低</td><td>噪声和毛刺会拉长序列</td></tr>
+        <tr><td>差分链码</td><td>方向变化序列</td><td>利用方向平滑性，适合熵编码</td><td>断裂轮廓需要重新启动</td></tr>
+        <tr><td>线段编码</td><td>起点、终点、点数或误差</td><td>对长直线极高效</td><td>曲线需要折线逼近，有失真</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Vertex Chain Code 与 Three-Orthogonal Chain Code</h3>
+
+  <p>后续链码研究尝试进一步降低符号熵。Bribiesca 提出的 Vertex Chain Code 基于边界经过的网格顶点类型，而不是直接记录 8 个方向，因此可以用更少的符号描述曲线局部形态 #Bribiesca-1999#。Three-Orthogonal Chain Code, 3OT 则经常出现在语义图压缩工作中，它通过相对转向描述边界，使符号分布更集中。</p>
+
+  <p>对红外轮廓图来说，VCC / 3OT 这类紧凑链码适合长而平滑的目标边界。它们比原始 Freeman F8 更接近“轮廓语言模型”：大多数时候轮廓继续向前，少数时候左转或右转。这个统计规律正适合 Markov model 或 adaptive arithmetic coding。</p>
+
+  <h3 class="section-title">线段几何编码：从逐像素行走到参数化形状</h3>
+
+  <p>如果一段轮廓本质上是直线，那么逐像素记录方向仍然冗余。Gerogiannis、Nikou 和 Kondi 在 ICIP 2015 的论文 <em>Shape Encoding for Edge Map Image Compression</em> 中直接研究 edge map image compression：他们将边缘图中的 shape manifold 建模为 line segments，每条线段编码 starting point、ending point 和 contributing points number，解码时在线段上均匀采样重建轮廓 #Gerogiannis-2015#。</p>
+
+  <p>这篇论文对红外轮廓图高度相关。许多红外场景包含人造结构边缘，如建筑轮廓、道路边界、车辆外形和工业设备边缘，长直线或折线非常常见。对这些结构，线段编码可能远优于逐像素链码；对曲线部分，则可以用折线近似，并通过最大偏移误差或 Chamfer distance 控制失真。</p>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 340" role="img" aria-label="线段几何编码示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <defs><marker id="arrowLineSeg" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#9bdcff"/></marker></defs>
+      <rect x="45" y="58" width="280" height="210" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <g fill="#79f2ff" opacity="0.95">
+        <circle cx="82" cy="230" r="4"/><circle cx="98" cy="210" r="4"/><circle cx="118" cy="190" r="4"/><circle cx="137" cy="170" r="4"/><circle cx="158" cy="151" r="4"/><circle cx="180" cy="134" r="4"/><circle cx="203" cy="120" r="4"/><circle cx="226" cy="108" r="4"/><circle cx="250" cy="99" r="4"/><circle cx="278" cy="92" r="4"/>
+      </g>
+      <text x="185" y="300" text-anchor="middle" fill="#e8edf7" font-size="17">边缘点集合</text>
+      <line x1="350" y1="162" x2="450" y2="162" stroke="#9bdcff" stroke-width="3" marker-end="url(#arrowLineSeg)"/>
+      <text x="400" y="137" text-anchor="middle" fill="#9bdcff" font-size="15">线段拟合</text>
+      <rect x="475" y="58" width="280" height="210" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <line x1="515" y1="230" x2="703" y2="92" stroke="#f7e37a" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="515" cy="230" r="8" fill="#79f2ff"/><circle cx="703" cy="92" r="8" fill="#79f2ff"/>
+      <text x="515" y="255" text-anchor="middle" fill="#e8edf7" font-size="15">起点</text>
+      <text x="703" y="80" text-anchor="middle" fill="#e8edf7" font-size="15">终点</text>
+      <text x="615" y="300" text-anchor="middle" fill="#e8edf7" font-size="17">编码：起点 + 终点 + 点数/误差</text>
+      <rect x="780" y="92" width="150" height="140" rx="14" fill="#111a2b" stroke="#53627c"/>
+      <text x="855" y="125" text-anchor="middle" fill="#e8edf7" font-size="18">码流</text>
+      <text x="805" y="158" fill="#9bdcff" font-size="15">x0,y0</text>
+      <text x="805" y="184" fill="#9bdcff" font-size="15">x1,y1</text>
+      <text x="805" y="210" fill="#9bdcff" font-size="15">n / error</text>
+    </svg>
+    <div class="cap">图 6：线段几何编码。对近似直线的红外边缘，逐像素链码仍有冗余；用起点、终点和误差控制参数表示一整段轮廓，码率会明显降低。</div>
+  </div>
+
+  <div class="callout"><strong>工程启发：</strong>一个强红外边缘 codec 不应只选链码或线段，而应按连通组件自适应选择：长直轮廓用线段，平滑曲线用差分链码，复杂噪声块用二值算术编码 fallback。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 结构保持</div>
+  <div class="ch-title">近无损压缩：不要让轮廓断裂，不要让拓扑变形</div>
+
+  <p>红外边缘图的有损压缩不能只看像素错误率。一个像素级误差很小的重建，如果把闭合轮廓压断，可能会直接破坏目标检测；反过来，某些边缘整体平移一两个像素，若连通性和形状仍保持，下游任务可能几乎不受影响。因此，这类数据需要结构保持视角。</p>
+
+  <h3 class="section-title">Reyes & Pappas：传输结构规格，而不是传输所有像素</h3>
+
+  <p>Reyes、Zhao、Neuhoff 和 Pappas 关于 bilevel image lossy compression 的工作提供了重要参考。他们讨论一种基于 Markov Random Fields 的二值图像有损压缩方法：编码端将图像分块，只传输块类别、run endpoint、decision bit 等 specification；解码端在满足这些结构约束的条件下，用 MRF 模型重建最平滑、最合理的二值图像 #Reyes-Pappas-2008#。</p>
+
+  <p>这一路线的关键不是“少传一点像素”，而是改变编码对象：传输的是结构约束，未指定部分由解码器根据局部相关性补全。对红外边缘图而言，可以进一步把 specification 设计为端点、交叉点、角点、进入/离开块的位置、局部方向和连通关系。这样即使码率极低，也尽量保留目标轮廓的拓扑骨架。</p>
+
+  <div class="theorem-box">
+    <h3>结构保持压缩的核心准则</h3>
+    <p>对边缘图而言，错误的严重性不只取决于错了多少像素，而取决于这些错误是否改变了轮廓的结构功能：是否断开连通组件、是否删除小目标、是否破坏闭合边界、是否改变关键角点和分叉点。</p>
+  </div>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 330" role="img" aria-label="结构保持压缩与像素误差的区别" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <rect x="55" y="60" width="250" height="190" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <path d="M115 210 C95 130,155 88,215 105 C280 125,268 222,190 222 C155 222,130 220,115 210" fill="none" stroke="#79f2ff" stroke-width="7" stroke-linecap="round"/>
+      <text x="180" y="285" text-anchor="middle" fill="#e8edf7" font-size="17">原始闭合轮廓</text>
+      <rect x="365" y="60" width="250" height="190" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <path d="M425 210 C405 130,465 88,525 105 C590 125,578 222,500 222 C465 222,440 220,425 210" fill="none" stroke="#79f2ff" stroke-width="7" stroke-linecap="round" opacity="0.95"/>
+      <path d="M418 204 C402 128,467 94,527 110 C587 128,572 216,500 216 C468 216,442 215,418 204" fill="none" stroke="#f7e37a" stroke-width="3" stroke-dasharray="8 7"/>
+      <text x="490" y="285" text-anchor="middle" fill="#e8edf7" font-size="17">小偏移：结构仍保留</text>
+      <rect x="675" y="60" width="250" height="190" rx="16" fill="#111a2b" stroke="#53627c"/>
+      <path d="M735 210 C715 130,775 88,835 105" fill="none" stroke="#79f2ff" stroke-width="7" stroke-linecap="round"/>
+      <path d="M872 138 C902 172,880 222,810 222 C775 222,750 220,735 210" fill="none" stroke="#79f2ff" stroke-width="7" stroke-linecap="round"/>
+      <circle cx="852" cy="120" r="6" fill="#ef5350"/><circle cx="862" cy="128" r="6" fill="#ef5350"/>
+      <text x="800" y="285" text-anchor="middle" fill="#e8edf7" font-size="17">少量像素错误：拓扑断裂</text>
+      <text x="490" y="36" text-anchor="middle" fill="#9bdcff" font-size="18">边缘图压缩不能只数错多少像素，还要看结构是否被破坏</text>
+    </svg>
+    <div class="cap">图 7：结构保持的评价直觉。中间图像像素位置有偏移但轮廓闭合；右侧只丢失少量关键像素，却造成拓扑断裂。对红外目标检测而言，后者可能更严重。</div>
+  </div>
+
+  <h3 class="section-title">评价指标：从 PSNR 转向边缘结构距离</h3>
+
+  <p>因此，红外边缘图压缩的评价指标应包括像素、几何、拓扑和任务四个层次。像素级可以用 F1 / IoU；几何层可以用 Chamfer Distance 和 Hausdorff Distance；拓扑层应统计连通组件数量变化、endpoint error、junction error、closed contour preservation；任务层则直接看目标检测 mAP、跟踪 MOTA/IDF1 或分割 mIoU。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标层次</th><th>代表指标</th><th>回答的问题</th></tr></thead>
+      <tbody>
+        <tr><td>像素级</td><td>Precision / Recall / F1 / IoU</td><td>重建边缘点和原始边缘点有多少重合？</td></tr>
+        <tr><td>几何级</td><td>Chamfer / Hausdorff distance</td><td>轮廓整体偏移了多远？是否有局部极端错误？</td></tr>
+        <tr><td>拓扑级</td><td>Component count / endpoint / junction error</td><td>连通性、闭合性、分叉结构是否被破坏？</td></tr>
+        <tr><td>任务级</td><td>mAP / MOTA / IDF1 / mIoU</td><td>压缩后还能不能服务下游红外视觉任务？</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 语义图与占用图</div>
+  <div class="ch-title">现代轮廓压缩：Semantic Map Compression 给出的新工具</div>
+
+  <p>近年来，语义分割图、占用图和地图轮廓压缩开始成为独立问题。它们与红外边缘图高度相似：像素取值有限，区域内部常常恒定，重要信息集中在边界。红外边缘图可以看成最简单的二值 semantic map：0 是 background，1 是 edge。若区分弱边缘、强边缘、目标边界和噪声，还可以扩展成多值标签图。</p>
+
+  <h3 class="section-title">CC-SMC：四叉树分块 + 链码</h3>
+
+  <p>Yang 等人在 2024 年提出 Chain coding-based segmentation map lossless compression, CC-SMC，用于语义分割图无损压缩 #Yang-CCSMC-2024#。其基本思想是：先对语义图做 quadtree partitioning，均匀块直接编码标签，含边界的块用链码编码轮廓，再对链码序列做熵编码。这个框架适合同时处理大片均匀区域和复杂边界区域。</p>
+
+  <p>迁移到红外边缘图时，四叉树可以快速跳过大片空白背景；边缘密集块则交给链码。它比全图链码更稳健，因为不要求所有边缘先形成干净闭合轮廓；但四叉树分块也可能截断长轮廓，降低上下文建模效率。</p>
+
+  <h3 class="section-title">ECC：扩展链码与共享边界跳过编码</h3>
+
+  <p>Yang、Liao、Choi、Racapé 和 Bajić 在 2026 年的 <em>Context Adaptive Extended Chain Coding for Semantic Map Compression</em> 中进一步提出 Extended Chain Code, ECC #Yang-ECC-2026#。ECC 扩展了传统 Freeman F8 的符号集，允许用更长距离的轮廓跳转表示平滑或长直边界；同时保留 3OT 作为 fallback，并使用 Markov model-based entropy coding 对符号序列建模。</p>
+
+  <p>该工作还提出 skip-coding 机制：当相邻语义区域共享边界时，只编码一次轮廓，后续区域通过 run-length signaling 跳过重复部分。论文摘要报告，相比 state-of-the-art benchmark，平均码率降低约 18%；相对现代通用无损 codec，编码器运行时间最高减少 98%，解码器最高减少 50% #Yang-ECC-2026#。</p>
+
+  <p>对红外边缘图而言，ECC 的价值在于它更接近“轮廓专用语言”：长直边缘不必逐像素行走，方向上下文可以被 Markov 模型利用，多层等温轮廓或相邻结构也可能受益于共享边界跳过编码。即使最终不直接复现这篇方法，它也是设计现代红外轮廓 codec 的重要参照。</p>
+
+  {{< mermaid >}}
+  graph TD
+    A[红外边缘图 / 二值轮廓图] --> B[空白区域检测]
+    B --> C[四叉树或连通组件划分]
+    C --> D{局部结构类型}
+    D -->|大片背景| E[RLE / skip block]
+    D -->|长直边缘| F[线段几何编码]
+    D -->|平滑曲线| G[差分链码 / ECC]
+    D -->|复杂噪声块| H[JBIG-style generic coding]
+    E --> I[统一熵编码]
+    F --> I
+    G --> I
+    H --> I
+    I --> J[压缩码流]
+  {{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · Coding for Machines</div>
+  <div class="ch-title">如果边缘图是给机器看的，评价目标就应该跟任务绑定</div>
+
+  <p>如果红外边缘图最终用于目标检测、跟踪、识别或态势感知，那么压缩不一定要服务人眼，而应服务机器视觉模型。这就是 Image / Video / Feature Coding for Machines 的基本视角：压缩后的数据只要能让机器完成任务，就不必保留人类视觉意义上的完整图像。</p>
+
+  <h3 class="section-title">SA-ICM：只学习对机器有用的边缘信息</h3>
+
+  <p>Shindo 等人在 ICIP 2024 的 <em>Image Coding for Machines with Edge Information Learning Using Segment Anything</em> 中提出 SA-ICM：用 Segment Anything Model 生成 mask，提取物体边缘信息，然后训练 Learned Image Compression 模型只编码/解码对象边缘 #Shindo-SAICM-2024#。论文摘要明确说，该方法 focuses on encoding and decoding only the edge information of object parts，并展示了其在图像识别任务中的优势，同时因为丢弃人脸纹理等细节而具有隐私保护效果 #Shindo-SAICM-2024#。</p>
+
+  <p>这篇论文虽然面向自然图像，但与红外边缘图压缩有直接概念联系：红外轮廓图本身就是 edge information，因此可以把 SA-ICM 的训练目标改造成“直接压缩红外边缘表示，并以红外检测/跟踪任务性能为约束”。</p>
+
+  <h3 class="section-title">扩散与地图辅助压缩：边缘作为生成条件</h3>
+
+  <p>另一条相关路线是将边缘、深度或地图作为生成式压缩的条件。Morita 等人的 <em>Edge-based Denoising Image Compression</em> 在压缩框架中引入 Edge Estimation Network，从传输 latent 中估计边缘信息，并用边缘条件引导 diffusion denoising，以改善重建图像锐度 #Morita-EdgeDenoising-2024#。Ye 等人的 MAGC 则在遥感极低码率压缩中使用 vector maps 作为语义和结构 guidance，缓解 diffusion 在低码率下的结构幻觉问题 #Ye-MAGC-2024#。</p>
+
+  <p>这些工作提醒我们：边缘图既可以是压缩对象，也可以是辅助条件。如果原始红外图仍有灰度信息，可以考虑“边缘图 + 低频残差”的分层压缩；如果只有边缘图，则可直接把边缘作为主码流，并用任务模型或结构先验约束重建。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 方案建议</div>
+  <div class="ch-title">面向红外轮廓图的三层实验路线</div>
+
+  <h3 class="section-title">第一层：建立强 baseline</h3>
+
+  <p>第一步不应直接设计复杂模型，而应先回答：现成二值压缩标准在当前红外边缘数据上到底能做到什么程度？建议实现或调用 PNG、TIFF CCITT Group 4、JBIG1、JBIG2、packed bitmap + gzip/zstd、RLE + Huffman / arithmetic coding。评价 bpp、compression ratio、编码/解码时间、内存占用和对不同边缘密度的敏感性。</p>
+
+  <h3 class="section-title">第二层：混合式轮廓 codec</h3>
+
+  <p>最适合该任务的中期方案，是一个基于连通组件分析的 hybrid contour codec。流程可以是：红外图或已有边缘图输入，经过二值化、形态学去噪、细化、连通组件分析和轮廓追踪；随后对每个组件做 mode decision：长直轮廓用线段编码，平滑曲线用差分链码或 ECC，短小噪声点按重要性删除或点列表编码，复杂块回退到 JBIG-style generic coding；最后统一熵编码。</p>
+
+  <div class="info-box">
+    <h3>推荐码流结构</h3>
+    <ul>
+      <li>图像尺寸与预处理参数：阈值、细化方式、是否去噪。</li>
+      <li>组件数量与组件起点：支持随机访问和局部解码。</li>
+      <li>组件类型：点、短线、长线、闭合轮廓、分叉结构、复杂块。</li>
+      <li>编码模式：RLE、F8/differential chain code、3OT/ECC、line segment、generic bitmap fallback。</li>
+      <li>可选残差层：用于近无损恢复被折线近似或噪声剪枝造成的误差。</li>
+    </ul>
+  </div>
+
+  <h3 class="section-title">第三层：结构保持近无损或任务驱动压缩</h3>
+
+  <p>如果目标是研究创新，可以进一步做 topology-preserving near-lossless infrared edge map compression。核心是定义结构失真指标，设计基于端点、角点、分叉点、线段和链码的混合表示，并用连通性约束控制压缩误差。若存在下游红外检测/跟踪标签，则可以转向 task-aware compression：在码率约束下最小化边缘结构误差和任务损失，而不再执着于逐像素无损。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>阶段</th><th>目标</th><th>方法</th><th>预期产出</th></tr></thead>
+      <tbody>
+        <tr><td>Baseline</td><td>弄清现成方法上限</td><td>G4 / JBIG / JBIG2 / RLE / PNG</td><td>码率、速度、边缘密度敏感性曲线</td></tr>
+        <tr><td>Contour Codec</td><td>针对轮廓结构提效</td><td>连通组件 + 链码 + 线段 + fallback</td><td>强工程算法与可解释码流</td></tr>
+        <tr><td>Structure-aware</td><td>极低码率下保持拓扑</td><td>关键点 / MRF / graph reconstruction</td><td>近无损结构压缩论文方向</td></tr>
+        <tr><td>Task-aware</td><td>服务检测/跟踪任务</td><td>rate + structure loss + task loss</td><td>Coding for Machines 红外压缩方向</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>最终建议：</strong>短期用 G4、JBIG1、JBIG2 和 RLE 建立强 baseline；中期做“空白跳过 + 线段 + 差分链码/ECC + generic fallback”的混合轮廓 codec；长期若要形成论文创新，应围绕拓扑保持近无损压缩或下游任务驱动红外边缘压缩展开。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References · 参考来源</div>
+  <div class="ch-title">文献与标准索引</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="ITU-T-T6">ITU-T Recommendation T.6. <em>Facsimile coding schemes and coding control functions for Group 4 facsimile apparatus</em>. <a href="https://www.itu.int/rec/T-REC-T.6" target="_blank">ITU-T</a></li>
+      <li data-cite-key="LOC-G4">Library of Congress. <em>TIFF, Group 4 Compression</em>. <a href="https://www.loc.gov/preservation/digital/formats/fdd/fdd000136.shtml" target="_blank">Format Description</a></li>
+      <li data-cite-key="ITU-T-T82">ITU-T Recommendation T.82 / ISO/IEC 11544. <em>Progressive bi-level image compression</em>. <a href="https://www.itu.int/rec/T-REC-T.82" target="_blank">ITU-T</a></li>
+      <li data-cite-key="JBIG-KIT">Kuhn, M. G. <em>JBIG-KIT lossless image compression library</em>. <a href="https://www.cl.cam.ac.uk/~mgk25/jbigkit" target="_blank">Project page</a></li>
+      <li data-cite-key="ITU-T-T88">ITU-T Recommendation T.88 / ISO/IEC 14492. <em>Lossy/lossless coding of bi-level images</em>. <a href="https://www.itu.int/rec/dologin_pub.asp?lang=e&amp;id=T-REC-T.88-200002-S!!PDF-E&amp;type=items" target="_blank">ITU-T</a></li>
+      <li data-cite-key="jbig2enc">zdenop. <em>jbig2enc: JBIG2 Encoder</em>. <a href="https://github.com/zdenop/jbig2enc" target="_blank">GitHub</a></li>
+      <li data-cite-key="Freeman-1961">Freeman, H. (1961). <em>Techniques for the computer description of arbitrary planar curves</em>. AFIPS Spring Joint Computer Conference. DOI: 10.1145/1460690.1460726.</li>
+      <li data-cite-key="Bribiesca-1999">Bribiesca, E. (1999/2000). <em>A chain code for representing 3D curves</em>. Pattern Recognition. DOI: 10.1016/S0031-3203(99)00056-X.</li>
+      <li data-cite-key="Gerogiannis-2015">Gerogiannis, D., Nikou, C., &amp; Kondi, D. (2015). <em>Shape Encoding for Edge Map Image Compression</em>. IEEE ICIP 2015. DOI: 10.1109/ICIP.2015.7350844. <a href="https://www.cse.uoi.gr/~cnikou/Publications/C055_icip-Quebec%20City-2015.pdf" target="_blank">PDF</a></li>
+      <li data-cite-key="Reyes-Pappas-2008">Reyes, M. G., Zhao, X., Neuhoff, D. L., &amp; Pappas, T. N. (2008). <em>Structure-preserving properties of bilevel image compression</em>. HVEI / ICIP line of work. <a href="https://users.eecs.northwestern.edu/~pappas/papers/reyes_hvei08.pdf" target="_blank">PDF</a></li>
+      <li data-cite-key="Yang-CCSMC-2024">Yang et al. (2024). <em>Chain coding-based segmentation map lossless compression</em>. Journal of Visual Communication and Image Representation, 103, 104222. DOI: 10.1016/j.jvcir.2024.104222.</li>
+      <li data-cite-key="Yang-ECC-2026">Yang, R., Liao, J., Choi, H., Racapé, F., &amp; Bajić, I. V. (2026). <em>Context Adaptive Extended Chain Coding for Semantic Map Compression</em>. arXiv:2603.03073. <a href="https://arxiv.org/html/2603.03073v2" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="Shindo-SAICM-2024">Shindo, T. et al. (2024). <em>Image Coding for Machines with Edge Information Learning Using Segment Anything</em>. ICIP 2024 / arXiv:2403.04173. <a href="https://arxiv.org/html/2403.04173" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="Morita-EdgeDenoising-2024">Morita, R. et al. (2024). <em>Edge-based Denoising Image Compression</em>. arXiv:2409.10978. <a href="https://arxiv.org/html/2409.10978v1" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="Ye-MAGC-2024">Ye, Y., Wang, C., Sun, W., &amp; Chen, Z. (2024). <em>Map-Assisted Remote-Sensing Image Compression at Extremely Low Bitrates</em>. arXiv:2409.01935. <a href="https://arxiv.org/html/2409.01935v1" target="_blank">arXiv HTML</a></li>
+      <li data-cite-key="Sun-EdgeSurvey-2022">Sun, R. et al. (2022). <em>Survey of Image Edge Detection</em>. Frontiers in Signal Processing. DOI: 10.3389/frsip.2022.826967. <a href="https://www.frontiersin.org/journals/signal-processing/articles/10.3389/frsip.2022.826967/full" target="_blank">Full text</a></li>
+      <li data-cite-key="Awesome-VCM">lingyzhu0101. <em>Awesome VCM: Paper List of Visual Data Compression for Machines</em>. <a href="https://github.com/lingyzhu0101/Awesome_VCM" target="_blank">GitHub</a></li>
+    </ul>
+  </div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="image-compression-hub.html"><span class="nav-label">图像压缩专题</span><span class="nav-title">返回系列总览</span></a>
+  <a class="nav-card current" href="edge-image-compression-survey.html"><span class="nav-label">当前文章</span><span class="nav-title">边缘图像压缩调研</span></a>
+  <a class="nav-card" href="sa-icm-2024.html"><span class="nav-label">下一篇</span><span class="nav-title">SA-ICM 深度解读</span></a>
+</div>
