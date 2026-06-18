@@ -1,280 +1,446 @@
 ---
-title: "unils-2024"
-description: ""
-date: 2026-06-18T11:10:14
+title: "数字人论文精读（二十六）：UniLS，首个端到端音频驱动的统一说-听数字人"
+description: "深度解读 CVPR 2026 论文 UniLS：通过两阶段训练范式（无音频先验学习 + 双轨音频微调）解决 listening stiffness 问题，首次实现纯音频驱动的端到端统一说-听面部动画生成，论文报告听者分布指标提升达 44.1%（F-FID 单项从 13.143 降至 4.304，降幅 67.3%），实时推理达 560.6 FPS。"
 created_at: 2026-06-18T11:10:14
-updated_at: 2026-06-18T11:10:14
-tags: []
-categories: []
-notify: true
+updated_at: 2026-06-18T11:28:00
+tags: ["数字人", "UniLS", "talking face", "listening stiffness", "CVPR 2026", "two-stage training"]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1240
+hub: digital-human-hub
+mathjax: true
 ---
-<!-- ============================================================
-  本模板展示所有构建系统支持的语法。
-  详细规范参见 ~/.hanako/skills/html-blog/references/
-  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
-  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
-  ============================================================ -->
 
-<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
-<div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+<!-- 系列导读 -->
+<div class="series-nav">
+  <p><strong>← 上一篇</strong>：<a href="flow-guided-talking-2021.html">Flow-Guided One-Shot Talking Face（CVPR 2021）</a>——用稠密光流替代稀疏关键点的突破。</p>
+  <p><strong>本篇定位</strong>：数字人论文精读第二十六篇。如果说 Flow-Guided 解决了"从稀疏到稠密"的运动表示问题，那么 UniLS 则解决了一个更根本的挑战：<strong>如何让数字人在倾听时也自然地"动"起来</strong>。论文揭示了 audio-motion correlation imbalance 这一根因，并通过两阶段训练范式首次实现了纯音频驱动的端到端统一说-听生成。</p>
 </div>
 
-<!-- ============================================================
-  章节容器
-  ============================================================ -->
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num b">67.3%</span><span class="label g">听者 F-FID 提升</span></div>
+  <div class="stat"><span class="num">560.6</span><span class="label">FPS 实时推理</span></div>
+  <div class="stat"><span class="num">421.3M</span><span class="label">模型参数量</span></div>
+  <div class="stat"><span class="num b">40h</span><span class="label l">GPU 训练时长</span></div>
+</div>
 
-<!-- 章节叙事（.ch）— .ch-title 自动加入 TOC -->
-<!-- <p> 标签可选：裸文本行在构建时自动补 <p> -->
+<!-- Part 0: 前置知识与术语表 -->
 <div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <div class="ch-label">前置知识</div>
+  <div class="ch-title">阅读本章前你需要了解的概念</div>
 
-  正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。
+  <h3 class="section-title">P1: 对话式数字人（Speaking vs Listening）</h3>
+  <p>对话式数字人需要在双人对话场景中同时具备两种能力：<strong>speaking</strong>（根据自身语音生成匹配的唇形和表情）和 <strong>listening</strong>（在对方说话时生成自然的倾听反应——眨眼、微点头、眼神跟随）。传统方法只做了 speaking，完全忽略了 listening。真人在倾听时并非静止不动：平均每 3-4 秒眨眼一次，偶尔微微点头，嘴角有细微表情变化。如果数字人在倾听时变成"扑克脸"，交互体验将极不自然。</p>
 
-  这是一段包含 ==高亮文字== 的正文。
+  <h3 class="section-title">P2: FLAME 3D 人脸参数化模型</h3>
+  <p>FLAME 是语音驱动面部动画的事实标准表示，将人脸分解为三组低维参数：<strong>形状参数 β</strong>（身份特征，固定不变）、<strong>表情参数 ψ</strong>（50 维，动态表情）、<strong>姿态参数 θ</strong>（头部旋转、下颌开合、眼球注视）。通过这组参数可重建 5,023 个顶点的 3D 人脸网格。UniLS 的所有面部运动生成都在 FLAME 参数空间（ψ + θ）中进行。</p>
 
-  <!-- Markdown 加粗/斜体也支持（HTML 源文件中） -->
-  <!-- **加粗** → <strong> / *斜体* → <em> -->
+  <h3 class="section-title">P3: wav2vec 2.0 音频特征</h3>
+  <p>wav2vec 2.0（Meta AI, NeurIPS 2020）通过掩码预测自监督预训练，学到了一套强大的通用语音表示。UniLS 使用冻结的 wav2vec2-xls-r-300m 编码器将双轨音频转换为特征序列，作为 Stage 2 中 dual cross-attention 的条件输入。wav2vec 特征同时也是论文核心动机分析（audio-motion correlation t-SNE 可视化）的基础工具。</p>
 
-  <!-- 图片 — 放在所讲解段落之后，不要堆在文件末尾 -->
+  <h3 class="section-title">P4: 自回归 Transformer 与 Chunk-based 生成</h3>
+  <p>自回归 Transformer 按时间顺序逐步预测下一个时间步的输出，每一步以之前所有内容作为条件。UniLS 采用 <strong>chunk-based</strong> 设计：每次预测一整块 100 帧（4 秒）的运动，而非逐帧预测。一段 60 秒的视频只需 15 步而非 1500 步，大幅减少误差累积并提升推理效率（560.6 FPS）。代价是 chunk 边界处可能出现微妙不连续。</p>
+
+  <h3 class="section-title">P5: VQ-VAE 与 Multi-scale Codec</h3>
+  <p>VQ-VAE 将连续数据编码为离散码本索引（如 256 entries × 64 dim），实现运动离散化。UniLS 的 Multi-scale VQ Codec 在 5 个时间尺度 [1, 5, 25, 50, 100] 上逐级残差量化：粗尺度捕获全局运动趋势（头部转动），细尺度捕获局部细节（唇形变化），每一级只编码前一级未能表达的额外信息。</p>
+</div>
+
+<!-- Part 1: 引言 -->
+<div class="ch fade-in">
+  <div class="ch-label">第一部分</div>
+  <div class="ch-title">为什么需要统一的说-听生成？</div>
+
+  <p>对话式数字人正在成为人机交互的核心界面。虚拟助手需要在用户发言时展现自然的倾听姿态；视频会议中的 3D 化身需要在说与听之间无缝切换；游戏 NPC 的交互真实感直接决定了用户沉浸体验。这些场景的共同需求是：<strong>数字人必须同时具备说话和倾听两种能力</strong>。</p>
+
+  <p>然而，现有研究长期停留在单向生成。FaceFormer（CVPR 2022）、CodeTalker（CVPR 2023）、ARTalk（SIGGRAPH Asia 2025）仅关注 speaking；Learning2Listen（CVPR 2022）、DIM（ECCV 2024）仅建模 listening。这种"单向性"意味着实际部署时需要拼接两套独立模型，无法保证角色在说-听转换时的时序连贯性。</p>
+
+  <p><strong>DualTalk</strong>（Peng et al., CVPR 2025）是首个尝试统一 speak-listen 的框架，但存在架构层面的根本缺陷：<strong>它不是端到端的</strong>。DualTalk 需要先获取或预生成 speaker-A 的面部运动序列，再以此为条件生成 speaker-B 的运动。这带来了三重问题：(1) 无法实时部署（FPS = N/A）；(2) 误差从 speaker-A 级联传导到 speaker-B；(3) 在纯音频驱动的交互场景中根本无法提供所需的视觉输入。</p>
+
+  <p>那么，直接做端到端联合训练行不行？<strong>这恰恰触发了本文要解决的核心问题——listening stiffness（听者僵硬）</strong>。当以端到端方式联合训练时，模型在 speaking 分支上能快速学到强 audio-motion 映射，但在 listening 分支上，由于缺乏足够的音频指导信号，模型退化为安全的、低方差的静态面部——缺乏眨眼、微表情和头部运动的"扑克脸"。</p>
+
   <div class="photo">
-    <img src="media/images/sengoku-japan/nobunaga.jpg" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
+    <img src="media/images/unils-2024/teaser-v2.webp" alt="UniLS 与已有方法的对比" loading="lazy">
+    <div class="cap">图 1：UniLS 与已有方法的对比。不同于 DualTalk 的非端到端设计和 ARTalk* 的纯说话模式，UniLS 首次实现纯双轨音频驱动的端到端统一说-听生成。（来源：#Chu-et-al.-2026# Fig.1）</div>
   </div>
 
-  <div class="callout"><strong>提示</strong>：提示框内容。</div>
+  <p>UniLS 的核心贡献是：<strong>首个端到端音频驱动的统一 speak-listen 生成框架</strong>，仅凭双轨音频即可同时生成双方的说-听运动。通过两阶段训练范式，听者 F-FID 提升 67.3%（13.143 → 4.304），实时推理达 560.6 FPS，完整开源代码、模型和数据集。</p>
+</div>
 
-  <div class="info-box">
-    <h3>信息框标题</h3>
-    信息框内容。标题不加入 TOC。
-  </div>
+<!-- Part 2: 问题剖析 -->
+<div class="ch fade-in">
+  <div class="ch-label">第二部分</div>
+  <div class="ch-title">为什么听者表情会僵硬？</div>
 
-  <div class="def-box">
-    <h3>定义框</h3>
-    放定义、符号、直觉解释。
-  </div>
-  <div class="theorem-box">
-    <h3>定理框</h3>
-    放命题、定理、推论和判定条件。
-  </div>
-  <div class="example-box">
-    <h3>例题框</h3>
-    <strong>题目：</strong>示例题目。
-    <strong>答案：</strong>示例答案。
-    <div class="callout"><strong>易错点</strong>：示例提醒。</div>
-  </div>
-  <div class="review-box">
-    <h3>复习速查</h3>
-    <ul>
-      <li><strong>定义</strong>：一行回忆核心概念。</li>
-      <li><strong>公式</strong>：列最重要的结论。</li>
-    </ul>
-  </div>
-  <div class="chapter-nav">
-    <a class="nav-card" href="prev.html"><span class="nav-label">上一章</span><span class="nav-title">上一章标题</span></a>
-    <a class="nav-card current" href="hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">枢纽页标题</span></a>
-    <a class="nav-card" href="next.html"><span class="nav-label">下一章</span><span class="nav-title">下一章标题</span></a>
+  <p>论文通过一项关键的定量分析揭示了 listening stiffness 的根本原因：<strong>audio-motion correlation imbalance（音频-运动关联不平衡）</strong>。</p>
+
+  <p>分析方法：使用 wav2vec 2.0 提取音频特征，使用 FLAME 提取表情参数，对 speaking 和 listening 场景分别计算 t-SNE 联合分布可视化（Figure 2）。结果呈现出清晰的不对称模式：</p>
+
+  <ul>
+    <li><strong>Speaking 场景</strong>：音频特征和运动嵌入紧密聚集，成对距离小且一致。音素与唇形有明确对应，韵律与头部运动也有统计显著相关——speaking motion 的信息大部分可从 audio 中恢复（高互信息）。</li>
+    <li><strong>Listening 场景</strong>：运动嵌入分散在远离音频特征的区域，分布松散。大量听者行为（自发眨眼、微表情）与对方语音几乎无关——listening motion 的信息主要来自 internal prior（低互信息）。</li>
+  </ul>
+
+  <p>这一发现的深层含义是：<strong>speaking 是良定义的（well-posed）audio-to-motion 映射，而 listening 是病态的（ill-posed）映射</strong>。当模型用同一个 loss 同时优化两个分支时，梯度主要由 speaking 分支主导（loss 下降更快、信号更强），listening 分支被"淹没"，最终收敛到最小化风险的平凡解——静止面部。</p>
+
+  <div class="photo">
+    <img src="media/images/unils-2024/correlation.webp" alt="Audio-motion correlation t-SNE 可视化" loading="lazy">
+    <div class="cap">图 2：Audio-motion correlation 的 t-SNE 可视化。Speaking 场景（左）中音频特征与运动嵌入紧密对齐；Listening 场景（右）中运动嵌入远离对应音频特征，分布松散。（来源：#Chu-et-al.-2026# Fig.2）</div>
   </div>
 
-  <blockquote>
-    引用内容。
-    <em>— 来源</em>
-  </blockquote>
+  <p>基于此分析，论文提出关键洞察：<strong>listening behavior 不应被学习为直接的 audio-to-motion 映射，而应被重新理解为两个分量的组合</strong>：</p>
+
+  $$\text{Listening Behavior} = \underbrace{\text{Internal Motion Prior}}_{\text{主体成分}} + \underbrace{\text{Weak Audio Modulation}}_{\text{辅助成分}}$$
+
+  <p>其中 <strong>Internal Motion Prior</strong>（内部运动先验）是人在没有外部语音刺激时的自然动态模式——自发眨眼、微表情、头部微动等；<strong>Weak Audio Modulation</strong>（弱音频调制）是对方语音对听者行为的微弱影响——在对方语气加重时微微点头、在停顿时更大概率眨眼等。</p>
+
+  <p>这一洞察直接导出了 UniLS 的方法设计：<strong>将内部运动先验的学习与音频调制分离到两个训练阶段</strong>。Stage 1 在无音频条件下训练，专门学习 internal motion prior；Stage 2 在此基础上引入双轨音频进行微调。这样，listening 分支不再需要从零学习一个 ill-posed 的映射，而是在已有的高质量 motion prior 基础上叠加微弱调制——这正是自然倾听行为的真实构成方式。</p>
+
+  <p>消融实验提供了决定性证据：去掉 Stage 1 后，listening FDD 从 17.12 退化到 25.64（+49.8%），F-FID 从 4.30 退化到 5.97（+38.8%）。补充材料显示，即使完全没有音频，Stage 1 的 audio-free generator 仍能产生 FDD=21.83（listen）的动态变化，证明内部运动先验确实被有效学习了。</p>
+</div>
+
+<!-- Part 3: 方法架构 -->
+<div class="ch fade-in">
+  <div class="ch-label">第三部分</div>
+  <div class="ch-title">UniLS 如何统一说-听生成</div>
+
+  <h3 class="section-title">3.0 整体 Pipeline 概览</h3>
+
+  <p>UniLS 的核心是一个 <strong>two-stage training paradigm</strong>。整个系统从原始视频到最终输出的数据流如下：</p>
+
+  {{< mermaid >}}
+graph TD
+    subgraph S1["Stage 1: Audio-free Generator"]
+        V1["Multi-scenario Videos<br/>(546.5h)"] --> FT1["FLAME Tracker"]
+        V2["Conversational Data<br/>(622.5h, audio ignored)"] --> FT1
+        FT1 --> MC1["Motion Chunking<br/>M ∈ R^{T×D}, T=100"]
+        MC1 --> SE1["Style Embedding s"]
+        MC1 --> Codec["Multi-scale VQ Codec<br/>levels=[1,5,25,50,100]<br/>codebook: 256×64"]
+        Codec --> AR1["AR Transformer G<br/>(self-attention only)"]
+        SE1 --> AR1
+        AR1 --> L1["L1 Reconstruction Loss"]
+        L1 --> Result1["✅ Internal Motion Prior<br/>(blinking, micro-expressions,<br/>head dynamics)"]
+    end
+
+    Result1 -->|"Pretrained weights"| AR2
+
+    subgraph S2["Stage 2: Audio-driven Finetuning"]
+        CD["Conversational Data<br/>(Seamless Interaction)"] --> FT2["FLAME Tracker"]
+        CD --> W2V["Frozen wav2vec 2.0"]
+        FT2 --> MC2["Motion Chunks M + Style s"]
+        W2V --> DA["Dual Audio Features<br/>a^A, a^B"]
+        MC2 --> AR2["AR Transformer G<br/>+ Dual Cross-Attention<br/>+ LoRA fine-tuning"]
+        DA --> CA_A["Cross-Attn Track A ← a^A"]
+        DA --> CA_B["Cross-Attn Track B ← a^B"]
+        CA_A --> AR2
+        CA_B --> AR2
+        AR2 --> L2["L1 Reconstruction Loss"]
+        L2 --> Result2["✅ Unified Speak-Listen Generator<br/>560.6 FPS real-time"]
+    end
+
+    classDef stage1 fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef stage2 fill:#fce4ec,stroke:#c62828,stroke-width:2px
+    classDef result fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    class S1 stage1
+    class S2 stage2
+    class Result1,Result2 result
+  {{< /mermaid >}}
+
+  <div class="photo">
+    <img src="media/images/unils-2024/overview-v2.webp" alt="UniLS two-stage training pipeline" loading="lazy">
+    <div class="cap">图 3：UniLS 两阶段训练管线。Stage 1 在无音频条件下学习内部运动先验；Stage 2 通过 dual cross-attention 和 LoRA 注入双轨音频条件化。（来源：#Chu-et-al.-2026# Fig.3）</div>
+  </div>
+
+  <h3 class="section-title">3.1 Stage 1: Audio-free Generator — 学习内部运动先验</h3>
+
+  <p><strong>Motivation</strong>：listening motion 与对方语音的互信息极低，直接的 audio-to-motion 映射是 ill-posed 的。但 listening behavior 的主体成分并不是由音频驱动的——真人在倾听时的眨眼、微表情主要由自身内部运动模式决定。如果能在无音频条件下先学会"人脸在没有外部刺激时应该怎么自然地动"，就等价于学会了 listening behavior 的主体部分。</p>
+
+  <p><strong>Intuition</strong>：就像教演员表演"倾听"。直接让演员听对手台词来练习反应（端到端训练），演员会因找不到明确的"台词→反应"对应关系而僵住。更好的方法是：先在没有台词的环境下练习自然的肢体语言（Stage 1），建立扎实的身体语言基础；然后再加入台词，学会根据对方语气微调动作（Stage 2）。</p>
+
+  <p><strong>Mechanism</strong>：给定历史运动序列 $M_{1:t}$ 和风格嵌入 $\mathbf{s}$，生成器预测下一个 chunk：</p>
+
+  $$\hat{M}_{t:2t} = \mathcal{G}(M_{1:t}, \mathbf{s})$$
+
+  <p>其中 $M_{1:t} \in \mathbb{R}^{t \times D}$ 是历史运动序列（每个 chunk 包含 $T=100$ 帧的 FLAME 参数 $\psi + \theta$），$\mathbf{s}$ 是 speaker-specific 的 style embedding（继承自 ARTalk），$\hat{M}_{t:2t}$ 是预测的下一个 chunk。</p>
+
+  <p>生成器 $\mathcal{G}$ 是基于 Transformer 的自回归模型（8 层 self-attention + FFN，hidden dim 512，8 heads），Stage 1 中<strong>没有 cross-attention 层</strong>。训练数据包括 546.5 小时多场景非对话视频（CelebV、TalkingHead-1KH、TEDTalk、VFHQ）+ 622.5 小时对话数据（音频被忽略）。补充材料中 free-running 评估显示，即使完全没有音频，模型仍能产生 FDD=21.83（listen）的动态变化。</p>
+
+  <h3 class="section-title">3.2 Stage 2: Audio-driven Finetuning — 注入双轨音频调制</h3>
+
+  <p><strong>Motivation</strong>：一个朴素做法是将两路音频混合后通过单个 cross-attention 注入。但消融实验给出了毁灭性的否定：使用 single cross-attention + 混合音频导致 LVE 从 5.83 飙升到 11.48（+96.9%），MHD 从 1.89 到 3.00（+58.7%）。混合音频使模型无法区分哪些声学特征来自说话人（应驱动唇形同步）、哪些来自听话人（应仅做微弱调制）。</p>
+
+  <p><strong>Intuition</strong>：UniLS 为两路音频分配了各自独立的 cross-attention 通道——Track A attend to speaker-A 音频（驱动 speaking），Track B attend to speaker-B 音频（驱动 listening）。两条 track 拥有独立的可学习投影矩阵，模型可以为 speaking 和 listening 学到完全不同的 attention pattern。</p>
+
+  <p><strong>Mechanism</strong>：Stage 2 的生成过程形式化为：</p>
+
+  $$\hat{M}_{t:2t} = \mathcal{G}(M_{1:t}, \mathbf{a}^A_{1:t}, \mathbf{a}^B_{1:t}, \mathbf{s})$$
+
+  <p>在每个 Transformer block 中，除了标准 self-attention，还增加了两个 cross-attention 层：</p>
+
+  $$\text{CA}_A(h, \mathbf{a}^A) = \text{softmax}\left(\frac{(h W_Q)(\mathbf{a}^A W_K)^T}{\sqrt{d}}\right) (\mathbf{a}^A W_V)$$
+
+  $$\text{CA}_B(h, \mathbf{a}^B) = \text{softmax}\left(\frac{(h W_Q')(\mathbf{a}^B W_K')^T}{\sqrt{d}}\right) (\mathbf{a}^B W_V')$$
+
+  <p><strong>LoRA 微调策略</strong>：Stage 2 中，新增的 cross-attention 层从头训练，而 Stage 1 继承的 backbone 权重仅通过 LoRA 微调（rank=32, alpha=32, dropout=0.1）。低秩约束限制了参数更新幅度，防止 audio-driven loss 覆盖已学到的 internal motion prior（catastrophic forgetting）。代码显示 LoRA 不仅应用于 self-attention，还应用于 FFN、code_token_embed、logits_head 和 sos_embed。</p>
+
+  <p><strong>对称性设计</strong>：生成 speaker-A 运动时，$\mathbf{a}^A$ 作为 Track A（speaking drive），$\mathbf{a}^B$ 作为 Track B（listening drive）。生成 speaker-B 运动时，只需交换两路音频角色。同一模型通过输入交换生成任一方运动，无需训练两个独立模型。</p>
+
+  <h3 class="section-title">3.3 Multi-scale VQ Codec — 层次化离散运动表示</h3>
+
+  <p>传统的单尺度 VQ 面临根本 trade-off：码本大小有限（256 entries），如果时间分辨率高则难以捕获长程模式，如果分辨率低则丢失高频细节。Multi-scale codec 通过<strong>逐级残差量化</strong>巧妙解决：粗尺度用少量码字覆盖大范围时序模式，细尺度只编码局部偏差。</p>
+
+  $$\begin{aligned}
+  \mathbf{c}^{(l+1)} &= \text{Interp}(\text{Quant}(\mathbf{f}^{(l)}), k_l), \\
+  \mathbf{f}^{(l+1)} &= \mathbf{f}^{(l)} - \mathbf{c}^{(l+1)}.
+  \end{aligned}$$
+
+  <p>配置：codebook 256 entries × 64 dim，multi-scale levels [1, 5, 25, 50, 100]，time window 100 frames。解码时将所有尺度的码累加并通过 Transformer decoder 重建运动。</p>
+
+  <h3 class="section-title">3.4 训练损失函数</h3>
+
+  <p>生成器训练使用 chunk-wise 自回归重建损失：</p>
+
+  $$\mathcal{L} = \sum_{t=1}^{T} \| \hat{M}_{t:2t} - M_{t:2t} \|$$
+
+  <p>为什么选择 L1 而非 L2？(1) L1 对异常值更鲁棒，面部运动中的快速变化（突然张嘴、快速眨眼）在 L2 下会产生过大梯度导致过度平滑；(2) L1 产生更锐利的预测，L2 倾向于预测均值导致模糊；(3) L2 会加剧 listening stiffness——在 listening 场景中 audio-motion 关联弱，L2 的条件均值估计更容易退化为零方差常数预测。</p>
+
+  <p>值得注意的是，<strong>没有额外的 audio-alignment loss</strong>（如 lip-sync loss 或 adversarial loss）。模型完全依靠 dual cross-attention 的结构设计和 two-stage 训练策略来实现 audio-motion alignment。</p>
+</div>
+
+<!-- Part 4: Training Pipeline -->
+<div class="ch fade-in">
+  <div class="ch-label">第四部分</div>
+  <div class="ch-title">如何训练 UniLS</div>
+
+  <h3 class="section-title">训练配置</h3>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>表头1</th><th>表头2</th><th>表头3</th></tr></thead>
+      <thead><tr><th>配置项</th><th>Codec</th><th>FreeGen (Stage 1)</th><th>LoRAGen (Stage 2)</th><th>披露状态</th></tr></thead>
       <tbody>
-        <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+        <tr><td>Optimizer</td><td>AdamW</td><td>AdamW</td><td>AdamW</td><td>论文披露</td></tr>
+        <tr><td>Learning Rate</td><td>1.0e-4</td><td>1.0e-4</td><td>1.0e-4</td><td>论文披露</td></tr>
+        <tr><td>LR Schedule</td><td>Linear warmup (0.1→1.0, 1K iter) + Linear decay (1.0→0.1)</td><td>同</td><td>同</td><td>代码补全</td></tr>
+        <tr><td>Batch Size</td><td>64</td><td>128</td><td>128</td><td>论文披露</td></tr>
+        <tr><td>Iterations</td><td>200K</td><td>600K</td><td>400K</td><td>代码补全（论文声称 generator 合计 200K，实际 1000K）</td></tr>
+        <tr><td>EMA</td><td>—</td><td>decay=0.9999</td><td>decay=0.9999</td><td>代码补全</td></tr>
+        <tr><td>GPUs</td><td colspan="3">4× NVIDIA H200</td><td>论文披露</td></tr>
+        <tr><td>GPU Hours</td><td>—</td><td>~10h</td><td>~30h</td><td>论文披露</td></tr>
+        <tr><td>Audio Encoder</td><td colspan="3">Frozen wav2vec2-xls-r-300m (output dim=1024)</td><td>代码补全</td></tr>
       </tbody>
     </table>
   </div>
 
+  <h3 class="section-title">数据集</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>用途</th><th>规模</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Seamless Interaction</td><td>对话数据（train/val/test）</td><td>657.5h (622.5/4.8/30.2h)</td><td>Meta 发布，含 4000+ 参与者；listening motions 406h (36.5M frames) &gt; speaking 251.5h (22.6M frames)</td></tr>
+        <tr><td>CelebV + TalkingHead-1KH + TEDTalk + VFHQ</td><td>多场景非对话数据（Stage 1）</td><td>546.5h</td><td>新闻播报、访谈、直播等多样化场景，增强 motion prior 泛化性</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">代码揭示的论文未明确细节</h3>
+
+  <p>代码分析揭示了几个论文正文未明确说明的关键设计选择：</p>
+
+  <p><strong>量化方案偏差</strong>：论文描述为标准 VQ（256 entries），代码实际使用 <strong>Binary Spherical Quantization (BSQ)</strong>，32 维二值球面量化，有效码本大小 2^32 ≈ 4.3 billion，远超标准 VQ 的 256。BSQ 使用 straight-through estimator 进行梯度传播，包含 entropy penalty。这可能是论文写作时的简化描述，或从早期版本演进后未同步更新文字。</p>
+
+  <p><strong>训练迭代数不一致</strong>：论文声称 generator 总共 200K iterations，代码配置为 1,000K（600K freegen + 400K loragen）。可能论文报告的是早期实验配置，最终提交版本使用了更长的训练。</p>
+
+  <p><strong>Generator loss 实际为 CE</strong>：论文 Eq.3 写 L1 重建损失，但代码中 generator（freegen 和 loragen）实际使用 <strong>Cross-Entropy Loss</strong> 对离散 BSQ bits 进行预测（$F.cross\_entropy(pred\_motion\_logits, gt\_motion\_bits)$）。这是因为 generator 在离散码空间操作，预测的是 BSQ bit 的概率分布，而非直接回归连续运动参数。只有 codec 训练使用了 L1 loss。</p>
+
+  <p><strong>Codec loss 更丰富</strong>：实际 codec loss 包括 VQ loss (1.0) + expression L1 (1.0) + pose L1 (8.0) + head velocity MSE (5.0) + head smoothness MSE (0.5) + mesh L2 (2.0) + lips L2 (0.1)。head velocity 和 head smoothness loss 在论文正文中完全没有提及。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      论文与代码的不一致
+    </div>
+    <div class="admonition-content">
+      <p>代码分析揭示了三处重要的论文-代码不一致：(1) 量化方案：论文写标准 VQ (256 entries)，代码用 BSQ (32-dim binary)；(2) 训练迭代数：论文写 200K，代码为 1000K；(3) Generator loss：论文写 L1，代码为 CE。复现者应以代码为准，论文文字描述可能存在简化或过时。</p>
+    </div>
+  </div>
+</div>
+
+<!-- Part 5: Inference Pipeline -->
+<div class="ch fade-in">
+  <div class="ch-label">第五部分</div>
+  <div class="ch-title">如何在线跑起来</div>
+
+  <h3 class="section-title">推理流程</h3>
+
+  <p>UniLS 的推理流程是一个 chunk-level 的自回归生成过程：</p>
+
   <ol>
-    <li>第一项</li>
-    <li>第二项</li>
+    <li><strong>初始化</strong>：如果未提供初始运动 chunk，使用全零 tensor；如果未提供 style embedding，也使用全零</li>
+    <li><strong>音频切分</strong>：双轨音频按 chunk 对齐切分，每个 chunk 对应 100 帧运动</li>
+    <li><strong>Classifier-Free Guidance (CFG)</strong>：batch 翻倍，一半用真实条件，一半用零条件，CFG scale 默认 1.5</li>
+    <li><strong>Temperature scaling</strong>：logits 除以 tau（默认 1.0）</li>
+    <li><strong>Top-p sampling</strong>：top_p=0.97，nucleus sampling</li>
+    <li><strong>Chunk-based autoregressive</strong>：逐 chunk 生成，每个 chunk 内部按多尺度逐级预测（从粗到细）</li>
+    <li><strong>解码</strong>：将离散码通过 Multi-scale VQ Codec 解码为 FLAME 参数序列</li>
   </ol>
-  <ul>
-    <li>列表项</li>
-  </ul>
 
-  <ul>
-    <li><strong>术语一</strong> :: 这是定义说明</li>
-    <li><em>带强调的术语</em> :: 定义内容</li>
-  </ul>
+  <h3 class="section-title">实时性能</h3>
 
-  <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-  </code></pre>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>Real-time</th><th>FPS↑</th><th>GFLOPS</th><th>#Params</th></tr></thead>
+      <tbody>
+        <tr><td>ARTalk*</td><td>Yes</td><td>357.7</td><td>720.7</td><td>489.5M</td></tr>
+        <tr><td>DualTalk</td><td>No</td><td>N/A</td><td>348.1</td><td>647.3M</td></tr>
+        <tr><td><strong>UniLS (ours)</strong></td><td><strong>Yes</strong></td><td><strong>560.6</strong></td><td><strong>739.4</strong></td><td><strong>421.3M</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>UniLS 以 560.6 FPS 的推理速度位居首位，比 ARTalk*（357.7 FPS）快 56.7%，同时参数量仅 421.3M（三者中最小）。远超实时需求（25-30 FPS）的性能余量意味着可以嵌入消费级硬件或边缘设备。DualTalk 因非端到端设计完全不支持实时推理（FPS = N/A），尽管其 GFLOPS（348.1）看似最低，但这仅反映单次前向传播，未计入多阶段串行推理的实际延迟。</p>
+
+  <div class="photo">
+    <img src="media/images/unils-2024/us_screenshot.webp" alt="UniLS 系统实时交互截图" loading="lazy">
+    <div class="cap">图 4：UniLS 系统实时交互截图。系统在单卡 RTX 5090 上以 560.6 FPS 运行，支持真正的实时双人对话面部动画生成。（来源：#Chu-et-al.-2026# Fig.6）</div>
+  </div>
 </div>
 
-<!-- ============================================================
-  数学公式 — 需要 frontmatter mathjax: true
-  ============================================================ -->
-<!--
-  行内：$...$ 或 \(...\) → <span class="math-inline">...</span>
-  独立：优先用 $$...$$ 独占多行；也支持 \[...\]
-  引用：#key# → <cite>#key</cite>
-  必须：frontmatter 设置 mathjax: true
-  注意：不要把 display math 放进 <p>、<span>、<a>、表格属性或图片 alt 里；需要居中时让 MathJax 默认居中即可
-  注意：公式内 < 和 > 会被构建器转义；复杂括号优先用 \Bigl( ... \Bigr)，少用会与普通文本冲突的裸 HTML 符号
--->
-
+<!-- Part 6: 实验验证 -->
 <div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
+  <div class="ch-label">第六部分</div>
+  <div class="ch-title">实验结果与消融分析</div>
 
-  行内公式 $O(T\epsilon^2)$ 或 \(x\in\mathbb{R}^{d}\)，必须嵌入普通正文段落中。
+  <h3 class="section-title">6.1 主结果对比</h3>
 
-$$
-\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)
-$$
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>LVE↓</th><th>MHD↓</th><th>FDD↓(S)</th><th>PDD↓(S)</th><th>JDD↓(S)</th><th>FDD↓(L)</th><th>PDD↓(L)</th><th>JDD↓(L)</th><th>F-FID↓</th><th>P-FID↓</th></tr></thead>
+      <tbody>
+        <tr><td>DiffPoseTalk</td><td>9.48</td><td>2.96</td><td>32.66</td><td>7.89</td><td>1.40</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>ARTalk</td><td>7.46</td><td>2.12</td><td>31.64</td><td>7.66</td><td>1.19</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>ARTalk*</td><td>6.79</td><td>2.02</td><td>27.41</td><td>8.55</td><td>0.81</td><td>30.62</td><td>9.52</td><td>1.53</td><td>10.779</td><td>0.072</td></tr>
+        <tr><td>DualTalk</td><td>6.35</td><td>1.95</td><td>37.46</td><td>9.70</td><td>1.02</td><td>43.58</td><td>10.71</td><td>2.02</td><td>13.143</td><td>0.079</td></tr>
+        <tr><td><strong>UniLS</strong></td><td><strong>5.83</strong></td><td><strong>1.89</strong></td><td><strong>18.41</strong></td><td><strong>4.67</strong></td><td><strong>0.71</strong></td><td><strong>17.12</strong></td><td><strong>4.75</strong></td><td><strong>0.98</strong></td><td><strong>4.304</strong></td><td><strong>0.038</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
 
-  也可以使用 display math：
+  <p><strong>Speaking 侧全面提升</strong>：LVE=5.83，比 DualTalk（6.35）降低 8.2%；上半脸 FDD 从 37.46 降至 18.41（降幅 50.9%）；头部姿态 PDD 从 9.70 降至 4.67（降幅 51.9%）。</p>
 
-\[
-\mathcal{L}(\theta)=\mathbb{E}_{x\sim p_{\text{data}}}\bigl[-\log p_\theta(x)\bigr]
-\]
+  <p><strong>Listening 侧实现质变</strong>：这才是 UniLS 最核心的突破。Listening FDD 从 DualTalk 的 43.58 降至 17.12（提升 60.7%），F-FID 从 13.143 降至 4.304（提升 67.3%）。F-FID 降低到原来的三分之一意味着 UniLS 生成的听者表情不再坍缩为"扑克脸"模式，而是呈现多样化的自然反应。P-FID 从 0.079 降至 0.038（提升 51.9%），头部姿态分布也更贴近真实。</p>
+
+  <h3 class="section-title">6.2 用户研究</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>对比对象</th><th>Sync (%)</th><th>Exp (%)</th><th>React (%)</th><th>Pose (%)</th></tr></thead>
+      <tbody>
+        <tr><td>vs. DiffPoseTalk</td><td>55.34</td><td>61.65</td><td>—</td><td>58.25</td></tr>
+        <tr><td>vs. ARTalk</td><td>75.36</td><td>75.36</td><td>—</td><td>71.98</td></tr>
+        <tr><td>vs. ARTalk*</td><td>76.92</td><td>77.88</td><td>79.80</td><td>74.52</td></tr>
+        <tr><td>vs. DualTalk</td><td>86.06</td><td>90.38</td><td>91.35</td><td>89.42</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>vs. DualTalk 时 listening reaction 偏好率高达 <strong>91.35%</strong>——超过九成参与者认为 UniLS 的倾听反应更自然，与客观指标高度一致。</p>
+
+  <h3 class="section-title">6.3 消融实验</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>LVE↓</th><th>MHD↓</th><th>FDD↓(S)</th><th>FDD↓(L)</th><th>F-FID↓</th><th>掉点幅度</th></tr></thead>
+      <tbody>
+        <tr><td>Single cross-attn</td><td>11.48</td><td>3.00</td><td>31.35</td><td>27.46</td><td>5.97</td><td>LVE +96.9%</td></tr>
+        <tr><td>w/o Stage 1</td><td>6.32</td><td>2.02</td><td>25.10</td><td>25.64</td><td>5.97</td><td>FDD(L) +49.8%</td></tr>
+        <tr><td>w/o Multi-scenario</td><td>6.26</td><td>1.99</td><td>18.77</td><td>17.81</td><td>4.62</td><td>LVE +7.4%</td></tr>
+        <tr><td><strong>UniLS (full)</strong></td><td><strong>5.83</strong></td><td><strong>1.89</strong></td><td><strong>18.41</strong></td><td><strong>17.12</strong></td><td><strong>4.30</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>第一名：Single cross-attention（破坏性最大）</strong>。LVE 从 5.83 飙升至 11.48（+96.9%），说明双轨音频分离是整个方法的基石——混合音频使 attention 无法建立准确的 phoneme-viseme 映射。</p>
+
+  <p><strong>第二名：Without Stage 1（主要影响 listening）</strong>。Listening FDD 从 17.12 升至 25.64（+49.8%），F-FID 从 4.30 升至 5.97（+38.8%），而 Speaking LVE 仅从 5.83 升至 6.32（+8.4%）。这种不对称影响精确印证了论文动机：speaking 的 audio-motion 关联强，即使没有先验也能学到合理映射；listening 关联弱，缺少先验就退化为静态输出。</p>
+
+  <p><strong>第三名：Without multi-scenario data（温和但全面）</strong>。Speaking LVE 从 5.83 升至 6.26（+7.4%），Listening F-FID 从 4.30 升至 4.62（+7.4%）。多样化场景数据增强 motion prior 泛化性，但提供的是增益而非决定性作用。</p>
+
+  <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+    <div class="photo" style="flex:1;min-width:280px;">
+      <img src="media/images/unils-2024/speak_compare.webp" alt="Speaking 生成质量对比" loading="lazy">
+      <div class="cap">图 5：Speaking 生成质量对比。UniLS 在唇形同步精度（LVE=5.83）和上半脸动态一致性（FDD=18.41）上均优于所有 baseline。（来源：#Chu-et-al.-2026# Fig.5）</div>
+    </div>
+    <div class="photo" style="flex:1;min-width:280px;">
+      <img src="media/images/unils-2024/listen_compare.webp" alt="Listening 生成质量对比" loading="lazy">
+      <div class="cap">图 6：Listening 生成质量对比。UniLS 生成的听者具有接近真实人类的动态丰富度（F-FID=4.304），而 DualTalk 和 ARTalk* 的听者面部趋于静态。（来源：#Chu-et-al.-2026# Fig.4）</div>
+    </div>
+  </div>
 </div>
 
-<!-- ============================================================
-  引用语法
-  ============================================================ -->
-<!--
-  #key# → <cite>#key</cite>
-  key 含空格 → 引用；无空格 → 行内公式
--->
-
+<!-- Part 7: 讨论与启发 -->
 <div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
+  <div class="ch-label">第七部分</div>
+  <div class="ch-title">局限性与未来方向</div>
 
-  根据 #Hinton et al., 2015# 的开创性工作，知识蒸馏用软标签把教师模型的暗知识传给学生模型。#Hinton et al., 2015#
+  <h3 class="section-title">局限性分析</h3>
+
+  <p><strong>缺乏语义理解</strong>：当前听者行为由声学线索（节奏、重音）驱动，无法产生语义相关反应——如在对方表达赞同时点头、听到否定观点时摇头。wav2vec 2.0 主要编码声学和音素信息，对高层语义（意图、情感、论点结构）编码能力有限。</p>
+
+  <p><strong>Chunk-based 生成的不连续性</strong>：100 帧 chunk 边界处偶尔出现微妙运动不连续。虽然 chunk 级别建模大幅减少了误差累积，但离散化的时序分割与人类面部运动的连续性存在张力。</p>
+
+  <p><strong>仅限双人场景</strong>：当前框架针对严格双人对话设计。多人场景需要解决注意力分配、轮流发言检测、多听者差异化反应等新问题。</p>
+
+  <p><strong>评估指标缺乏语义标准</strong>：当前评估体系完全基于统计分布指标（FID、动态偏差、顶点误差），缺乏语义层面的恰当性评估。</p>
+
+  <h3 class="section-title">未来方向</h3>
+
+  <ul>
+    <li><strong>融入语义信息</strong>：将 LLM 文本理解能力引入生成管线，先转文本再提取语义标签作为额外条件信号；或使用情感识别模型驱动更具共情力的听者反应。</li>
+    <li><strong>Continuous long-horizon models</strong>：探索 state-space model（如 Mamba）或 linear attention 的无限上下文建模，消除 chunk 边界不连续性。</li>
+    <li><strong>多人场景扩展</strong>：使用 speaker diarization 自动识别当前说话人，为每个听者分配独立 cross-attention track。</li>
+    <li><strong>多语言支持</strong>：wav2vec2-xls-r-300m 本身是多语言预训练的，但不同语言的音素-视素映射差异和文化特定的非语言行为差异需要针对性适配。</li>
+  </ul>
+
+  <h3 class="section-title">对数字人产业的启发</h3>
+
+  <p><strong>端到端实时系统的可行性已被证实</strong>。560.6 FPS 和 421.3M 参数证明高质量说-听统一生成不需要庞大模型或复杂串行管线。性能余量意味着可以在同一 GPU 上并行运行语音识别、语义理解等其他模块。</p>
+
+  <p><strong>Two-stage training 范式具有通用迁移价值</strong>。"先学内部先验、再叠加外部调制"的策略并非面部动画专属——任何涉及弱信号驱动的任务都可能受益：手势生成中先学自发肢体运动先验再用语音微调；全身动画中先学物理合理的运动动力学再用高层指令做任务适配。</p>
+
+  <p><strong>从"能说"到"会听"的范式转移</strong>。数字人的自然度瓶颈不在"说话"而在"倾听"。过去十年的技术进步主要集中在 speaking 质量，但真实对话体验的一半以上来自倾听时的非语言反馈。UniLS 证明了高质量 listening 生成的技术可行性，将推动产业界重新审视交互体验的设计重心。</p>
+</div>
+
+<!-- 参考来源 -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考文献</div>
 
   <div class="sources">
     <h3>参考来源</h3>
     <ul>
-      <li data-cite-key="Hinton-et-al.-2015">Hinton, G. et al. (2015). Distilling the Knowledge in a Neural Network. <a href="https://arxiv.org/abs/1503.02531" target="_blank">arXiv:1503.02531</a></li>
+      <li data-cite-key="Chu-et-al.-2026">Chu, X. et al. (2026). UniLS: End-to-End Audio-Driven Avatars for Unified Listening and Speaking. <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2512.09327" target="_blank">arXiv:2512.09327</a></li>
+      <li data-cite-key="Peng-et-al.-2025">Peng, Z. et al. (2025). DualTalk: Dual-Speaker Interaction for 3D Talking Head Conversations. <em>CVPR 2025</em>. <a href="https://openaccess.thecvf.com/content/CVPR2025/papers/Peng_DualTalk_Dual-Speaker_Interaction_for_3D_Talking_Head_Conversations_CVPR_2025_paper.pdf" target="_blank">CVPR 2025</a></li>
+      <li data-cite-key="Chu-et-al.-2025">Chu, X. et al. (2025). ARTalk: Speech-Driven 3D Head Animation via Autoregressive Model. <em>SIGGRAPH Asia 2025</em>. <a href="https://dl.acm.org/doi/10.1145/3757377.3763955" target="_blank">ACM DL</a></li>
+      <li data-cite-key="Fan-et-al.-2022">Fan, Y. et al. (2022). FaceFormer: Speech-Driven 3D Facial Animation with Transformers. <em>CVPR 2022</em>. <a href="https://openaccess.thecvf.com/content/CVPR2022/html/Fan_FaceFormer_Speech-Driven_3D_Facial_Animation_With_Transformers_CVPR_2022_paper.html" target="_blank">CVPR 2022</a></li>
+      <li data-cite-key="Li-et-al.-2017">Li, T. et al. (2017). Learning a Model of Facial Shape and Expression from 4D Scans. <em>SIGGRAPH Asia 2017</em>. <a href="https://flame.is.tue.mpg.de/" target="_blank">FLAME Project</a></li>
+      <li data-cite-key="Baevski-et-al.-2020">Baevski, A. et al. (2020). wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations. <em>NeurIPS 2020</em>. <a href="https://proceedings.neurips.cc/paper/2020/hash/92d1e1eb1cf6f9531937db58baf6b01c-Abstract.html" target="_blank">NeurIPS 2020</a></li>
+      <li data-cite-key="Sun-et-al.-2024">Sun, Z. et al. (2024). DiffPoseTalk: Speech-Driven 3D Facial Animation with Diffusion Models. <em>SIGGRAPH 2024</em>.</li>
+      <li data-cite-key="Ng-et-al.-2022">Ng, Z. et al. (2022). Learning2Listen: Evolving Listener Motion with Cross-Modal Attention. <em>CVPR 2022</em>.</li>
     </ul>
   </div>
 </div>
 
-<!-- ============================================================
-  Shortcode 语法 {{< ... >}}
-  ============================================================ -->
+<!-- 本篇小结 -->
+<div class="series-nav">
+  <h3 class="section-title">本篇小结</h3>
+  <p>UniLS（CVPR 2026）是首个端到端音频驱动的统一 speak-listen 数字人框架。论文揭示了 listening stiffness 的根因——audio-motion correlation imbalance，并通过两阶段训练范式（Stage 1 无音频先验学习 + Stage 2 双轨音频微调）从根本上解决了这一问题。听者 F-FID 提升 67.3%，实时推理达 560.6 FPS。代码分析揭示了论文与代码的三处重要不一致（量化方案、训练迭代数、Generator loss），复现者应以代码为准。</p>
 
-<div class="ch fade-in">
-  <div class="ch-label">Shortcode</div>
-  <div class="ch-title">Shortcode 语法</div>
-
-  普通高亮：==默认高亮文字==。
-
-  彩色高亮：{{< bg yellow >}}黄色高亮{{< /bg >}}、{{< bg red >}}红色高亮{{< /bg >}}、{{< bg blue >}}蓝色高亮{{< /bg >}}、{{< bg green >}}绿色高亮{{< /bg >}}、{{< bg purple >}}紫色高亮{{< /bg >}}。
-
-  {{< details summary="点击展开" openByDefault=true >}}
-  隐藏内容。details shortcode 必须成对出现，不要拆到多个 <p> 标签里。
-  {{< /details >}}
-
-  {{< bilibili BV1xxooXX1Xx >}}
-  {{< youtube dQw4w9WgXcQ "说明" >}}
-  {{< video "media/images/video/sample.mp4" >}}
-  {{< googleslides "https://docs.google.com/presentation/d/..." >}}
-</div>
-
-<!-- ============================================================
-  Code Tabs：同一内容的多种视图
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Code Tabs</div>
-  <div class="ch-title">流程图与算法伪代码</div>
-
-  <p>当 Mermaid 流程图和 Algorithm 伪代码描述同一过程时，优先放进同一个 <code>code-tabs</code> 区块，避免正文纵向堆叠过长。</p>
-
-  <div class="code-tabs">
-    <div class="code-tabs-header">
-      <button class="code-tab-btn active" data-tab="example-flow">流程图</button>
-      <button class="code-tab-btn" data-tab="example-algorithm">算法</button>
-    </div>
-    <div class="code-tab-content active" data-panel="example-flow">
-      {{< mermaid >}}
-      flowchart TD
-        A[输入] --> B[处理]
-        B --> C[输出]
-      {{< /mermaid >}}
-    </div>
-    <div class="code-tab-content" data-panel="example-algorithm">
-      <pre><code class="language-text">Algorithm: Example
-Input: x
-repeat
-  y = step(x)
-until convergence
-Output: y</code></pre>
-    </div>
-  </div>
-</div>
-
-<!-- ============================================================
-  Wiki 链接 [[...]]
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Wiki 链接</div>
-  <div class="ch-title">外链与站内引用</div>
-
-  <p>外部百科 / 论文 / 仓库链接：[[wiki.zh 日本历史]]、[[wiki Albert Einstein | 爱因斯坦]]、[[arxiv 2301.00001 abs | 论文]]、[[github pytorch/pytorch | PyTorch]]、[[google transformer architecture]]。</p>
-
-  <p>站内文章引用优先用标题：[[@ELF: Embedded Language Flows | ELF 论文]]；需要锚点跳转时用路径：[[posts.html | 返回文章列表]]。</p>
-</div>
-
-<!-- ============================================================
-  Mermaid 图表 — 完整类型见 blog-syntax/references/mermaid.md
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Mermaid</div>
-  <div class="ch-title">图表类型一览</div>
-
-  <p>本站支持流程图、思维导图、象限图、时间线、状态图、时序图、分支图等。<strong>硬性规则：节点/边标签含括号、斜杠、冒号、中英文混排时必须加引号</strong>，否则 Mermaid v11 运行时解析失败导致整图不渲染。完整类型与示例见 <code>blog-syntax/references/mermaid.md</code>。</p>
-
-  {{< mermaid >}}
-flowchart LR
-  A["输入"] --> B["处理"]
-  B --> C{"判断"}
-  C -->|"是"| D["输出"]
-  C -->|"否"| A
-  {{< /mermaid >}}
-
-  {{< mermaid >}}
-mindmap
-  root(("主题"))
-    分支一
-      "子节点 A"
-      "子节点 B"
-    分支二
-      "子节点 C"
-  {{< /mermaid >}}
-</div>
-
-<!-- 文章末尾：参考来源（如有引用必须带 data-cite-key） -->
-<div class="ch fade-in">
-  <div class="ch-label">References</div>
-  <div class="ch-title">写作规范小结</div>
-
-  <div class="review-box">
-    <h3>收尾检查清单</h3>
-    <ul>
-      <li><strong>图片路径</strong>：用 <code>media/images/&lt;slug&gt;/&lt;file&gt;</code>，禁止 <code>assets/media</code>。</li>
-      <li><strong>display math</strong>：不要包进 <code>&lt;p&gt;</code>，让 MathJax 默认居中。</li>
-      <li><strong>小节标题</strong>：正文小标题用 <code>&lt;h3 class="section-title"&gt;</code>。</li>
-      <li><strong>sources</strong>：每条参考来源必须带 <code>data-cite-key</code>。</li>
-      <li><strong>Mermaid</strong>：特殊字符标签加引号，shortcode 必须成对闭合。</li>
-    </ul>
-  </div>
+  <h3 class="section-title">继续阅读</h3>
+  <p>UniLS 代表了对话式数字人从"能说"到"会听"的范式转移。下一步可以关注：</p>
+  <ul>
+    <li><strong>语义感知的听者反应</strong>：将 LLM 文本理解引入生成管线，实现语义相关的听者反应</li>
+    <li><strong>多人场景扩展</strong>：从双人到多人的扩展，解决注意力分配和差异化反应</li>
+    <li><strong>实时交互式数字人系统</strong>：将 UniLS 与语音识别、语义理解等模块集成，构建完整的对话系统</li>
+  </ul>
 </div>
