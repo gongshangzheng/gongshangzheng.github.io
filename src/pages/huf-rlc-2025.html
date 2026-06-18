@@ -1,0 +1,184 @@
+---
+title: "Huf-RLC 论文解读：用零游程修补 Huffman 在红外线扫图像压缩中的短板"
+description: "深度解读 Sensors 2025 的红外线扫描图像有损压缩论文：DWT、DUSQ、概率模型、DPCM 与 Run-Length-Enhanced Huffman Coding 如何共同加速红外图像压缩。"
+date: 2026-06-16T22:09:58
+created_at: 2026-06-16T22:09:58
+updated_at: 2026-06-16T22:25:00
+tags: [红外图像, 图像压缩, DWT, Huffman, JPEG2000]
+categories: [AI]
+subcategory: "图像压缩"
+sub_id: 3010
+hub: infrared-image-compression-survey
+mathjax: true
+hero_title: "Huf-RLC 红外压缩论文解读"
+hero_sub: "Sensors 2025 · Wavelet Probability Model · Run-Length-Enhanced Huffman"
+hero_tagline: "这篇论文的核心不是发明一个更复杂的 codec，而是抓住红外线扫图像中“大量连续零”的统计结构，把 Huffman 的一比特下限向更低平均码长推进。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3.155×</span><span class="label">快于 JPEG2000</span></div>
+  <div class="stat"><span class="num b">2.049×</span><span class="label g">快于 JPEG</span></div>
+  <div class="stat"><span class="num">53+27</span><span class="label">训练/测试图像</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label l">DWT 分解层级</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">为什么这篇论文值得读？</div>
+  <p>这篇 Sensors 2025 论文 <em>Lossy Infrared Image Compression Based on Wavelet Coefficient Probability Modeling and Run-Length-Enhanced Huffman Coding</em> 研究的是一个非常工程化的问题：红外线扫描图像冗余高、文件大，但 JPEG2000 的 MQ 算术编码复杂度会拖慢处理速度，因此作者希望在尽量接近 JPEG2000 压缩性能的同时获得更高编码速度 #Zhu-2025#。</p>
+  <p>论文提出的方案叫 <strong>Huf-RLC</strong>，即 Run-Length-Enhanced Huffman Coding。它并不试图用一个深度网络替代整个压缩系统，而是在经典的“变换—量化—熵编码”框架内部，针对量化后小波系数中大量连续零的现象，改造 Huffman 编码中最短码字的使用方式 #Zhu-2025#。</p>
+  <div class="callout"><strong>一句话概括</strong>：Huf-RLC 是一个面向红外线扫图像的轻量小波压缩器，它用预统计的小波系数概率模型省掉在线建表成本，再用零游程增强 Huffman 编码，专门解决稀疏小波系数中“零太多但 Huffman 最短码仍至少 1 bit”的低效问题。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">问题不是 Huffman 不够快，而是 Huffman 对“连续零”不够聪明</div>
+  <p>论文的背景判断很清楚：深度学习图像压缩虽然可以通过非线性变换获得更强表达能力，但计算复杂度高，限制了它在速度敏感场景中的使用；传统线性变换中，DCT 是 JPEG 的核心，DWT 是 JPEG2000 的核心，而 DWT 因为局部性和多分辨率结构，更适合处理非平稳图像并避免低码率下的块效应 #Zhu-2025#。</p>
+  <p>但是，JPEG2000 的强性能来自较复杂的熵编码链路。作者认为，在红外线扫图像这种高冗余数据上，应该优先考虑低复杂度、可查表、可高速运行的编码方案。Huffman 编码在码表构建后可以通过查表实现常数时间编码，因此是速度友好的选择；问题在于，Huffman 的码长必须是整数 bit，无法像算术编码那样逼近任意小的自信息 #Zhu-2025#。</p>
+
+  <p>论文用一个简单例子说明这个缺陷。若零符号概率为 \(p(0)=0.8\)，它的自信息是：</p>
+
+\[
+I(0)=-\log_2 p(0)=0.322\ \text{bit}.
+\]
+
+  <p>但 Huffman 给最常见符号分配的最短码通常仍是 1 bit，于是零符号的码长误差为 \(1-0.322=0.678\) bit；当量化小波系数里零大量出现时，这个误差会被反复累积，成为压缩效率损失的主要来源 #Zhu-2025#。</p>
+
+  <div class="def-box">
+    <h3>核心矛盾</h3>
+    <p>Huffman 很快，但最短码长不能低于 1 bit；稀疏小波系数里零很多，而且常常连续出现。单个零用 1 bit 还可以接受，但一长串零逐个编码，就把 Huffman 的整数码长缺陷放大了。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 方法总览</div>
+  <div class="ch-title">整体 pipeline：DWT → DUSQ → DPCM → 概率模型 → Huf-RLC</div>
+  <p>论文的整体框架仍属于经典 transform coding。输入红外线扫图像先做五级 DWT，得到低频 LL 子带和多个高频 LH/HL/HH 子带；随后使用死区均匀标量量化 DUSQ 让高频系数变得更稀疏，再对 LL 子带使用 DPCM 去除空间冗余；最后基于预先统计好的小波系数概率模型查表编码，并对零系数使用 Huf-RLC #Zhu-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/huf-rlc-2025/figure-12-framework.webp" alt="Huf-RLC framework" loading="lazy">
+    <div class="cap">论文 Figure 12：基于 Huf-RLC 和小波系数概率模型的有损压缩框架。图中最重要的是两条路径：高频子带走概率模型 + Huf-RLC，低频 LL 子带先经过 DPCM 再建模编码 #Zhu-2025#。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>作用</th><th>为什么需要</th></tr></thead>
+      <tbody>
+        <tr><td>DWT</td><td>把图像分解成 LL、LH、HL、HH 多级子带</td><td>利用红外图像低频占优、高频稀疏的结构</td></tr>
+        <tr><td>DUSQ</td><td>带死区的均匀量化</td><td>扩大零区间，让高频系数产生更多零</td></tr>
+        <tr><td>DPCM</td><td>对 LL 子带做列向差分</td><td>去除低频子带残余空间冗余</td></tr>
+        <tr><td>Probability Model</td><td>离线统计各子带量化系数分布</td><td>避免在线统计概率和构建 Huffman 表</td></tr>
+        <tr><td>Huf-RLC</td><td>把零游程长度附加到零的最短 Huffman 码后</td><td>让连续零不再逐个花费 1 bit</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · DWT 与 DUSQ</div>
+  <div class="ch-title">为什么先把红外图像拆到小波域？</div>
+  <p>论文选择 DWT 而不是 DCT 的核心理由是局部性。DCT 的基函数跨越整块或全局区域，JPEG 为降低复杂度采用 \(8\times8\) block DCT，这在低码率下容易出现块效应；DWT 通过局部卷积式分解同时保留时域和频域信息，可以在整幅图上工作，并通过多级分解支持渐进式质量和分辨率表达 #Zhu-2025#。</p>
+  <p>五级 DWT 后，一个图像会产生 \(3n+1\) 个子带；当 \(n=5\) 时，包含 15 个高频子带和 1 个低频 LL 子带。LL 子带保存主体能量和低频近似，LH、HL、HH 分别保存水平、垂直和对角方向细节 #Zhu-2025#。</p>
+  <p>量化部分，作者使用 DUSQ 而不是普通 USQ。DUSQ 的关键是给零附近设置更大的死区，让小幅高频系数更容易被量化为零。这个设计对 Huf-RLC 非常关键：只有零足够多、零游程足够长，后面的 run-length-enhanced Huffman 才能产生明显收益 #Zhu-2025#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · DPCM</div>
+  <div class="ch-title">低频 LL 子带为什么要单独处理？</div>
+  <p>论文对不同小波子带的空间冗余做了细致分析。高频 LH、HL、HH 子带主要表示方向细节，信息量较低且受噪声影响较强；而 LL 子带包含绝大多数图像信息，保留了显著空间冗余，因此作者选择只对 LL 子带做 DPCM，以降低复杂度并避免在高频噪声子带中引入额外熵增 #Zhu-2025#。</p>
+  <p>在 Image A 的五级 DWT 上，LL 子带初始熵为 9.7194；列向 DPCM 后熵降至 7.3093，行向 DPCM 后熵降至 8.5251，因此列向 DPCM 带来 2.4101 的熵下降，明显优于行向差分 #Zhu-2025#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>五级子带</th><th>初始熵</th><th>列向 DPCM</th><th>行向 DPCM</th><th>结论</th></tr></thead>
+      <tbody>
+        <tr><td>LH</td><td>6.1932</td><td>6.9936</td><td>6.5551</td><td>差分反而增熵，不适合处理</td></tr>
+        <tr><td>HL</td><td>7.5204</td><td>6.9991</td><td>8.2336</td><td>列向略有收益，但不显著</td></tr>
+        <tr><td>HH</td><td>5.0752</td><td>5.8301</td><td>5.8806</td><td>噪声敏感，差分增熵</td></tr>
+        <tr><td>LL</td><td>9.7194</td><td><strong>7.3093</strong></td><td>8.5251</td><td>列向 DPCM 最有效</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · Probability Model</div>
+  <div class="ch-title">用离线概率模型换在线速度</div>
+  <p>传统 Huffman 编码需要根据源符号概率构造码表。若每个图像、每个小波子带都在线统计概率并建表，速度会受到明显影响。论文因此采用直接统计法：对 53 张红外线扫图像做五级 DWT，统计不同量化等级下各子带量化系数的概率分布，再按概率降序构建平均概率模型和预设 Huffman 码表 #Zhu-2025#。</p>
+  <p>这个设计本质上是一个工程折中：它假设同类红外线扫图像在小波子带上有稳定统计规律，因此可以把“统计概率 + 建码表”的计算从在线编码阶段提前到离线阶段。实际编码时只需根据量化参数 \(Q\) 选择对应量化等级、子带概率模型、码表和零游程 bit length #Zhu-2025#。</p>
+  <div class="info-box">
+    <h3>这和学习式压缩有什么相似之处？</h3>
+    <p>学习式压缩中的 entropy model 也是在估计 latent 的概率分布，只是它通常通过神经网络自适应预测概率；本文的概率模型更朴素：直接对同类红外线扫图像做离线统计。前者更强但慢，后者更窄但快。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · Huf-RLC</div>
+  <div class="ch-title">Huf-RLC 的关键：把“零”从一个符号变成一段游程</div>
+  <p>Huf-RLC 没有把 RLC 和 Huffman 简单串联。传统做法通常是对零使用 RLC、对非零符号使用 Huffman，但这需要额外 flag 或 prefix，增加码流开销并复杂化编解码逻辑。本文的做法是：保留 Huffman 码表，但修改最短的零符号码，在它后面追加固定 bit 数来记录连续零的长度 #Zhu-2025#。</p>
+  <p>编码时，如果当前量化系数为零，就累积 run length；当遇到非零符号或 run length 达到可记录上限时，输出零对应的 Huffman 码，并追加记录游程长度的 RLC bits。非零符号仍按普通 Huffman 查表编码。解码时，读到零码字即可继续读取后面的 run-length bits，从而一次恢复一串零 #Zhu-2025#。</p>
+
+  <div class="def-box">
+    <h3>为什么它能突破“单个零至少 1 bit”的尴尬？</h3>
+    <p>严格说，Huf-RLC 并没有让单个 Huffman 码字变成小数 bit；它是把一串零合并成一个“零码字 + 游程长度”。如果一段零足够长，那么平均到每个零上的 bit 数就可能小于 1，因此论文称其能够在稀疏分布中把平均码长降到 1 bit 以下。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 8 · 实验</div>
+  <div class="ch-title">实验结果：接近 JPEG2000，显著快于 JPEG2000</div>
+  <p>实验使用 53 张红外线扫图像构成训练集，用于统计概率模型和选择零游程 bit length；另有 27 张来自不同红外线扫探测器工作场景的图像构成测试集 #Zhu-2025#。</p>
+  <p>在可视化比较中，低码率下 JPEG 出现明显块效应，JPEG2000 整体质量最高，本文方法与 JPEG2000 的差距较小；高码率下三者差距缩小，但本文方法仍能保持接近 JPEG2000 的重建质量 #Zhu-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/huf-rlc-2025/figure-14-comparison.webp" alt="Comparison with JPEG and JPEG2000" loading="lazy">
+    <div class="cap">论文 Figure 14：JPEG、JPEG2000 与本文方法在低/高码率下的重建图对比。低码率下 JPEG 的块效应更明显，本文方法视觉效果更接近 JPEG2000 #Zhu-2025#。</div>
+  </div>
+
+  <p>Table 5 中 6 张示例图像的均值显示：低码率下 JPEG 的平均 PSNR 为 28.97、SSIM 为 0.8484，JPEG2000 为 43.17 / 0.9729，本文方法为 40.50 / 0.9649；高码率下 JPEG 为 49.67 / 0.9901，JPEG2000 为 51.06 / 0.9926，本文方法为 49.95 / 0.9894 #Zhu-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/huf-rlc-2025/figure-15-rd-curve.webp" alt="Rate distortion curve" loading="lazy">
+    <div class="cap">论文 Figure 15：训练集与测试集上的 PSNR/SSIM-BPP 曲线。本文方法整体优于 JPEG，并保持与 JPEG2000 较小差距 #Zhu-2025#。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>比较对象</th><th>训练集平均差距</th><th>训练集低 BPP</th><th>训练集高 BPP</th><th>测试集平均差距</th><th>测试集低 BPP</th></tr></thead>
+      <tbody>
+        <tr><td>Proposed vs JPEG2000, PSNR</td><td>-1.825</td><td>-3.665</td><td>-0.637</td><td>-0.520</td><td>-2.522</td></tr>
+        <tr><td>JPEG vs JPEG2000, PSNR</td><td>-3.699</td><td>-8.779</td><td>-1.278</td><td>-2.257</td><td>-6.934</td></tr>
+        <tr><td>Proposed vs JPEG2000, SSIM</td><td>-0.00300</td><td>-0.00640</td><td>-0.00136</td><td>+0.00200</td><td>-0.00652</td></tr>
+        <tr><td>JPEG vs JPEG2000, SSIM</td><td>-0.00985</td><td>-0.04022</td><td>-0.00113</td><td>-0.00865</td><td>-0.03859</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>速度方面，Table 7 报告 JPEG 为 14.153 MB/s，JPEG2000 为 9.174 MB/s，本文方法为 28.944 MB/s；换算后，本文方法约为 JPEG2000 的 3.155 倍、JPEG 的 2.049 倍 #Zhu-2025#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 9 · 贡献与局限</div>
+  <div class="ch-title">它强在工程统计，不强在通用性</div>
+  <p>这篇论文的贡献可以概括为三点。第一，作者针对红外线扫图像的小波子带统计规律建立了离线概率模型，避免在线统计和建表。第二，作者发现稀疏量化小波系数中零符号的 Huffman 最短码误差是压缩效率瓶颈，并用零游程增强修补这个问题。第三，作者对 LL 子带单独使用列向 DPCM，在不显著增加复杂度的情况下减少低频空间冗余 #Zhu-2025#。</p>
+  <p>但它的局限也很明显。首先，概率模型依赖 53 张同类红外线扫图像的统计分布，泛化到其他红外成像模式、普通热成像阵列图像、RGB-T 数据集或医学热红外图像时需要重新验证。其次，论文主要比较 JPEG、JPEG2000 和本文方法，没有纳入 BPG/VVC intra 或现代 learned image compression baseline。第三，方法优化的是 PSNR、SSIM、BPP 和速度，并未评估红外下游任务，例如目标检测、测温误差或小目标保持能力。</p>
+
+  <div class="callout"><strong>我的判断</strong>：Huf-RLC 更像一个“红外传感器端实时压缩模块”，而不是通用图像压缩 SOTA。它的价值在于：当你的硬件算力有限、数据类型稳定、速度比极致 RD 更重要时，它是一条很现实的路线。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 10 · 和生成式/学习式压缩的关系</div>
+  <div class="ch-title">这篇传统方法论文对 LIC 也有启发</div>
+  <p>虽然这篇论文不是 learned image compression，但它对红外 LIC 很有启发：红外图像压缩不一定要从更大的网络开始，很多收益来自对数据统计的准确理解。DWT 子带、DUSQ 零稀疏、LL 子带空间冗余、线扫方向相关性、零游程长度分布，这些都可以成为神经压缩模型里的 inductive bias。</p>
+  <p>一个自然的后续方向是把 Huf-RLC 的思想迁移到学习式熵模型：用小波域 latent 表示红外图像，用神经 entropy model 预测不同子带的概率参数，同时显式建模 zero-run 或 sparse token。这样可以在保留红外统计结构的同时，让模型适应更多场景。</p>
+</div>
+
+<div class="ch fade-in sources">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+  <ol>
+    <li data-cite-key="Zhu-2025">Zhu, Y., Liu, Y., Zhu, Y., Huang, M., Jiang, J., &amp; Zhang, Y. (2025). <em>Lossy Infrared Image Compression Based on Wavelet Coefficient Probability Modeling and Run-Length-Enhanced Huffman Coding</em>. Sensors, 25(8), 2491. DOI: 10.3390/s25082491. <a href="https://www.mdpi.com/1424-8220/25/8/2491" target="_blank">MDPI</a>; <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC12031199/" target="_blank">PMC full text</a></li>
+    <li data-cite-key="PubMed-40285181">PubMed. <em>Lossy Infrared Image Compression Based on Wavelet Coefficient Probability Modeling and Run-Length-Enhanced Huffman Coding</em>. PMID: 40285181. <a href="https://pubmed.ncbi.nlm.nih.gov/40285181/" target="_blank">https://pubmed.ncbi.nlm.nih.gov/40285181/</a></li>
+    <li data-cite-key="Usevitch-2001">Usevitch, B. E. (2001). <em>A Tutorial on Modern Lossy Wavelet Image Compression: Foundations of JPEG 2000</em>. IEEE Signal Processing Magazine. <a href="https://www.csd.uoc.gr/~hy371/bibliography/WaveletImageCompression.pdf" target="_blank">PDF</a></li>
+  </ol>
+</div>

@@ -1,0 +1,203 @@
+---
+title: "PHP 安全实践"
+description: "PHP 安全编码：密码存储、SQL 注入防护、XSS 防护、CSRF、Session 安全"
+date: 2026-05-28T14:30:00
+created_at: 2026-05-28T14:30:00
+updated_at: 2026-05-28T14:30:00
+categories: [编程]
+tags: ["PHP", "安全", "后端", "OWASP"]
+source: hugo-blog
+mathjax: true
+subcategory: "PHP"
+---
+
+<p>Web 安全不是可选项，而是编码的基本功。PHP 8.x 提供了大量内置安全工具，但它们需要开发者主动使用。本页覆盖 PHP 应用中最常见的安全威胁和对应防御手段。</p>
+
+<h2>密码存储</h2>
+<p><strong>永远不要明文存储密码。</strong>使用 <code>password_hash()</code> 和 <code>password_verify()</code>：</p>
+<pre><code class="language-php">// ✅ 存储密码
+$hash = password_hash($password, PASSWORD_DEFAULT);
+// PASSWORD_DEFAULT 当前使用 bcrypt，未来会自动升级算法
+$stmt = $pdo->prepare('INSERT INTO users (email, password) VALUES (?, ?)');
+$stmt->execute([$email, $hash]);
+
+// ✅ 验证密码
+$stmt = $pdo->prepare('SELECT password FROM users WHERE email = ?');
+$stmt->execute([$email]);
+$user = $stmt->fetch();
+
+if ($user && password_verify($inputPassword, $user['password'])) {
+    // 登录成功
+}
+
+// ✅ 检查是否需要升级哈希（算法更新后）
+if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+    $newHash = password_hash($inputPassword, PASSWORD_DEFAULT);
+    // 更新数据库
+}
+</code></pre>
+
+<h3>为什么不用 MD5/SHA1？</h3>
+<ul>
+<li>MD5/SHA1 速度太快，GPU 每秒可暴力破解数十亿次</li>
+<li>没有 salt，相同密码产生相同哈希</li>
+<li><code>password_hash()</code> 自动加 salt，使用 bcrypt/Argon2 等慢哈希算法</li>
+</ul>
+
+<h2>SQL 注入防护</h2>
+<p>SQL 注入至今仍是 PHP 应用中最严重的安全威胁。<strong>核心原则：绝不拼接用户输入到 SQL 语句中。</strong></p>
+<pre><code class="language-php">// ❌ 危险：直接拼接
+$sql = "SELECT * FROM users WHERE id = " . $_GET['id'];
+// 攻击者传入: id=1 OR 1=1
+
+// ✅ 安全：预处理语句
+$stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+$stmt->execute([$_GET['id']]);
+$user = $stmt->fetch();
+
+// ✅ 安全：命名占位符
+$stmt = $pdo->prepare('SELECT * FROM users WHERE email = :email AND status = :status');
+$stmt->execute([':email' => $email, ':status' => $status]);
+</code></pre>
+
+<h3>PDO 安全配置</h3>
+<pre><code class="language-php">$pdo = new PDO($dsn, $user, $pass, [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,  // 异常模式
+    PDO::ATTR_EMULATE_PREPARES   => false,                    // 真正的预处理
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,         // 关联数组
+]);
+</code></pre>
+
+<h2>XSS 防护</h2>
+<p>跨站脚本攻击（XSS）通过在页面中注入恶意脚本窃取用户信息。<strong>输出编码是唯一可靠的防御。</strong></p>
+<pre><code class="language-php">// ❌ 危险：直接输出用户输入
+echo $_GET['name'];
+
+// ✅ 安全：htmlspecialchars 转义
+echo htmlspecialchars($_GET['name'], ENT_QUOTES, 'UTF-8');
+
+// ✅ 在模板中统一处理
+function e(string $value): string {
+    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+}
+
+echo e($_GET['name']);
+</code></pre>
+
+<h3>上下文感知编码</h3>
+<table style="border-collapse:collapse;width:100%;margin:1rem 0;">
+<tr style="background:rgba(119,123,180,0.15);"><th style="padding:0.5rem;border:1px solid rgba(255,255,255,0.1);text-align:left;">输出位置</th><th style="padding:0.5rem;border:1px solid rgba(255,255,255,0.1);text-align:left;">编码方式</th></tr>
+<tr><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);">HTML 正文</td><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);"><code>htmlspecialchars($v, ENT_QUOTES, 'UTF-8')</code></td></tr>
+<tr><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);">HTML 属性</td><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);"><code>htmlspecialchars($v, ENT_QUOTES, 'UTF-8')</code></td></tr>
+<tr><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);">JavaScript</td><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);"><code>json_encode($v)</code></td></tr>
+<tr><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);">URL 参数</td><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);"><code>urlencode($v)</code></td></tr>
+<tr><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);">CSS</td><td style="padding:0.4rem;border:1px solid rgba(255,255,255,0.08);"><code>css_escape($v)</code></td></tr>
+</table>
+
+<h2>CSRF 防护</h2>
+<p>跨站请求伪造（CSRF）诱导已登录用户执行非预期操作。防御方法是为每个表单嵌入唯一 Token。</p>
+<pre><code class="language-php">// 生成 Token（页面加载时）
+session_start();
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// 表单中嵌入
+echo '&lt;input type="hidden" name="csrf_token" value="' . e($_SESSION['csrf_token']) . '"&gt;';
+
+// 提交时验证
+if ($_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+    die('CSRF token mismatch');
+}
+</code></pre>
+
+<h2>输入验证</h2>
+<pre><code class="language-php">// ✅ 始终验证，绝不信任用户输入
+$email = filter_input(INPUT_POST, 'email', FILTER_VALIDATE_EMAIL);
+if ($email === false) {
+    // 无效邮箱
+}
+
+$age = filter_input(INPUT_POST, 'age', FILTER_VALIDATE_INT, [
+    'options' => ['min_range' => 0, 'max_range' => 150]
+);
+
+// ✅ 白名单验证
+$allowed = ['jpg', 'png', 'gif'];
+$ext = strtolower(pathinfo($_FILES['avatar']['name'], PATHINFO_EXTENSION));
+if (!in_array($ext, $allowed)) {
+    die('不允许的文件类型');
+}
+</code></pre>
+
+<h2>Session 安全</h2>
+<pre><code class="language-php">session_start();
+
+// 1. 启动时生成新 Session ID（防固定会话攻击）
+session_regenerate_id(true);
+
+// 2. 设置安全 Cookie 参数
+ini_set('session.cookie_httponly', 1);  // JS 无法读取
+ini_set('session.cookie_secure', 1);   // 仅 HTTPS
+ini_set('session.cookie_samesite', 'Lax'); // 防 CSRF
+
+// 3. 设置 Session 过期时间
+ini_set('session.gc_maxlifetime', 1800); // 30 分钟
+
+// 4. 销毁 Session
+session_unset();
+session_destroy();
+</code></pre>
+
+<h2>文件上传安全</h2>
+<pre><code class="language-php">// ✅ 安全的文件上传处理
+function secureUpload(array $file, string $uploadDir, array $allowedExts): string {
+    // 1. 检查错误
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('上传失败');
+    }
+
+    // 2. 限制文件大小（2MB）
+    if ($file['size'] > 2 * 1024 * 1024) {
+        throw new RuntimeException('文件过大');
+    }
+
+    // 3. 验证 MIME 类型（不要只依赖扩展名）
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $finfo->file($file['tmp_name']);
+
+    // 4. 白名单检查
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    if (!in_array($ext, $allowedExts)) {
+        throw new RuntimeException('不允许的文件类型');
+    }
+
+    // 5. 生成随机文件名（防路径穿越和覆盖）
+    $newName = bin2hex(random_bytes(16)) . '.' . $ext;
+    $dest = rtrim($uploadDir, '/') . '/' . $newName;
+
+    // 6. 移动文件
+    if (!move_uploaded_file($file['tmp_name'], $dest)) {
+        throw new RuntimeException('移动失败');
+    }
+
+    return $newName;
+}
+</code></pre>
+
+<h2>安全配置清单</h2>
+<ul>
+<li><strong>error_reporting:</strong> 生产环境关闭错误输出，记录到日志</li>
+<li><strong>display_errors:</strong> <code>Off</code>（生产环境）</li>
+<li><strong>expose_php:</strong> <code>Off</code>（隐藏 PHP 版本头）</li>
+<li><strong>allow_url_fopen:</strong> <code>Off</code>（防止远程文件包含）</li>
+<li><strong>open_basedir:</strong> 限制 PHP 可访问的目录</li>
+<li><strong>disable_functions:</strong> 禁用危险函数（<code>exec</code>, <code>system</code>, <code>passthru</code> 等）</li>
+</ul>
+
+<h2>下一步</h2>
+<ul>
+<li><a href="php-database.html">PHP 数据库</a> — PDO 预处理语句详解</li>
+<li><a href="php-formulaire.html">PHP 表单</a> — 表单验证与安全处理</li>
+<li><a href="php-modern.html">PHP 8.x 新特性</a> — 语言层面的安全增强</li>
+</ul>

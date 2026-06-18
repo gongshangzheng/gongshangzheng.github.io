@@ -1,0 +1,142 @@
+---
+title: "GPGPU 架构与大规模并行编程 · L03c"
+description: "GPU SIMT 模型、CUDA 编程、线程网格、内存层级与优化。西安交通大学课程笔记。"
+created_at: 2026-05-25T12:00:00
+updated_at: 2026-05-25T12:00:00
+tags: ["GPU", "CUDA", "课程笔记", "SIMT", "并行编程"]
+categories: ["课程"]
+subcategory: "计算机系统"
+mathjax: true
+hero_title: "GPGPU 架构与大规模并行编程"
+hero_sub: "嵌入式智能系统与新型计算架构 · L03c"
+hero_tagline: "GPU 有几千个核心，为什么写 CUDA 代码比写 C 代码复杂得多？"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">CH01 · 为什么 GPU 适合并行计算</div>
+  <div class="ch-title">从图形渲染到通用计算</div>
+  <p>GPU 最初为图形渲染设计——为屏幕上每个像素独立计算颜色。这个任务的天然并行性决定了 GPU 的架构方向：<strong>海量简单核心</strong>，而非少量复杂核心。</p>
+  <p>2006 年 NVIDIA 推出 CUDA，标志着 GPU 从专用图形处理器走向<strong>通用并行计算（GPGPU）</strong>。今天的 AI 训练、科学模拟、密码学等领域，GPU 已成为标配。</p>
+
+  <div class="callout">
+    <strong>CPU vs GPU 的设计哲学对比</strong>
+    <p><strong>CPU</strong>：少量强大核心（4-64 核），复杂控制逻辑（分支预测、乱序执行、推测执行），大容量缓存（减少内存访问延迟）。设计目标：<strong>最小化单线程延迟</strong>。</p>
+    <p><strong>GPU</strong>：海量简单核心（数千个 CUDA Core），极简控制逻辑（无乱序执行、无分支预测），小缓存（靠高吞吐隐藏延迟）。设计目标：<strong>最大化整体吞吐率</strong>。</p>
+  </div>
+
+  <p>形象地说：CPU 是<strong>跑车</strong>——少量、昂贵、每辆都很快；GPU 是<strong>货运列车</strong>——大量、便宜、总运量巨大。你要运一个人，用跑车；你要运一万吨货，用火车。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH02 · SIMT 执行模型</div>
+  <div class="ch-title">Single Instruction, Multiple Threads</div>
+  <p>GPU 的并行执行模型叫做 <strong>SIMT（Single Instruction, Multiple Threads）</strong>，可以看作 SIMD 的「线程化」版本。在 SIMD 中，一条指令同时操作多个数据元素；在 SIMT 中，一条指令同时被多个<strong>线程</strong>执行，每个线程操作自己的数据。</p>
+  <p>SIMT 的关键概念：</p>
+  <ul>
+    <li><strong>Thread（线程）</strong>：最小的执行单元，每个线程有自己的寄存器状态和程序计数器</li>
+    <li><strong>Warp（束）</strong>：32 个线程组成一个 Warp，同一 Warp 内的线程<strong>锁步执行</strong>同一条指令</li>
+    <li><strong>Block（块）</strong>：多个 Warp 组成一个 Block，Block 内的线程可以通过共享内存和同步原语协作</li>
+    <li><strong>Grid（网格）</strong>：多个 Block 组成一个 Grid，对应一次内核启动的所有线程</li>
+  </ul>
+
+  <div class="callout">
+    <strong>Warp 调度与延迟隐藏</strong>
+    <p>GPU 没有复杂的乱序执行，而是靠<strong>多线程交错执行</strong>隐藏延迟。当一个 Warp 正在等待内存数据（几百个周期），Warp 调度器立即切换到另一个就绪的 Warp 执行。只要有足够的 Warp 待命，执行单元就永远不会空闲。</p>
+    <p>一个 SM（Streaming Multiprocessor）可以同时驻留数百个 Warp，通过快速切换实现「用吞吐换延迟」。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH03 · CUDA 编程模型</div>
+  <div class="ch-title">Grid → Block → Thread 三级结构</div>
+  <p>CUDA 编程的核心是<strong>内核函数（Kernel）</strong>——在 GPU 上并行执行的函数。调用内核时，程序员指定 Grid 和 Block 的维度：</p>
+  <pre><code>// 定义内核：每个线程执行一次 add()
+__global__ void add(float *a, float *b, float *c, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) c[i] = a[i] + b[i];
+}
+
+// 启动内核：256 个线程/Block，足够多的 Block 覆盖 n 个元素
+int blockSize = 256;
+int numBlocks = (n + blockSize - 1) / blockSize;
+add<<<numBlocks, blockSize>>>(a, b, c, n);</code></pre>
+
+  <p>三级索引的计算：$\text{global\_idx} = \text{blockIdx} \times \text{blockDim} + \text{threadIdx}$。每个线程根据全局索引处理不同的数据元素。</p>
+
+  <p>CUDA 的内置变量：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变量</th><th>含义</th><th>范围</th></tr></thead>
+      <tbody>
+        <tr><td><code>threadIdx.x/y/z</code></td><td>线程在 Block 内的索引</td><td>0 ~ blockDim-1</td></tr>
+        <tr><td><code>blockIdx.x/y/z</code></td><td>Block 在 Grid 内的索引</td><td>0 ~ gridDim-1</td></tr>
+        <tr><td><code>blockDim.x/y/z</code></td><td>Block 的维度大小</td><td>由启动参数指定</td></tr>
+        <tr><td><code>gridDim.x/y/z</code></td><td>Grid 的维度大小</td><td>由启动参数指定</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH04 · GPU 内存层级</div>
+  <div class="ch-title">从寄存器到全局内存的完整谱系</div>
+  <p>GPU 的内存层级比 CPU 更复杂，但也提供了更多优化空间：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>内存类型</th><th>作用域</th><th>生命周期</th><th>延迟</th><th>容量</th></tr></thead>
+      <tbody>
+        <tr><td>Register</td><td>单线程</td><td>内核执行期</td><td>~1 周期</td><td>~256 KB/SM</td></tr>
+        <tr><td>Shared Memory</td><td>Block 内共享</td><td>内核执行期</td><td>~20 周期</td><td>~164 KB/SM</td></tr>
+        <tr><td>L1 Cache</td><td>SM 内共享</td><td>自动管理</td><td>~30 周期</td><td>与 Shared 共享</td></tr>
+        <tr><td>L2 Cache</td><td>全 GPU 共享</td><td>自动管理</td><td>~200 周期</td><td>数 MB</td></tr>
+        <tr><td>Global Memory</td><td>全 GPU 共享</td><td>显存分配期</td><td>~400 周期</td><td>数 GB ~ 数十 GB</td></tr>
+        <tr><td>Constant Memory</td><td>全 GPU 只读</td><td>显存分配期</td><td>缓存命中 ~1 周期</td><td>64 KB</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>内存合并访问（Coalesced Access）</strong>
+    <p>这是 CUDA 优化的第一法则。一个 Warp 的 32 个线程同时访问全局内存时，如果访问地址是连续的（如数组的第 i, i+1, i+2... 个元素），硬件可以将这些访问<strong>合并为一次事务</strong>，带宽利用率最大化。</p>
+    <p>如果 32 个线程访问的地址分散（如随机访问），则需要 32 次独立内存事务，性能暴跌。</p>
+  </div>
+
+  <p><strong>共享内存（Shared Memory）</strong>是 CUDA 优化的关键武器。它位于芯片上，延迟接近寄存器，可以被 Block 内所有线程读写。典型用法是先把数据从 Global Memory 加载到 Shared Memory，然后在 Shared Memory 上反复计算，最后写回 Global Memory——类似 CPU 的缓存分块（Tiling）。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH05 · 分支发散与线程分歧</div>
+  <div class="ch-title">Warp 内的 if-else 陷阱</div>
+  <p>SIMT 的一个关键约束：<strong>同一 Warp 内的所有线程必须执行同一条指令</strong>。如果 Warp 内部分线程走 if 分支，部分走 else 分支，GPU 不能跳过任何线程——它只能<strong>串行执行两个分支</strong>，禁用不走该分支的线程。</p>
+  <pre><code>__global__ void bad_branch(float *data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (data[i] > 0)       // 分支发散！
+        data[i] = sqrt(data[i]);
+    else
+        data[i] = data[i] * data[i];
+}</code></pre>
+  <p>如果 Warp 内 16 个线程 data[i]>0，16 个线程 data[i]≤0，那么这个 Warp 需要执行两条路径，有效性能减半。</p>
+
+  <div class="callout">
+    <strong>缓解策略</strong>
+    <p>1. <strong>线程级排序</strong>：先排序数据让相似值聚集，减少 Warp 内分歧</p>
+    <p>2. <strong>分支粒度对齐</strong>：确保分支条件在 Warp 级别一致（如按 Warp 分配任务而非按线程）</p>
+    <p>3. <strong> predication</strong>：编译器可能用条件执行指令替代分支，避免显式发散</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">CH06 · 课后思考</div>
+  <div class="ch-title">思考与延伸</div>
+  <ol>
+    <li>CUDA 的线程模型与 CPU 多线程（pthread/OpenMP）有什么本质区别？为什么 GPU 线程切换是「零开销」而 CPU 线程切换代价高昂？</li>
+    <li>矩阵乘法是 GPU 的经典 benchmark。分析 naive CUDA 实现 vs 使用 Shared Memory Tiling 的性能差距，瓶颈在哪里？</li>
+    <li>NVIDIA 的 Tensor Core 在 Volta/Turing/Ampere 架构中引入，它与传统 CUDA Core 有什么区别？为什么对 AI 训练至关重要？</li>
+    <li>GPU 的内存带宽（如 H100 的 3 TB/s）远高于 CPU，但延迟也高得多。在什么类型的问题中，高带宽可以弥补高延迟？什么问题不适合 GPU？</li>
+  </ol>
+</div>
+
+</div>

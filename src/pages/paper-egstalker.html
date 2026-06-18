@@ -1,0 +1,337 @@
+---
+title: "数字人论文精读（十一）：EGSTalker，把 3D Gaussian 数字人推向实时音频驱动"
+description: "深度解读 EGSTalker：如何用 3DGS、multi-resolution hash triplane、ESAA agent attention 与 KAN 做实时 audio-driven talking head。"
+hero_title: "EGSTalker：实时音频驱动 3D Gaussian 数字人"
+hero_sub: "Paper Reading · 3DGS Talking Head · SMC 2025"
+hero_tagline: "把音频—空间 dense attention 改写成 agent token 聚合与广播。"
+date: 2026-06-08T10:51:02
+created_at: 2026-06-08T10:51:02
+updated_at: 2026-06-09T10:41:18
+tags: [数字人, EGSTalker, 3DGS, Talking Head, 论文精读]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1100
+mathjax: true
+notify: true
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">68.51</span><span class="label">FPS</span></div>
+  <div class="stat"><span class="num b">3.7h</span><span class="label g">训练耗时</span></div>
+  <div class="stat"><span class="num">3–5</span><span class="label">分钟训练视频</span></div>
+  <div class="stat"><span class="num b">0.5%</span><span class="label l">Agent Token</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">这篇论文真正要解决的问题：3DGS 已经很快，但它怎样“听懂”音频？</div>
+
+  EGSTalker 是一篇面向实时 audio-driven talking head generation 的 3D Gaussian Splatting 论文。它的任务不是 zero-shot 生成任意人的视频，而是给定目标人物约 3–5 分钟训练视频，先建立这个人的静态三维头部表示，再用新音频驱动每一帧的 Gaussian 属性变形，最终合成会说话的头像视频。论文提交于 2025 年 10 月，并注明被 IEEE International Conference on Systems, Man, and Cybernetics 2025 接收。#Zhu-et-al.-2025-EGSTalker#
+
+  这篇论文容易被一句“实时 3DGS 数字人”概括掉，但真正的问题比这更具体：3DGS 的 rasterization 已经能把渲染速度推得很高，瓶颈转移到了 audio-to-motion mapping。也就是说，系统要回答的问题变成：音频特征如何高效地控制大量 3D Gaussian 的位置、尺度、旋转、不透明度和颜色系数？如果只是用 MLP 做逐点调制，表达力不够；如果对所有空间点和音频条件做完整 cross-attention，计算成本又会压垮实时性。#Zhu-et-al.-2025-EGSTalker# #Kerbl-et-al.-2023-3DGS#
+
+  <div class="callout"><strong>一句话结论</strong>：EGSTalker 的核心贡献不是“首次用 3DGS 做 talking head”，而是把音频驱动 3DGS 里的 dense spatial-audio interaction 改成 agent-token mediated interaction，在画质基本不掉的前提下提升实时性。</div>
+
+  <div class="photo">
+    <img src="media/images/paper-egstalker/headfig-small-paper.webp" alt="EGSTalker visual comparison" loading="lazy">
+    <div class="cap">图 1：EGSTalker 的目标是用结构化头部表示和高效音频空间融合机制提升清晰度、运动一致性与实时性（来源：EGSTalker 论文原图）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">背景路线图：从 2D 换嘴、NeRF 到 3D Gaussian talking head</div>
+
+  Audio-driven talking head 大致可以沿三条路线理解。第一类是 2D 图像或视频编辑，例如 Wav2Lip 和 IP-LAP。这类方法直接在图像空间或局部嘴部区域做同步，推理链路相对轻，但头姿、身份一致性、牙齿细节和三维一致性更依赖训练数据与后处理。#Prajwal-et-al.-2020-Wav2Lip# #Zhong-et-al.-2023-IP-LAP#
+
+  第二类是 NeRF talking portrait。AD-NeRF、RAD-NeRF、ER-NeRF 这条线用隐式辐射场建模人物头部，优点是三维一致性更强，但训练和渲染成本明显更高。EGSTalker 的实验表中，AD-NeRF 训练时间为 167.6h、FPS 只有 0.04；ER-NeRF 训练时间为 8.9h、FPS 为 15.21。这个数量级说明，NeRF 路线即使画质稳定，也很难直接满足高帧率交互系统。#Guo-et-al.-2021-AD-NeRF# #Tang-et-al.-2022-RAD-NeRF# #Li-et-al.-2023-ER-NeRF#
+
+  第三类就是 3DGS talking head。3D Gaussian Splatting 把场景表示为一组可学习的 Gaussian primitives，每个 Gaussian 携带位置、尺度、旋转、opacity 和 spherical harmonics 颜色参数，再通过高效 rasterization 渲染。TalkingGaussian、GaussianTalker、GSTalker 都在探索如何让这些 Gaussian 随音频动态变化。EGSTalker 正是这条线的后续：它吸收 GaussianTalker 的“静态 Gaussian + 音频驱动 deformation”范式，但把空间编码、音频空间融合和属性预测重新做轻量化。#Kerbl-et-al.-2023-3DGS# #Li-et-al.-2025-TalkingGaussian# #Cho-et-al.-2024-GaussianTalker# #Chen-et-al.-2024-GSTalker#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>优势</th><th>主要瓶颈</th><th>EGSTalker 的关系</th></tr></thead>
+      <tbody>
+        <tr><td>2D lip editing / video dubbing</td><td>Wav2Lip, IP-LAP</td><td>链路轻，直接优化唇形同步</td><td>三维一致性、头姿和身份细节受限</td><td>作为低成本基线比较</td></tr>
+        <tr><td>NeRF talking portrait</td><td>AD-NeRF, RAD-NeRF, ER-NeRF</td><td>隐式三维表示，画面稳定</td><td>训练慢、渲染慢</td><td>提供 audio-spatial decomposition 与 region-aware 思路</td></tr>
+        <tr><td>3DGS talking head</td><td>TalkingGaussian, GaussianTalker, GSTalker</td><td>渲染快，适合实时系统</td><td>音频如何控制 Gaussian 仍然困难</td><td>EGSTalker 直接在这一线改进效率和融合机制</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">总体方法：两阶段训练，把“人是谁”和“这一帧怎么动”拆开</div>
+
+  EGSTalker 的 pipeline 分成两个阶段。第一阶段叫 Static Gaussian Initialization，目标是从训练视频中建立目标人物的静态 3D Gaussian 表示；第二阶段叫 Efficient Audio-driven Gaussian Deformation，目标是在每一帧根据音频、眼部特征和相机姿态预测 Gaussian 属性偏移。最终输出不是直接生成像素，而是先得到动态 Gaussian，再用 3DGS rasterization 渲染出视频帧。#Zhu-et-al.-2025-EGSTalker#
+
+  <div class="photo">
+    <img src="media/images/paper-egstalker/framework-3-paper.webp" alt="EGSTalker framework" loading="lazy">
+    <div class="cap">图 2：EGSTalker 总体框架。第一阶段建立静态 Gaussian 头部表示；第二阶段用音频、眼部和相机条件驱动 Gaussian deformation（来源：EGSTalker 论文原图）。</div>
+  </div>
+
+  用公式概括，静态阶段把空间点 \(\mathbf{x}=(x,y,z)\) 编码为空间特征 \(f_v(\mathbf{x})\)，再映射为静态 Gaussian 参数：
+
+\[
+\mathcal{G}_{static}\{\mu_s,s_s,r_s,SH_s,\alpha_s\}=KAN(f_v(\mathbf{x})).
+\]
+
+  动态阶段则基于融合后的音频感知空间特征 \(f_d(\mathbf{x}_n)\)，预测第 \(n\) 个 Gaussian 的属性偏移：
+
+\[
+\mathcal{G}_{deform}\{\Delta\mu_n,\Delta s_n,\Delta r_n,\Delta SH_n,\Delta\alpha_n\}=KAN(f_d(\mathbf{x}_n)).
+\]
+
+  最后渲染视频帧：
+
+\[
+\hat{V}=\{I_i\}=Splatting(\mathcal{G}_{static}+\mathcal{G}_{deform}).
+\]
+
+  {{< mermaid >}}
+flowchart LR
+  V["3–5 分钟目标人物视频"] --> S["Static Gaussian Initialization"]
+  S --> G["静态 3D Gaussian: 位置 / 尺度 / 旋转 / SH / opacity"]
+  A["驱动音频"] --> AN["AudioNet + AudioAttNet"]
+  E["眼部特征"] --> ESAA["ESAA: agent aggregation + broadcast"]
+  C["相机姿态"] --> ESAA
+  G --> ESAA
+  AN --> ESAA
+  ESAA --> D["Gaussian deformation offsets"]
+  D --> R["3DGS rasterization"]
+  R --> O["Talking head video"]
+  {{< /mermaid >}}
+
+  <div class="callout"><strong>读法</strong>：把第一阶段理解为“建一个这个人的可渲染头部资产”，第二阶段理解为“每来一段音频，就预测这个资产在当前帧该怎样变形”。</div>
+
+  <h3 class="section-title">Static Gaussian Initialization：triplane 负责空间结构，代码里的静态头其实是 MLP heads</h3>
+
+  静态阶段的动机是脸部运动具有区域性。嘴唇附近的点在发音时高度相关，眼周、脸颊、下巴又有不同的运动模式。普通 3DGS 可以表示一个静态头，但它不天然知道这些 intra-region 与 inter-region spatial relationships。EGSTalker 采用 multi-resolution hash triplane：把三维点投影到三个正交二维平面，在多分辨率网格上插值，再用 Hadamard product 融合成紧凑空间特征。#Zhu-et-al.-2025-EGSTalker# #Cao-and-Johnson-2023-HexPlane#
+
+  这里有一个必须保真的细节：论文公式把空间特征到 Gaussian 参数的映射写成 KAN，但官方仓库当前实现中，静态分支 `scene/canonical_tri_plane.py` 使用 `HexPlaneField(args.bounds, args.kplanes_config, args.multires)` 生成特征，随后 `feature_out`、`scales`、`rotations`、`opacity`、`shs` 都是 Linear/ReLU MLP heads，而不是 `scene/networks.py` 中封装的 Taylor-KAN。也就是说，论文方法描述和开源实现存在细节差异；最终读法应区分“论文公式中的 KAN 映射”和“仓库里静态/动态分支的实际实现”。#Zhu-et-al.-2025-EGSTalker# #EGSTalker-GitHub#
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      论文公式和开源实现的差异
+    </div>
+    <div class="admonition-content"><p>静态阶段不要笼统写成“代码完全用 KAN 输出所有 Gaussian 参数”。源码里的静态参数头是 Linear/ReLU MLP heads；最终动态 deformation offset heads（<code>pos_deform</code>、<code>scales_deform</code>、<code>rotations_deform</code>、<code>opacity_deform</code>、<code>shs_deform</code>）也是 Linear/ReLU MLP heads。KAN 主要出现在动态条件编码与注意力投影相关模块，例如 <code>audio_mlp</code>、<code>eye_mlp</code>、<code>cam_mlp</code>、<code>enc_x_mlp</code>、<code>aud_ch_att_net</code> 和 <code>eye_att_net</code>。</p></div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-egstalker/repo-framework.webp" alt="EGSTalker repository framework" loading="lazy">
+    <div class="cap">图 3：官方仓库 README 中的框架图，与论文两阶段叙事一致；代码层面静态参数头与论文公式描述存在实现差异（来源：EGSTalker GitHub）。</div>
+  </div>
+
+  <h3 class="section-title">ESAA：用 agent token 把昂贵的空间—音频交互拆成“聚合”和“广播”</h3>
+
+  EGSTalker 最关键的模块是 Efficient Spatial-Audio Attention。普通 cross-attention 的直觉很直接：每个空间点都去看音频条件，得到和当前发音相关的运动信息。但对 3DGS 来说，空间点数量很大，如果做 dense interaction，复杂度会随空间序列长度快速增长。ESAA 的思路是引入少量 agent tokens \(\mathcal{A}\)：先让 agent 从音频条件中聚合信息，再让空间特征向 agent 查询并广播回每个空间点。#Zhu-et-al.-2025-EGSTalker# #Han-et-al.-2025-AgentAttention#
+
+  论文把这个过程写成：
+
+\[
+ACA(f_v,f_a)=SDP(f_v,\mathcal{A},SDP(\mathcal{A},f_a,f_a)).
+\]
+
+  其中 scaled dot-product attention 是：
+
+\[
+SDP(Q,K,V)=Softmax\Bigl(\frac{QK^T}{\sqrt{d_k}}\Bigr)V.
+\]
+
+  这个式子的读法是：里面的 \(SDP(\mathcal{A},f_a,f_a)\) 是 Agent Aggregation，agent tokens 从音频特征中提取代理值；外面的 \(SDP(f_v,\mathcal{A},\cdot)\) 是 Agent Broadcast，空间特征向 agent 查询，把音频驱动信息分发到每个空间位置。复杂度从 \(O(N^2d)\) 降到 \(O(Nnd)\)，其中 \(N\) 是空间长度，\(n\) 是 agent token 数，\(d\) 是特征维度。#Zhu-et-al.-2025-EGSTalker#
+
+  <div class="photo">
+    <img src="media/images/paper-egstalker/attention02-paper.webp" alt="Efficient Spatial-Audio Attention" loading="lazy">
+    <div class="cap">图 4：ESAA 用 agent tokens 先聚合音频信息，再向空间特征广播，从而降低 spatial-audio attention 成本（来源：EGSTalker 论文原图）。</div>
+  </div>
+
+  官方代码中，这一机制对应 `scene/transformer/agent_attention_t.py` 的 `AgentScaleDotProductAttention`：先用 `agent_linear(q[:, :self.agent_num, :])` 生成 agent tokens，再计算 `agent_attn_scores` 聚合 value，最后用 `q_attn_scores` 把聚合后的 `agent_values` 广播回 query。`scene/transformer/transformer.py` 的 `Spatial_Audio_Attention_Layer` 在 attention 前对 `enc_source` 加 PeriodicPositionalEncoding，然后做残差、LayerNorm 和 FFN。#EGSTalker-GitHub#
+
+  EGSTalker 还加入 Periodic Positional Encoding，用来表达音频驱动面部运动的周期性：
+
+\[
+PPE(t,2i)=\sin\Bigl(\frac{t \bmod p}{10000^{2i/d}}\Bigr),\quad PPE(t,2i+1)=\cos\Bigl(\frac{t \bmod p}{10000^{2i/d}}\Bigr).
+\]
+
+  源码里 `PeriodicPositionalEncoding(d_model=args.d_model, period=25, max_seq_len=600)` 对应 25 FPS 视频条件下的周期编码设定。音频之外，代码还把 eye feature、camera pose 和一个 learnable null vector 拼入 `enc_source`，说明它并不把所有面部运动都归因于音频。#Zhu-et-al.-2025-EGSTalker# #EGSTalker-GitHub#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：论文写 loss，代码补齐了真正的训练配置</div>
+
+  作为系统型/工程型论文，训练链路必须单独看。论文给出两类训练目标。静态阶段使用重建、结构相似性和 perceptual loss：
+
+\[
+L_{static}=L_{L1}+\lambda_{D-SSIM}L_{D-SSIM}+\lambda_{lpips}L_{lpips}.
+\]
+
+  动态阶段额外加入嘴部区域约束：
+
+\[
+L_{def}=L_{L1}+\lambda_{D-SSIM}L_{D-SSIM}+\lambda_{lpips}L_{lpips}+\lambda_{lip}L_{lip}.
+\]
+
+  论文正文没有逐项列出优化器和学习率 schedule，官方代码补足了可复现实现：`train.py` 中先训练 coarse stage，再训练 fine stage；`arguments/args.py` 把 `coarse_iterations` 设为 100、`iterations` 设为 1000、`batch_size` 设为 8，并开启 `lip_fine_tuning=True` 与 `depth_fine_tuning=True`。优化器在 `scene/gaussian_model.py` 中使用 Adam，`eps=1e-15`；实验覆盖配置包含 `deformation_lr_init=0.0001` 与 `deformation_lr_final=0.00001`。#Zhu-et-al.-2025-EGSTalker# #EGSTalker-GitHub#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>项目</th><th>论文正文</th><th>官方代码补充</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>4 个高分辨率视频，三男一女，每段约 6500 帧，25 FPS</td><td>数据加载由 <code>scene/provider.py</code> 处理</td></tr>
+        <tr><td>硬件</td><td>单张 NVIDIA Tesla T4，16GB VRAM</td><td>代码自动选择 CUDA；CPU 与系统内存未在论文正文披露</td></tr>
+        <tr><td>阶段</td><td>Static initialization + audio-driven deformation</td><td><code>train.py</code> 中 coarse 后 fine</td></tr>
+        <tr><td>迭代</td><td>正文未逐项披露</td><td><code>coarse_iterations=100</code>, <code>iterations=1000</code>；epoch 数未披露</td></tr>
+        <tr><td>batch size</td><td>正文未披露</td><td><code>batch_size=8</code>，coarse 内部强制 batch size 1</td></tr>
+        <tr><td>学习率</td><td>正文未披露</td><td><code>deformation_lr_init=0.0001</code>, <code>deformation_lr_final=0.00001</code>；通用默认值还含 position/grid/feature/opacity/scaling/rotation 学习率</td></tr>
+        <tr><td>损失实现</td><td>符号化 \(\lambda\) 权重</td><td>\(0.8L_1+0.01L_{perceptual}+0.2(1-SSIM)\)，另加 lip/depth fine-tuning 各 0.4</td></tr>
+        <tr><td>优化器</td><td>正文未披露</td><td>Adam, <code>eps=1e-15</code></td></tr>
+        <tr><td>推理设置</td><td>论文报告 FPS，但未逐项披露推理 batch、CPU、编码环境</td><td><code>render.py</code> 以 batch 调用 <code>render_from_batch</code>；<code>only_infer=True</code> 时缓存静态空间特征</td></tr>
+        <tr><td>训练耗时</td><td>表 1 报告 EGSTalker 训练 3.7h</td><td>源码不硬编码耗时，取决于数据与硬件</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>复现提醒</strong>：文章里引用“3–5 分钟”时必须写成训练视频长度；EGSTalker 表 1 中训练耗时是 3.7h，不是几分钟训练完。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：实时性的来源是缓存静态空间特征 + 3DGS rasterization</div>
+
+  推理入口是官方仓库的 `render.py`。流程是加载训练好的 `GaussianModel` 和 `Scene`，如果提供 `custom_aud` 就创建 custom cameras；然后按 batch 调用 `render_from_batch(..., stage='fine', only_infer=True)`，把每一帧渲染出来，最后用 ffmpeg 合成带音频的视频。#EGSTalker-GitHub#
+
+  这里有一个容易误读的地方：EGSTalker 的推理并不是纯 audio-only。论文方法图里出现的 facial attribute / face feature，在开源代码中主要对应 `eye_f` 这类辅助条件；它不是由音频网络在线生成，而是从目标人物视频预处理结果里读出来。具体说，数据读取阶段从 `au.csv` 读取 `AU45_r` 作为眨眼/眼部 Action Unit，再归一化为 `eye_f`；custom audio 推理时只替换 `aud_features`，`eye_f`、相机姿态和头部轨迹仍来自目标人物的预处理序列。#EGSTalker-GitHub#
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      推理条件不是纯音频
+    </div>
+    <div class="admonition-content"><p>如果只给一段新音频，EGSTalker 可以替换音频特征来做 cross-driven talking head；但眼部 blink/AU 信号和 camera/head trajectory 仍需要来自目标人物数据或外部驱动序列。它没有在论文和代码中给出一个“音频自动生成完整表情特征”的模块。</p></div>
+  </div>
+
+  实时代码里最值得注意的是缓存。`Deformation.forward_dynamic` 在 `only_infer=True` 时缓存 point positional encoding、scale/rotation embedding 和 triplane features，避免每一帧重复计算静态空间部分。也就是说，实时性不是只靠 ESAA，还是三件事叠加：3DGS 本身 rasterization 快；person-specific 静态头部可以提前训练好；推理时只动态预测 offsets，并缓存可复用空间特征。#EGSTalker-GitHub# #Kerbl-et-al.-2023-3DGS#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>链路段</th><th>对应模块</th><th>是否可缓存</th><th>实时性影响</th></tr></thead>
+      <tbody>
+        <tr><td>目标人物静态表示</td><td><code>canonical_tri_plane</code> + GaussianModel</td><td>训练后固定</td><td>把人物身份和基础纹理提前固化</td></tr>
+        <tr><td>音频特征</td><td><code>AudioNet</code>, <code>AudioAttNet</code></td><td>离线音频可预处理；在线语音需流式窗口</td><td>决定唇形响应延迟</td></tr>
+        <tr><td>空间特征</td><td><code>self.tri_plane(..., only_feature=True)</code></td><td><code>only_infer=True</code> 时缓存</td><td>减少每帧重复计算</td></tr>
+        <tr><td>跨模态融合</td><td><code>AgentScaleDotProductAttention</code></td><td>不可完全缓存</td><td>ESAA 降低 attention 成本</td></tr>
+        <tr><td>属性偏移</td><td><code>pos_deform</code>, <code>scales_deform</code>, <code>rotations_deform</code>, <code>opacity_deform</code>, <code>shs_deform</code></td><td>逐帧预测</td><td>决定嘴部和面部动态</td></tr>
+        <tr><td>渲染合成</td><td><code>render_from_batch</code> + ffmpeg</td><td>逐帧执行</td><td>3DGS rasterization 是高 FPS 的底座</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这也解释了 EGSTalker 的适用边界：它适合目标人物固定、需要高帧率音频驱动的数字人，不适合直接作为“任意人物、任意风格、零样本生成”的通用视频模型。线上交互系统还要额外计算 ASR/TTS、网络传输、编码、WebRTC 和客户端缓冲，论文的 FPS 不能直接等价为端到端延迟。#Zhu-et-al.-2025-EGSTalker#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：EGSTalker 不是全指标最快，而是在质量、同步和速度之间取了更稳的点</div>
+
+  Self-driven 实验中，EGSTalker 在 PSNR、SSIM、FID、LMD、LSE-C 等指标上表现很强：PSNR 36.070、SSIM 0.992、LPIPS 0.0223、FID 2.424、LMD 2.536、LSE-D 8.237、LSE-C 6.966、训练时间 3.7h、FPS 68.51。对比 GaussianTalker，EGSTalker 的 PSNR、LPIPS、FID、LMD、LSE-C 和 FPS 都略好，训练时间从 4.5h 降到 3.7h；对比 TalkingGaussian，EGSTalker 的 FPS 略低于 70.42，LPIPS 也不如 0.0189，但 PSNR、SSIM、FID 和 LMD 更好。#Zhu-et-al.-2025-EGSTalker# #Li-et-al.-2025-TalkingGaussian# #Cho-et-al.-2024-GaussianTalker#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>Method</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>FID ↓</th><th>LMD ↓</th><th>LSE-D ↓</th><th>LSE-C ↑</th><th>Time ↓</th><th>FPS ↑</th></tr></thead>
+      <tbody>
+        <tr><td>AD-NeRF</td><td>25.794</td><td>0.9643</td><td>0.0842</td><td>18.289</td><td>2.932</td><td>9.839</td><td>5.105</td><td>167.6h</td><td>0.04</td></tr>
+        <tr><td>ER-NeRF</td><td>26.047</td><td>0.961</td><td>0.0635</td><td>7.637</td><td>2.547</td><td>7.913</td><td>7.054</td><td>8.9h</td><td>15.21</td></tr>
+        <tr><td>TalkingGaussian</td><td>35.21</td><td>0.990</td><td>0.0189</td><td>3.398</td><td>2.538</td><td>8.051</td><td>6.963</td><td>1.5h</td><td>70.42</td></tr>
+        <tr><td>GaussianTalker</td><td>36.034</td><td>0.992</td><td>0.0224</td><td>2.431</td><td>2.614</td><td>8.274</td><td>6.964</td><td>4.5h</td><td>59.24</td></tr>
+        <tr><td><strong>EGSTalker</strong></td><td><strong>36.070</strong></td><td><strong>0.992</strong></td><td>0.0223</td><td><strong>2.424</strong></td><td><strong>2.536</strong></td><td>8.237</td><td><strong>6.966</strong></td><td>3.7h</td><td>68.51</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  Cross-driven 实验进一步考察“用非目标人物音频驱动目标身份”时的同步稳定性。EGSTalker 在 Testset A 上达到 LMD 7.459、LSE-C 6.945、LSE-D 8.470；在 Testset B 上达到 LMD 8.224、LSE-C 6.461、LSE-D 8.862。它不是每项都领先：Testset A 的最低 LMD 属于 TalkingGaussian，最低 LSE-D 属于 ER-NeRF；Testset B 的最高 LSE-C 与最低 LSE-D 也属于 ER-NeRF。EGSTalker 的优势更准确地说是，在 LMD 和 LSE-C 两个口型/同步指标上维持强竞争力，同时保持 3DGS 路线的高质量重建与实时渲染能力。#Zhu-et-al.-2025-EGSTalker#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>Method</th><th>Testset A LMD ↓</th><th>Testset A LSE-C ↑</th><th>Testset A LSE-D ↓</th><th>Testset B LMD ↓</th><th>Testset B LSE-C ↑</th><th>Testset B LSE-D ↓</th></tr></thead>
+      <tbody>
+        <tr><td>AD-NeRF</td><td>7.716</td><td>4.932</td><td>10.547</td><td>8.379</td><td>4.443</td><td>10.707</td></tr>
+        <tr><td>RAD-NeRF</td><td>7.575</td><td>6.697</td><td>8.665</td><td>8.562</td><td><strong>6.669</strong></td><td><strong>8.620</strong></td></tr>
+        <tr><td>ER-NeRF</td><td>7.458</td><td>6.865</td><td><strong>8.361</strong></td><td>8.362</td><td><strong>7.061</strong></td><td><strong>8.269</strong></td></tr>
+        <tr><td>TalkingGaussian</td><td><strong>7.450</strong></td><td>6.136</td><td>9.265</td><td>8.323</td><td>6.381</td><td>8.637</td></tr>
+        <tr><td>GaussianTalker</td><td>7.994</td><td>6.260</td><td>9.523</td><td>8.687</td><td>6.618</td><td>8.950</td></tr>
+        <tr><td><strong>EGSTalker</strong></td><td>7.459</td><td><strong>6.945</strong></td><td>8.470</td><td><strong>8.224</strong></td><td>6.461</td><td>8.862</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-egstalker/result-ecai-paper.webp" alt="EGSTalker qualitative results" loading="lazy">
+    <div class="cap">图 5：论文给出的多方法可视化对比。EGSTalker 的卖点是清晰度、身份保持和同步之间的综合折中，而不是单一指标绝对领先（来源：EGSTalker 论文原图）。</div>
+  </div>
+
+  消融实验更有意思。去掉 ESAA 和 PPE 后，PSNR 反而从 36.070 升到 36.415，LPIPS 也从 0.0223 降到 0.0218；但 LMD 从 2.536 变差到 2.638，LSE-C 从 6.966 掉到 6.430。这个反直觉结果说明，像素重建质量不等于嘴形同步质量。模型如果只追求重建指标，可能更擅长复原平均脸部纹理，却不一定能把当前音频的细微口型变化表达出来。#Zhu-et-al.-2025-EGSTalker#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>Variant</th><th>PSNR ↑</th><th>LPIPS ↓</th><th>LMD ↓</th><th>LSE-C ↑</th><th>解读</th></tr></thead>
+      <tbody>
+        <tr><td>w/o KAN, ESAA, PPE</td><td>36.034</td><td>0.0224</td><td>2.614</td><td>6.964</td><td>接近 GaussianTalker 基线</td></tr>
+        <tr><td>w/o ESAA, PPE</td><td>36.415</td><td>0.0218</td><td>2.638</td><td>6.430</td><td>像素指标更好，同步明显变差</td></tr>
+        <tr><td>w/o PPE</td><td>36.104</td><td>0.0218</td><td>2.537</td><td>6.851</td><td>周期信息对置信同步有帮助</td></tr>
+        <tr><td>w/o Step 1</td><td>35.865</td><td>0.0248</td><td>2.651</td><td>6.461</td><td>静态初始化缺失会破坏基础表示</td></tr>
+        <tr><td>All</td><td>36.070</td><td>0.0223</td><td>2.536</td><td>6.966</td><td>综合同步与质量最稳</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  Agent token 数量也不是越多越好。论文报告 0.16% agent token 时 FPS 可达 74.1，但 LMD 为 2.610；0.5% 时 LMD 为 2.536、LSE-C 为 6.966、FPS 为 68.5；1.0% 时 LMD 进一步到 2.508，但 FPS 降到 65.6，LSE-C 也没有继续提升。论文最终选择 0.5%，本质上是在同步质量和实时性之间取折中点。#Zhu-et-al.-2025-EGSTalker#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">局限与启发：这是一篇很实用的系统论文，但不要把它读成通用生成模型</div>
+
+  EGSTalker 的局限首先来自 person-specific 设定。它需要目标人物短视频训练，因此更适合固定主播、客服数字人、虚拟形象和可预训练角色，不适合用户随手上传一张图就立即生成完整数字人的场景。其次，它的泛化高度依赖训练视频覆盖。论文没有逐项报告头发、torso、极端表情、遮挡、侧脸和大幅头动的失败案例；这些是从 person-specific 训练设定推导出的工程风险，真正落地前需要用目标业务视频单独压测。#Zhu-et-al.-2025-EGSTalker#
+
+  第二个局限是评测数字需要放回系统边界看。68.51 FPS 证明其渲染与变形链路满足实时潜力，但真实交互还包含音频采集、语音识别、LLM/TTS、视频编码、网络传输和客户端播放缓冲。如果接入在线数字人系统，应该单独压测端到端 p50/p95 延迟，而不能把论文 FPS 当成产品延迟。#Zhu-et-al.-2025-EGSTalker#
+
+  第三个启发来自代码：论文提出 KAN 作为重要组件，但开源实现里静态 Gaussian 参数头和最终动态 deformation offset heads 都是 Linear/ReLU MLP heads，KAN 主要用于动态条件编码与注意力投影相关模块。这不是小瑕疵，而是复现和二次研究时很重要的事实。若后续要做改进，值得单独比较三种版本：完全 MLP、只在动态条件投影中用 KAN、静态参数头和最终 deformation heads 也全部改成 KAN。#EGSTalker-GitHub#
+
+  <div class="review-box">
+    <h3 class="section-title">读完这篇论文应保留的 5 个判断</h3>
+    <ul>
+      <li><strong>范式判断</strong>：EGSTalker 属于 person-specific 3DGS talking head，不是 zero-shot video generation。</li>
+      <li><strong>核心模块</strong>：ESAA 是最关键创新，用 agent tokens 降低 spatial-audio attention 成本。</li>
+      <li><strong>指标判断</strong>：它不是所有指标第一，而是在质量、同步和 FPS 间取得稳定折中。</li>
+      <li><strong>工程判断</strong>：实时性来自 3DGS rasterization、静态特征缓存和轻量 attention 的组合。</li>
+      <li><strong>复现判断</strong>：论文 KAN 叙述与开源代码静态参数头、最终动态 offset heads 的实现存在差异，写作和复现都要明确标注。#EGSTalker-GitHub#</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>论文与代码</h3>
+    <ul>
+      <li data-cite-key="Zhu-et-al.-2025-EGSTalker">Zhu, T., Yu, Y., Wang, L., Sun, F., & Zheng, W. (2025). EGSTalker: Real-Time Audio-Driven Talking Head Generation with Efficient Gaussian Deformation. <a href="https://arxiv.org/abs/2510.08587" target="_blank">arXiv:2510.08587</a></li>
+      <li data-cite-key="EGSTalker-GitHub">ZhuTianheng. EGSTalker official code repository. <a href="https://github.com/ZhuTianheng/EGSTalker" target="_blank">GitHub</a></li>
+      <li data-cite-key="Kerbl-et-al.-2023-3DGS">Kerbl, B., Kopanas, G., Leimkühler, T., & Drettakis, G. (2023). 3D Gaussian Splatting for Real-Time Radiance Field Rendering. ACM Transactions on Graphics.</li>
+      <li data-cite-key="Cao-and-Johnson-2023-HexPlane">Cao, A., & Johnson, J. (2023). HexPlane: A Fast Representation for Dynamic Scenes. CVPR 2023.</li>
+      <li data-cite-key="Han-et-al.-2025-AgentAttention">Han, D. et al. (2025). Agent Attention: On the Integration of Softmax and Linear Attention. ECCV 2025.</li>
+      <li data-cite-key="Guo-et-al.-2021-AD-NeRF">Guo, Y. et al. (2021). AD-NeRF: Audio Driven Neural Radiance Fields for Talking Head Synthesis. ICCV 2021.</li>
+      <li data-cite-key="Tang-et-al.-2022-RAD-NeRF">Tang, J. et al. (2022). Real-time Neural Radiance Talking Portrait Synthesis via Audio-spatial Decomposition. arXiv:2211.12368.</li>
+      <li data-cite-key="Li-et-al.-2023-ER-NeRF">Li, J. et al. (2023). Efficient Region-Aware Neural Radiance Fields for High-Fidelity Talking Portrait Synthesis. ICCV 2023.</li>
+      <li data-cite-key="Li-et-al.-2025-TalkingGaussian">Li, J. et al. (2025). TalkingGaussian: Structure-Persistent 3D Talking Head Synthesis via Gaussian Splatting. ECCV 2025.</li>
+      <li data-cite-key="Cho-et-al.-2024-GaussianTalker">Cho, K. et al. (2024). GaussianTalker: Real-Time High-Fidelity Talking Head Synthesis with Audio-Driven 3D Gaussian Splatting. arXiv:2404.16012.</li>
+      <li data-cite-key="Chen-et-al.-2024-GSTalker">Chen, B. et al. (2024). GSTalker: Real-time Audio-Driven Talking Face Generation via Deformable Gaussian Splatting. arXiv:2404.19040.</li>
+      <li data-cite-key="Prajwal-et-al.-2020-Wav2Lip">Prajwal, K. R. et al. (2020). A Lip Sync Expert Is All You Need for Speech to Lip Generation in the Wild. ACM Multimedia 2020.</li>
+      <li data-cite-key="Zhong-et-al.-2023-IP-LAP">Zhong, W. et al. (2023). Identity-Preserving Talking Face Generation With Landmark and Appearance Priors. CVPR 2023.</li>
+    </ul>
+  </div>
+</div>

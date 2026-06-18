@@ -1,0 +1,360 @@
+---
+title: "数字人工程解读（三）：OpenAvatarChat 源码解读——LiteAvatar 实时数字人的模块化设计、WebRTC 流媒体与 TURN 端口部署"
+description: "深度解读 OpenAvatarChat 仓库：LiteAvatar 实时数字人的 Handler Pipeline 架构、RTC 流媒体数据通路、coturn TURN 服务部署与端口（3478/5349/49152+）配置详解。"
+date: 2026-06-16T14:56:00
+created_at: 2026-06-16T14:56:00
+updated_at: 2026-06-16T14:56:00
+tags: [数字人, OpenAvatarChat, LiteAvatar, WebRTC, TURN, coturn, fastrtc, 数字人部署, 端口配置, Handler Pipeline]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 2020
+toc: true
+mathjax: false
+notify: true
+hero_title: "OpenAvatarChat 源码解读"
+hero_sub: "从 Handler Pipeline 到 TURN 端口：LiteAvatar 数字人的模块化设计与部署全链路"
+---
+
+<div class="wrap">
+
+<div class="callout"><strong>一句话总结</strong>：OpenAvatarChat 是 HumanAIGC 团队开源的模块化实时数字人对话系统。本文以 LiteAvatar（2D 说话头）模式为切⼊点，深度分析其 Handler Pipeline 数据通路、WebRTC 流媒体链路，以及 coturn TURN 服务的端口部署细节——特别是 49152+ 范围内的端口数量如何与并发数挂钩。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第⼀章</div>
+  <div class="ch-title">项目定位与整体架构</div>
+
+  <h3 class="section-title">OpenAvatarChat 是什么</h3>
+  <p><strong>OpenAvatarChat</strong> 是一个开源的模块化交互数字人对话系统，由 HumanAIGC 团队开发维护。它不是一个单一模型，而是一个<strong>把 ASR、LLM、TTS、Avatar 渲染、WebRTC 流媒体编排成实时对话管线的框架</strong>#repo-readme#。</p>
+  <p>核心特点——</p>
+  <ul>
+    <li><strong>多模态交互</strong>：支持文本、语音、视频。用户对着摄像头说话，数字人实时回应</li>
+    <li><strong>模块化架构</strong>：每个环节（ASR、LLM、TTS、Avatar）可独立替换，组件来自 SenseVoice、Qwen、CosyVoice、LiteAvatar 等开源项目</li>
+    <li><strong>多种数字人方案</strong>：LiteAvatar（2D 说话头）、LAM（3D Gaussian Splat）、MuseTalk（唇形同步）、FlashHead（扩散模型）</li>
+    <li><strong>低延迟</strong>：通过 VAD 检测、音频缓冲、帧率控制，平均响应约 2.2 秒#repo-readme#</li>
+  </ul>
+
+  <h3 class="section-title">支持的数字人类型</h3>
+  <div class="table-wrap">
+    <table>
+      <tr><th>数字人方案</th><th>技术路线</th><th>模式</th><th>硬件要求</th></tr>
+      <tr><td>LiteAvatar</td><td>TTS2Face（参数驱动）</td><td>2D</td><td>较低，有 GPU 即可</td></tr>
+      <tr><td>LAM</td><td>Audio2Expression + 3D Gaussian Splat</td><td>3D</td><td>需要 GPU</td></tr>
+      <tr><td>MuseTalk</td><td>扩散模型 + 唇形同步</td><td>2D</td><td>需要 GPU</td></tr>
+      <tr><td>FlashHead</td><td>扩散模型实时流式</td><td>2D</td><td>需要 GPU</td></tr>
+    </table>
+  </div>
+
+  <h3 class="section-title">宏观架构：从浏览器到数字人渲染</h3>
+  <p>整个系统分为三个运行单元——前端 WebUI、FastAPI 服务端和 ChatEngine 推理管线。它们通过 WebRTC 音频视频流和 WebSocket 数据通道连在一起#repo-code-rtc#。</p>
+
+{{< mermaid >}}
+flowchart TB
+  subgraph Browser["浏览器 (Vue3 前端)"]
+    UI["VideoChat / WSVideoChat"]
+    Media["getUserMedia (摄像头+麦克风)"]
+  end
+
+  subgraph FastAPI["FastAPI 服务 (8282)"]
+    Static["Static Files (/ui/*)"]
+    InitConfig["/openavatarchat/initconfig"]
+    WebRTCOffer["/webrtc/offer (fastrtc)"]
+  end
+
+  subgraph ChatEngine["ChatEngine Handler Pipeline"]
+    Client["RtcClient Handler"]
+    VAD["SileroVad"]
+    ASR["SenseVoice"]
+    LLM["Qwen-Plus (DashScope API)"]
+    TTS["CosyVoice (Bailian API)"]
+    Avatar["HandlerTts2Face (LiteAvatar)"]
+  end
+
+  Media -->|"WebRTC (H.264)"| WebRTCOffer
+  WebRTCOffer --> Client
+  Client --> VAD --> ASR --> LLM --> TTS
+  TTS -->|"AVATAR_AUDIO"| Avatar
+  Avatar -->|"AVATAR_VIDEO + AVATAR_AUDIO"| Client
+  Client -->|"WebRTC Track"| Media
+  Static --> UI
+  InitConfig --> UI
+{{< /mermaid >}}
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">LiteAvatar 数据通路：从麦克风到数字人帧</div>
+
+  <h3 class="section-title">Handler Pipeline 执行模型</h3>
+  <p>ChatEngine 的核心设计是 <strong>Handler Pipeline</strong>——每个 Handler 有明确的输入/输出数据类型（ChatDataType），引擎自动按依赖关系串联它们#repo-code-chat-engine#。</p>
+  <p>LiteAvatar 模式下（配置文件 <code>chat_with_openai_compatible_bailian_cosyvoice.yaml</code>），Pipeline 包含以下 Handler：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>顺序</th><th>Handler</th><th>模块路径</th><th>输入类型</th><th>输出类型</th></tr>
+      <tr><td>1</td><td>RtcClient</td><td>client/rtc_client/client_handler_rtc</td><td>MIC_AUDIO, CAMERA_VIDEO</td><td>—</td></tr>
+      <tr><td>2</td><td>InterruptHandler</td><td>logic/interrupt/interrupt_handler</td><td>INTERRUPT Signal</td><td>Signal 转发</td></tr>
+      <tr><td>3</td><td>SileroVad</td><td>vad/silerovad/vad_handler_silero</td><td>MIC_AUDIO</td><td>VAD 分段</td></tr>
+      <tr><td>4</td><td>SenseVoice</td><td>asr/sensevoice/asr_handler_sensevoice</td><td>Audio Segment</td><td>HUMAN_TEXT</td></tr>
+      <tr><td>5</td><td>LLMOpenAICompatible</td><td>llm/openai_compatible/...</td><td>HUMAN_TEXT</td><td>AVATAR_TEXT</td></tr>
+      <tr><td>6</td><td>CosyVoice (Bailian)</td><td>tts/bailian_tts/...</td><td>AVATAR_TEXT</td><td>AVATAR_AUDIO</td></tr>
+      <tr><td>7</td><td>LiteAvatar</td><td>avatar/liteavatar/avatar_handler_liteavatar</td><td>AVATAR_AUDIO</td><td>AVATAR_VIDEO + AVATAR_AUDIO</td></tr>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Pipeline 自动编排
+    </div>
+    <div class="admonition-content"><p>你不需要手动串联 Handler。ChatEngine 根据每个 Handler 的 <code>get_handler_detail()</code> 返回的输入/输出类型自动建立数据流转关系。新增一个 Avatar Handler 只需实现相同接口即可替换。</p></div>
+  </div>
+
+  <h3 class="section-title">LiteAvatar Worker：独立进程的音频到视频转换</h3>
+  <p>LiteAvatar 的核心是 <strong>HandlerTts2Face</strong>（位于 <code>src/handlers/avatar/liteavatar/avatar_handler_liteavatar.py</code>），它管理一个或多个 <strong>LiteAvatarWorker</strong> 子进程#repo-code-liteavatar#。</p>
+  <p>Worker 的生命周期——</p>
+
+  {{< mermaid >}}
+  sequenceDiagram
+    participant TTS as TTS Handler
+    participant Handle as HandlerTts2Face.handle()
+    participant Worker as LiteAvatarWorker (子进程)
+    participant Algo as TTS2Face Algo (C++)
+    participant Output as 共享内存 → RTC Stream
+
+    TTS->>Handle: AVATAR_AUDIO (numpy array)
+    Handle->>Worker: audio_in_queue.put(SpeechAudio)
+    Worker->>Worker: START 事件 → audio_input_loop
+    Worker->>Algo: audio2param(audio_bytes)
+    Algo-->>Worker: 面部参数 (30fps)
+    Worker->>Algo: param2video
+    Algo-->>Worker: 视频帧 (H×W×3)
+    Worker->>Output: video_out_queue (共享内存)
+    Output-->>Handle: _media_out_loop 读取
+    Handle->>Handle: submit_data(AVATAR_VIDEO)
+  {{< /mermaid >}}
+
+  <p>关键源码——Worker 启动触发的 START 事件#repo-code-worker-start#：</p>
+
+  <pre><code class="language-python"># src/handlers/avatar/liteavatar/liteavatar_worker.py
+def _event_input_loop(self):
+    while True:
+        event = self.event_in_queue.get()
+        if event == Tts2FaceEvent.START:
+            if not self.session_running:
+                self.session_running = True
+                self.processor.start()
+                self.audio_input_thread = threading.Thread(target=self._audio_input_loop)
+                self.audio_input_thread.start()
+                logger.info("Avatar session started")</code></pre>
+
+  <p>Worker 使用 <strong>共享内存</strong>（SharedMemoryBufferPool）在主进程和子进程间传输音频/视频数据，避免序列化开销。主进程的 <code>_media_out_loop</code> 从共享内存池中取出视频帧和音频数据，封装为 <code>ChatData</code> 提交到 Pipeline。</p>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">WebRTC 流媒体链路：fastrtc + aiortc</div>
+
+  <h3 class="section-title">RtcStream：连接前后端的桥梁</h3>
+  <p>RTC 流媒体由 <strong>RtcStream</strong>（位于 <code>src/service/rtc_service/rtc_stream.py</code>）负责。它继承自 <code>fastrtc.AsyncAudioVideoStreamHandler</code>，实现了三个关键方法#repo-code-rtc-stream#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>方法</th><th>方向</th><th>功能</th></tr>
+      <tr><td><code>receive(frame)</code></td><td>前端 → 后端</td><td>接收麦克风音频，写入 Pipeline (MIC_AUDIO)</td></tr>
+      <tr><td><code>emit()</code></td><td>后端 → 前端</td><td>从 Pipeline 读取 AVATAR_AUDIO，发送到 WebRTC audio track</td></tr>
+      <tr><td><code>video_emit()</code></td><td>后端 → 前端</td><td>从 Pipeline 读取 AVATAR_VIDEO，发送到 WebRTC video track</td></tr>
+    </table>
+  </div>
+
+  <h3 class="section-title">H.264 编码管道</h3>
+  <p>OpenAvatarChat 在启动时通过 monkey-patch 方式强制 H.264 编码（位于 <code>client_handler_rtc.py</code> 的模块级初始化代码），确保视频兼容性和硬件加速#repo-code-h264#：</p>
+
+  <pre><code class="language-python"># src/handlers/client/rtc_client/client_handler_rtc.py
+async def patched_set_remote_description(self, sessionDescription):
+    await original_set_remote(self, sessionDescription)
+    for transceiver in self._RTCPeerConnection__transceivers:
+        if transceiver.kind == "video":
+            capabilities = get_capabilities("video")
+            current_codecs = transceiver._codecs
+            refiltered = filter_preferred_codecs(current_codecs, capabilities.codecs)
+            transceiver._codecs = refiltered  # H.264 优先
+            logger.info(f"Video codecs negotiated: {[c.mimeType for c in transceiver._codecs[:2]]}")</code></pre>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      fastrtc 版本兼容性
+    </div>
+    <div class="admonition-content"><p>当前版本为 <code>fastrtc==0.0.34</code> + <code>aiortc==1.14.0</code>。在非 localhost 环境下可能遇到 <code>Received ICE candidate for unknown connection</code> 警告——ICE candidate 在 PeerConnection 就绪前到达导致时序冲突。建议使用 SSH 隧道（<code>ssh -L 8282:localhost:8282</code>）做本地测试，或升级 fastrtc 到最新版本。</p></div>
+  </div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">TURN 服务部署与端口配置（关键）</div>
+
+  <div class="admonition danger">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      不看这里的端口配置，数字人 100% 罢工
+    </div>
+    <div class="admonition-content"><p>如果你从公网访问服务器（非 localhost），WebRTC 的 ICE 连接需要穿透 NAT。没有 TURN 服务做数据中继，浏览器和服务器之间的媒体流将无法建立——你会看到"数字人永远在加载中"。以下端口必须全开。</p></div>
+  </div>
+
+  <h3 class="section-title">端口完整清单</h3>
+  <div class="table-wrap param-table">
+    <table>
+      <tr><th>端口</th><th>协议</th><th>服务</th><th>用途</th><th>说明</th></tr>
+      <tr><td>8282</td><td>TCP</td><td>FastAPI (uvicorn)</td><td>HTTPS 服务</td><td>前端页面 + /webrtc/offer API + /openavatarchat/initconfig</td></tr>
+      <tr><td>3478</td><td>TCP + UDP</td><td>coturn</td><td>TURN 信令</td><td>STUN 绑定请求 + TURN 分配请求</td></tr>
+      <tr><td>5349</td><td>TCP</td><td>coturn</td><td>TURNS 信令</td><td>TURN over TLS，加密媒体中继信令</td></tr>
+      <tr><td>49152–49164</td><td>UDP</td><td>coturn</td><td>媒体中继</td><td>实际音频/视频数据中转端口范围</td></tr>
+    </table>
+  </div>
+
+  <h3 class="section-title">端口数量与并发数的关系</h3>
+  <p>每个 WebRTC PeerConnection 需要 <strong>2 个 UDP 中继端口</strong>——一个用于 RTP 音频，一个用于 RTP 视频。因此#inference-ports#：</p>
+
+  <div class="callout"><strong>并发数 n → 至少需要 2n 个端口</strong></div>
+
+  <p>具体换算——</p>
+  <ul>
+    <li>配置 <code>concurrent_limit: 2</code> → 需要 4 个端口</li>
+    <li>配置 <code>concurrent_limit: 5</code> → 需要 10 个端口</li>
+    <li>配置 <code>concurrent_limit: 10</code> → 需要 20 个端口</li>
+  </ul>
+  <p>当前推荐范围 <code>49152–49164</code> 提供 13 个端口，可支持最多 6 个并发连接。如需更高并发，扩大 <code>max-port</code> 即可。</p>
+
+  <h3 class="section-title">coturn 配置示例</h3>
+  <pre><code class="language-ini"># /etc/turnserver.conf
+listening-port=3478
+tls-listening-port=5349
+listening-ip=0.0.0.0
+relay-ip=172.19.207.124         # 服务器内网 IP
+external-ip=47.110.95.197       # 服务器公网 IP
+min-port=49152                  # 媒体中继起始端口
+max-port=49164                  # 媒体中继结束端口
+verbose
+fingerprint
+lt-cred-mech
+user=username:password          # 与 YAML 配置保持一致
+realm=openavatarchat</code></pre>
+
+  <h3 class="section-title">YAML 配置中的 TURN</h3>
+  <pre><code class="language-yaml"># config/chat_with_openai_compatible_bailian_cosyvoice.yaml
+RtcClient:
+  module: client/rtc_client/client_handler_rtc
+  connection_ttl: 900
+  turn_config:
+    turn_provider: turn_server
+    urls:
+      - "turn:47.110.95.197:3478?transport=tcp"
+      - "turn:47.110.95.197:3478?transport=udp"
+      - "turns:47.110.95.197:5349?transport=tcp"
+    username: "admin"
+    credential: "admin"</code></pre>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      常见坑：TURN 凭证不匹配
+    </div>
+    <div class="admonition-content"><p>YAML 中的 <code>username</code>/<code>credential</code> 必须与 <code>/etc/turnserver.conf</code> 中 <code>user=</code> 后的值一致。此外，阿里云等云服务器需要在<strong>安全组规则</strong>中显式开放上述所有端口——仅防火墙开放不够。</p></div>
+  </div>
+
+  <h3 class="section-title">SSL 证书</h3>
+  <p>从 localhost 以外访问需要 HTTPS（浏览器要求）。OpenAvatarChat 默认读取 <code>ssl_certs/localhost.crt</code> 和 <code>ssl_certs/localhost.key</code>，可通过 <code>scripts/create_ssl_certs.sh</code> 生成自签名证书#repo-deploy-doc#。</p>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">快速开始与配置指引</div>
+
+  <h3 class="section-title">三步启动 LiteAvatar</h3>
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      前置条件
+    </div>
+    <div class="admonition-content"><p>需要设置 <code>DASHSCOPE_API_KEY</code> 环境变量（阿里云百炼 API Key），或在项目根目录创建 <code>.env</code> 文件。LLM 和 TTS 均通过百炼 API 调用，不消耗本地 GPU 资源。</p></div>
+  </div>
+
+  <pre><code class="language-bash"># 1. 克隆 + 子模块
+git clone https://github.com/HumanAIGC-Engineering/OpenAvatarChat.git
+cd OpenAvatarChat
+git submodule update --init --recursive --depth 1
+
+# 2. 安装依赖
+uv run install.py --config config/chat_with_openai_compatible_bailian_cosyvoice.yaml
+
+# 3. 下载 LiteAvatar 模型
+uv run scripts/download_models.py --handler liteavatar
+
+# 4. 启动
+uv run src/demo.py --config config/chat_with_openai_compatible_bailian_cosyvoice.yaml</code></pre>
+
+  <div class="table-wrap param-table">
+    <table>
+      <tr><th>命令参数</th><th>作用</th><th>如何替换</th></tr>
+      <tr><td><code>--config</code></td><td>指定 YAML 配置文件</td><td>替换为 <code>chat_with_lam.yaml</code> 体验 3D 数字人，或 <code>chat_with_openai_compatible_bailian_cosyvoice_flashhead.yaml</code> 体验 FlashHead</td></tr>
+      <tr><td><code>--handler liteavatar</code></td><td>指定下载模型的目标 Handler</td><td>不同 Handler 对应不同模型：<code>sensevoice</code>、<code>silero_vad</code> 等</td></tr>
+      <tr><td><code>DASHSCOPE_API_KEY</code></td><td>百炼 API Key</td><td>在 <a href="https://dashscope.console.aliyun.com/">阿里云百炼控制台</a> 创建</td></tr>
+    </table>
+  </div>
+
+  <h3 class="section-title">关键配置文件字段</h3>
+  <pre><code class="language-yaml"># config/chat_with_openai_compatible_bailian_cosyvoice.yaml (核心字段)
+chat_engine:
+  concurrent_limit: 2                # 最大并发数，影响 TURN 端口需求
+  handler_configs:
+    RtcClient:
+      connection_ttl: 900            # 会话超时（秒）
+      output_video_fps: 24           # 输出帧率（MuseTalk 用 24；LiteAvatar 用 25）
+    LiteAvatar:
+      avatar_name: "20250408/sample_data"  # 模型名称（从 ModelScope 下载）
+      fps: 25                        # 必须与 output_video_fps 一致
+      use_gpu: true                  # 是否使用 GPU 加速</code></pre>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">常见问题与排错指南</div>
+
+  <h3 class="section-title">数字人永远在加载中</h3>
+  <p>检查顺序——</p>
+  <ol>
+    <li><code>resource/avatar/liteavatar/20250408/sample_data</code> 目录是否存在。若不存在，运行 <code>uv run scripts/download_models.py --handler liteavatar</code></li>
+    <li>服务日志中是否出现 <code>Avatar process is ready</code> 和 <code>Avatar session started</code>。只有前者没有后者说明 TTS 音频没有成功触发 Pipeline</li>
+    <li>浏览器 Console 中是否有 <code>Unknown connection</code> 或 ICE 相关错误</li>
+    <li>如果是公网访问，端口 3478/5349/49152-49164 是否在阿里云安全组中开放</li>
+  </ol>
+
+  <h3 class="section-title">coturn 凭证问题</h3>
+  <p>coturn 日志中查看 <code>/var/tmp/turn_*.log</code>，如果出现 <code>401 Unauthorized</code>，说明 YAML 中的 username/credential 与 <code>/etc/turnserver.conf</code> 不匹配。</p>
+
+  <h3 class="section-title">SSL 证书不被信任</h3>
+  <p>自签名证书在浏览器中会显示"不安全"警告，但不影响 WebRTC 功能。生产环境建议使用 Let's Encrypt 或购买正式证书。</p>
+
+</div>
+
+<div class="sources">
+  <h3 class="section-title">参考资料</h3>
+  <ul>
+    <li data-cite-key="repo-readme">OpenAvatarChat README.md — 项目定位、核心卖点、快速开始命令 #repo-readme#</li>
+    <li data-cite-key="repo-deploy-doc">OpenAvatarChat 部署文档 — 网络环境说明、SSL 证书、TURN 服务配置 #repo-deploy-doc#</li>
+    <li data-cite-key="repo-code-rtc">src/handlers/client/rtc_client/client_handler_rtc.py — RTC Client Handler，WebRTC 初始化和 H.264 编码注入</li>
+    <li data-cite-key="repo-code-rtc-stream">src/service/rtc_service/rtc_stream.py — RtcStream 类，前后端 WebRTC 音频视频双向桥接</li>
+    <li data-cite-key="repo-code-chat-engine">src/chat_engine/ — ChatEngine、HandlerManager、数据流转编排</li>
+    <li data-cite-key="repo-code-liteavatar">src/handlers/avatar/liteavatar/ — HandlerTts2Face、LiteAvatarWorker、共享内存 Buffer Pool</li>
+    <li data-cite-key="repo-code-worker-start">src/handlers/avatar/liteavatar/liteavatar_worker.py — _event_input_loop，START 事件触发 Worker 启动</li>
+    <li data-cite-key="repo-code-h264">src/handlers/client/rtc_client/client_handler_rtc.py — patched_set_remote_description，H.264 codec 注入</li>
+    <li data-cite-key="inference-ports">端口并发关系：每个 PeerConnection 需要 2 个 UDP 端口（RTP Audio + RTP Video），n 并发需 2n 端口。基于 WebRTC 协议规范和 coturn 实战经验推断。</li>
+  </ul>
+</div>
+
+</div>

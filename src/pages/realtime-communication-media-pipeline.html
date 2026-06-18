@@ -1,0 +1,113 @@
+---
+title: "实时通信（三）：音视频链路，采集、编码、RTP/RTCP、Jitter Buffer 与 A/V Sync"
+description: "深入讲解实时音视频从设备采集到浏览器播放的完整链路：采集、编码、RTP 分包、RTCP 反馈、Jitter Buffer、丢包恢复与音画同步。"
+date: 2026-06-11T17:54:18
+created_at: 2026-06-11T17:54:18
+updated_at: 2026-06-12T10:11:16
+tags: [RTP, RTCP, Jitter Buffer, A/V Sync, Opus, H264, VP8, AV1]
+categories: [编程]
+subcategory: "实时通信"
+sub_id: 30
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">RTP</span><span class="label">媒体分包</span></div>
+  <div class="stat"><span class="num b">RTCP</span><span class="label g">反馈控制</span></div>
+  <div class="stat"><span class="num">Jitter</span><span class="label">缓冲吸收</span></div>
+  <div class="stat"><span class="num b">Sync</span><span class="label g">音画同步</span></div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="realtime-communication-webrtc-core.html"><span class="nav-label">上一篇</span><span class="nav-title">WebRTC 核心</span></a>
+  <a class="nav-card current" href="realtime-communication-media-pipeline.html"><span class="nav-label">第 3 篇</span><span class="nav-title">音视频链路</span></a>
+  <a class="nav-card" href="realtime-communication-server-architecture.html"><span class="nav-label">下一篇</span><span class="nav-title">服务端架构</span></a>
+</div>
+
+<div class="def-box">
+  <h3>本篇先解决哪些词</h3>
+  <p><strong>采集</strong> 是从麦克风和摄像头取原始声音画面；<strong>编码器</strong> 把原始媒体压缩成可传输的码流；<strong>Codec</strong> 是编码和解码规则；<strong>RTP/RTCP</strong> 负责媒体包和反馈；<strong>Jitter Buffer</strong> 用缓冲吸收网络抖动；<strong>A/V Sync</strong> 负责让声音和画面对齐。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">从摄像头到屏幕，中间不是一根管子</div>
+
+一帧视频进入 RTC 系统后，会经历采集、预处理、编码、RTP 分包、网络发送、接收重排、抖动缓冲、解码、渲染。音频也类似，只是音频通常更敏感：人能容忍视频降清晰度，却很难忍受声音断断续续。
+
+{{< mermaid >}}
+graph LR
+    A["Capture 采集"] --> B["Preprocess 前处理"]
+    B --> C["Encode 编码"]
+    C --> D["RTP packetize 分包"]
+    D --> E["Network 网络"]
+    E --> F["Jitter Buffer 重排缓冲"]
+    F --> G["Decode 解码"]
+    G --> H["Render 播放"]
+{{< /mermaid >}}
+
+<div class="callout"><strong>链路视角</strong>：端到端延迟不是一个模块决定的，而是采集周期、编码队列、网络排队、jitter buffer、解码和渲染共同叠加。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">编码器：在清晰度、码率和延迟之间做交换</div>
+
+音频常用 Opus，因为它能覆盖语音和音乐，支持低延迟、可变码率、包丢失隐藏。视频常见 H.264、VP8、VP9、AV1，不同 codec 在压缩效率、硬件支持、编码复杂度和专利生态上各有取舍。
+
+<div class="def-box">
+  <h3>Codec 是“压缩和还原媒体”的约定</h3>
+  <p><strong>Codec</strong> 是 coder-decoder 的缩写。发送端用编码器把原始音视频压缩成码流，接收端用解码器还原成可播放的声音和画面。Opus 是音频 codec；H.264、VP8、VP9、AV1 是视频 codec。</p>
+</div>
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>Codec</th><th>优势</th><th>工程注意点</th></tr></thead>
+<tbody>
+<tr><td>Opus</td><td>低延迟、语音质量好、抗丢包能力强</td><td>音频优先级通常高于视频，弱网时先保声音</td></tr>
+<tr><td>H.264</td><td>硬件支持广，兼容性强</td><td>不同 profile/level 可能导致协商或解码问题</td></tr>
+<tr><td>VP8/VP9</td><td>WebRTC 生态成熟，适合浏览器</td><td>硬件加速覆盖不如 H.264 稳定</td></tr>
+<tr><td>AV1</td><td>压缩效率高，适合高质量低码率</td><td>编码复杂度和设备支持仍需评估</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">RTP/RTCP：媒体包和控制反馈</div>
+
+RTP（Real-time Transport Protocol，实时传输协议）负责承载媒体流。它的核心字段包括 sequence number、timestamp、SSRC、payload type。<strong>sequence number</strong> 是包序号，用于检测丢包和乱序；<strong>timestamp</strong> 是媒体时间戳，用于恢复播放时间线；<strong>SSRC</strong> 是同步源标识，用来区分不同媒体流；<strong>payload type</strong> 映射到具体 codec。
+
+RTCP（RTP Control Protocol，RTP 控制协议）负责反馈统计和控制：接收端报告丢包、jitter、RTT；发送端根据反馈调整码率；当关键帧丢失时，接收端可以通过 <strong>PLI</strong>（Picture Loss Indication，画面丢失指示）或 <strong>FIR</strong>（Full Intra Request，完整帧请求）请求新关键帧，也可以通过 <strong>NACK</strong> 请求重传部分 RTP 包。
+
+<div class="def-box">
+  <h3>Jitter Buffer</h3>
+  <p>Jitter Buffer 是接收端缓冲区，用来吸收网络包到达时间的不均匀。它会在低延迟和稳定播放之间权衡：缓冲越小越实时，但越容易卡；缓冲越大越稳，但互动延迟越高。</p>
+</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">A/V Sync：音画同步靠同一条时间线</div>
+
+音频和视频是不同 RTP 流，采样率和时间戳单位也不同。接收端需要借助 RTCP Sender Report 把 RTP timestamp 映射到 NTP 时间，进而把音频和视频对齐到同一条墙钟时间线。否则就会出现声音先到、嘴型后到，或者画面先动、声音滞后的体验问题。
+
+<div class="admonition tip">
+  <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>数字人场景的同步更敏感</div>
+  <div class="admonition-content"><p>普通会议里几十毫秒的音画偏差可能不明显，但数字人嘴型和语音强绑定。ASR、TTS、Avatar 生成、编码和 WebRTC 播放任一环节延迟漂移，都会被用户感知为“嘴不对”。</p></div>
+</div>
+</div>
+
+<div class="sources">
+  <h2>Sources</h2>
+  <ol>
+    <li data-cite-key="WebRTC-Official">WebRTC project. <a href="https://webrtc.org/" target="_blank">Real-time communication for the web</a>.</li>
+    <li data-cite-key="RFC8445-ICE">RFC 8445. <a href="https://datatracker.ietf.org/doc/html/rfc8445" target="_blank">Interactive Connectivity Establishment (ICE)</a>.</li>
+    <li data-cite-key="RFC8839-JSEP">RFC 8839. <a href="https://datatracker.ietf.org/doc/html/rfc8839" target="_blank">JavaScript Session Establishment Protocol</a>.</li>
+    <li data-cite-key="RFC3550-RTP">RFC 3550. <a href="https://datatracker.ietf.org/doc/html/rfc3550" target="_blank">RTP: A Transport Protocol for Real-Time Applications</a>.</li>
+    <li data-cite-key="RFC3711-SRTP">RFC 3711. <a href="https://datatracker.ietf.org/doc/html/rfc3711" target="_blank">The Secure Real-time Transport Protocol</a>.</li>
+    <li data-cite-key="LiveKit-SFU">LiveKit Docs. <a href="https://docs.livekit.io/reference/internals/livekit-sfu/" target="_blank">LiveKit SFU internals</a>.</li>
+    <li data-cite-key="mediasoup-docs">mediasoup documentation. <a href="https://mediasoup.org/documentation/v3/" target="_blank">mediasoup v3 docs</a>.</li>
+    <li data-cite-key="Janus-docs">Janus WebRTC Server. <a href="https://janus.conf.meetecho.com/docs/" target="_blank">Official documentation</a>.</li>
+  </ol>
+</div>

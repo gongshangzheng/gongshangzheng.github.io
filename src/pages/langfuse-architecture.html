@@ -1,0 +1,150 @@
+---
+title: "Langfuse 架构与仓库阅读：Web、Worker、ClickHouse、Redis 与 S3"
+description: "基于 Langfuse 自托管文档、docker-compose.yml 与 langfuse/langfuse 仓库结构，解释 Langfuse 的系统架构和数据路径。"
+date: 2026-06-03T10:29:05
+created_at: 2026-06-03T10:29:05
+updated_at: 2026-06-03T10:34:00
+tags: [Langfuse, Architecture, ClickHouse, Redis, S3, Postgres, Worker]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: Langfuse Architecture
+hero_sub: 从自托管组件到仓库结构
+hero_tagline: Web + Worker + Postgres + ClickHouse + Redis + S3
+mathjax: false
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2</span><span class="label">应用容器</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">存储组件</span></div>
+  <div class="stat"><span class="num">1</span><span class="label">Monorepo</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">运行时架构：两类应用容器，四类存储组件</div>
+
+  <p>Langfuse 自托管文档把系统拆成两类应用容器、四类存储组件和一个可选 LLM API/Gateway：Langfuse Web 提供 UI 和 API，Langfuse Worker 异步处理事件；Postgres 处理事务数据，ClickHouse 存储 traces、observations 和 scores，Redis/Valkey 用于队列与缓存，S3/Blob Store 保存原始事件、多模态输入和导出文件。#Langfuse Self Hosting, 2026#</p>
+
+  {{< mermaid >}}
+flowchart TD
+    App[LLM 应用 / Agent / RAG] --> SDK[SDK / OpenTelemetry / Framework Integrations]
+    SDK --> Web[Langfuse Web\nUI + API + Ingestion]
+    Web --> Postgres[Postgres\n事务数据]
+    Web --> Redis[Redis / Valkey\n队列与缓存]
+    Web --> S3[S3 / Blob Store\n原始事件与大文件]
+    Redis --> Worker[Langfuse Worker\n异步处理]
+    S3 --> Worker
+    Worker --> ClickHouse[ClickHouse\nTrace / Observation / Score]
+    Web --> ClickHouse
+    Web --> LLM[可选 LLM API / Gateway]
+{{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">数据写入路径：为什么不是直接写数据库</div>
+
+  <p>Langfuse 自托管文档特别强调 queued trace ingestion：Web 容器接收 batch trace 后会先写入 S3，Redis 中保存队列引用，Worker 再从 S3 读取事件并写入 ClickHouse。这样做的目的，是在突发流量下保护数据库，降低 ingest API 超时风险，并让原始事件具备可恢复性。#Langfuse Self Hosting, 2026#</p>
+
+  <div class="callout"><strong>架构重点</strong>：S3 不是边缘附件，而是 ingestion 可靠性的关键组件；Redis 不是只做缓存，还承担队列协调。</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>职责</th><th>如果出问题会怎样</th></tr></thead>
+      <tbody>
+        <tr><td>Web</td><td>接收 API、鉴权、写入队列与对象存储</td><td>请求入口不可用</td></tr>
+        <tr><td>S3 / Blob</td><td>保存原始事件、多模态文件、导出</td><td>事件恢复和大文件能力受影响</td></tr>
+        <tr><td>Redis</td><td>队列、API key 缓存、prompt 缓存</td><td>ingestion 延迟、鉴权与热 prompt 读取变慢</td></tr>
+        <tr><td>Worker</td><td>异步消费、写 ClickHouse、后台任务</td><td>trace 可接收但分析数据延迟出现</td></tr>
+        <tr><td>ClickHouse</td><td>OLAP 查询和 trace/score 存储</td><td>dashboard、trace 查询、score analytics 受影响</td></tr>
+        <tr><td>Postgres</td><td>项目、用户、组织、配置等事务数据</td><td>控制面和元数据不可用</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">仓库结构：pnpm + Turborepo Monorepo</div>
+
+  <p><code>langfuse/langfuse</code> 根目录的 <code>package.json</code> 声明 Node 24、<code>pnpm@11.1.3</code> 和 Turborepo 脚本。仓库不是一个单体目录，而是由 <code>web</code>、<code>worker</code>、<code>packages/shared</code>、<code>ee</code>、<code>fern</code>、<code>scripts</code> 等组成。#Langfuse GitHub, 2026#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路径</th><th>作用</th><th>阅读重点</th></tr></thead>
+      <tbody>
+        <tr><td><code>web</code></td><td>Next.js 应用、UI、API、trpc、集成入口</td><td>用户操作和同步 API 如何进入系统</td></tr>
+        <tr><td><code>worker</code></td><td>Node/TypeScript Worker</td><td>队列消费、后台任务、事件回填</td></tr>
+        <tr><td><code>packages/shared</code></td><td>共享领域模型与工具代码</td><td>Web 与 Worker 共用的数据结构</td></tr>
+        <tr><td><code>docker-compose.yml</code></td><td>本地自托管组合</td><td>理解最小可运行生产切面</td></tr>
+        <tr><td><code>fern</code></td><td>API 文档和规范</td><td>API-first 生态接入</td></tr>
+        <tr><td><code>ee</code></td><td>企业版扩展</td><td>自托管许可证与企业能力边界</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">为什么 ClickHouse 是 Langfuse 的核心</div>
+
+  <p>Langfuse README 明确提到项目基于 ClickHouse；自托管文档说明 ClickHouse 存储 traces、observations 和 scores。原因很直接：这类数据既有高写入量，又要支持 dashboard、筛选、聚合和趋势分析。如果全部放在 Postgres 中，事务型数据库会承担大量 OLAP 压力。#Langfuse GitHub, 2026# #Langfuse Self Hosting, 2026#</p>
+
+  <div class="info-box">
+    <h3>读架构时的主线</h3>
+    <p>Langfuse 的控制面更像普通 SaaS：用户、项目、权限、prompt 元数据走 Postgres；数据面更像日志分析系统：trace、observation、score 进入 ClickHouse；可靠 ingestion 则依赖 Redis 队列和 S3 原始事件。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">读仓库时按"控制面 / 数据面"拆开</div>
+
+  <p>阅读 <code>langfuse/langfuse</code> 时，不要把它当作一个普通 Web 项目从页面入口开始顺读。更有效的方式是先区分控制面和数据面：控制面管理组织、项目、用户、权限、API key、prompt 元数据；数据面处理 trace ingestion、异步队列、ClickHouse 写入、score 查询和 dashboard 聚合。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>切面</th><th>核心数据</th><th>主要组件</th><th>主要风险</th></tr></thead>
+      <tbody>
+        <tr><td>控制面</td><td>Org、Project、User、API Key、Prompt metadata</td><td>Web、Postgres</td><td>权限、鉴权、配置一致性</td></tr>
+        <tr><td>数据面</td><td>Trace、Observation、Score、Event payload</td><td>Web、S3、Redis、Worker、ClickHouse</td><td>吞吐、延迟、可恢复性、查询成本</td></tr>
+        <tr><td>体验面</td><td>Dashboard、Trace detail、Playground、Annotation UI</td><td>Web、ClickHouse、Postgres</td><td>查询性能、交互复杂度、信息密度</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">生产部署拓扑：单机、Kubernetes 与云资源</div>
+
+  <p>Langfuse 文档将低规模部署和生产级部署区分开：本地或 VM Docker Compose 适合测试和低规模场景，但缺少高可用、扩缩容和备份能力；生产和高可用部署推荐 Kubernetes Helm 或云上 Terraform。这个区分很重要，因为 Langfuse 不是单容器应用，而是包含数据库、队列、对象存储和异步 worker 的系统。#Langfuse Self Hosting, 2026#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>部署形态</th><th>适合场景</th><th>需要补齐的能力</th></tr></thead>
+      <tbody>
+        <tr><td>Local Docker Compose</td><td>试用、开发、功能验证</td><td>无需 HA，但要更换示例密钥</td></tr>
+        <tr><td>VM Docker Compose</td><td>小团队、低流量内部系统</td><td>备份、监控、磁盘容量、升级流程</td></tr>
+        <tr><td>Kubernetes Helm</td><td>生产、高可用、多团队共享</td><td>HPA、资源限制、外部数据库、对象存储、密钥管理</td></tr>
+        <tr><td>Cloud Terraform</td><td>标准化云上生产部署</td><td>VPC、IAM、托管数据库、托管对象存储、日志监控</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">自托管部署的工程注意事项</div>
+
+  <p>官方 docker-compose 文件中多个密钥被标记为 <code>CHANGEME</code>，包括 Postgres、ClickHouse、Redis、MinIO、NextAuth、SALT 和 ENCRYPTION_KEY。生产部署还需要关注高可用、备份、网络暴露面、对象存储持久性，以及所有基础设施组件必须使用 UTC 时区。#Langfuse Docker Compose, 2026# #Langfuse Self Hosting, 2026#</p>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="langfuse-prompt-evaluation.html"><span class="nav-label">上一篇</span><span class="nav-title">Prompt 与评测闭环</span></a>
+    <a class="nav-card current" href="langfuse.html"><span class="nav-label">总览</span><span class="nav-title">Langfuse 系列导读</span></a>
+    <a class="nav-card" href="langfuse-practice-improvement.html"><span class="nav-label">下一篇</span><span class="nav-title">实践与改进路线</span></a>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Langfuse-Self-Hosting-2026">Langfuse. (2026). <em>Self-host Langfuse</em>. <a href="https://langfuse.com/self-hosting" target="_blank">https://langfuse.com/self-hosting</a></li>
+      <li data-cite-key="Langfuse-GitHub-2026">Langfuse. (2026). <em>langfuse/langfuse GitHub Repository</em>. <a href="https://github.com/langfuse/langfuse" target="_blank">https://github.com/langfuse/langfuse</a></li>
+      <li data-cite-key="Langfuse-Docker-Compose-2026">Langfuse. (2026). <em>docker-compose.yml</em>. <a href="https://raw.githubusercontent.com/langfuse/langfuse/main/docker-compose.yml" target="_blank">https://raw.githubusercontent.com/langfuse/langfuse/main/docker-compose.yml</a></li>
+    </ul>
+  </div>
+</div>

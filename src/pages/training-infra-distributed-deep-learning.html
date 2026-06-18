@@ -1,0 +1,298 @@
+---
+title: "训练 Infra：为什么训练大模型像在协调上千张 GPU 一起工作"
+description: "从数据并行、模型并行到 ZeRO、Megatron 和 NCCL，系统梳理大规模分布式训练基础设施的核心矛盾与工程解法。"
+date: 2026-06-02T00:08:54
+created_at: 2026-06-02T00:08:54
+updated_at: 2026-06-12T11:18:30
+tags: [分布式训练, DeepSpeed, ZeRO, Megatron, NCCL, AI Infra, 训练系统]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: 训练 Infra
+hero_sub: 为什么训练大模型像在协调上千张 GPU 一起工作
+hero_tagline: 显存、通信、切分策略与容错——训练系统的四大受力点
+mathjax: false
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3</span><span class="label">核心并行维度</span></div>
+  <div class="stat"><span class="num b">1024</span><span class="label g">ZeRO 可训练 GPU 规模</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">ZeRO Stage</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列六</div>
+  <div class="ch-title">训练和推理，面对的是完全不同的系统问题</div>
+
+  前面几篇围绕推理基础设施展开，但模型在能服务之前，首先要被训练出来。而训练大模型的基础设施问题，和推理有着截然不同的受力结构。
+
+  推理系统的核心矛盾是：怎么在显存、延迟和并发之间平衡，让模型高效地回答每一个请求。训练系统的核心矛盾则是：怎么把大到单卡根本装不下的模型，分散到成百上千张 GPU 上，同时让通信开销不成为瓶颈，并且保证长时间训练不因为一次故障而全盘重来 #ZeRO-DeepSpeed-2020# #Megatron-LM-2020# #NVIDIA-NCCL-2025#。
+
+  这一篇就从这里切入，解释为什么训练大模型更像一场分布式协同工程。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、训练的第一性约束：不是算力，而是显存与通信</div>
+
+  当模型规模进入百亿甚至更高量级时，问题不再是“GPU 快不快”，而是“这些参数、梯度和优化器状态究竟放在哪里，又怎么在多台机器之间同步”。
+
+  以一个 175B 参数的模型为例，仅参数本身就需要数百 GB 显存；如果使用 Adam 优化器，优化器状态（一阶矩、二阶矩）又是参数量的数倍。单张 GPU 的显存根本放不下整个模型，更不用说还有激活值、梯度和其他临时开销 #ZeRO-DeepSpeed-2020#。
+
+  这意味着大模型训练的第一性约束，已经不只是 FLOPs，而是<strong>显存、通信、切分策略和容错机制</strong>。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、混合精度训练：FP8 不是只把数字变短</div>
+
+  <p>分布式训练不只在“多卡怎么切”上省显存，也会在“每个数用多少 bit 表示”上省带宽和计算。FP32 最稳但代价高，FP16/BF16 是当前训练的常见默认选择，而 FP8 进一步把单个数压到 8 bit，目标是在支持的硬件上提升矩阵乘吞吐、降低显存读写量 #NVIDIA-Transformer-Engine-Docs#。</p>
+
+  <p>问题在于，FP8 的表示能力比 FP16/BF16 更紧。训练过程中，激活、梯度和权重更新的数值尺度会不断变化；如果尺度太小，梯度可能 underflow 到接近 0；如果尺度太大，又可能 overflow 或被严重截断。因此 FP8 训练通常不会裸用低精度，而是配合 <strong>scaling</strong>、amax tracking、delayed scaling，以及必要时的高精度 master weights / optimizer states，让关键张量落在 FP8 可表达的有效范围里 #NVIDIA-Transformer-Engine-Docs#。</p>
+
+  <div class="info-box">
+    <h3>核心直觉</h3>
+    <p>FP8 训练的难点不是“会不会算矩阵乘”，而是“每一层、每一轮的数值尺度怎么选”。所谓梯度缩放或张量缩放，本质上是在低精度格式前后乘一个 scale，把真实数值搬到 FP8 比较安全的区间里计算，再按比例还原。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、三种基本并行策略</div>
+
+  在讨论具体框架之前，先要理解分布式训练的三种基本并行维度。
+
+  <div class="section fade-in">
+    <div class="section-title">3.1 数据并行（Data Parallelism）</div>
+    每张 GPU 持有完整的模型副本，处理不同的数据 batch。最简单直接，但无法解决单卡显存放不下模型的问题。当模型超过单卡容量时，数据并行 alone 就行不通了 #Megatron-LM-2020#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.2 模型并行（Model Parallelism）</div>
+    将模型参数切分到多张 GPU 上。主要有两种切法：
+    <ul>
+      <li><strong>Tensor Parallelism（TP）</strong>：把单层内的参数张量切开，每张 GPU 算一部分，最后 all-reduce 合并。适合注意力层和超大线性层。</li>
+      <li><strong>Pipeline Parallelism（PP）</strong>：把模型的不同层分配到不同 GPU 上，数据像流水线一样逐层传递。适合层数很多的深度模型。</li>
+    </ul>
+    模型并行解决了“模型太大”的问题，但引入了额外的通信开销，且切分方式往往需要根据模型结构仔细设计 #Megatron-LM-2020#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.3 序列并行（Sequence Parallelism）</div>
+    针对超长序列场景，把输入序列维度也切分到多张 GPU 上。这是 TP 的自然延伸，因为在 Transformer 中，序列维度的计算和参数维度一样可以被分散 #Megatron-LM-2020#。
+  </div>
+
+  <div class="info-box">
+    <h3>关键认知</h3>
+    <p>现实中的大模型训练很少只用一种并行策略，而是把 <strong>DP + TP + PP</strong> 组合起来，形成所谓的 <strong>3D 并行</strong>。不同并行维度解决不同问题：DP 提升数据吞吐，TP 和 PP 解决模型放不下的问题。</p>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.4 并行策略要贴着物理拓扑放</div>
+    <p>3D 并行不是只在配置文件里写几个数字。真正落到集群上时，还要考虑 GPU 之间的物理互联：同一台服务器内的 8 张 GPU 往往通过 NVLink 或 NVSwitch 互联，带宽高、延迟低；服务器之间则通常通过 InfiniBand 互联，带宽更低、延迟更高。</p>
+    <p>因此，通信最密集的并行维度应优先放在单机内部。<strong>张量并行（TP）</strong>会在层内频繁做 all-reduce / all-gather / reduce-scatter，通信粒度细、频率高，最适合放在同一台机器的 8 张 GPU 内。<strong>流水线并行（PP）</strong>主要在相邻 stage 之间传激活和梯度，通信频率与流水线边界相关，可以跨节点。<strong>数据并行（DP）</strong>通常在 step 级别同步梯度或参数分片，也常跨节点扩展。</p>
+    <p>所以在“单机 8 卡 NVLink，跨机 InfiniBand”的典型拓扑里，常见映射是：<strong>TP 放单机 8 卡内，PP 和 DP 跨节点分布</strong>。这样能把最吃带宽、最怕延迟的层内通信留在高速互联里，把相对粗粒度的通信放到跨节点网络上 #Megatron-LM-2020# #NVIDIA-Megatron-Bridge-Parallelisms# #NVIDIA-NCCL-2025#。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、ZeRO：用切分代替复制</div>
+
+  传统数据并行的核心问题是冗余：每张 GPU 都保存一份完整的模型参数、梯度和优化器状态。ZeRO（Zero Redundancy Optimizer）的思想很简单：<strong>既然每张卡都存一份完整的副本，为什么不把它们切分开，各自只存一部分？</strong>
+
+  ZeRO 分为三个渐进阶段 #ZeRO-DeepSpeed-2020# #DeepSpeed-ZeRO-Docs#：
+
+  <div class="section fade-in">
+    <div class="section-title">4.1 ZeRO Stage 1：切分优化器状态</div>
+    把优化器状态（如 Adam 的一阶矩、二阶矩）切分到所有数据并行 rank 上。每张卡只更新自己那部分参数对应的优化器状态。显存降低约 4 倍，通信量与标准数据并行相同 #DeepSpeed-ZeRO-Docs#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.2 ZeRO Stage 2：再切分梯度</div>
+    在 Stage 1 基础上，把梯度也切分。每张卡只保留自己那部分参数对应的梯度。显存降低约 8 倍，通信量仍然与标准数据并行相同 #DeepSpeed-ZeRO-Docs#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.3 ZeRO Stage 3：切分参数本身</div>
+    把模型参数也切分到所有 rank 上。在前向和后向传播时，通过 all-gather 动态收集需要的参数切片。显存降低与数据并行度成正比：64 张卡就是 64 倍。这意味着理论上可以训练任意大的模型，只要集群总显存足够 #DeepSpeed-ZeRO-Docs#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.4 通信视角：All-Reduce 拆成 Reduce-Scatter 与 All-Gather</div>
+    <p>从通信原语看，传统数据并行通常用 <strong>All-Reduce</strong> 同步梯度：每张卡先各自算出一份完整梯度，然后通过集合通信求和，最后每张卡都拿到完整的聚合梯度。这适合“每张卡都保留完整副本”的数据并行 #NVIDIA-NCCL-2025#。</p>
+    <p>ZeRO 的目标恰好相反：既然梯度、优化器状态或参数最终要被切分到不同 rank 上，就没有必要让每张卡长期持有完整副本。因此更自然的通信分解是：先用 <strong>Reduce-Scatter</strong> 完成“求和 + 分片”，让每张卡只拿到自己负责的梯度 shard；后续如果某一步确实需要完整张量，再用 <strong>All-Gather</strong> 把各 rank 的 shard 临时拼回来 #DeepSpeed-ZeRO-Docs# #NVIDIA-NCCL-2025#。</p>
+    <p>严格区分阶段时，<strong>ZeRO Stage 1</strong> 主要切分优化器状态，<strong>Stage 2</strong> 才把梯度也切分，<strong>Stage 3</strong> 进一步切分参数本身。但在题目或面试语境中，问“ZeRO 系列如何完成梯度聚合和分片”时，通常期待的组合就是 <strong>Reduce-Scatter + All-Gather</strong> #DeepSpeed-ZeRO-Docs#。</p>
+  </div>
+
+  <div class="callout">
+    <strong>核心洞察</strong>：ZeRO 的优雅之处在于，它不需要修改模型代码——只需要改 DeepSpeed 的配置文件。这让大模型训练的门槛显著降低。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、Megatron：模型并行的工程化标杆</div>
+
+  如果说 ZeRO 解决的是“数据并行下的显存冗余”，那么 Megatron 解决的是“模型本身太大，必须切开”的问题。
+
+  Megatron-LM 是 NVIDIA 推出的专门用于大规模 Transformer 训练的框架，核心贡献是把 Tensor Parallelism 和 Pipeline Parallelism 工程化到了生产可用的程度 #Megatron-LM-2020#。
+
+  <ul>
+    <li><strong>Tensor Parallelism</strong>：把 attention 和 MLP 层的参数矩阵按列或按行切开，分散到多张 GPU 上。前向和后向时通过 all-reduce 同步。</li>
+    <li><strong>Pipeline Parallelism</strong>：把模型按层分组，每组放在一个 GPU 上。通过 micro-batching 减少流水线气泡（bubble）。</li>
+    <li><strong>Sequence Parallelism</strong>：在 TP 的基础上，把 LayerNorm 和 Dropout 这类在序列维度上的操作也分散开。</li>
+  </ul>
+
+  Megatron 的设计哲学是：通过精巧的切分和通信编排，让超大模型训练在集群上“像正常训练一样”运行，而不是变成一场通信调优的噩梦。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">六、NCCL：分布式训练的通信血管</div>
+
+  无论用 ZeRO 还是 Megatron，最终都绕不开一个问题：GPU 之间怎么高效地交换数据？
+
+  NCCL（NVIDIA Collective Communications Library）就是这个问题的答案。它提供了一系列针对 GPU 优化的集合通信原语：AllReduce、AllGather、ReduceScatter、Broadcast 等，并且能自动适应不同的互联拓扑（NVLink、PCIe、InfiniBand、RoCE）#NVIDIA-NCCL-2025#。
+
+  NCCL 的重要性在于：分布式训练的性能瓶颈，往往不在计算，而在通信。一次 all-reduce 操作如果实现得不好，可能会让 GPU 大量时间空等。NCCL 通过拓扑感知的路由、内核融合和最新的 symmetric memory 支持，持续降低通信延迟 #NVIDIA-NCCL-2025#。
+
+  <div class="section fade-in">
+    <div class="section-title">6.1 集合通信原语速查表</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>原语</th><th>做什么</th><th>训练中的典型用途</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Broadcast</td><td>一个 rank 把同一份数据发给所有 rank</td><td>初始化参数、同步配置</td></tr>
+          <tr><td>Reduce</td><td>多个 rank 的数据聚合到一个目标 rank</td><td>单点统计、调试或非对称聚合</td></tr>
+          <tr><td>All-Reduce</td><td>先聚合所有 rank 的数据，再把完整结果发回每个 rank</td><td>传统数据并行中的梯度同步</td></tr>
+          <tr><td>Scatter</td><td>一个 rank 把不同数据块分发给不同 rank</td><td>静态切分输入或张量块</td></tr>
+          <tr><td>All-Gather</td><td>每个 rank 提供一个 shard，所有 rank 收集到完整张量</td><td>ZeRO Stage 3 前向/反向时临时恢复参数</td></tr>
+          <tr><td>Reduce-Scatter</td><td>先聚合所有 rank 的数据，再把聚合结果按 shard 分给不同 rank</td><td>ZeRO 风格梯度聚合与分片保存</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h3>没有 NCCL，就没有大规模训练</h3>
+    <p>ZeRO 和 Megatron 的切分策略再优雅，如果没有底层高效的通信实现，都只是纸上谈兵。NCCL 就是连接上层策略和底层硬件的那条血管。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">七、训练 vs 推理：两张不同的受力图</div>
+
+  把训练基础设施和推理基础设施放在一起看，能更清楚地理解它们为什么需要不同的系统：
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>训练</th><th>推理</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>核心矛盾</td><td>模型太大、通信太贵、容错困难</td><td>并发太多、延迟太敏感、KV cache 太贵</td></tr>
+        <tr><td>优化目标</td><td>缩短总训练时间、降低单步通信开销</td><td>降低 TTFT/TPOT、提升并发吞吐</td></tr>
+        <tr><td>状态管理</td><td>参数、梯度、优化器状态的切分与同步</td><td>KV cache 的分配、复用与回收</td></tr>
+        <tr><td>典型技术</td><td>ZeRO、TP、PP、3D 并行、checkpoint</td><td>PagedAttention、continuous batching、scheduler</td></tr>
+        <tr><td>故障影响</td><td>单点故障可能导致数天训练作废</td><td>单点故障影响当前请求，可快速重启</td></tr>
+        <tr><td>通信模式</td><td>all-reduce、reduce-scatter、all-gather（同步、高频）</td><td>point-to-point、relay（异步为主）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  训练是在<strong>时间维度</strong>上压缩：怎么让千亿参数在可接受的时间内收敛。推理是在<strong>空间维度</strong>上压缩：怎么让同一张 GPU 同时服务尽可能多的请求。两个问题的数学结构不同，工程解法自然也不同。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">八、题库：训练 Infra 常见考点</div>
+
+  <div class="section fade-in">
+    <div class="section-title">题目：ZeRO 优化的数据并行</div>
+    <p>在使用 ZeRO1（Zero Redundancy Optimizer）优化的数据并行中，每个 GPU 计算完局部梯度后，通过哪两个基础通信算子以实现梯度的聚合和分片？</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选项</th><th>通信算子</th><th>判断</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>A</td><td>All-Gather 和 Broadcast</td><td>不能完成梯度求和</td></tr>
+          <tr><td>B</td><td>Broadcast 和 Reduce</td><td>Reduce 只聚合到单个目标 rank，不负责分片分发</td></tr>
+          <tr><td>C</td><td>Scatter 和 All-Reduce</td><td>All-Reduce 会让每个 rank 拿到完整聚合结果，不符合 ZeRO 的分片目标</td></tr>
+          <tr><td>D</td><td>Reduce-Scatter 和 All-Gather</td><td><strong>正确</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h3>答案解析</h3>
+    <p>正确答案是 <strong>D. Reduce-Scatter 和 All-Gather</strong>。Reduce-Scatter 可以把多张 GPU 上的局部梯度先做 reduce 聚合，再把聚合后的结果按 rank 切成 shard；All-Gather 则用于在后续需要完整张量时，把各 rank 保存的 shard 临时收集起来。</p>
+    <p>这道题容易混淆的地方在“ZeRO1”这个说法。严格按照 ZeRO 阶段划分，Stage 1 主要切分优化器状态，Stage 2 才进一步切分梯度，Stage 3 再切分参数；但如果题目强调“梯度的聚合和分片”，考点实际是 ZeRO 系列相对传统 All-Reduce 数据并行的通信模式：<strong>用 Reduce-Scatter 承担聚合后的分片保存，用 All-Gather 承担必要时的临时恢复</strong>。</p>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">题目：3D 并行策略的物理拓扑映射</div>
+    <p>假设你拥有一个包含多台服务器的集群，每台服务器内有 8 张 GPU，通过高带宽 NVLink 互联，服务器之间通过延迟较高、带宽较低的 InfiniBand（IB）网络互联。在配置并行策略时，为了最小化通信瓶颈，最合理的物理拓扑映射策略是：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选项</th><th>映射策略</th><th>判断</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>A</td><td>将所有并行策略随机分配，依赖底层 NCCL 通信库在运行时自动路由</td><td>错误。NCCL 能优化通信实现，但不能替代拓扑感知的并行映射</td></tr>
+          <tr><td>B</td><td>将流水线并行（PP）放置在单机 8 卡内，张量并行（TP）跨节点分布</td><td>错误。TP 层内通信最频繁，不应优先跨 IB</td></tr>
+          <tr><td>C</td><td>将数据并行（DP）放在单机 8 卡内，张量并行（TP）和流水线并行（PP）跨节点分布</td><td>错误。把 TP 放到跨节点会放大通信瓶颈</td></tr>
+          <tr><td>D</td><td>将张量并行（TP）放置在单机 8 卡内，流水线并行（PP）和数据并行（DP）跨节点分布</td><td><strong>正确</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h3>答案解析</h3>
+    <p>正确答案是 <strong>D. 将张量并行（TP）放置在单机 8 卡内，流水线并行（PP）和数据并行（DP）跨节点分布</strong>。TP 会在 Transformer 单层内部频繁同步部分矩阵乘结果，通信频率高、延迟敏感，最适合留在 NVLink / NVSwitch 这类高速单机互联里。</p>
+    <p>PP 的跨 stage 通信通常发生在流水线边界，通信模式相对粗粒度；DP 的梯度或参数同步可以跨节点扩展，并通过 overlap、bucket、reduce-scatter 等方式优化。因此在多机 8 卡拓扑中，优先把 TP 映射到单机内部，是降低通信瓶颈的关键判断 #Megatron-LM-2020# #NVIDIA-Megatron-Bridge-Parallelisms# #NVIDIA-NCCL-2025#。</p>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">题目：FP8 训练的数值稳定性</div>
+    <p>模型用 FP8 训练，工程上常见的数值稳定化操作是：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选项</th><th>操作</th><th>判断</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>A</td><td>梯度缩放</td><td><strong>正确</strong></td></tr>
+          <tr><td>B</td><td>去掉 dropout</td><td>dropout 是正则化手段，不是 FP8 数值范围控制手段</td></tr>
+          <tr><td>C</td><td>使用更小的 batch size，避免过度平滑</td><td>batch size 主要影响梯度噪声和吞吐，不是 FP8 稳定训练的典型答案</td></tr>
+          <tr><td>D</td><td>增大学习率并减少权重衰减</td><td>增大学习率通常会放大不稳定风险</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h3>答案解析</h3>
+    <p>正确答案是 <strong>A. 梯度缩放</strong>。FP8 的有效动态范围和精度都比 FP16/BF16 更紧，训练时需要通过 scaling 把梯度、激活或权重相关张量放进合适的表示区间，避免过小的值 underflow，也避免过大的值 overflow 或被严重截断。</p>
+    <p>工程实现中不一定只叫“梯度缩放”。在 NVIDIA Transformer Engine 这类 FP8 训练系统里，更常见的说法是 per-tensor scaling、amax history 和 delayed scaling；题目把选项压缩成单选时，“梯度缩放”就是最接近数值稳定化考点的答案 #NVIDIA-Transformer-Engine-Docs#。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">九、为下一篇铺路：从训练到数据 Infra</div>
+
+  训练系统解决了“模型怎么被训练出来”的问题，但模型并不是凭空出现的。它依赖数据——而且是大量经过清洗、标注、版本化和治理的数据。下一篇就会从数据 Infra 的角度出发，讨论现代 AI 系统真正消耗的“燃料”是怎么管理的。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="ZeRO-DeepSpeed-2020">Microsoft Research. <em>ZeRO & DeepSpeed: New system optimizations enable training models with over 100 billion parameters</em>. 2020. <a href="https://www.microsoft.com/en-us/research/blog/zero-deepspeed-new-system-optimizations-enable-training-models-with-over-100-billion-parameters" target="_blank">Microsoft Research Blog</a></li>
+    <li data-cite-key="DeepSpeed-ZeRO-Docs">DeepSpeed. <em>ZeRO Overview</em>. <a href="https://www.deepspeed.ai/tutorials/zero" target="_blank">DeepSpeed Docs</a></li>
+    <li data-cite-key="Megatron-LM-2020">NVIDIA. <em>Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism</em>. 2020. <a href="https://developer.nvidia.com/gtc/2020/video/s21496-vid" target="_blank">NVIDIA GTC</a></li>
+    <li data-cite-key="NVIDIA-Megatron-Bridge-Parallelisms">NVIDIA NeMo. <em>Parallelisms Guide — Megatron Bridge</em>. <a href="https://docs.nvidia.com/nemo/megatron-bridge/latest/parallelisms.html" target="_blank">NVIDIA Documentation</a></li>
+    <li data-cite-key="NVIDIA-NCCL-2025">NVIDIA. <em>Enabling Fast Inference and Resilient Training with NCCL 2.27</em>. 2025. <a href="https://developer.nvidia.com/blog/enabling-fast-inference-and-resilient-training-with-nccl-2-27" target="_blank">NVIDIA Technical Blog</a></li>
+    <li data-cite-key="NVIDIA-Transformer-Engine-Docs">NVIDIA. <em>Transformer Engine Documentation: FP8 Formats and Delayed Scaling</em>. <a href="https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html" target="_blank">NVIDIA Docs</a></li>
+  </ul>
+</div>

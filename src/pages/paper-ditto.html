@@ -1,0 +1,468 @@
+---
+title: "数字人论文精读（六）：Ditto，把扩散模型搬进运动空间的实时可控数字人"
+description: "Ant Group Ditto 用 motion-space diffusion、Conditional DiT 与流式推理，把高质量 talking head 推向可控实时交互。"
+date: 2026-06-05T16:35:35
+created_at: 2026-06-05T16:35:35
+updated_at: 2026-06-05T17:24:10
+tags: [数字人, Talking Head, Ditto, Diffusion, 论文精读]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1050
+mathjax: true
+notify: true
+hero_title: "Ditto"
+hero_sub: "ACM MM 2025 · Ant Group"
+hero_tagline: "Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.895</span><span class="label">Online RTF</span></div>
+  <div class="stat"><span class="num b">385ms</span><span class="label g">首帧延迟</span></div>
+  <div class="stat"><span class="num">10</span><span class="label">DiT 去噪步数</span></div>
+  <div class="stat"><span class="num b">265D</span><span class="label l">运动表示</span></div>
+</div>
+
+<div class="callout"><strong>系列说明</strong>：本文属于数字人系列论文精读，建议先读 <a href="paper-vasa1.html">VASA-1</a> 与 <a href="cyberverse-realtime-digital-human-agent.html">CyberVerse 源码解读</a>，再看 Ditto 如何把 motion-space diffusion 进一步做成开源、可控、流式的实时 talking head。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">引言：实时数字人为什么不能只追求“更像视频生成”</div>
+
+  <p>Ditto 这篇论文要解决的是一个很工程、也很产品的问题：给定一张人像和一段语音，如何实时生成一个能自然说话、还能被控制的数字人视频。过去两年，扩散模型让 talking head 的表情、头动和细节真实感提升很快，EMO、EchoMimic、Hallo 这类方法把“会动的嘴”推进到“会有表情和节奏的脸”。但论文指出，这条路线仍然卡在两个关键问题上：一是推理慢，很多扩散式方法在单 GPU 上远慢于实时；二是控制弱，用户很难直接指定 gaze、emotion、pose 或修复局部表情缺陷，只能靠重采样碰运气。#Li-et-al.-2025#</p>
+
+  <p>这正是实时数字人与离线视频生成的根本差异。离线生成可以等待，也可以重试；交互式 AI assistant、直播数字人或视频通话中的 avatar 不行。用户说一句话，系统必须在几百毫秒内回第一帧，并且在流式音频持续输入时稳定输出。如果生成结果眼神乱飘、表情过度、头动与躯干接不上，用户也不能接受“再生成一次”。所以 Ditto 的切入点很清晰：不要让扩散模型直接在冗余的视频/图像潜空间里解决所有问题，而是把扩散任务缩小到更适合 talking head 的运动空间。</p>
+
+  <div class="callout"><strong>核心 Insight</strong>：Ditto 的重点不是“扩散模型又做了一次 talking head”，而是把扩散模型从图像空间搬到 motion space。扩散只生成低维、可控、接近语义的面部运动；身份、纹理和像素细节交给 one-shot renderer。</div>
+
+  <p>这使 Ditto 与 VASA-1 形成了直接对话。VASA-1 证明了 motion-space diffusion 可以做到实时高质量，但其代码不可用，且隐式运动表示不方便做细粒度控制。Ditto 则基于 LivePortrait 风格的 motion extractor 构建运动空间，引入 Conditional DiT、运动语义映射、gaze correction 与流式推理优化，并开源推理代码。换句话说，它把 VASA-1 的“方向正确”进一步落到了可控性、工程部署和开源复现上。#Xu-et-al.-2024# #Guo-et-al.-2024#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ditto/framework.webp" alt="Ditto overall framework" loading="lazy">
+    <div class="cap">图 1：Ditto 的整体框架。左侧是 motion space 与训练流程，右侧是推理流程：Motion Extractor 提取运动表示，Conditional DiT 生成 motion sequence，再由 one-shot renderer 渲染目标身份（来源：Li et al., 2025, Fig.1）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">问题定义与核心术语</div>
+
+  <h3 class="section-title">任务到底是什么</h3>
+
+  <p>Audio-driven talking head synthesis 的输入通常是一张参考人像 $I_{ref}$ 和一段音频序列，输出是一段与音频同步的说话视频。传统方法会把问题理解成“音频到像素”或“音频到视频 latent”的生成任务，但 Ditto 把它拆成两层：第一层是音频到面部运动；第二层是运动到目标身份的视频渲染。这样一来，模型不需要在扩散阶段同时学习身份纹理、背景、头发、牙齿、口型、眨眼和头姿，而只需预测一串紧凑运动参数。</p>
+
+  <div class="def-box">
+    <h3>Motion Space（运动空间）</h3>
+    <p>Ditto 中的 motion space 来自 LivePortrait 风格的 motion extractor。单帧图像经过 $\mathcal{M}$ 后得到 canonical keypoints $\mathbf{c}$、expression deformation $\boldsymbol{\delta}$、head rotation $\mathbf{R}$ 与 translation $\mathbf{t}$。其中 $\mathbf{m}=\{\boldsymbol{\delta},\mathbf{R},\mathbf{t}\}$ 被视为要生成的 identity-agnostic motion representation。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>ECS 与 ICS</h3>
+    <p>Enhanced Conditional Signals（ECS）包括音频特征 $\mathbf{a}$、眼部状态 $\mathbf{e}$、canonical keypoints $\mathbf{c}_{ref}$ 和 emotion label $\mathbf{s}$，用于在 cross-attention 中持续引导生成。Initial Conditional Signal（ICS）是 reference initial motion $\mathbf{m}_{ref}$，通过复制并与噪声序列拼接，主要影响片段初始阶段，帮助长序列保持连续。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>RTF 与 FFD</h3>
+    <p>Real-Time Factor（RTF）表示处理一段音视频所需时间与该段真实时长的比值。$\text{RTF}<1$ 才意味着速度超过实时。First-Frame Delay（FFD）表示流式系统从收到输入到输出第一帧的延迟，是交互数字人非常关键的体验指标。</p>
+  </div>
+
+  <h3 class="section-title">为什么已有扩散路线不够好</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>优势</th><th>瓶颈</th></tr></thead>
+      <tbody>
+        <tr><td>GAN / NeRF / 显式系数</td><td>Wav2Lip、SadTalker、早期 NeRF talking head</td><td>速度较快，部分表示可解释</td><td>表情和头动自然度不足，整体面部动力学较弱</td></tr>
+        <tr><td>像素或通用 VAE latent 扩散</td><td>EMO、EchoMimic、Hallo</td><td>表情丰富，视觉质量提升明显</td><td>空间冗余，推理慢，控制通常依赖弱条件或重采样</td></tr>
+        <tr><td>运动空间扩散</td><td>VASA-1、Ditto</td><td>扩散目标低维，适合实时；更容易做运动控制</td><td>运动表示质量决定上限，高频自然性可能受压缩影响</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Ditto 的判断是：对实时数字人而言，“生成空间”比“生成模型”本身更重要。即便同样使用 diffusion transformer，如果目标空间太冗余，模型就会把大量算力花在身份纹理和背景细节上；如果目标空间太隐式，又难以控制和修复。运动空间正好处在中间：足够低维，便于实时；又保留表情、头姿、眼神等可被解释和干预的结构。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">方法 Pipeline：从音频到运动，再从运动回到视频</div>
+
+  <p>Ditto 的完整链路可以概括为三步：先用 Motion Extractor 把图像投到运动空间；再用 Conditional DiT 根据音频和控制信号生成运动序列；最后用 Appearance Feature Extractor 与 Face Renderer 把运动渲染回目标身份的视频。这个拆分最重要的好处，是把“谁在说话”和“怎么动”分开处理。</p>
+
+  {{< mermaid >}}
+flowchart TD
+  A["参考人像 I_ref"] --> B["Motion Extractor M"]
+  A --> C["Appearance Extractor F"]
+  D["音频流"] --> E["HuBERT H"]
+  B --> F["c_ref / m_ref"]
+  E --> G["audio feature a"]
+  H["eye state / emotion / initial motion"] --> I["Conditional Signals C"]
+  F --> I
+  G --> I
+  J["random noise"] --> K["Conditional DiT T"]
+  I --> K
+  K --> L["motion sequence m_hat"]
+  C --> M["appearance feature f_ref"]
+  F --> N["reference keypoints x_ref"]
+  L --> O["generated keypoints x_hat"]
+  M --> P["Face Renderer G"]
+  N --> P
+  O --> P
+  P --> Q["talking-head video"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">Motion Space：让扩散模型只学“怎么动”</h3>
+
+  <p>论文首先定义了运动表示。给定单帧 $I$，Motion Extractor $\mathcal{M}$ 输出 canonical keypoints $\mathbf{c}\in\mathbb{R}^{K\times3}$、expression deformation $\boldsymbol{\delta}\in\mathbb{R}^{K\times3}$、head rotation $\mathbf{R}\in\mathbb{R}^{3\times3}$ 和 translation $\mathbf{t}\in\mathbb{R}^{3}$。Ditto 让扩散模型预测的是 $\mathbf{m}=\{\boldsymbol{\delta},\mathbf{R},\mathbf{t}\}$，而不是图像 latent。</p>
+
+  <div class="def-box">
+    <h3>从运动到隐式 3D keypoints</h3>
+    <p>参考图像与生成运动分别对应两组 keypoints：</p>
+\[
+\mathbf{x}_{ref}=\mathbf{c}_{ref}\mathbf{R}_{ref}+\boldsymbol{\delta}_{ref}+\mathbf{t}_{ref}
+\]
+\[
+\hat{\mathbf{x}}=\mathbf{c}_{ref}\hat{\mathbf{R}}+\hat{\boldsymbol{\delta}}+\hat{\mathbf{t}}
+\]
+    <p>其中 $\mathbf{c}_{ref}$ 仍来自参考身份，$\hat{\mathbf{R}}$、$\hat{\boldsymbol{\delta}}$、$\hat{\mathbf{t}}$ 来自生成运动。这样做的直觉是：身份几何锚点不变，运动在其上发生。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>Renderer 的角色</h3>
+    <p>Face Renderer $\mathcal{G}$ 根据 appearance feature、reference keypoints 和 generated keypoints 合成当前帧：</p>
+\[
+\hat{I}=\mathcal{G}\bigl(\mathbf{f}_{ref},\mathbf{x}_{ref},\hat{\mathbf{x}}\bigr)
+\]
+    <p>这一步把运动空间重新映射回像素空间。扩散模型不需要记住参考人的皮肤纹理、发型或背景，renderer 负责保留这些身份与外观信息。</p>
+  </div>
+
+  <h3 class="section-title">Conditional DiT：哪些条件在控制运动</h3>
+
+  <p>如果只把音频喂给 DiT，模型仍然会遇到两个问题：同一句话可以配多种合理头动，眨眼和眼神与音频相关性很弱；同时，LivePortrait 的 motion representation 并非完美 identity-agnostic，里面仍可能残留身份几何信息。Ditto 因此把条件信号设计成多源输入。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ditto/dit.webp" alt="Conditional DiT architecture" loading="lazy">
+    <div class="cap">图 2：Conditional DiT 结构。上路 ECS 进入 cross-attention；下路 ICS 与噪声拼接影响初始运动；主干由 self-attention、FiLM、cross-attention 和 MLP 组成（来源：Li et al., 2025, Fig.2）。</div>
+  </div>
+
+  <ul>
+    <li><strong>音频特征 $\mathbf{a}$</strong>：由 HuBERT 提取，是 lip movement 和 speech rhythm 的主条件。</li>
+    <li><strong>canonical keypoints $\mathbf{c}_{ref}$</strong>：提供目标身份的几何适配，缓解 motion extractor 中运动与身份没有完全解耦的问题。</li>
+    <li><strong>emotion label $\mathbf{s}$</strong>：在 clip 级别提供情绪条件，避免模型只从音频中隐式猜表情。</li>
+    <li><strong>eye state $\mathbf{e}$</strong>：包含眼部 aspect ratio 与相对 pupil position，控制眨眼和 gaze。</li>
+    <li><strong>reference initial motion $\mathbf{m}_{ref}$</strong>：作为片段初始状态，增强跨片段连续性，也可周期性把长序列拉回目标状态。</li>
+  </ul>
+
+  <div class="callout"><strong>这一章只回答“模型长什么样”</strong>：Conditional DiT 的训练数据组织、加噪目标、损失函数和 checkpoint 选择，放到下一章 Training Pipeline 单独展开。这样读者能把模型结构和训练流水线分开理解。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">Training Pipeline：Ditto 是怎么把视频训成运动生成器的</div>
+
+  <p>把 Ditto 讲清楚，不能只讲模型结构，还必须把训练流水线单独拆开。因为这篇论文的核心不是“拿一个 DiT 去生成脸”，而是先用一个已训练好的 one-shot talking-head 系统定义 motion space，再把真实视频全部投影到这个运动空间中，让扩散模型只学习 motion trajectory。也就是说，训练阶段的目标不是合成像素，而是学习“给定音频和控制条件时，下一段人脸应该如何运动”。#Li-et-al.-2025#</p>
+
+  {{< mermaid >}}
+flowchart TD
+  A["清洗后训练视频\n约 50h / 330 identities"] --> B["抽帧与音频对齐"]
+  B --> C["Motion Extractor M"]
+  C --> D["canonical keypoints c"]
+  C --> E["真实运动序列 m0 = delta / R / t"]
+  B --> F["HuBERT audio feature a"]
+  B --> G["eye state e / emotion label s"]
+  D --> H["Enhanced Conditional Signals ECS"]
+  F --> H
+  G --> H
+  E --> I["Initial Conditional Signal ICS\nreference initial motion"]
+  E --> J["前向加噪得到 mt"]
+  H --> K["Conditional DiT T"]
+  I --> K
+  J --> K
+  K --> L["预测 clean motion m_hat"]
+  L --> M["diffusion loss + temporal loss + initial loss"]
+  M --> N["渲染验证集并用 lipsync score 选 checkpoint"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">第一步：把真实视频压到 motion space</h3>
+
+  <p>训练数据来自约 50 小时、330 个 identities 的清洗视频。每个视频片段都会经过两类特征抽取：图像侧用 Motion Extractor 得到 canonical keypoints、expression deformation、head rotation 和 translation；音频侧用 HuBERT 得到帧级音频特征。这样，原本高维的视频监督信号被转成了低维运动序列 $\mathbf{m}_0=\{\boldsymbol{\delta},\mathbf{R},\mathbf{t}\}$。这一步很关键：DiT 不再学习 RGB 像素，而是学习 LivePortrait 风格 renderer 能理解的动作指令。</p>
+
+  <h3 class="section-title">第二步：构造两类条件信号</h3>
+
+  <p>训练样本并不只是 $(\text{audio},\text{motion})$ 对。Ditto 把条件拆成 ECS 和 ICS。ECS 包含音频特征 $\mathbf{a}$、眼部状态 $\mathbf{e}$、canonical keypoints $\mathbf{c}_{ref}$ 与 emotion label $\mathbf{s}$，负责在整个片段中通过 cross-attention 持续约束运动生成。ICS 则来自 reference initial motion $\mathbf{m}_{ref}$，会被复制到序列长度后与噪声 motion 拼接，主要负责片段起点和跨片段连续性。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>训练信号</th><th>来源</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>Audio feature</td><td>HuBERT</td><td>决定口型、语速和说话节奏</td></tr>
+        <tr><td>Canonical keypoints</td><td>Motion Extractor</td><td>把 motion 适配到目标身份几何，缓解身份与运动未完全解耦的问题</td></tr>
+        <tr><td>Eye state</td><td>眼部 aspect ratio 与 pupil position</td><td>控制眨眼和 gaze，补足音频无法解释的眼部运动</td></tr>
+        <tr><td>Emotion label</td><td>Clip-level 情绪标注</td><td>给表情强度和风格提供显式条件</td></tr>
+        <tr><td>Initial motion</td><td>参考初始帧运动</td><td>稳定片段开头，降低长序列拼接跳变</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">第三步：用训练技巧处理 motion representation 的偏差</h3>
+
+  <p>论文专门强调，motion representation 虽然比像素空间紧凑，但它本身也有训练难点。首先，野外视频中的头部朝向分布并不均衡，如果直接训练，模型可能学到偏向某一侧的运动习惯；Ditto 因此对人脸图像做 horizontal flip，让左右朝向的 audio-to-motion 关系更平衡。其次，嘴部、眼部、表情和头姿的运动幅度、收敛速度、与音频的相关性都不同，统一 loss 权重会让某些区域训练不足。Ditto 按控制区域对 motion representation 分组，并根据当前 epoch 与上一 epoch 的平均 loss 差异动态调整各组权重，再经过 softmax 得到 adjustment coefficients，这就是消融中影响很大的 adaptive loss weights。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>训练策略</th><th>解决的问题</th><th>论文给出的机制</th></tr></thead>
+      <tbody>
+        <tr><td>Horizontal Flip</td><td>野外数据头部朝向分布不均，可能导致生成运动偏向某一侧</td><td>水平翻转人脸图像，平衡左右两侧 audio-to-motion 对应关系</td></tr>
+        <tr><td>Adaptive Loss Weights</td><td>嘴部、眼部、表情、头姿收敛速度不同，统一权重会破坏同步与动态质量</td><td>按控制区域分组，根据相邻 epoch 的平均 loss 差异动态调整组权重</td></tr>
+        <tr><td>Validation by Lipsync Score</td><td>diffusion loss 曲线不能准确代表最终视频质量</td><td>把验证集 motion 渲染成视频后，用 lipsync score 辅助选择 checkpoint</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>实现配置也很关键。论文披露，Ditto 使用 8 张 NVIDIA A100 GPU 训练，batch size 为 1024，优化器是 Adan，学习率为 1e-4，weight decay 为 0.02，总共训练 500 epochs。训练时，音频特征、视频帧和条件信号按 25 fps 对齐，每次从视频片段中采样 $L=80$ 帧，也就是 3.2 秒的训练 segment；$\mathbf{m}_{ref}$ 来自当前 segment 的前一帧，$\mathbf{c}_{ref}$ 来自同一视频 clip 的随机帧。论文没有给出总 wall-clock 训练时间，因此这里不编造训练小时数。</p>
+
+  <h3 class="section-title">第四步：训练 DiT 从噪声还原 clean motion</h3>
+
+  <p>训练时先对真实运动 $\mathbf{m}_0$ 做 diffusion 前向加噪得到 $\mathbf{m}_t$，再让 Conditional DiT 根据 $\mathbf{m}_t$、时间步 $t$ 和条件 $\mathbf{C}$ 预测 clean motion。主损失是 clean motion 的均方误差：</p>
+\[
+\mathcal{L}_d=\mathbb{E}_{t\sim\mathcal{U}[1,T],\mathbf{m}_0,\mathbf{C}}\left[\left\|\mathbf{m}_0-\mathcal{T}(\mathbf{m}_t,\mathbf{C},t)\right\|_2^2\right]
+\]
+
+  <p>只匹配每一帧的位置还不够，因为 talking head 最怕的是嘴角、眼睛和头姿抖动。Ditto 因此加入速度和加速度约束：</p>
+\[
+\mathcal{L}_t=\left\|\hat{\mathbf{m}}'-\mathbf{m}'\right\|_2^2+\left\|\hat{\mathbf{m}}''-\mathbf{m}''\right\|_2^2
+\]
+
+  <p>最终训练目标为：</p>
+\[
+\mathcal{L}=\mathcal{L}_d+\mathcal{L}_t+\mathcal{L}_{ini}
+\]
+
+  <div class="callout"><strong>训练上的关键点</strong>：Ditto 不只看 diffusion loss 选模型，而是会把验证集 motion 渲染成视频，再用 lipsync score 辅助选择 checkpoint。原因是 motion loss 低不等于口型和观感一定好，最终系统质量必须回到视频层面验证。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">Inference Pipeline：离线推理与流式推理怎么跑起来</div>
+
+  <p>推理阶段要回答的是另一个问题：训练好的 motion generator 如何进入实时系统。Ditto 的推理链路分成两种形态：离线推理一次性处理完整音频，适合生成视频文件；流式推理按音频 chunk 连续输出，适合实时对话、直播和交互数字人。两者共用 source image 预处理、Conditional DiT 和 renderer，但流式版本额外引入 cache、causal mask 与片段融合来控制首帧延迟。</p>
+
+  <h3 class="section-title">离线推理：单张图和整段音频如何变成视频</h3>
+
+  <p>离线推理可以理解为训练 pipeline 的反向使用。系统先读取 source image，缓存 appearance feature、reference keypoints 与 initial motion；再把整段音频送入 HuBERT 得到音频特征；随后 Conditional DiT 从随机噪声开始，在 ECS 与 ICS 条件下迭代去噪，得到完整 motion sequence；最后 renderer 对每一帧执行 $\mathcal{G}(\mathbf{f}_{ref},\mathbf{x}_{ref},\hat{\mathbf{x}})$，输出 talking-head video。</p>
+
+  {{< mermaid >}}
+flowchart TD
+  A["source image"] --> B["Appearance Extractor\ncache f_ref"]
+  A --> C["Motion Extractor\nc_ref / m_ref / x_ref"]
+  D["full audio"] --> E["HuBERT audio features"]
+  C --> F["ECS + ICS"]
+  E --> F
+  G["Gaussian noise"] --> H["Conditional DiT denoising\n50-step or 10-step"]
+  F --> H
+  H --> I["generated motion sequence"]
+  C --> J["generated keypoints x_hat"]
+  I --> J
+  B --> K["Face Renderer"]
+  C --> K
+  J --> K
+  K --> L["talking-head video"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">Streaming Inference：三个模块分别降延迟</h3>
+
+  <p>流式推理比离线推理多了一个约束：音频不是一次性给完，而是按小块持续到达。Ditto 的实时性不是单点优化，而是 Audio2Feat、Motion DiT 和 Face Rendering 三段分别降延迟。音频侧，HuBERT 用 KV cache 提供伪上下文，并加入 causal mask，使 0.4 秒音频流片段也能在 CPU 上实时提特征。运动生成侧，音频特征被对齐到视频帧率并切成固定长度片段，片段间有 overlap，再用 segment-wise fusion 平滑拼接。为了速度，DiT 推理从 50 步降到 10 步，并转 TensorRT。渲染侧，目标身份外观特征预先提取缓存，renderer 也转 TensorRT；需要视频文件时，FFmpeg 在 CPU 并行压缩。</p>
+
+  {{< mermaid >}}
+sequenceDiagram
+  participant Audio as "Streaming audio chunk"
+  participant Hub as "HuBERT + KV cache"
+  participant DiT as "10-step DiT TensorRT"
+  participant Fuse as "Segment-wise fusion"
+  participant Render as "Renderer TensorRT"
+  participant Out as "Video stream"
+  Audio->>Hub: "0.4s chunk + causal mask"
+  Hub->>DiT: "frame-aligned audio feature"
+  DiT->>Fuse: "overlapped motion segment"
+  Fuse->>Render: "smoothed motion frame"
+  Render->>Out: "first frame / continuous frames"
+  {{< /mermaid >}}
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模块</th><th>关键优化</th><th>论文报告结果</th></tr></thead>
+      <tbody>
+        <tr><td>Audio2Feat</td><td>HuBERT KV cache + causal mask</td><td>23ms，RTF 0.115</td></tr>
+        <tr><td>Motion DiT</td><td>10-step denoising + TensorRT + segment fusion</td><td>62ms，RTF 0.310</td></tr>
+        <tr><td>Face Rendering</td><td>预提取 appearance feature + TensorRT renderer</td><td>15ms，RTF 0.375</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Motion Control：把隐式 keypoint 变得像 blendshape</h3>
+
+  <p>Ditto 的运动表示仍然是 implicit keypoints，并不像 ARKit blendshape 那样天然写着“jaw open”或“left eye blink”。论文的做法很直接：把 expression deformation 看成 63 维向量，即 21 个 3D keypoints 的 $x,y,z$ 坐标。然后逐维施加正负小偏移，渲染固定身份下的变化，观察每一维主要影响哪个局部区域。通过这种 probing，Ditto 建立了 deformation dimension 到 facial semantics 的映射。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ditto/bs.webp" alt="Motion control by deformation offset" loading="lazy">
+    <div class="cap">图 3：通过对 deformation 维度施加正负 offset，观察不同隐式 keypoint 维度控制的面部区域。论文据此建立类似 blendshape 的运动控制方式（来源：Li et al., 2025, Fig.3）。</div>
+  </div>
+
+  <p>这个映射带来两类控制：一类是 regional control，例如限制靠近脖子的区域运动，方便把头部与躯干拼接；另一类是 magnitude control，例如约束某些 deformation 值，避免嘴型或眼部表情过度造成伪影。这是 Ditto 相比许多端到端扩散视频方法更适合产品调参的地方：它可以把“哪里不自然”映射到“哪个运动维度要收紧”。</p>
+
+  <h3 class="section-title">Gaze Correction：眼神为什么会跟着头乱跑</h3>
+
+  <p>论文提到一个很真实的工程缺陷：早期测试中，生成 gaze 与 head pose 绑定，头像转头时眼睛也跟着漂，无法稳定看向摄像头。原因在于训练时 eye state 是逐帧加入的，但推理时 eye state 固定来自单张参考图，模型容易把 gaze variation 学进 head pose。Ditto 的修复方案是录制一个模板视频：让演员平滑转头，同时眼睛始终看向摄像头、表情保持不变。这样抽取出的 motion variation 主要就是“为了抵消头动而发生的 gaze 修正”。</p>
+
+  <div class="def-box">
+    <h3>Gaze 修正映射</h3>
+    <p>设头姿变化为 $\mathbf{R}_e$，对应的 gaze deformation variation 为 $\boldsymbol{\delta}_e$，论文用回归函数 $\mathcal{K}$ 学习二者关系：</p>
+\[
+\boldsymbol{\delta}_e=\mathcal{K}(\mathbf{R}_e)
+\]
+    <p>推理时用它修正生成 deformation：</p>
+\[
+\boldsymbol{\delta}_{correct}=\boldsymbol{\delta}+\boldsymbol{\delta}_e
+\]
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-ditto/gaze_correction.webp" alt="Gaze correction" loading="lazy">
+    <div class="cap">图 4：Gaze adjustment 将眼神方向从头姿中解耦，使头像在转头时仍能保持更自然的 eye contact（来源：Li et al., 2025, Fig.6）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">实验：速度、质量和可控性各自说明什么</div>
+
+  <h3 class="section-title">实验配置：先看结果是在什么条件下得到的</h3>
+
+  <p>论文的实验配置需要单独看，否则很容易误读实时性。训练侧，作者收集并清洗了约 50 小时 broadcast scene videos，覆盖 330 个 identities，平均视频长度约 150 秒；模型用 8 张 NVIDIA A100 GPU 训练，batch size 1024，Adan optimizer，learning rate 为 1e-4，weight decay 为 0.02，训练 500 epochs。训练样本按 25 fps 对齐，采样 80 帧也就是 3.2 秒片段训练 DiT。推理侧，RTF/FFD 测试环境是 12-core Intel Xeon Platinum 8369B CPU @ 2.90GHz、1 张 NVIDIA A100 GPU 和 100G memory；因此这些实时指标不能直接等价外推到消费级 GPU。论文没有披露总 wall-clock 训练时间，这一点需要明确记住。#Li-et-al.-2025#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>论文披露值</th><th>解读</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>约 50 小时、330 identities、平均 150 秒视频</td><td>内部清洗数据，限制严格复现</td></tr>
+        <tr><td>训练硬件</td><td>8 × NVIDIA A100 GPU</td><td>训练成本不低，论文未披露总训练耗时</td></tr>
+        <tr><td>优化配置</td><td>Adan，lr 1e-4，weight decay 0.02，batch size 1024，500 epochs</td><td>这些配置决定 motion DiT 的收敛条件</td></tr>
+        <tr><td>训练片段</td><td>25 fps 对齐，$L=80$ 帧，约 3.2 秒</td><td>片段长度影响口型、头动和跨片段连续性</td></tr>
+        <tr><td>推理测试环境</td><td>12-core Xeon Platinum 8369B CPU、1 × A100、100G memory</td><td>RTF/FFD 是在服务器级环境下测得</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">主实验：Talk9 与 HDTF100</h3>
+
+  <p>论文主要在 Talk9 和 HDTF100 上做定量对比。Talk9 上，Ditto-s10 的 FID 为 17.060、FVD 为 231.182、CSIM 为 0.861、Sync-C 为 8.111、RTF 为 0.635。值得注意的是，Ditto-s10 的 Sync-C 甚至略高于 Ditto-s50，说明在这个运动空间里，10 步去噪已经能保留足够质量。相比之下，EchoMimic、Hallo、Hallo2 的 RTF 分别是 35.528、53.082、56.838，远远不能实时。#Li-et-al.-2025#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>FID↓</th><th>FVD↓</th><th>CSIM↑</th><th>Sync-C↑</th><th>Sync-D↓</th><th>RTF↓</th></tr></thead>
+      <tbody>
+        <tr><td>MuseTalk</td><td>21.445</td><td>436.862</td><td>0.807</td><td>5.586</td><td>8.400</td><td>2.248</td></tr>
+        <tr><td>EchoMimic</td><td>42.554</td><td>395.754</td><td>0.840</td><td>5.733</td><td>9.204</td><td>35.528</td></tr>
+        <tr><td>Hallo2</td><td>22.899</td><td>245.236</td><td>0.806</td><td>7.737</td><td>7.608</td><td>56.838</td></tr>
+        <tr><td>Ditto-s50</td><td>17.254</td><td>219.368</td><td>0.864</td><td>8.069</td><td>7.114</td><td>2.121</td></tr>
+        <tr><td><strong>Ditto-s10</strong></td><td><strong>17.060</strong></td><td>231.182</td><td>0.861</td><td><strong>8.111</strong></td><td>7.291</td><td><strong>0.635</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>HDTF100 上，Ditto 的 FVD 降到 134.640，明显低于 Hallo2 的 239.517；SyncC 达到 8.939，也高于对比方法。这个结果支持论文的核心论点：motion representation 不仅让速度变快，也降低了 diffusion 学习难度，改善跨帧连续性和身份保持。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ditto/res.webp" alt="Ditto qualitative results" loading="lazy">
+    <div class="cap">图 5：Ditto 在不同风格、尺度和控制条件下的生成结果，包括 gaze、pose、emotion 与 full-body portrait 拼接（来源：Li et al., 2025, Fig.4）。</div>
+  </div>
+
+  <h3 class="section-title">消融：哪些组件最关键</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Setting</th><th>FID↓</th><th>FVD↓</th><th>CSIM↑</th><th>SyncC↑</th><th>SyncD↓</th><th>解读</th></tr></thead>
+      <tbody>
+        <tr><td>Full Model</td><td>17.254</td><td>219.368</td><td>0.864</td><td>8.069</td><td>7.114</td><td>基准</td></tr>
+        <tr><td>w/o C-kp</td><td>17.438</td><td>261.693</td><td>0.849</td><td>6.932</td><td>8.476</td><td>身份几何适配变差，动态质量和同步下降</td></tr>
+        <tr><td>w/o Emo</td><td>23.036</td><td>324.078</td><td>0.792</td><td>6.310</td><td>8.990</td><td>只靠音频学表情更难，质量和身份一致性都掉</td></tr>
+        <tr><td>w/o Ada-w</td><td>18.978</td><td>588.821</td><td>0.844</td><td>0.289</td><td>14.992</td><td>姿态/表情收敛严重失衡，几乎破坏同步</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>反直觉发现</strong>：最致命的消融不是去掉某个“大模块”，而是去掉 adaptive loss weights。SyncC 从 8.069 掉到 0.289，说明 motion representation 内部不同区域的学习难度差异非常大，不能用统一权重硬训。</div>
+
+  <h3 class="section-title">局限：自然性仍有代价</h3>
+
+  <p>用户研究里，Ditto 在 visual quality 和 lipsync 上分别达到 84.0% 与 80.7%，明显领先 EchoMimic、Hallo、Hallo2；但在 naturalness of facial expressions and head movement 上，Ditto 为 48.7%，低于 Hallo2 的 59.3%。论文解释说，motion representation 可能削弱部分 high-frequency motion information。这个局限很重要：紧凑运动空间提升了速度和可控性，但也可能压掉一些微小而真实的自然抖动、表情细节和说话节奏变化。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ditto/comp_2.webp" alt="Ditto qualitative comparison" loading="lazy">
+    <div class="cap">图 6：Ditto 与 EchoMimic、Hallo、Hallo2 的定性对比。论文用蓝色箭头标出基线方法中的牙齿错乱、模糊、唇动不准等伪影（来源：Li et al., 2025, Fig.5）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">代码与工程复现：开源带来了什么增量</div>
+
+  <p>Ditto 的 GitHub 仓库公开在 <a href="https://github.com/antgroup/ditto-talkinghead" target="_blank">antgroup/ditto-talkinghead</a>。README 显示主分支是 inference branch，训练代码在 <code>train</code> 分支；模型权重托管在 HuggingFace。仓库提供 TensorRT 与 PyTorch 两种推理路径，但论文中的实时结果依赖 A100、TensorRT 8.6.1 以及 Ampere Plus 兼容 engine，这一点对复现速度很关键。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工程要素</th><th>README 信息</th><th>对复现的含义</th></tr></thead>
+      <tbody>
+        <tr><td>环境</td><td>CentOS 7.2、A100、Python 3.10、TensorRT 8.6.1</td><td>实时性能强依赖 GPU 与 TensorRT 版本</td></tr>
+        <tr><td>模型文件</td><td>ONNX、TensorRT engine、PyTorch weights、cfg pkl</td><td>推理链路模块化，便于替换 engine 或调试 PyTorch</td></tr>
+        <tr><td>推理入口</td><td><code>inference.py</code>，输入 audio、source image、cfg、data_root</td><td>适合快速验证单图 + 音频生成效果</td></tr>
+        <tr><td>训练代码</td><td><code>train</code> branch，README 标注可能与论文版本略有差异</td><td>能研究训练细节，但严格论文复现实验仍需谨慎</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      复现注意
+    </div>
+    <div class="admonition-content"><p>论文训练数据是约 50 小时、330 个 identities 的内部清洗数据；实时指标基于 A100 + TensorRT。开源推理代码能帮助理解工程链路，但不能直接保证在消费级 GPU 上得到同等 RTF 与 FFD。</p></div>
+  </div>
+
+  <p>从代码角度看，Ditto 对数字人工程最大的启发，是把系统拆成可替换的模块：音频特征、motion generator、renderer、stitching/full-body 输出都可以独立优化。相比一个端到端视频扩散大模型，这种模块化系统更容易做延迟预算、降级策略和局部质量修复。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第八章</div>
+  <div class="ch-title">讨论：Ditto 对实时数字人产品的启发</div>
+
+  <p>如果从产品视角看，Ditto 说明了一件事：实时数字人的核心不只是“生成质量”，而是“可预测地按时生成”。用户会容忍一点点画质损失，却很难容忍首帧等待、口型错位、眼神乱飘和无法控制的表情。Ditto 把生成问题约束到 motion space，牺牲了一部分端到端视频扩散的自由度，但换来了延迟、控制和可调试性。</p>
+
+  <div class="review-box">
+    <h3>本文要点复盘</h3>
+    <ul>
+      <li><strong>核心问题</strong>：扩散式 talking head 质量提升明显，但慢且不可控，难以进入实时交互。</li>
+      <li><strong>核心方案</strong>：用 LivePortrait 风格 motion space 作为扩散目标，Conditional DiT 生成运动，renderer 保留身份与纹理。</li>
+      <li><strong>关键工程</strong>：HuBERT streaming、10-step DiT、TensorRT、appearance cache、segment-wise fusion。</li>
+      <li><strong>实验结论</strong>：RTF 与 FFD 已满足实时交互要求；消融显示 emotion、canonical keypoints 和 adaptive weights 都非常关键。</li>
+      <li><strong>主要局限</strong>：紧凑运动表示可能削弱高频自然性；训练数据和硬件条件限制严格复现。</li>
+    </ul>
+  </div>
+
+  <p>对后续工作而言，一个自然方向是把 motion space 做得更分层：低频头姿、嘴型、眼神、微表情分别用不同频带或不同控制头建模，既保留 Ditto 的实时优势，又减少高频自然性的损失。另一个方向是把控制接口产品化：把 gaze、emotion、pose、regional constraints 暴露为可配置 API，让上层对话系统能根据语义和场景动态控制数字人状态。</p>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="paper-vasa1.html"><span class="nav-label">上一篇论文精读</span><span class="nav-title">VASA-1：整体面部动力学</span></a>
+    <a class="nav-card current" href="digital-human-hub.html"><span class="nav-label">系列入口</span><span class="nav-title">数字人系列</span></a>
+    <a class="nav-card" href="cyberverse-realtime-digital-human-agent.html"><span class="nav-label">工程落地</span><span class="nav-title">CyberVerse 源码解读</span></a>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Li-et-al.-2025">Li, Tianqi, Ruobing Zheng, Minghui Yang, Jingdong Chen, and Ming Yang. “Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis.” ACM MM 2025. <a href="https://arxiv.org/abs/2411.19509" target="_blank">arXiv:2411.19509</a></li>
+    <li data-cite-key="Xu-et-al.-2024">Xu, Sicheng et al. “VASA-1: Lifelike Audio-Driven Talking Faces Generated in Real Time.” 2024. <a href="https://arxiv.org/abs/2404.10667" target="_blank">arXiv:2404.10667</a></li>
+    <li data-cite-key="Guo-et-al.-2024">Guo, Jianzhu et al. “LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control.” 2024. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv:2407.03168</a></li>
+    <li data-cite-key="Ditto-GitHub">Ant Group. “ditto-talkinghead.” <a href="https://github.com/antgroup/ditto-talkinghead" target="_blank">GitHub repository</a></li>
+    <li data-cite-key="Ditto-Project">Ditto Project Page. <a href="https://digital-avatar.github.io/ai/Ditto/" target="_blank">Project website</a></li>
+  </ul>
+</div>

@@ -1,0 +1,136 @@
+---
+title: "多模态推理为什么更难：以 SGLang Omni 为例看 multi-stage inference"
+description: "当模型从文本走向语音/图像/视频，推理系统的同构假设被打破。以 SGLang Omni 为案例，拆解 multi-stage inference 如何迫使基础设施重新定义边界。"
+date: 2026-06-02T00:07:02
+created_at: 2026-06-02T00:07:02
+updated_at: 2026-06-02T00:17:20
+tags: [SGLang Omni, 多模态推理, Multi-Stage Inference, 语音模型, AI Infra, 推理系统]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: 多模态推理为什么更难
+hero_sub: 以 SGLang Omni 为例看 multi-stage inference
+hero_tagline: 当推理不再只有一条 decode loop，系统边界必须重画
+mathjax: false
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">4</span><span class="label">核心流水线阶段</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">异构计算瓶颈</span></div>
+  <div class="stat"><span class="num">2</span><span class="label">独立调度循环</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列五</div>
+  <div class="ch-title">文本推理的同构假设，为什么在多模态里开始失效</div>
+
+  前面几篇已经建立了文本 LLM 推理的基础设施语言：prefill、decode、KV cache、continuous batching、scheduler。这些概念之所以有效，是因为它们背后共享着一个不太显眼却至关重要的前提：<strong>每个请求的计算过程大体是同构的</strong>——都是一段 prefill，再接一条逐 token 推进的 decode loop。
+
+  真正让多模态与语音系统变难的，并不是“又多支持了一种输入输出模态”，而是这个同构前提本身开始失效。以语音输入输出模型为例，系统面对的往往不再是一条统一的 decode loop，而是一条由多个异构 stage 组成的流水线：有的阶段更吃算力，有的更吃带宽，有的则对 kernel launch 和同步时延极其敏感 #SGLang-Omni-2026# #SGLang-Omni-Design#。
+
+  这一篇就以 SGLang Omni 为案例，拆解 multi-stage inference 带来的系统问题，以及一个优秀的推理系统团队是如何按计算特性重新划系统边界的。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、标准文本推理的“正常世界”长什么样</div>
+
+  在标准文本推理里，基础设施优化的核心任务可以概括为一句话：<strong>如何围绕一条统一的 autoregressive loop，把 GPU 算力、显存带宽和缓存状态压榨到极致。</strong>于是我们才会看到一整套围绕 prefill/decode 分离、continuous batching、KV cache 管理和 prefix 复用建立起来的推理工程学 #vLLM-2023#。
+
+  这个体系运转良好的前提是：所有请求都在跑同一种计算结构。无论 prompt 多长、输出多短，它们最终都还是落在同一类 loop 上。Scheduler 只需要管理“哪些请求在这一轮 decode 中继续推进”，而不需要关心不同请求是否在跑完全不同的计算类型。
+
+  但多模态尤其是语音输出模型，把这个假设打破了。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、语音输出模型天然拆成一条四阶段流水线</div>
+
+  一个能听懂语音、能用语音回复的 omni 模型，整个过程天然可以拆成四步 #SGLang-Omni-Design#：
+
+  <ul>
+    <li><strong>Audio Encoding</strong>：把用户语音波形压缩成离散 codec token。</li>
+    <li><strong>Understanding / Thinker</strong>：LLM 读取这些 token（可能还有图像、视频），理解意图并生成文本回复。</li>
+    <li><strong>Speech Synthesis / Talker</strong>：把文本回复和声学特征转成输出语音的 codec token。</li>
+    <li><strong>Audio Decoding / Vocoder</strong>：把 codec token 解码回可播放的波形。</li>
+  </ul>
+
+  其中 Thinker 和 Talker 虽然在概念上是同一条流水线的两个环节，但在计算上它们几乎是两种完全不同的工作负载。Thinker 生成的是稀疏、低频的文本 token，计算模式和标准 LLM 高度相似；Talker 生成的是高频、密集的 codec token，每一步的计算量极小，却对同步时延极其敏感 #SGLang-Omni-Design#。
+
+  更麻烦的是，Talker 并不是独立工作的。它每生成一个时间步的第 0 个 codec token，MTP 模块就必须立刻介入，并行补全剩余层，并把结果写回 Talker 作为下一步输入。这是一个步间紧反馈回路，任何跨进程通信的额外开销都会累积到不可接受 #SGLang-Omni-Design#。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、multi-stage inference 带来的三类系统问题</div>
+
+  一旦 decode 从单阶段变成多阶段，推理系统就不再只是“优化一个 engine”，而必须回答三个全新的问题。
+
+  <div class="section fade-in">
+    <div class="section-title">3.1 不同 stage 的瓶颈根本不是一类东西</div>
+    Thinker 遵循文本 LLM 的老规律：prefill 更吃算力，decode 更吃显存带宽。但 Talker + MTP 的组合却是一种标准 LLM 里没见过的工作负载：每一步的矩阵乘法极小，kernel launch 和同步开销反而成了主导因素。Vocoder 又更像 compute-heavy 的 ConvNet，和 LLM decode 的瓶颈资源不同 #SGLang-Omni-Design#。
+
+    把这三类工作硬塞进同一个 scheduler 里，结果不是统一优化，而是彼此拖累。Thinker 的大 batch prefill 会打断 Talker 的细粒度操作；Talker 的低延迟需求又会被 Thinker 的长计算阻塞。结论是：<strong>调度解耦不是可选项，而是必然。</strong>
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.2 不同 stage 之间的依赖关系完全不同</div>
+    同一个系统里同时存在两种通信需求：Thinker 到 Talker 是异步解耦的，可以走共享 buffer 和事件通知；但 Talker 和 MTP 之间是同步紧耦合的，每一步都必须在极短时延内完成反馈写回。于是通信系统不能再抽象成统一总线，而必须按依赖松紧程度分层设计 #SGLang-Omni-Design#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.3 显存预算从“一份总额”变成“多方争抢”</div>
+    单阶段文本 serving 的显存管理至少逻辑单纯：一部分留给权重，一部分留给 KV cache。但在 multi-stage 场景下，Thinker 的权重、Talker 的权重、各自的 KV cache、encoder 的临时激活峰值、反馈缓冲区，都在争抢同一块资源。显存管理从一个一维比例调节，变成了多主体、动态变化的预算问题 #SGLang-Omni-Design#。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、SGLang Omni 的系统回应：按计算特性划边界</div>
+
+  SGLang Omni 的设计价值，不在于它支持了多少种 omni 模型，而在于它把“系统边界应该怎么划”这个问题回答得很明确：<strong>边界不该按模块名字来划，而应按依赖关系和计算特性来划。</strong>
+
+  <div class="section fade-in">
+    <div class="section-title">4.1 独立 scheduler，各自优化</div>
+    Thinker 和 Talker 各自维护独立的调度循环。Thinker 复用 SGLang main 的 continuous batching 和 KV cache 管理能力；Talker 则跑在专为轻量、高频、强反馈 workload 优化的 scheduler 上。不需要调度的阶段（如 encoder）用极简的 SimpleScheduler #SGLang-Omni-2026# #SGLang-Omni-Design#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.2 Talker + MTP 合在同一个 Stage</div>
+    因为 Talker 和 MTP 之间的依赖是同步且每步极轻的，拆成两个 Stage 走跨进程通信会导致每一步延迟膨胀到不可接受。SGLang Omni 选择把 MTP 的补全和 feedback 写回全部封装在 FeedbackARModelRunner 的一个 forward 调用里。对上层 Coordinator 来说，Talker + MTP 的一个时间步只是轻量的一步 decode #SGLang-Omni-Design#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.3 分层通信：不搞一刀切</div>
+    控制面走 ZMQ 承载事件通知；数据面走 relay，同机 GPU 用 shared memory 或 CUDA IPC 零拷贝，跨节点走 NCCL。紧耦合的同步依赖不走任何跨 stage 通信，全部收在 Stage 内部 #SGLang-Omni-Design#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">4.4 多方预算制显存管理</div>
+    每个 stage 在自己的配置里声明显存预算比例，启动时按 GPU 汇总。总和超过 100% 直接拒绝；通过后每个 AR stage 在预算内尽可能多地分配 KV cache。Encoder 的临时激活峰值通过 TP 切分来消化 #SGLang-Omni-Design#。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、这件事为什么不仅是 omni 模型的问题</div>
+
+  SGLang Omni 这个案例实际上揭示了一个更普遍的 AI Infra 设计原则：
+
+  <div class="info-box">
+    <h3>设计原则</h3>
+    <p>基础设施设计最忌讳的事情之一，就是把上层语义边界直接照搬到系统边界里。真正应该决定边界的，不是“这是不是一个模型模块”，而是<strong>“它和谁强依赖、它的瓶颈是什么、它需要怎样的调度与通信语义”</strong>。</p>
+  </div>
+
+  从单阶段 serving 到异构流水线，推理系统的时代正在变化。文本 LLM 时代的推理系统已经让我们学会围绕 KV cache、batching 和调度重新思考 serving；而多模态与语音时代做的事情，是进一步迫使我们承认：<strong>并不是所有推理都能被压缩成一条统一的 decode loop。</strong>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">六、为下一篇铺路：从推理 Infra 到训练 Infra</div>
+
+  推理基础设施已经让我们看到了 AI 系统最贴近用户的一层。但模型在能服务之前，首先要被训练出来——而训练大模型的基础设施问题，和推理有着完全不同的受力结构。下一篇就会从 ZeRO、Megatron 和 NCCL 出发，解释为什么训练大模型更像一场跨上千张 GPU 的协同工程。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="SGLang-Omni-2026">sgl-project. <em>SGLang-Omni: High-Performance Serving Framework for Omni and Multimodal Models</em>. 2026. <a href="https://github.com/sgl-project/sglang-omni" target="_blank">GitHub</a></li>
+    <li data-cite-key="SGLang-Omni-Design">Zhao, C. <em>SGLang Omni: Multi-Stage Inference System Design</em>. 2026. <a href="https://yage.ai/share/sglang-omni-llm-inference-20260530.html" target="_blank">yage.ai</a></li>
+    <li data-cite-key="vLLM-2023">Kwon, W. et al. <em>vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention</em>. 2023. <a href="https://vllm.ai/blog/2023-06-20-vllm" target="_blank">vLLM Blog</a></li>
+  </ul>
+</div>

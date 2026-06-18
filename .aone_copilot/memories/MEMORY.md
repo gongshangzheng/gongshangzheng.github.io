@@ -1,0 +1,39 @@
+- [分类页不保留 taxonomy eyebrow](feedback_no_taxonomy_eyebrow.md) — 分类首页不要额外上标说明，标题区保持直接紧凑。
+- [分类页保留卡片与视觉元信息](feedback_taxonomy_cards_visual_metadata.md) — 分类页保留卡片式、标签式和每个分类的 icon/tone/desc。
+- [直接描述具体工作](feedback_direct_work_wording.md) — 简历/介绍页文案避免片汤化概括句，优先写具体工作内容。
+- [裁切图片白边](feedback_crop_image_whitespace.md) — 博客或论文配图有明显白边时，使用前应先裁切白边。
+- [优先更新 skill 模板](feedback_skill_template_updates.md) — 修改 skill 用例时优先更新其真实模板与说明，而非只改仓库示例页。
+- [Skill 规则与示例分离](feedback_skill_rules_examples_separation.md) — Skill 规则区只写规则，详细例子放到专门示例部分。
+- [Subcategory 标题前缀和编号](feedback_subcategory_title_prefix_numbering.md) — 同一 subcategory 内同类文章必须用统一标题前缀和编号。
+- [博客 HTML 写作硬约束](feedback_blog_html_hard_constraints.md) — display math 禁包 `<p>`、小节标题必带 class、sources 必有 data-cite-key。
+- [课程笔记关键概念必须配图](feedback_course_notes_visuals.md) — 讲结构、表示法或抽象机制时，优先补充图示或课件页。
+- [数字人归入 AI/数字人](feedback_blog_category_digital_human.md) — 数字人相关文章归入 AI 下“数字人”，不要新建“研究综述”分类。
+- [大型调研系列化交付](feedback_research_series_delivery.md) — 领域过大时拆成同一 subcategory 下的系列文章并用总览/Hub 组织。
+- [博客媒体路径规范](feedback_blog_image_paths.md) — 图片放 media/images/<slug>/，视频放 media/videos/<slug>/，禁止 assets/media。
+- [docref 与 docpage 语义边界](feedback_docref_docpage_semantics.md) — docref/docpage 都必须有上下文；docpage 按“导读→页面→回扣”使用。
+- [Mermaid 渲染稳定写法](feedback_mermaid_rendering.md) — 含括号/斜杠/数学符号等标签必须加引号，避免 Mermaid v11 解析失败。
+- [不生成手绘 SVG](feedback_no_generated_svg.md) — 博客/课程笔记不生成手绘示意 SVG；blog-syntax 内置 admonition SVG 图标可用。
+- [论文解读必须主 agent 亲自核验](feedback_paper_writing_pipeline.md) — full 论文解读不外包给单 subagent；发布前逐项核验字数/公式/表格/图片可用/引用闭合。
+- [SVG 配图存量文章整改清单](insight_svg_legacy_articles.md) — 12 篇历史文章用手绘 SVG 配图，低优先级逐篇替换为论文原图或 Mermaid/JSXGraph。
+- [mark 高亮语法](feedback_mark_highlight_syntax.md) — 高亮只用 ==text==，单等号 =text= 不再表示 mark。
+- [禁止未实现和假设实现](feedback_no_unimplemented_or_assumed_work.md) — 编辑后必须检查并修复未实现、待办标记、简化/假设实现和不可用引用。
+- [系统型论文训练与推理 Pipeline](feedback_system_paper_pipelines.md) — 系统型/工程型/生成式论文必须独立写 Training 与 Inference/Streaming Pipeline。
+- [论文实验配置必须给齐](feedback_experiment_config_required.md) — 实验章节必须列训练/推理配置；未披露项也要显式说明。
+- [文章正文不写写作过程](feedback_no_writing_process_in_articles.md) — 博客/论文/survey 正文直接论述主题，不写升级、写作或组织材料的过程。
+- [深度调研必须基于完整来源链](feedback_deep_research_source_quality.md) — deep-research 不能只读 abstract/搜索片段；核心 survey 必须完整读完、总结并发布。
+- [Academic Research 重要参考文献需精读](feedback_academic_research_reference_readings.md) — 领域综述的重要参考文献需进入 read-article/论文精读候选或产出。
+- [直接编辑文章文件](feedback_direct_article_editing.md) — 写博客/论文 HTML 不要默认先造临时 Python 写入脚本，优先直接编辑目标文件。
+- [不要用临时 Python 脚本改文章](feedback_no_temp_python_for_article_edits.md) — 修改博客/frontmatter/Hub/skill 时优先直接编辑，不默认脚本写入。
+- [Shell 校验不用 heredoc](feedback_no_shell_heredoc.md) — shell 校验/统计命令保持单行，避免多行 heredoc 被包装或转义破坏。
+- [Survey 必须显式 taxonomy](feedback_survey_taxonomy_required.md) — 写 survey 时必须区分任务分类和技术路线分类，避免只罗列论文。
+- [论述围绕道理而非评价材料](feedback_expository_argument_style.md) — 博客/survey 直接说明概念边界和论证关系，避免“XX 的价值在于”。
+- [数字人 sub_id 分段编号](feedback_digital_human_sub_id_ranges.md) — AI/数字人按系列/论文/工程分段，段内用 10 步长递增。
+- [代码分析必须引用源码](feedback_code_analysis_source_quotes.md) — 论文/博客中解读开源代码时必须引用源码片段，不能只列变量名。
+- [关键术语首次出现必须解释](feedback_key_terms_first_use.md) — 博客/论文/survey 首次出现核心术语时必须给定义和上下文。
+- [数字人调研必须覆盖 3DGS 路线](feedback_digital_human_3d_gaussian_route.md) — 数字人/talking head 调研不能遗漏 EGSTalker 等 3DGS/NeRF 路线。
+- [Academic/Read-Article 默认研究管线](feedback_academic_read_article_pipeline_defaults.md) — 建 todo、明确 subagents、source-first、指针化，并用扁平 survey-spine 产出结构化 survey。
+- [表格优先合理换行与斜体说明](feedback_table_wrapping.md) — 表格说明用表格后斜体段落，不用 caption 标签。
+- [Talking head 与 portrait animation 不作为硬分类](feedback_talking_head_portrait_taxonomy.md) — 数字人 taxonomy 优先按驱动条件/运动来源划分。
+- [数字人实验必须多维评估](feedback_digital_human_experiment_metrics.md) — 数字人实验不能只看 FID/FVD，需覆盖同步、身份、运动、稳定性和效率。
+- [文章修订必须更新主体](feedback_article_revision_must_update_body.md) — 更新已有文章不能只改标题/导语/总表，必须同步改正文主体章节。
+- [禁止错误 citation 包裹语法](feedback_no_invalid_citation_wrappers.md) — citation 统一用 `#key#`，不生成旧 dollar-at citation、错误双层包裹或裸 at-key。

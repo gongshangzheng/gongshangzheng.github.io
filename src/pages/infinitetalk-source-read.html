@@ -1,0 +1,333 @@
+---
+title: "数字人工程解读（七）：InfiniteTalk 源码，站在视频大模型肩上的无限长数字人"
+description: "拆解 MeiGen-AI 的稀疏帧视频配音框架：基座 Wan2.1-14B 扩散视频大模型、DiT 双 cross-attention 音画注入、motion frame 滑窗实现无限长，以及与上篇 Ultralight 的「轻 vs 重」对照。"
+date: 2026-06-05T13:50:25
+created_at: 2026-06-05T13:50:25
+updated_at: 2026-06-05T13:50:25
+tags: ["数字人", "源码解读", "稀疏帧配音", "扩散模型", "DiT", "Wan2.1", "无限长视频", "InfiniteTalk"]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 2300
+hero_title: "InfiniteTalk 源码解读"
+mathjax: true
+---
+<div class="stats">
+  <div class="stat"><span class="num">14B</span><span class="label">基座参数量</span></div>
+  <div class="stat"><span class="num b">∞</span><span class="label g">可生成时长</span></div>
+  <div class="stat"><span class="num l">81</span><span class="label">帧/块</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label">路 cross-attn</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列位置</div>
+  <div class="ch-title">序章：从「塞进手机」跳到「站在大模型肩上」</div>
+
+  上一篇我们读了 <a href="ultralight-digital-human-source-read.html">Ultralight-Digital-Human</a>——一个不到 1M、能在手机上跑、靠「遮嘴重建」逐帧补口型的极简数字人。它代表了数字人的一个极端：<strong>越轻越好</strong>。
+
+  这一篇，我们走到光谱的另一端。主角是 <a href="https://github.com/MeiGen-AI/InfiniteTalk" target="_blank">MeiGen-AI/InfiniteTalk</a>，一个由<strong>美团 + 中科院</strong>团队在 2025 年 8 月开源的框架。#IT-repo# 它不满足于「只对口型」，而是要让人物的<strong>头、身体、表情都随音频自然动起来</strong>，还能生成<strong>无限长</strong>的视频。代价是：它直接站在一个 <strong>140 亿参数的视频扩散大模型</strong>（阿里通义万相 Wan2.1）肩膀上，吃显卡、吃算力。
+
+  <div class="callout"><strong>两篇放一起读的价值</strong>：Ultralight 和 InfiniteTalk 是同一问题（音频驱动数字人）的两种极端答案。一个做减法到极致，一个借大模型之力做加法到极致。读完这两篇，你就能在「轻量实时」和「高质量全身」这条光谱上，给任何数字人方案定位。本文末尾有一张完整的对照表。</div>
+
+  <div class="photo">
+    <img src="media/images/infinitetalk-source-read/pipeline.webp" loading="lazy">
+    <div class="cap">图 1：InfiniteTalk 整体架构（来源：项目 README assets/pipeline.png）。左侧是主生成流程，右侧是 DiT Block 的内部结构——后文会逐块拆解。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Overview</div>
+  <div class="ch-title">项目概览：它到底是什么</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>事实</th></tr></thead>
+      <tbody>
+        <tr><td>一句话定位</td><td><strong>稀疏帧视频配音</strong>（Sparse-Frame Video Dubbing）框架：给视频/图片 + 音频，合成无限长、全身同步的口播视频</td></tr>
+        <tr><td>团队 / 时间</td><td>MeiGen-AI（美团 + 中科院 UCAS/CASIA + 中山大学 + HKUST），2025-08-19 开源，论文 arXiv:2508.14033</td></tr>
+        <tr><td>基座模型</td><td><strong>Wan2.1-I2V-14B</strong>（阿里通义万相的图生视频扩散大模型，DiT 架构）</td></tr>
+        <tr><td>音频编码器</td><td>chinese-wav2vec2-base（腾讯开源）</td></tr>
+        <tr><td>自训部分</td><td>只训「音频条件权重」（audio condition weights），不重训整个视频大模型</td></tr>
+        <tr><td>输入模式</td><td>视频→视频（V2V，无限长）/ 图片→视频（I2V，1 分钟内最佳）</td></tr>
+        <tr><td>许可证</td><td>Apache 2.0（仓库带正式 LICENSE.txt）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      理解这个项目的一把钥匙
+    </div>
+    <div class="admonition-content"><p>InfiniteTalk 的本质是<strong>「条件适配」而非「从头造模型」</strong>。它把一个已经很强的通用视频生成大模型（Wan2.1）拿过来，在它身上接两根「条件线」——一根喂音频、一根喂参考帧，再用一套滑窗策略把它的「短视频生成能力」接力成「无限长」。所有工程难点都围绕这三件事展开。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Paradigm</div>
+  <div class="ch-title">核心范式：为什么是「稀疏帧」配音</div>
+
+  论文开篇就点出传统视频配音的死穴：<strong>只编辑嘴部区域</strong>，导致换了音频后，嘴在动、但表情和肢体还是原视频的样子，二者错位，观众一眼就觉得「假」。#IT-paper#
+
+  那为什么不直接用一个图生视频（I2V）大模型，给张脸 + 音频让它全自由生成？论文给出了关键分析：<strong>朴素 I2V 模型做不到「自适应 conditioning」</strong>——要么条件太弱（人物乱动、丢失身份），要么条件太强（被原视频锁死、嘴动不起来）。
+
+  InfiniteTalk 的答案是<strong>稀疏帧配音</strong>：
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      稀疏帧配音 = 战略性地「只保留少数参考帧」
+    </div>
+    <div class="admonition-content"><p>不再逐帧把原视频当条件，而是<strong>只战略性地保留稀疏的参考关键帧</strong>，用它们维持「这个人是谁、标志性手势、相机怎么运镜」；其余的画面，全部交给模型根据音频<strong>重新生成全身动作</strong>。「稀疏」二字的含义就在这里——参考是稀疏的，自由度是充足的。</p></div>
+  </div>
+
+  论文把这套方案的成功归结为两个技术贡献，后面两章会逐一对应到代码：
+  <ul>
+    <li><strong>时序上下文帧（temporal context frames）</strong>：用上一块的尾帧做下一块的开头，实现块与块之间的无缝衔接——这是「无限长」的基础。</li>
+    <li><strong>细粒度参考帧位置的采样策略</strong>：通过控制参考帧出现的位置/强度，在「听话」和「自由」之间找平衡。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Map</div>
+  <div class="ch-title">仓库地图：薄薄一层「条件」盖在厚厚一层「大模型」上</div>
+
+  仓库结构非常能说明它的设计哲学——<strong>大部分代码是借来的 Wan2.1 基座，自己的核心很薄</strong>。
+
+  {{< mermaid >}}
+flowchart TD
+  CLI["generate_infinitetalk.py<br/>推理入口 / app.py Gradio"] --> PIPE["wan/multitalk.py<br/>InfiniteTalkPipeline"]
+  PIPE --> AUD["src/audio_analysis/wav2vec2.py<br/>音频编码"]
+  PIPE --> DIT["wan/modules/multitalk_model.py<br/>DiT + 双 cross-attention"]
+  PIPE --> VAE["wan/modules/vae.py<br/>视频 VAE 编解码"]
+  PIPE --> T5["wan/modules/t5.py / clip.py<br/>文本/图像编码"]
+  PIPE --> VRAM["src/vram_management/<br/>低显存管理"]
+  DIT -.基座.-> WAN["Wan2.1-I2V-14B<br/>阿里通义万相 权重"]
+  AUD -.基座.-> W2V["chinese-wav2vec2-base<br/>腾讯 权重"]
+  {{< /mermaid >}}
+
+  <p><em>图 2：模块依赖。<code>wan/</code> 目录几乎整个是 Wan2.1 的代码（版权头写着 Alibaba Wan Team），InfiniteTalk 真正自己的逻辑集中在 <code>multitalk.py</code> 的生成循环、<code>multitalk_model.py</code> 的条件注入，以及 <code>src/</code> 下的音频与显存管理。</em></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文件</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td><code>generate_infinitetalk.py</code></td><td>CLI 推理入口，解析参数、读取 json、调度 Pipeline（663 行）</td></tr>
+        <tr><td><code>wan/multitalk.py</code></td><td><strong>核心</strong>：<code>InfiniteTalkPipeline.generate_infinitetalk()</code> 主生成循环（855 行）</td></tr>
+        <tr><td><code>wan/modules/multitalk_model.py</code></td><td><strong>核心</strong>：在 Wan DiT 上加 audio/reference cross-attention（823 行）</td></tr>
+        <tr><td><code>src/audio_analysis/wav2vec2.py</code></td><td>wav2vec2 音频特征提取</td></tr>
+        <tr><td><code>src/vram_management/</code></td><td>参数分级 offload，对应「极低显存运行」卖点</td></tr>
+        <tr><td><code>wan/utils/multitalk_utils.py</code></td><td>分辨率桶、色彩校正、ffmpeg 存视频等工具</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Architecture</div>
+  <div class="ch-title">架构剖析：音频和参考帧怎么进入扩散模型</div>
+
+  对照图 1，整个前向可以分成「编码 → 拼接 → DiT 去噪 → 解码」四步。
+
+  <h3 class="section-title">两个编码器 + 一次通道拼接</h3>
+
+  <pre><code class="language-python"># wan/multitalk.py：参考帧的两种编码
+# 1) CLIP 语义编码（提供"这个人长什么样"的高层身份）
+clip_context = self.clip.visual(cond_image[:, :, -1:, :, :])
+# 2) VAE 编码（把参考帧 + 零填充压到 latent 空间，与噪声同维度拼接）
+padding_frames = torch.zeros(1, C, frame_num - 1, H, W)
+y = self.vae.encode(torch.concat([cond_image, padding_frames], dim=2))
+y = torch.concat([msk, y], dim=1)   # 拼上 mask：第一帧已知、其余待生成
+</code></pre>
+
+  音频则由 <code>wav2vec</code> 编码后，按帧切成滑动窗口（每个目标帧取前后各 2 帧、共 5 帧的音频上下文）。这样图像和音频都准备成了 DiT 可以消费的条件。
+
+  <h3 class="section-title">DiT Block：两路 cross-attention 各管一摊</h3>
+
+  对照图 1 右侧，每个 DiT Block（共 N 层）的内部顺序是固定的四段：
+
+  {{< mermaid >}}
+flowchart TD
+  X["视频 latent token"] --> SA["Self-attention<br/>(帧内/帧间时空建模)"]
+  SA --> RCA["Reference cross-attention<br/>(注入参考帧 embed → 保身份)"]
+  RCA --> ACA["Audio cross-attention<br/>(注入音频 embed → 驱动口型/动作)"]
+  ACA --> FFN["FFN"]
+  FFN --> OUT["→ 下一层 / Velocity prediction"]
+  {{< /mermaid >}}
+
+  <p><em>图 3：DiT Block 的条件注入顺序。Self-attention 负责时空一致性，然后<strong>先注入参考帧（管身份）、再注入音频（管动作）</strong>，最后 FFN。两路 cross-attention 职责分离，是这套架构清晰的关键。</em></p>
+
+  DiT 最终输出的不是图像，而是 <strong>velocity prediction</strong>——这是 flow matching / rectified flow 的训练目标（预测从噪声流向数据的「速度场」），比传统 DDPM 预测噪声更适合视频。采样时用 <code>sample_shift</code>（480P=7、720P=11）调整噪声调度。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Infinite Length</div>
+  <div class="ch-title">无限长机制：本项目最硬核的工程</div>
+
+  扩散视频模型一次只能生成固定长度（这里是 81 帧）。InfiniteTalk 怎么把它接力成无限长？答案是 <strong>motion frame（运动帧）滑窗</strong>——也就是论文说的「时序上下文帧」。
+
+  <h3 class="section-title">核心思想：让相邻块「首尾相接」</h3>
+
+  {{< mermaid >}}
+flowchart LR
+  C1["块 1<br/>帧 0-80"] -->|尾部 N 帧<br/>编码成 latent| C2["块 2<br/>开头钉住这 N 帧<br/>再续生成"]
+  C2 -->|尾部 N 帧| C3["块 3<br/>同样接力"]
+  C3 --> DOTS["... 直到音频用完"]
+  {{< /mermaid >}}
+
+  <p><em>图 4：滑窗接力。每一块生成完，把它结尾的 N 帧（N = motion_frame）作为下一块的「已知开头」钉死，下一块在此基础上续写。这样相邻块画面天然连续。</em></p>
+
+  <h3 class="section-title">代码里的「钉帧」操作</h3>
+
+  关键在主循环里：非首块时，把上一块尾帧的 latent 在<strong>每一个去噪步</strong>都强行覆盖回当前块的开头，确保去噪全程不偏离衔接点：
+
+  <pre><code class="language-python"># wan/multitalk.py：每个去噪步都"钉住"motion 帧
+for i in range(len(timesteps) - 1):
+    # 用上一块尾帧 latent 覆盖当前块开头，强制连续
+    latent[:, :cur_motion_frames_latent_num] = latent_motion_frames
+    noise_pred = self.model(latent, t=timestep, **arg_c)[0]
+    ...
+    latent = latent + noise_pred * dt          # flow matching 更新
+    if not is_first_clip:                       # 非首块：把 motion 帧重新加噪钉回
+        add_latent = self.add_noise(latent_motion_frames, noise, timesteps[i+1])
+        latent[:, :T_m] = add_latent
+</code></pre>
+
+  <h3 class="section-title">拼接时去掉重叠，避免重复</h3>
+
+  既然下一块开头复用了上一块的尾帧，拼接成片时就要把这段重叠砍掉，否则画面会卡顿重复：
+
+  <pre><code class="language-python"># wan/multitalk.py：拼接与滑窗前进
+if is_first_clip:
+    gen_video_list.append(videos)
+else:
+    gen_video_list.append(videos[:, :, cur_motion_frames_num:])  # 砍掉重叠的 motion 帧
+# 滑窗前进：步长 = 块长 - 重叠
+cur_motion_frames_num = motion_frame
+cond_frame = videos[:, :, -cur_motion_frames_num:]   # 取尾帧做下一块条件
+audio_start_idx += (frame_num - cur_motion_frames_num)
+</code></pre>
+
+  <div class="callout"><strong>一个诚实的工程妥协：色彩校正</strong>。长视频生成有个老大难问题——<strong>颜色会越漂越远</strong>（README 明确警告「超过 1 分钟色偏明显」）。InfiniteTalk 没有回避，而是加了一步 <code>match_and_blend_colors</code>，拿原始参考帧的色彩分布去校正每一块的输出。这是个治标的补丁，但作者把它明明白白写进了代码和文档。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Control</div>
+  <div class="ch-title">音画控制：双路 CFG 决定「多听话」</div>
+
+  数字人最怕两件事：嘴对不上（音频太弱）、人物变形乱动（条件太强）。InfiniteTalk 用<strong>两路独立的 Classifier-Free Guidance（CFG）</strong>分别给文本和音频装了「音量旋钮」。
+
+  推理时模型会跑多次前向，得到不同条件组合下的预测，再线性组合：
+
+  <pre><code class="language-python"># wan/multitalk.py：文本 + 音频双路 CFG
+# arg_c=全条件, arg_null_text=去文本, arg_null=全去
+noise_pred = noise_pred_uncond \
+    + text_guide_scale  * (noise_pred_cond       - noise_pred_drop_text) \
+    + audio_guide_scale * (noise_pred_drop_text  - noise_pred_uncond)
+</code></pre>
+
+  其中 <code>audio_guide_scale</code>（推荐 3~5）越大，口型跟音频越紧；<code>text_guide_scale</code>（推荐 5）控制文本提示的影响。README 直接给了调参建议：<strong>口型不准就调大 audio CFG</strong>。
+
+  项目还可选启用 <strong>APG（自适应投影引导，arXiv:2410.02416）</strong>#APG# 替代朴素 CFG——它通过把引导方向投影、加动量，缓解高 CFG 下常见的「过饱和、画面发腻」问题。这是扩散生成里一个很实用的进阶技巧。
+
+  此外，<strong>多人动画</strong>靠 <code>ref_target_masks</code> 实现：用 bbox 把每个人的音频绑定到画面对应区域，让两个人各说各的、互不串台。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Optimization</div>
+  <div class="ch-title">工程优化：让 14B 大模型「跑得起来」</div>
+
+  140 亿参数的视频扩散模型，显存和速度都是硬门槛。InfiniteTalk 给了一整套「省」和「快」的开关：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>开关</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><code>--num_persistent_param_in_dit 0</code></td><td>把 DiT 参数分级 offload 到 CPU，<strong>极低显存</strong>也能跑（<code>src/vram_management/</code>）</td></tr>
+        <tr><td><code>--quant fp8 / int8</code></td><td>量化模型权重，进一步压显存</td></tr>
+        <tr><td><code>--use_teacache</code></td><td>TeaCache：缓存相邻去噪步的相似计算，<strong>加速</strong>采样</td></tr>
+        <tr><td>FusioniX / lightx2v LoRA</td><td>蒸馏 LoRA，把 40 步采样压到 <strong>4~8 步</strong>（代价：长视频色偏加剧、ID 保持下降）</td></tr>
+        <tr><td><code>--dit_fsdp --t5_fsdp --ulysses_size</code></td><td>多 GPU：FSDP 分片 + Ulysses 序列并行</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这套优化矩阵本身就是一份「如何把大扩散模型工程化落地」的实践清单，值得单独学习。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Review</div>
+  <div class="ch-title">工程评价</div>
+
+  <h3 class="section-title">优点</h3>
+  <ul>
+    <li><strong>站在巨人肩上</strong>：复用 Wan2.1 的生成能力，只训音频条件，用相对小的代价拿到了高质量全身生成。</li>
+    <li><strong>真无限长</strong>：motion frame 滑窗是干净利落的工程方案，理论上时长只受显存/时间限制。</li>
+    <li><strong>控制粒度细</strong>：双路 CFG + APG + 多人 mask，给了使用者充足的调节手段。</li>
+    <li><strong>落地友好</strong>：量化、低显存、多 GPU、加速 LoRA、ComfyUI/Gradio 一应俱全。</li>
+  </ul>
+
+  <h3 class="section-title">局限</h3>
+  <ul>
+    <li><strong>重</strong>：14B 基座，和 Ultralight 完全不是一个算力量级，移动端无从谈起。</li>
+    <li><strong>长视频色偏</strong>：超过 1 分钟颜色漂移，只能靠色彩校正缓解，未根治。</li>
+    <li><strong>相机控制有限</strong>：V2V 能大致模仿原视频运镜但不精确，作者说长视频相机控制仍在改进。</li>
+    <li><strong>加速有代价</strong>：FusioniX 等蒸馏 LoRA 提速明显，但会放大色偏、削弱身份保持。</li>
+  </ul>
+
+  <h3 class="section-title">复现风险</h3>
+  <ul>
+    <li>需要下载三套权重：Wan2.1-I2V-14B（数十 GB）、chinese-wav2vec2-base、InfiniteTalk 条件权重。</li>
+    <li>依赖 flash-attn、xformers 等对 CUDA 版本敏感的库，环境搭建门槛高。</li>
+    <li>真正流畅出片需要高端 GPU；低显存模式可跑但速度感人。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Takeaways</div>
+  <div class="ch-title">轻 vs 重：两篇放在一起看</div>
+
+  把上篇 Ultralight 和本篇 InfiniteTalk 并排，数字人这条光谱的两端就一目了然了：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>Ultralight（第八篇）</th><th>InfiniteTalk（本篇）</th></tr></thead>
+      <tbody>
+        <tr><td>路线</td><td>遮嘴重建（Wav2Lip 一脉）</td><td>稀疏帧配音 + 扩散生成</td></tr>
+        <tr><td>骨干</td><td>自研轻量 UNet（&lt;1M）</td><td>Wan2.1-I2V 扩散大模型（14B）</td></tr>
+        <tr><td>驱动范围</td><td>只重绘人脸下半部</td><td>头、身体、表情全身同步</td></tr>
+        <tr><td>身份方式</td><td>per-person，一人一模型</td><td>稀疏参考帧，免重训</td></tr>
+        <tr><td>时长</td><td>逐帧合成，素材来回播</td><td>motion frame 滑窗，无限长</td></tr>
+        <tr><td>算力</td><td>移动端可实时</td><td>高端 GPU，重算力</td></tr>
+        <tr><td>适用</td><td>端侧、低成本、实时口播</td><td>高质量内容生产、长视频</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition success">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      一条可迁移的核心经验
+    </div>
+    <div class="admonition-content"><p>InfiniteTalk 最值得借鉴的，是它<strong>「不重造轮子，而是给大模型装条件接口」</strong>的思路：拿一个强通用模型（视频生成），通过 cross-attention 注入领域条件（音频），再用滑窗把单次能力接力成长序列。这套「<strong>基座大模型 + 轻量条件适配 + 滑窗续接</strong>」的范式，可以迁移到长音频生成、长文档处理、流式视频理解等一大批「单次有限、需求无限」的任务上。</p></div>
+  </div>
+
+  回到系列：从轻到重，我们已经看完了数字人在<strong>算力光谱</strong>上的两个极端。下一步如果继续，可以往「评测与数据」或「实时交互系统」方向走。但仅就这两篇而言，你应该已经能回答那个最实际的问题——<strong>「我的场景该选轻的还是重的」</strong>。
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="ultralight-digital-human-source-read.html"><span class="nav-label">上一篇 · 第八章</span><span class="nav-title">Ultralight 源码解读（轻量端侧）</span></a>
+    <a class="nav-card current" href="digital-human-hub.html"><span class="nav-label">系列目录</span><span class="nav-title">数字人系列 Hub</span></a>
+    <a class="nav-card" href="voice-ai-digital-human-landscape.html"><span class="nav-label">相关 · 第七章</span><span class="nav-title">数字人产业图谱</span></a>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="IT-repo">MeiGen-AI. InfiniteTalk（源码、README、generate_infinitetalk.py / wan/multitalk.py）. <a href="https://github.com/MeiGen-AI/InfiniteTalk" target="_blank">github.com/MeiGen-AI/InfiniteTalk</a></li>
+      <li data-cite-key="IT-paper">Yang et al. InfiniteTalk: Audio-driven Video Generation for Sparse-Frame Video Dubbing. <a href="https://arxiv.org/abs/2508.14033" target="_blank">arXiv:2508.14033</a></li>
+      <li data-cite-key="Wan">Wan-AI / Alibaba. Wan2.1-I2V-14B（基座视频扩散模型）. <a href="https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P" target="_blank">huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P</a></li>
+      <li data-cite-key="MultiTalk">MeiGen-AI. MultiTalk（InfiniteTalk 的前作）. <a href="https://github.com/MeiGen-AI/MultiTalk" target="_blank">github.com/MeiGen-AI/MultiTalk</a></li>
+      <li data-cite-key="wav2vec2">TencentGameMate. chinese-wav2vec2-base（音频编码器）. <a href="https://huggingface.co/TencentGameMate/chinese-wav2vec2-base" target="_blank">huggingface.co/TencentGameMate/chinese-wav2vec2-base</a></li>
+      <li data-cite-key="APG">Sadat et al. Eliminating Oversaturation and Artifacts of High Guidance Scales (APG). <a href="https://arxiv.org/abs/2410.02416" target="_blank">arXiv:2410.02416</a></li>
+    </ul>
+  </div>
+</div>

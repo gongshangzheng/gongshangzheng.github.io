@@ -1,0 +1,249 @@
+---
+title: "红外图像压缩调研：从热辐射成像到学习式多模态编码"
+description: "系统梳理红外图像压缩的成像特性、典型数据集、传统编码、学习式压缩、RGB-IR 联合压缩与任务驱动研究路线。"
+date: 2026-06-16T21:49:23
+created_at: 2026-06-16T21:49:23
+updated_at: 2026-06-16T22:25:00
+tags: [红外图像, 图像压缩, 学习式压缩, 多模态, 热成像]
+categories: [AI]
+subcategory: "图像压缩"
+sub_id: 3000
+hub: image-compression-hub
+aliases: ["红外压缩", "红外图像压缩", "Infrared Image Compression", "Thermal Image Compression"]
+mathjax: true
+hero_title: "红外图像压缩调研"
+hero_sub: "Infrared Image Compression · Thermal Imaging · Learned Compression"
+hero_tagline: "红外压缩不是把灰度图压小，而是在低码率下保留热辐射场中对测量、识别和决策真正重要的信息。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">5</span><span class="label">应用场景</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">压缩范式</span></div>
+  <div class="stat"><span class="num">10+</span><span class="label">核心资料</span></div>
+  <div class="stat"><span class="num b">2025</span><span class="label l">最新进展</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Overview · 问题定义</div>
+  <div class="ch-title">红外图像压缩不是“灰度图压缩”的简单变体</div>
+  <p>红外图像，尤其是热红外图像，并不是记录人眼可见光中的颜色纹理，而是记录物体在红外波段的辐射响应；在自动驾驶、安防、医学热成像、遥感和工业检测中，红外图像常被用来补足可见光在黑暗、雾、烟、眩光和恶劣天气下的不足 #FLIR-Dataset#。</p>
+  <p>因此，红外图像压缩的目标也不同于普通 RGB 图像压缩：RGB 压缩通常关心“人看起来是否自然”，而红外压缩还必须关心温度/辐射值是否保真、小目标是否仍可检测、医学或工业诊断是否仍可靠，以及 RGB-IR 多传感器系统中跨模态冗余是否被充分利用 #Mantel-2017# #Bhowmik-2022#。</p>
+  <div class="callout"><strong>核心判断</strong>：红外压缩真正要优化的不是单一 PSNR，而是码率、辐射保真、任务性能和边缘实时性的多目标折中。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Case · 图像案例</div>
+  <div class="ch-title">一个典型案例：FLIR 热红外自动驾驶图像</div>
+  <p>Teledyne FLIR 的 ADAS 热红外数据集面向自动驾驶与高级驾驶辅助系统，官方说明其 starter thermal dataset 可用于训练 CNN 检测模型，并强调热红外可在完全黑暗、雾、烟、恶劣天气和眩光条件下提供可见光之外的补充信息 #FLIR-Dataset#。</p>
+  <div class="photo">
+    <img src="media/images/infrared-image-compression-survey/flir-skateboarder-ir.webp" alt="FLIR thermal infrared skateboarder example" loading="lazy">
+    <div class="cap">FLIR 官方热红外示例图。图像看起来纹理很少，但行人、车辆、骑行者等小目标的热斑和边缘对检测任务非常关键。来源：Teledyne FLIR ADAS Dataset #FLIR-Dataset#。</div>
+  </div>
+  <p>FLIR 页面列出多个区域版本的数据集：免费 starter dataset 约 14,000 张标注图像，Enhanced San Francisco Dataset 约 10,000 张，Enhanced EU Dataset 约 14,000 张；类别覆盖 car、bike、person、dog、other vehicle，以及增强数据中的 sign、light、truck、bus、hydrant、rider、motorcycle、train 等 #FLIR-Dataset#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Imaging · 成像特性</div>
+  <div class="ch-title">红外图像给压缩算法带来的四个特殊约束</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>特性</th><th>普通 RGB 图像</th><th>红外 / 热红外图像</th><th>压缩影响</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>信号含义</td><td>可见光颜色与纹理</td><td>红外辐射、温度场或传感器响应</td><td>失真可能改变测量意义，而不只是视觉质量</td></tr>
+        <tr><td>通道结构</td><td>通常 3 通道 8-bit</td><td>常见单通道，可能 14/16-bit</td><td>不能简单按 8-bit RGB codec 处理</td></tr>
+        <tr><td>纹理分布</td><td>自然纹理丰富</td><td>低纹理、低对比、热边缘和噪声并存</td><td>高频项既可能是目标边缘，也可能是传感器噪声</td></tr>
+        <tr><td>任务敏感性</td><td>人眼感知常是主要目标</td><td>小目标检测、温度误差、医学诊断很关键</td><td>需要任务驱动或 ROI-aware 的评价</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Mantel 与 Forchhammer 在研究高 bit-depth 红外图像压缩时指出，许多热传感器输出高于 8-bit 的数据，并比较了 JPEG2000、JPEG-XT 和 HEVC 在红外图像上的表现；该工作用 SNR、MRSE 和 HDR-VDP2 等指标评估，而不只依赖普通 RGB 图像压缩常见的观感判断 #Mantel-2017#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Datasets · 数据集</div>
+  <div class="ch-title">红外压缩研究常用的数据资源</div>
+  <p>红外压缩的一个难点是数据来源分散：单模态热红外图像、多光谱 RGB-T 图像对、医学热红外图像、红外线扫描图像和遥感高光谱/多光谱数据，其统计特性和任务目标并不相同。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集 / 来源</th><th>模态</th><th>典型用途</th><th>对压缩研究的价值</th></tr></thead>
+      <tbody>
+        <tr><td>FLIR Thermal ADAS</td><td>Thermal + visible</td><td>自动驾驶目标检测</td><td>适合研究压缩对 mAP、AP_small 的影响 #FLIR-Dataset#</td></tr>
+        <tr><td>KAIST Multispectral Pedestrian</td><td>RGB-T</td><td>行人检测、多模态融合</td><td>适合 RGB-IR 联合压缩和跨模态 entropy model #Lu-2022#</td></tr>
+        <tr><td>LLVIP</td><td>Low-light visible + IR</td><td>低光监控、RGB-IR 融合</td><td>2025 CCEM 工作在 LLVIP 上报告了相对 CVPR 2022 codec 的码率节省 #Wang-2025#</td></tr>
+        <tr><td>医学热红外图像</td><td>Thermal medical</td><td>诊断、热异常分析</td><td>适合无损/近无损压缩与诊断保真 #Schaefer-2007#</td></tr>
+        <tr><td>红外线扫描图像</td><td>Line-scanning IR</td><td>工业、遥感、扫描系统</td><td>适合小波域、RLC、低复杂度实时编码 #HufRLC-2025#</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Classical Codecs · 传统压缩</div>
+  <div class="ch-title">从 JPEG-LS、JPEG2000 到 HEVC：传统编码仍是强基线</div>
+  <p>对于红外图像，传统编码器不是过时基线，而是必须认真比较的工程基线。医学红外图像的无损压缩实验显示，Lossless JPEG、JPEG-LS、JPEG2000、PNG 和 CALIC 等算法都可以用于医学热红外图像；Schaefer 等人在 380 多张医学热红外图像上发现 JPEG-LS 在压缩率和压缩速度上表现最好 #Schaefer-2007#。</p>
+  <p>在高 bit-depth 红外图像上，Mantel 与 Forchhammer 比较 JPEG2000、JPEG-XT 和 HEVC 后报告：JPEG2000 在低于 1.4 bpp 时表现最好，HEVC 在 1.4 到 6.5 bpp 范围内表现最好，并且 HEVC 可以在平均 1.3 bpp 下达到约 1°C 的精度 #Mantel-2017#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>编码器</th><th>类型</th><th>适合场景</th><th>主要问题</th></tr></thead>
+      <tbody>
+        <tr><td>JPEG</td><td>DCT 有损</td><td>快速、兼容、简单预览</td><td>块效应明显，小目标和热边缘易受损</td></tr>
+        <tr><td>JPEG-LS</td><td>无损/近无损预测编码</td><td>医学热红外、需要精确保真</td><td>压缩比有限，不适合极低码率</td></tr>
+        <tr><td>JPEG2000</td><td>小波，有损/无损</td><td>高位深、医学、遥感、低 bpp</td><td>复杂度和生态支持问题</td></tr>
+        <tr><td>HEVC intra</td><td>帧内视频编码</td><td>高 bit-depth 红外、较高 bpp 区间</td><td>编码复杂度高，部署较重</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Wavelet · 红外专用统计</div>
+  <div class="ch-title">小波域是红外压缩的重要中间地带</div>
+  <p>红外图像往往具有低频能量集中、高频细节稀疏的特点，这使小波域成为传统编码和学习式编码之间很自然的桥梁。2025 年 Sensors 论文 <em>Lossy Infrared Image Compression Based on Wavelet Coefficient Probability Modeling and Run-Length-Enhanced Huffman Coding</em> 针对红外线扫描图像提出 Huf-RLC 方法，动机是 JPEG2000 中 MQ 算术编码器复杂度较高，而稀疏量化小波系数中存在大量连续零 #HufRLC-2025#。</p>
+  <p>Huf-RLC 使用 DWT 小波分解、Run-Length Coding 增强 Huffman 编码、wavelet coefficient probability model 和低频子带 DPCM；摘要报告该方法在 PSNR 和 SSIM 上优于 JPEG，与 JPEG2000 相比只有较小性能损失，并且压缩速度是 JPEG2000 的 3.155 倍、JPEG 的 2.049 倍 #HufRLC-2025#。</p>
+
+  <div class="info-box">
+    <h3>为什么小波适合红外？</h3>
+    <p>小波把图像分成低频近似和多方向高频细节。红外图像中大面积热背景通常集中在低频，目标边缘和异常热斑进入高频子带；这让编码器可以对背景、边缘、噪声和小目标采用不同的码率策略。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Learned Compression · 学习式压缩</div>
+  <div class="ch-title">把 LIC 直接套到红外上是不够的</div>
+  <p>现代学习式图像压缩通常使用 analysis transform、quantization、entropy model 和 synthesis transform，并优化 rate-distortion 损失：</p>
+
+\[
+\mathcal{L} = R(\hat{y}) + \lambda D(x, \hat{x}).
+\]
+
+  <p>但是，普通 RGB learned image compression 默认面对的是 8-bit 三通道自然图像，而红外图像可能是高位深单通道辐射数据；如果损失函数只使用 MSE 或 MS-SSIM，就可能在视觉上看似可接受，却破坏温度误差、小目标热边缘或下游检测特征。</p>
+  <p>较新的 <em>ARWNet: Auto-Regressive Wavelet Network for Learned Infrared Image Compression</em> 明确把 wavelet frequency decomposition 与 channel-wise autoregressive entropy modeling 结合，说明红外 LIC 研究正在从“套用通用 autoencoder”转向“把红外频域统计写进模型结构” #ARWNet-2026#。</p>
+
+  <div class="def-box">
+    <h3>红外 LIC 的关键改造点</h3>
+    <ul>
+      <li><strong>输入域</strong>：优先处理 raw / high-bit-depth infrared，而不是只压伪彩色 8-bit 图。</li>
+      <li><strong>变换域</strong>：引入小波、频域或多尺度结构，显式区分低频热背景与高频热边缘。</li>
+      <li><strong>熵模型</strong>：为红外图像的低频强相关和高频稀疏设计 conditional / autoregressive probability model。</li>
+      <li><strong>失真项</strong>：加入 radiometric error、temperature error、feature loss 或 detection loss。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Multi-modality · RGB-IR 联合压缩</div>
+  <div class="ch-title">红外图像不只是被压缩对象，也可以成为另一个模态的先验</div>
+  <p>在自动驾驶、机器人和智能监控中，红外图像常与可见光图像成对采集。Lu 等人在 CVPR 2022 论文 <em>Learning Based Multi-Modality Image and Video Compression</em> 中指出，多模态数据会增加存储和传输成本，而传统方法通常对每个模态单独压缩，没有利用不同模态之间的相关性 #Lu-2022#。</p>
+  <p>该工作使用红外图像作为参考模态，通过 channel-wise alignment module 产生对齐特征，并把对齐后的红外特征作为上下文来压缩可见光图像；同时还引入 Transformer-based spatial alignment module 来利用不同模态解码中间特征之间的相关性，并在 FLIR 和 KAIST 数据集上优于传统和学习式单模态压缩方法 #Lu-2022#。</p>
+  <p>2025 年 <em>End-to-End RGB-IR Joint Image Compression With Channel-wise Cross-modality Entropy Model</em> 进一步提出 CCEM，用低频上下文提取和融合模块来利用模态内与模态间先验；论文摘要报告，该方法在 LLVIP 和 KAIST 上优于已有 RGB-IR 图像对压缩方法，并在 LLVIP 上相对 CVPR 2022 RGB-IR codec 节省 23.1% bit rate #Wang-2025#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>核心想法</th><th>适用前提</th><th>研究潜力</th></tr></thead>
+      <tbody>
+        <tr><td>单模态红外压缩</td><td>只压 IR 图像</td><td>只有热红外传感器</td><td>适合医学、工业、边缘热像仪</td></tr>
+        <tr><td>RGB 辅助 IR 压缩</td><td>用 RGB 结构先验帮助 IR 重建</td><td>RGB-IR 配准较好</td><td>适合低光增强、监控</td></tr>
+        <tr><td>IR 辅助 RGB 压缩</td><td>用 IR 提供夜间/热目标上下文</td><td>红外信号可靠</td><td>适合自动驾驶和安防</td></tr>
+        <tr><td>联合 latent 压缩</td><td>压缩共同语义和模态残差</td><td>可训练成对数据充足</td><td>适合真正的多传感器 codec</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Task-aware · 任务驱动压缩</div>
+  <div class="ch-title">压缩后的红外图像必须仍然“能被机器看懂”</div>
+  <p>Bhowmik 等人的 <em>Lost in Compression</em> 直接研究 JPEG 有损压缩对红外图像目标检测的影响；他们在 FLIR 热红外数据上测试 JPEG quality 95、75、50、15、10、5，并评估 Cascade R-CNN、FSAF 和 Deformable DETR 等检测架构 #Bhowmik-2022#。</p>
+  <p>该论文报告，在未压缩数据上训练和评估时，Cascade R-CNN 在 FLIR 数据集上达到最大 mAP 0.823；高压缩等级，尤其 quality 15、10、5，会显著降低检测性能，而在压缩图像上重新训练模型可以缓解性能下降，在 compression level 5 上平均提升约 76%；论文还指出 tiny 和 small objects 比 medium 和 large objects 更容易受到压缩影响 #Bhowmik-2022#。</p>
+
+  <p>因此，面向红外感知的压缩损失可以写成：</p>
+
+\[
+\mathcal{L}=R+\lambda D_{pixel}+\beta D_{feature}+\gamma \mathcal{L}_{task}+\eta \mathcal{L}_{small}.
+\]
+
+  <p>其中 $D_{pixel}$ 保证基本重建，$D_{feature}$ 保证下游 backbone 特征一致性，$\mathcal{L}_{task}$ 保证检测或分割性能，$\mathcal{L}_{small}$ 专门保护小目标热斑和边缘。</p>
+
+  <div class="callout"><strong>研究启发</strong>：红外压缩很适合从 rate-distortion 走向 rate-distortion-accuracy，尤其是 AP_small-aware compression。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Evaluation · 评价指标</div>
+  <div class="ch-title">红外压缩应该分层评价，而不是只报 PSNR</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层次</th><th>指标</th><th>回答的问题</th></tr></thead>
+      <tbody>
+        <tr><td>像素保真</td><td>PSNR, SSIM, MS-SSIM, RMSE, MRSE</td><td>重建图像和原图有多接近？</td></tr>
+        <tr><td>辐射/温度保真</td><td>temperature MAE, radiometric error</td><td>温度或辐射值还能不能用？</td></tr>
+        <tr><td>HDR/感知</td><td>HDR-VDP2, LPIPS, DISTS</td><td>高动态范围或结构感知差异如何？</td></tr>
+        <tr><td>任务性能</td><td>mAP, AP_small, mIoU, Dice, AUC</td><td>检测、分割、诊断是否受损？</td></tr>
+        <tr><td>工程复杂度</td><td>encoding time, decoding time, memory, energy/frame</td><td>能否在边缘红外设备上实时部署？</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Research Map · 方法谱系</div>
+  <div class="ch-title">四条主线：传统编码、红外统计、学习式编码、多模态任务压缩</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>范式</th><th>代表工作</th><th>优点</th><th>短板</th></tr></thead>
+      <tbody>
+        <tr><td>传统通用编码</td><td>JPEG, PNG, JPEG-LS, JPEG2000, HEVC</td><td>标准成熟、工程可用、强基线</td><td>不一定理解红外任务和小目标</td></tr>
+        <tr><td>红外统计编码</td><td>Huf-RLC, DWT + DPCM</td><td>利用小波稀疏和红外线扫描冗余，速度快</td><td>表达能力弱于深度模型</td></tr>
+        <tr><td>学习式红外压缩</td><td>ARWNet 类 wavelet + autoregressive entropy model</td><td>可端到端优化，能吸收频域先验</td><td>公开基准和复现实验仍不足</td></tr>
+        <tr><td>RGB-IR 联合压缩</td><td>CVPR 2022 multi-modality codec, CCEM 2025</td><td>利用跨模态冗余，节省总码率</td><td>依赖配准图像对和成对训练数据</td></tr>
+        <tr><td>任务驱动压缩</td><td>Detection-aware / small-object-aware compression</td><td>直接优化检测、分割或诊断任务</td><td>评价复杂，可能牺牲人眼重建质量</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Proposal · 可做选题</div>
+  <div class="ch-title">一个值得推进的题目：小目标感知的学习式红外压缩</div>
+  <p>最直接的科研切口是 <strong>Task-Aware Learned Infrared Image Compression for Small Object Detection</strong>：把红外图像压缩从单纯 rate-distortion 问题改写为 rate-distortion-accuracy 问题，并专门保护小目标热斑。</p>
+
+  <div class="example-box">
+    <h3>实验设计草案</h3>
+    <ul>
+      <li><strong>数据集</strong>：FLIR ADAS 作为主数据集，KAIST / LLVIP 作为 RGB-IR 扩展。</li>
+      <li><strong>baseline</strong>：JPEG、JPEG2000、HEVC intra、Ballé hyperprior、Cheng attention model、普通 LIC fine-tune。</li>
+      <li><strong>模型</strong>：infrared encoder + wavelet/frequency auxiliary latent + entropy model + decoder + frozen detector feature loss。</li>
+      <li><strong>指标</strong>：bpp、PSNR、MS-SSIM、mAP、AP_small、encoding latency。</li>
+      <li><strong>关键对照</strong>：同等 bpp 下，是否能比普通 LIC 保留更多 AP_small。</li>
+    </ul>
+  </div>
+
+  <p>更激进的方向是 <strong>Semantic-Preserving Generative Compression for Thermal Infrared Images</strong>：编码端只传低分辨率热图、目标/边缘 token 和少量 latent，解码端使用 diffusion 或 latent generative prior 重建热场语义。但这条路线必须严肃处理 hallucination 风险，因为医学、安防和军事场景不能接受“生成出来的热目标”。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Conclusion · 小结</div>
+  <div class="ch-title">红外压缩的核心：低码率下保留可决策信息</div>
+  <p>红外图像压缩的关键不是“把单通道图像压小”，而是在尽可能低的码率下，保留热辐射场中对测量、识别和决策真正重要的信息。传统编码提供强工程基线，小波和红外统计提供可解释先验，学习式压缩提供端到端优化空间，多模态联合压缩提供跨传感器冗余，而任务驱动压缩则把目标从视觉保真推进到机器感知保真。</p>
+  <p>如果后续继续深入，我建议优先沿两条线推进：第一，复现传统编码、通用 LIC 和红外专用方法在 FLIR/KAIST/LLVIP 上的 rate-distortion-accuracy 曲线；第二，设计 AP_small-aware 或 radiometric-aware 的红外 LIC，使压缩模型真正服务于红外图像的应用本质。</p>
+</div>
+
+<div class="ch fade-in sources">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+  <ol>
+    <li data-cite-key="FLIR-Dataset">Teledyne FLIR OEM. <em>FLIR Thermal Datasets for Algorithm Training</em>. <a href="https://oem.flir.com/solutions/automotive/dataset" target="_blank">https://oem.flir.com/solutions/automotive/dataset</a></li>
+    <li data-cite-key="Mantel-2017">Mantel, C., &amp; Forchhammer, S. (2017). <em>Compression of Infrared Images</em>. IS&amp;T Electronic Imaging. <a href="https://backend.orbit.dtu.dk/ws/files/142081045/s5.pdf" target="_blank">PDF</a></li>
+    <li data-cite-key="Schaefer-2007">Schaefer, G. et al. <em>An evaluation of lossless compression algorithms for medical infrared images</em>. PubMed abstract. <a href="https://pubmed.ncbi.nlm.nih.gov/17282533/" target="_blank">https://pubmed.ncbi.nlm.nih.gov/17282533/</a></li>
+    <li data-cite-key="HufRLC-2025">Zhang et al. (2025). <em>Lossy Infrared Image Compression Based on Wavelet Coefficient Probability Modeling and Run-Length-Enhanced Huffman Coding</em>. Sensors. <a href="https://pubmed.ncbi.nlm.nih.gov/40285181/" target="_blank">PubMed</a>; <a href="https://www.mdpi.com/1424-8220/25/8/2491" target="_blank">MDPI</a></li>
+    <li data-cite-key="Bhowmik-2022">Bhowmik, N., Barker, J. W., Gaus, Y. F. A., &amp; Breckon, T. P. (2022). <em>Lost in Compression: the Impact of Lossy Image Compression on Variable Size Object Detection within Infrared Imagery</em>. arXiv:2205.08002. <a href="https://arxiv.org/abs/2205.08002" target="_blank">https://arxiv.org/abs/2205.08002</a></li>
+    <li data-cite-key="Lu-2022">Lu, G., Zhong, T., Geng, J., Hu, Q., &amp; Xu, D. (2022). <em>Learning Based Multi-Modality Image and Video Compression</em>. CVPR 2022. <a href="https://openaccess.thecvf.com/content/CVPR2022/html/Lu_Learning_Based_Multi-Modality_Image_and_Video_Compression_CVPR_2022_paper.html" target="_blank">CVF Open Access</a></li>
+    <li data-cite-key="Wang-2025">Wang, H. et al. (2025). <em>End-to-End RGB-IR Joint Image Compression With Channel-wise Cross-modality Entropy Model</em>. arXiv:2506.21851. <a href="https://arxiv.org/abs/2506.21851" target="_blank">https://arxiv.org/abs/2506.21851</a></li>
+    <li data-cite-key="ARWNet-2026"><em>ARWNet: Auto-Regressive Wavelet Network for Learned Infrared Image Compression</em>. IEEE Xplore record. <a href="https://ieeexplore.ieee.org/abstract/document/11442008" target="_blank">https://ieeexplore.ieee.org/abstract/document/11442008</a></li>
+  </ol>
+</div>

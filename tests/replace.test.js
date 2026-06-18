@@ -1,0 +1,311 @@
+const { processBody, processShortcodes } = require('../lib/replace');
+const { renderPostGraph } = require('../lib/generators/post-graph');
+
+function assert(condition, msg) {
+  if (!condition) throw new Error('FAIL: ' + msg);
+}
+
+const defaultOpts = { imgDir: 'media/images', baseUrl: '/' };
+
+const tests = {
+  'bg yellow': () => {
+    const out = processShortcodes('{{< bg yellow >}}highlighted{{< /bg >}}');
+    assert(out.includes('background:#ffeb92fd'), 'yellow bg missing, got: ' + out);
+  },
+
+  'bg red': () => {
+    const out = processShortcodes('{{< bg red >}}highlighted{{< /bg >}}');
+    assert(out.includes('background:#fa9494'), 'red bg missing');
+  },
+
+  'bg blue': () => {
+    const out = processShortcodes('{{< bg blue >}}text{{< /bg >}}');
+    assert(out.includes('background:#9ccaff'), 'blue bg missing');
+  },
+
+  'bg green': () => {
+    const out = processShortcodes('{{< bg green >}}text{{< /bg >}}');
+    assert(out.includes('background:#acffea'), 'green bg missing');
+  },
+
+  'bg purple': () => {
+    const out = processShortcodes('{{< bg purple >}}text{{< /bg >}}');
+    assert(out.includes('background:#eeb4ff'), 'purple bg missing');
+  },
+
+  'details openByDefault': () => {
+    const out = processShortcodes('{{< details summary="展开阅读" openByDefault=true >}}内容{{< /details >}}');
+    assert(out.includes('<details open>'), 'open attribute missing');
+    assert(out.includes('<summary>展开阅读</summary>'), 'summary missing');
+    assert(out.includes('内容</details>'), 'content missing');
+  },
+
+  'details default closed': () => {
+    const out = processShortcodes('{{< details summary="标题" >}}内容{{< /details >}}');
+    assert(out.includes('<details>'), 'should not have open attribute');
+    assert(out.includes('<summary>标题</summary>'), 'summary missing');
+  },
+
+  'bilibili with BV id': () => {
+    const out = processShortcodes('{{< bilibili BV1xxooXX1Xx >}}');
+    assert(out.includes('player.bilibili.com/player.html?bvid=BV1xxooXX1Xx'), 'bilibili iframe src wrong, got: ' + out);
+  },
+
+  'bilibili with page param': () => {
+    const out = processShortcodes('{{< bilibili BV1xx p=3 >}}');
+    assert(out.includes('page=3'), 'page param missing, got: ' + out);
+  },
+
+  'youtube with caption': () => {
+    const out = processShortcodes('{{< youtube dQw4w9WgXcQ "精彩视频" >}}');
+    assert(out.includes('lite-youtube'), 'lite-youtube missing, got: ' + out);
+    assert(out.includes('>精彩视频<'), 'caption missing, got: ' + out);
+  },
+
+  'youtube without caption': () => {
+    const out = processShortcodes('{{< youtube abc123 >}}');
+    assert(out.includes('lite-youtube'), 'lite-youtube missing');
+    assert(!out.includes('<p class="caption">'), 'should not have caption');
+  },
+
+  'video shortcode': () => {
+    const out = processShortcodes('{{< video "assets/video/demo.mp4" >}}');
+    assert(out.includes('<video controls'), 'video tag missing, got: ' + out);
+    assert(out.includes('src="assets/video/demo.mp4"'), 'src missing');
+  },
+
+  'googleslides shortcode': () => {
+    const out = processShortcodes('{{< googleslides "https://docs.google.com/presentation/d/xxx" >}}');
+    assert(out.includes('googleslides-embed'), 'googleslides-embed missing, got: ' + out);
+    assert(out.includes('iframe src="https://docs.google.com/presentation/d/xxx"'), 'iframe src wrong, got: ' + out);
+  },
+
+  'pdf page shortcode': () => {
+    const out = processShortcodes('{{< pdf "courses/lecture.pdf" page=12 title="示意图" >}}');
+    assert(out.includes('doc-page doc-page-iframe'), 'pdf iframe figure missing, got: ' + out);
+    assert(out.includes('src="/media/courses/lecture.pdf#page=12"'), 'pdf page src wrong, got: ' + out);
+    assert(out.includes('<strong>示意图</strong>'), 'pdf title missing, got: ' + out);
+    assert(out.includes('p.12'), 'pdf page label missing, got: ' + out);
+  },
+
+  'ppt page shortcode': () => {
+    const out = processShortcodes('{{< ppt "courses/lecture.pptx" page=8 title="参数化" >}}');
+    assert(out.includes('doc-ref docref'), 'ppt ref card missing, got: ' + out);
+    assert(out.includes('doc-ref-type">PPT'), 'ppt type missing, got: ' + out);
+    assert(out.includes('href="/media/courses/lecture.pptx"'), 'ppt href wrong, got: ' + out);
+    assert(out.includes('slide 8'), 'ppt page label missing, got: ' + out);
+    assert(out.includes('<strong>参数化</strong>'), 'ppt title missing, got: ' + out);
+  },
+
+  'docref shortcode': () => {
+    const out = processShortcodes('{{< docref "courses/lecture.pdf" page=12 title="示意图" >}}');
+    assert(out.includes('doc-ref docref'), 'docref card missing, got: ' + out);
+    assert(out.includes('href="/media/courses/lecture.pdf#page=12"'), 'docref href wrong, got: ' + out);
+    assert(out.includes('p.12'), 'docref page missing, got: ' + out);
+  },
+
+  'docpage canvas shortcode': () => {
+    const out = processShortcodes('{{< docpage "courses/lecture.pdf" page=12 title="示意图" >}}');
+    assert(out.includes('doc-page-canvas'), 'docpage canvas missing, got: ' + out);
+    assert(out.includes('data-docpage-pdf="/media/courses/lecture.pdf"'), 'docpage pdf data missing, got: ' + out);
+    assert(out.includes('data-docpage-page="12"'), 'docpage page data missing, got: ' + out);
+  },
+
+  'docpages range shortcode': () => {
+    const out = processShortcodes('{{< docpages "courses/lecture.pdf" pages="2,4-5" title="讲义" >}}');
+    assert(out.includes('doc-pages'), 'docpages wrapper missing, got: ' + out);
+    assert((out.match(/data-docpage-page=/g) || []).length === 3, 'docpages count wrong, got: ' + out);
+  },
+
+  'functionplot shortcode emits data marker only': () => {
+    const out = processShortcodes('{{< functionplot title="sinc" x="-10,10" y="-0.5,1.2" fn="sin(pi*x)/(pi*x)" >}}');
+    assert(out.includes('data-functionplot'), 'functionplot marker missing, got: ' + out);
+    assert(out.includes('data-functionplot-config='), 'functionplot config missing, got: ' + out);
+    assert(out.includes('functionplot-target'), 'functionplot target missing, got: ' + out);
+    assert(!out.includes('functionplot-runtime.js'), 'shortcode must not inject JS assets directly');
+  },
+
+  'jsxgraph shortcode emits data marker only': () => {
+    const out = processShortcodes('{{< jsxgraph title="demo" height=300 >}}const board = JXG.JSXGraph.initBoard(el,{axis:true});{{< /jsxgraph >}}');
+    assert(out.includes('data-jsxgraph'), 'jsxgraph marker missing, got: ' + out);
+    assert(out.includes('data-jsxgraph-config='), 'jsxgraph config missing, got: ' + out);
+    assert(out.includes('jsxgraph-target'), 'jsxgraph target missing, got: ' + out);
+    assert(!out.includes('jsxgraph-runtime.js'), 'shortcode must not inject JS assets directly');
+  },
+
+  'post-graph shortcode filters graph by tag': () => {
+    const graph = {
+      nodes: [
+        { id: 'a', title: 'A', url: './a.html', tags: ['AI'], categories: ['课程'], subcategory: '数学', degree: 1 },
+        { id: 'b', title: 'B', url: './b.html', tags: ['AI'], categories: ['课程'], subcategory: '数学', degree: 1 },
+        { id: 'c', title: 'C', url: './c.html', tags: ['Graph'], categories: ['编程'], subcategory: 'Tools', degree: 0 },
+      ],
+      edges: [{ source: 'a', target: 'b', type: 'link', weight: 1 }],
+    };
+    const out = processShortcodes('{{< post-graph "tags/AI" height=420 >}}', [], null, graph, renderPostGraph);
+    assert(out.includes('data-post-graph'), 'post graph marker missing, got: ' + out);
+    assert(out.includes('2 篇文章 · 1 条连接'), 'filtered graph summary wrong, got: ' + out);
+    assert(out.includes('data-height="420"'), 'height option missing, got: ' + out);
+  },
+
+  'highlight ==text==': () => {
+    const out = processBody('这是 ==高亮文字== 测试', defaultOpts);
+    assert(out.includes('<mark>高亮文字</mark>'), 'mark missing, got: ' + out);
+  },
+
+  'MathJax block is opaque to all replacements': () => {
+    const input = '<div class="math-block">$$F(\\omega)=\\sum_{k=-\\infty}^{\\infty} c_k \\, \\delta(\\omega-k\\omega_0), [[wiki Should Not Link]], ==not mark==, *not strong*$$</div>';
+    const out = processBody(input, defaultOpts);
+    assert(out === input, 'math block must be unchanged, got: ' + out);
+  },
+
+  'wiki link without country (default en)': () => {
+    const out = processBody('[[wiki Albert Einstein | 爱因斯坦]]', defaultOpts);
+    assert(out.includes('https://en.wikipedia.org/wiki/Albert%20Einstein'), 'url wrong, got: ' + out);
+    assert(out.includes('>爱因斯坦</a>'), 'display text wrong, got: ' + out);
+  },
+
+  'wiki link with .en': () => {
+    const out = processBody('[[wiki.en Industrial Revolution | 工业革命]]', defaultOpts);
+    assert(out.includes('https://en.wikipedia.org/wiki/Industrial%20Revolution'), 'url wrong, got: ' + out);
+    assert(out.includes('>工业革命</a>'), 'display text wrong, got: ' + out);
+  },
+
+  'wiki link with .zh': () => {
+    const out = processBody('[[wiki.zh 日本历史 | 日本历史（中文）]]', defaultOpts);
+    assert(out.includes('https://zh.wikipedia.org/wiki/%E6%97%A5%E6%9C%AC%E5%8E%86%E5%8F%B2'), 'url wrong, got: ' + out);
+    assert(out.includes('>日本历史（中文）</a>'), 'display text wrong, got: ' + out);
+  },
+
+  'wiki link trims trailing space in text': () => {
+    const out = processBody('[[wiki Albert Einstein | 爱因斯坦]]', defaultOpts);
+    assert(!out.includes('%20%20'), 'trailing space in url, got: ' + out);
+    assert(!out.includes('Albert Einstein </a>'), 'trailing space in display, got: ' + out);
+  },
+
+  'arxiv abs link': () => {
+    const out = processBody('[[arxiv 2301.00001 abs | 论文链接]]', defaultOpts);
+    assert(out.includes('https://arxiv.org/abs/2301.00001'), 'url wrong, got: ' + out);
+    assert(out.includes('>论文链接</a>'), 'display wrong, got: ' + out);
+  },
+
+  'arxiv pdf link': () => {
+    const out = processBody('[[arxiv 2301.00001 pdf | PDF 版本]]', defaultOpts);
+    assert(out.includes('https://arxiv.org/pdf/2301.00001'), 'url wrong, got: ' + out);
+  },
+
+  'arxiv link trims trailing space': () => {
+    const out = processBody('[[arxiv 2301.00001 abs | 论文链接]]', defaultOpts);
+    assert(!out.includes('2301.00001%20'), 'trailing space in url, got: ' + out);
+    assert(!out.includes('论文链接 '), 'trailing space in display, got: ' + out);
+  },
+
+  'github link': () => {
+    const out = processBody('[[github pytorch/pytorch | PyTorch]]', defaultOpts);
+    assert(out.includes('https://github.com/pytorch/pytorch'), 'url wrong, got: ' + out);
+    assert(out.includes('>PyTorch</a>'), 'display wrong, got: ' + out);
+  },
+
+  'github link trims trailing space': () => {
+    const out = processBody('[[github pytorch/pytorch | PyTorch]]', defaultOpts);
+    assert(!out.includes('pytorch%20'), 'trailing space in url, got: ' + out);
+  },
+
+  'google link': () => {
+    const out = processBody('[[google transformer architecture | 搜索 Transformer]]', defaultOpts);
+    assert(out.includes('https://www.google.com/search?q=transformer%20architecture'), 'url wrong, got: ' + out);
+    assert(out.includes('>搜索 Transformer</a>'), 'display wrong, got: ' + out);
+  },
+
+  'google link trims trailing space': () => {
+    const out = processBody('[[google transformer | 搜索]]', defaultOpts);
+    assert(!out.includes('transformer%20'), 'trailing space in url, got: ' + out);
+  },
+
+  'wiki image with width and caption': () => {
+    const out = processBody('![[sengoku-japan/nobunaga.jpg | 400 # 织田信长]]', defaultOpts);
+    assert(out.includes('src="media/images/sengoku-japan/nobunaga.jpg"'), 'src wrong, got: ' + out);
+    assert(out.includes('width="400"'), 'width wrong, got: ' + out);
+    assert(out.includes('>织田信长<'), 'caption wrong, got: ' + out);
+  },
+
+  'wiki image with only width': () => {
+    const out = processBody('![[example.jpg | 300]]', defaultOpts);
+    assert(out.includes('width="300"'), 'width wrong, got: ' + out);
+    assert(!out.includes('caption'), 'should not have caption');
+  },
+
+  'wiki image with only caption': () => {
+    const out = processBody('![[example.jpg # 图片说明]]', defaultOpts);
+    assert(out.includes('>图片说明<'), 'caption wrong, got: ' + out);
+    assert(!out.includes('width='), 'should not have width');
+  },
+
+  'wiki image bare (no width, no caption)': () => {
+    const out = processBody('![[example.jpg]]', defaultOpts);
+    assert(out.includes('src="media/images/example.jpg"'), 'src wrong, got: ' + out);
+    assert(!out.includes('width='), 'should not have width');
+    assert(!out.includes('caption'), 'should not have caption');
+  },
+
+  'wiki image path with subdirectory': () => {
+    const out = processBody('![[japan-history/oda-nobunaga.jpg | 500 # 织田信长]]', defaultOpts);
+    assert(out.includes('src="media/images/japan-history/oda-nobunaga.jpg"'), 'src wrong, got: ' + out);
+  },
+
+  'internal link to page': () => {
+    const out = processBody('[[posts.html | 返回列表]]', defaultOpts);
+    assert(out.includes('href="posts.html"'), 'href wrong, got: ' + out);
+    assert(out.includes('>返回列表</a>'), 'display wrong, got: ' + out);
+  },
+
+  'internal link with anchor': () => {
+    const out = processBody('[[japan-history.html#绳文 | 跳到绳文章节]]', defaultOpts);
+    assert(out.includes('href="japan-history.html#'), 'href wrong, got: ' + out);
+    assert(out.includes('>跳到绳文章节</a>'), 'display wrong, got: ' + out);
+  },
+
+  'inline middle dot is not converted to bullet': () => {
+    const input = '<li><a href="https://www.bilibili.com/video/BV19UiyYyETP" target="_blank">Bilibili · Z 变换补充视频 BV19UiyYyETP</a></li>';
+    const out = processBody(input, defaultOpts);
+    assert(out.includes('Bilibili · Z 变换补充视频'), 'inline middle dot should remain literal, got: ' + out);
+    assert(!out.includes('<li>Z 变换补充视频'), 'inline middle dot should not create nested bullet, got: ' + out);
+  },
+
+  'middle dot bullet only at block start': () => {
+    const out = processBody('<p>· 第一条</p>', defaultOpts);
+    assert(out.includes('<li>第一条</li>'), 'block-start middle dot should become bullet, got: ' + out);
+  },
+
+  'xref resolves through postMap when title differs from slug': () => {
+    const out = processBody('参见 [[@连续扩散语言模型路线综述：对视觉编码器研究的系统性启发 | 连续扩散语言模型路线综述]]', {
+      ...defaultOpts,
+      postMap: { '连续扩散语言模型路线综述：对视觉编码器研究的系统性启发': 'continuous-diffusion-language-models-survey' }
+    });
+    assert(out.includes('href="./continuous-diffusion-language-models-survey.html"'), 'xref should use known post slug, got: ' + out);
+    assert(out.includes('>连续扩散语言模型路线综述</a>'), 'alias should be preserved, got: ' + out);
+  },
+
+  '[[D-...]] hides element': () => {
+    const out = processBody('正常文字[[D-要隐藏的内容]]继续', defaultOpts);
+    assert(!out.includes('要隐藏'), 'should be hidden, got: ' + out);
+    assert(out.includes('正常文字'), 'should preserve other content');
+  },
+
+  'shortcodes then body replacements work together': () => {
+    const body = processShortcodes('{{< bg yellow >}}[[wiki Albert Einstein | 爱因斯坦]]{{< /bg >}}');
+    const out = processBody(body, defaultOpts);
+    assert(out.includes('background:#ffeb92fd'), 'bg missing, got: ' + out);
+    assert(out.includes('https://en.wikipedia.org/wiki/Albert%20Einstein'), 'wiki link missing, got: ' + out);
+  },
+
+  '.html source files get shortcode processing': () => {
+    const htmlContent = '<p>{{< bg red >}}test{{< /bg >}}</p><p>[[wiki Albert Einstein | 爱因斯坦]]</p>';
+    const processed = processShortcodes(htmlContent);
+    const out = processBody(processed, defaultOpts);
+    assert(out.includes('background:#fa9494'), 'bg not processed, got: ' + out);
+    assert(out.includes('https://en.wikipedia.org/wiki/Albert%20Einstein'), 'wiki not processed, got: ' + out);
+  },
+};
+
+module.exports = { tests, name: 'replace' };

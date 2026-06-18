@@ -1,0 +1,773 @@
+---
+title: "Ch11 · RLHF 安全对齐 · 动手学大模型"
+description: PPO 三步循环：Rollout → Evaluation → Optimization，KL 正则化约束，深入解析 RLHF 训练全流程
+created_at: 2026-05-19T13:48:30
+updated_at: 2026-05-20T14:45:00
+tags: [LLM, RLHF, PPO, 对齐, Reward Model, 动手学大模型]
+categories: [AI]
+hero_title: "Ch11 · RLHF 安全对齐"
+hero_sub: "PPO · Reward Model · 对齐"
+hero_tagline: "用 PPO 算法微调 GPT-2 生成积极评论，深入理解 RLHF 训练全流程"
+subcategory: "大语言模型"
+---
+
+
+<!-- 导读 -->
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 11</div>
+  <div class="ch-title">RLHF 安全对齐</div>
+  <p>RLHF（Reinforcement Learning from Human Feedback，人类反馈强化学习）是 ChatGPT、Claude、InstructGPT 等主流模型的核心训练范式。它在传统的监督微调之上引入了一层强化学习机制，让模型能够从"人类偏好"中学习——不仅仅是学"怎么说对"，而是学"怎么说好"。</p>
+  <p>本章通过一个完整可运行的实验——用 PPO 算法微调 GPT-2 使其生成更积极的 IMDB 电影评论——深入解析 RLHF 的训练全流程。我们使用 <strong>BERT 情感分类器</strong>替代人工反馈作为奖励信号，实现全自动化的训练管道，无需人工标注偏好数据即可完成整个训练循环。</p>
+  <p>实验在单卡 A800 80GB 上完成，训练耗时约 35 分钟，reward 均值从 0.59 提升到 2.24。这是一个资源有限条件下完全可复现的配置，足以让你理解 RLHF 的每个环节。</p>
+</div>
+
+<!-- 第一节：RLHF 的背景与动机 -->
+<div class="ch fade-in">
+  <div class="ch-label">1 · 背景</div>
+  <div class="ch-title">为什么需要 RLHF</div>
+  <p>语言模型的预训练目标是"预测下一个 token"。这个目标与"生成有帮助、无害、不偏见的内容"之间存在根本性差异。预训练让模型学会了"人类怎么说话"，但没有让它学会"人类希望它怎么说话"。</p>
+  <p>监督微调（Supervised Fine-Tuning，SFT）尝试弥合这一差距：用高质量的"指令-响应"对来微调模型，让它学会遵循指令。然而 SFT 面临一个核心瓶颈：<strong>它依赖于人工标注的质量，而标注者对"好答案"的理解存在差异</strong>。更关键的是，SFT 只能学习"什么是好的输出"，但无法学习"为什么一个输出比另一个更好"——后者需要比较两个输出的相对优劣。</p>
+  <p>RLHF 的核心创新在于引入了一个"奖励模型"（Reward Model）。这个模型学习的是"人类认为什么好"，而非"具体哪个答案正确"。然后，策略模型（Policy Model）通过强化学习算法（通常是 PPO）最大化累积奖励，同时受到 KL 散度约束以防止模型偏离原始语言能力太远。</p>
+  <div class="callout"><strong>要点</strong>：RLHF 的本质是用"偏好学习"替代"正确答案学习"。它让模型学会的不是"这是正确回答"而是"这个回答比那个回答更好"——这个转变极大提升了模型在开放式任务上的表现。</div>
+</div>
+
+<!-- 第二节：PPO 三步循环 -->
+<div class="ch fade-in">
+  <div class="ch-label">2 · 算法</div>
+  <div class="ch-title">PPO 三步循环详解</div>
+  <p>PPO（Proximal Policy Optimization，近端策略优化）是 RLHF 的核心优化算法。它的训练循环分为三个阶段：Rollout（采样）、Evaluation（评估）、Optimization（优化）。理解这三个阶段的交互机制是掌握 RLHF 的关键。</p>
+
+  <div class="info-box">
+    <h3>步骤一：Rollout（采样）</h3>
+    <p>策略模型（Policy Model，即待训练的 GPT-2）接收一批 query（IMDB 电影评论的开头部分），生成对应的 response（后续文本）。这个过程使用自回归生成，模型的参数在采样期间保持冻结。</p>
+    <p>Rollout 阶段的目标是建立"经验池"。每条 (query, response) 对将进入下一阶段的奖励评估。注意，Rollout 是在参考模型（Reference Model）的监督下进行的——虽然参数冻结，但生成本身会影响后续 KL 散度的计算。</p>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>步骤二：Evaluation（评估）</h3>
+    <p>对于 Rollout 阶段产生的每条 (query, response) 对，使用奖励模型（Reward Model）计算标量奖励分数。本实验中，我们使用预训练的 BERT 情感分类器（distilbert-imdb）作为奖励模型。</p>
+    <p>具体做法：将 query 和 response 拼接后传入 BERT 分类器，提取"正面类"（POSITIVE）的 logit 作为奖励分数。这个分数衡量的是生成文本的情感积极性——分数越高，说明生成内容越积极。</p>
+    <p>同时，计算当前策略模型与参考模型之间的 KL 散度：<code>KL(reference || current)</code>。这个 KL 散度作为惩罚项加到奖励中，防止策略模型在优化过程中偏离参考模型太远（保持语言模型的基础能力）。</p>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>步骤三：Optimization（优化）</h3>
+    <p>使用 PPO 算法更新策略模型的参数。PPO 的核心思想是"保守地更新策略"——它通过限制每次更新的幅度来保证训练的稳定性。具体而言，PPO 在损失函数中引入了 clipping 机制，防止策略概率比（action probability ratio）更新过大。</p>
+    <p>优化目标可以简化为：<code>最大化 reward - β * KL(π_θ || π_ref)</code>，其中 β 是 KL 惩罚系数，π_θ 是当前策略，π_ref 是参考策略。这个目标确保模型在追求更高奖励的同时不会完全抛弃原有的语言能力。</p>
+  </div>
+
+  <p></p>
+
+  <div class="callout"><strong>要点</strong>：这三个步骤形成了一个闭环。Rollout 产生经验，Evaluation 给出反馈，Optimization 更新策略。然后新策略重新 Rollout，循环往复。每次迭代中，模型都在学习"什么样的生成能够获得更高的情感奖励"，同时被 KL 惩罚约束着不偏离太远。</div>
+</div>
+
+<!-- 第三节：实验配置详解 -->
+<div class="ch fade-in">
+  <div class="ch-label">3 · 配置</div>
+  <div class="ch-title">实验配置详解</div>
+  <p>本章的实验配置完全可复现，所有代码基于 Hugging Face TRL 库。以下是关键的配置细节。</p>
+
+  <div class="info-box">
+    <h3>数据集：IMDB 电影评论</h3>
+    <p>IMDB 数据集包含 50,000 条电影评论，每条标注为"积极"或"消极"。我们筛选出至少 200 字符的评论以保证文本长度，然后使用 LengthSampler 将每条评论随机截断为 2-8 个 token 的 query，让模型续写。</p>
+    <p>截断策略的设计意图是：query 作为"开头"提供了情感语境，模型需要基于这个语境生成语义连贯且情感积极的后续内容。</p>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>参考模型：GPT-2 IMDB 微调版</h3>
+    <p>我们使用 lvwerra/gpt2-imdb 作为基础模型。这是一个在 IMDB 数据集上额外微调过 1 个 epoch 的 GPT-2 模型，已经具备初步的情感语言建模能力。用它作为 RLHF 的起点，比直接使用原始 GPT-2 更高效。</p>
+    <p>参考模型（ref_model）在训练中保持冻结，用于计算 KL 散度惩罚。它的存在确保了"即使强化学习把模型带偏了，也有一个锚点可以拽回来"。</p>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>奖励模型：BERT 情感分类器</h3>
+    <p>我们使用 lvwerra/distilbert-imdb 作为奖励模型。这是一个 DistilBERT，在 IMDB 数据集上微调过，具备准确的情感分类能力。模型输出正面类和负面类的 logits，我们取正面类 logit 作为奖励分数。</p>
+    <p>这个设置的巧妙之处在于：奖励模型和语言模型在不同的数据集上训练，具有不同的能力分布。BERT 学到的是"情感判断"，GPT-2 学到的是"文本生成"。两者通过 RLHF 连接，GPT-2 开始学会"生成能让 BERT 判断为积极的内容"——这本质上是一种对齐。</p>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>训练参数</h3>
+    <p>核心参数配置：</p>
+  </div>
+
+  <pre class="code-block"><code>config = PPOConfig(
+    model_name="model/gpt2-imdb",
+    learning_rate=1.41e-5,
+    log_with="wandb",
+)
+
+# BERT 情感分类器配置
+sent_kwargs = {
+    "top_k": None,
+    "function_to_apply": "none",  # 取原始 logit，不做 softmax
+    "batch_size": 16
+}</code></pre>
+
+  <p>学习率 1.41e-5 取自原始 RLHF 论文《Fine-Tuning Language Models from Human Preferences》。wandb 用于可视化训练曲线，包括 reward 变化、KL 散度、生成长度等关键指标。</p>
+
+  <p><strong>硬件配置</strong>：单卡 NVIDIA A800-SXM4-80GB，显存占用约 10097MiB，训练耗时 35 分 19 秒。这是复现 RLHF 全流程的最低可行配置——小于 40GB 显存的显卡可能需要减少 batch size 或 gradient accumulation。</p>
+</div>
+
+<!-- 第四节：核心代码模块 -->
+<div class="ch fade-in">
+  <div class="ch-label">4 · 代码</div>
+  <div class="ch-title">核心代码模块解析</div>
+  <p>以下是实验中三个最关键代码模块的功能解析。</p>
+
+  <div class="info-box">
+    <h3>PPOTrainer</h3>
+    <p>PPOTrainer 是 TRL 库的核心组件，负责管理整个 PPO 训练循环。它初始化时接收：config（训练配置）、model（策略模型，带 ValueHead）、ref_model（参考模型）、tokenizer、数据集和数据整理器。</p>
+    <p>PPOTrainer 内部自动处理设备分配、多 GPU 分布式训练（如果可用）、经验池管理和模型更新。它的设计理念是"一键启动"——你只需配置好数据、模型和参数，训练循环由它全权代理。</p>
+  </div>
+
+  <p></p>
+
+  <pre class="code-block"><code>model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name)
+ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name)
+tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+tokenizer.pad_token = tokenizer.eos_token
+
+ppo_trainer = PPOTrainer(
+    config, model, ref_model, tokenizer,
+    dataset=dataset, data_collator=collator
+)</code></pre>
+
+  <p>注意 <code>AutoModelForCausalLMWithValueHead</code> 是带 ValueHead 的语言模型。ValueHead 是 PPO 用于估计状态值（State Value）的辅助网络，它与语言模型的主干共享参数但有独立的输出头。在 PPO 中，ValueHead 用于计算 advantage 估计。</p>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>LengthSampler</h3>
+    <p>LengthSampler 是 TRL 库提供的采样器，用于控制生成序列的长度。它的输入是最小和最大长度，返回一个随机采样的长度值。在实验中，我们用它来：</p>
+  </div>
+
+  <p></p>
+
+  <pre class="code-block"><code># 定义输出长度采样器：输出长度在 32 到 64 之间随机
+output_length_sampler = LengthSampler(32, 64)
+
+# 定义输入截断采样器：输入长度在 2 到 8 之间随机
+input_size = LengthSampler(2, 8)</code></pre>
+
+  <p>生成配置：</p>
+
+  <pre class="code-block"><code>gen_kwargs = {
+    "min_length": -1,
+    "top_p": 0.92,
+    "top_k": 0,
+    "do_sample": True,
+}</code></pre>
+
+  <p><code>top_p=0.92</code> 是核采样（Nucleus Sampling）的参数，控制生成多样性。<code>do_sample=True</code> 确保使用随机采样而非贪婪解码。</p>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>奖励计算</h3>
+    <p>奖励计算是连接语言模型和情感分类器的桥梁。核心逻辑如下：</p>
+  </div>
+
+  <p></p>
+
+  <pre class="code-block"><code>texts = [q + r for q, r in zip(query_list, response_list)]
+pipe_outputs = sentiment_pipe(texts, **sent_kwargs)
+
+# 提取正面类的 score 作为奖励
+positive_scores = [
+    item["score"]
+    for output in pipe_outputs
+    for item in output
+    if item["label"] == "POSITIVE"
+]
+
+rewards = positive_scores</code></pre>
+
+  <p><code>sent_kwargs</code> 中的 <code>function_to_apply: "none"</code> 意味着输出的是原始 logit（未经过 softmax），这给了我们更细粒度的奖励信号。</p>
+</div>
+
+<!-- 第五节：训练效果分析 -->
+<div class="ch fade-in">
+  <div class="ch-label">5 · 效果</div>
+  <div class="ch-title">训练效果深度分析</div>
+  <p>RLHF 训练带来了显著的行为变化。以下是量化分析。</p>
+
+  <div class="info-box">
+    <h3>奖励分数的跃升</h3>
+    <p>训练前后的奖励分数对比：</p>
+  </div>
+
+  <ul>
+    <li><strong>均值</strong>：0.59 → 2.24（提升 280%）</li>
+    <li><strong>中位数</strong>：0.65 → 2.49（提升 283%）</li>
+  </ul>
+
+  <p></p>
+
+  <p>这个结果说明模型成功学会了"生成更积极的内容"。BERT 情感分类器的奖励信号有效传递到了语言模型的生成策略中。</p>
+
+  <div class="info-box">
+    <h3>生成文本的质变</h3>
+    <p>观察训练前后的生成样例（query 为评论开头，response 为模型续写）：</p>
+  </div>
+
+  <p></p>
+
+  <p><strong>训练前（低奖励）</strong>：</p>
+  <ul>
+    <li>query: "What a terrible" → response: "movie!<|endoftext|>"（奖励：-2.68）</li>
+    <li>query: "If he wanted to be" → response: "funny, he could"（奖励：-0.39）</li>
+  </ul>
+
+  <p><strong>训练后（高奖励）</strong>：</p>
+  <ul>
+    <li>query: "What a terrible" → response: "movie! The cinematography was stunning and the acting..."（奖励：+2.34）</li>
+    <li>query: "If he wanted to be" → response: "funny, he could have written a masterpiece..."（奖励：+0.41）</li>
+  </ul>
+
+  <p>关键变化：训练后的模型学会了"反转负面语境"——它不再被动接受 query 的情感色彩，而是主动在生成内容中引入积极元素。这是一个非常有趣的涌现行为：模型发现了"情感分类器的弱点"在于上下文理解，于是学会了在负面语境下生成正面续写以获得更高奖励。</p>
+
+  <div class="callout"><strong>要点</strong>：奖励分数的提升不仅仅是"更积极地说话"，而是模型学会了在各种语境下生成能够"欺骗"情感分类器的内容。这种能力本质上是 RLHF 训练的目标——让模型学习"什么是人类认为好的"，但也带来了一个潜在风险：模型可能过度优化奖励信号而产生"reward hacking"行为。</div>
+</div>
+
+<!-- 第六节：KL 散度的保护机制 -->
+<div class="ch fade-in">
+  <div class="ch-label">6 · KL</div>
+  <div class="ch-title">KL 散度的保护机制</div>
+  <p>KL(reference || current) 是 RLHF 中的关键正则化项。它的存在基于一个深刻观察：如果只优化奖励信号而不加约束，模型会很快学会"作弊"——它可能开始生成无意义的重复序列来最大化奖励，或者完全抛弃语言能力生成"语法乱码但情感积极"的内容。</p>
+  <p>KL 散度衡量的是当前策略与参考策略之间的概率分布差异。加入 KL 惩罚后，优化目标变为：</p>
+  <pre class="code-block"><code>Loss = -E[reward] + β * KL(π_ref || π_θ)</code></pre>
+
+  <p>其中 β 是惩罚系数。较大的 β 意味着模型被严格约束在参考模型附近，语言能力保持良好但奖励提升较慢；较小的 β 允许模型更自由地优化奖励，但可能牺牲语言质量。</p>
+
+  <p>这个机制类似于"在陌生地形中走路时系一根绳子在树上"——你有一定自由度去探索，但不会走得太远以至于迷失方向。KL 散度就是那根绳子，它保证了 RLHF 训练的安全边界。</p>
+
+  <div class="info-box">
+    <h3>KL 约束的实践效果</h3>
+    <p>在我们的实验中，观察 wandb 记录的训练曲线，KL 散度在整个训练过程中保持在合理范围内（约 0.1-0.3），既没有趋近于零（说明模型确实在学习新行为），也没有急剧增大（说明语言能力没有崩溃）。</p>
+    <p>这种平衡是 RLHF 训练的理想状态——模型在"变得更好"的同时保持了"仍然是一个语言模型"的核心属性。</p>
+  </div>
+</div>
+
+<!-- 第七节：wandb 训练可视化 -->
+<div class="ch fade-in">
+  <div class="ch-label">7 · 可视化</div>
+  <div class="ch-title">wandb 训练可视化</div>
+  <p>实验使用 wandb（Weights & Biases）记录训练过程，关键可视化指标包括：</p>
+
+  <ul>
+    <li><strong>reward/mean</strong>：奖励均值随训练步数的曲线，应呈上升趋势</li>
+    <li><strong>reward/dist</strong>：奖励分布的热力图，观察奖励是否集中在高价值区域</li>
+    <li><strong>policy/kl</strong>：KL 散度随时间的曲线，用于监控训练稳定性</li>
+    <li><strong>train/ppo_lr</strong>：学习率调度，确保没有过大波动</li>
+    <li><strong>train/ppo_epochs</strong>：每轮的 PPO epoch 数</li>
+  </ul>
+
+  <p>wandb 的自动记录功能让你在训练结束后可以回放任意时间点的模型状态，分析 reward 变化的转折点，并与其他实验配置进行对比。</p>
+
+  <p>训练完成后，模型和分词器保存到 <code>model/gpt2-imdb-pos-v2/</code> 目录，包括：tokenizer_config.json、special_tokens_map.json、vocab.json、merges.txt、added_tokens.json、tokenizer.json。这些文件可以加载到任何兼容环境中进行推理。</p>
+</div>
+
+<!-- 第八节：RLHF 的扩展方向 -->
+<div class="ch fade-in">
+  <div class="ch-label">8 · 扩展</div>
+  <div class="ch-title">RLHF 的扩展方向</div>
+  <p>本章的实验展示了一个简化的 RLHF 设置。在实际应用中，RLHF 有几个重要的扩展方向。</p>
+
+  <div class="info-box">
+    <h3>替代奖励模型</h3>
+    <p>本章使用 BERT 情感分类器作为奖励模型，实际应用中可以使用：</p>
+    <ul>
+      <li><strong>Reward Model（RM）</strong>：用成对偏好数据训练的专用模型，如InstructGPT中的 reward model</li>
+      <li><strong>AI 反馈（RLAIF）</strong>：用另一个 LLM 的输出作为偏好标签，替代人工标注</li>
+      <li><strong>规则引擎</strong>：在特定领域使用规则作为奖励（如代码生成中的编译器反馈）</li>
+    </ul>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>PPO 的替代算法</h3>
+    <p>PPO 不是唯一的选项。近几年出现了多个 PPO 的替代方案：</p>
+    <ul>
+      <li><strong>GRPO（Group Relative Policy Optimization）</strong>：DeepSeek 使用，无需 value head，降低计算开销</li>
+      <li><strong>DPO（Direct Preference Optimization）</strong>：绕过奖励模型，直接用偏好数据优化策略</li>
+      <li><strong>REINFORCE</strong>：更简单的策略梯度方法，适合小规模实验</li>
+    </ul>
+  </div>
+
+  <p></p>
+
+  <div class="info-box">
+    <h3>多目标 RLHF</h3>
+    <p>实际对齐需要考虑多个维度：有用性（Helpfulness）、无害性（Harmlessness）、诚实性（Honesty）。单一奖励信号不足以覆盖所有维度。多目标 RLHF 通常使用加权组合或分层奖励结构。</p>
+    <p>这正是我们在上一章讨论的"安全对齐"问题的技术基础——RLHF 可以被视为一种通过优化奖励来间接实现安全对齐的机制。</p>
+  </div>
+</div>
+
+<!-- 第九节：完整代码流程 -->
+<div class="ch fade-in">
+  <div class="ch-label">9 · 流程</div>
+  <div class="ch-title">完整代码流程</div>
+  <p>以下是 RLHF 训练的关键代码流程总结。</p>
+
+  <pre class="code-block"><code># === 1. 下载模型和数据 ===
+export HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli download --resume-download stanfordnlp/imdb --local-dir dataset/imdb --repo-type dataset
+huggingface-cli download --resume-download lvwerra/gpt2-imdb --local-dir model/gpt2-imdb
+huggingface-cli download --resume-download lvwerra/distilbert-imdb --local-dir model/distilbert-imdb
+
+# === 2. 初始化 ===
+from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
+from trl.core import LengthSampler
+
+config = PPOConfig(model_name="model/gpt2-imdb", learning_rate=1.41e-5, log_with="wandb")
+import wandb; wandb.init()
+
+# === 3. 加载数据和模型 ===
+dataset = build_dataset(config)
+model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name)
+ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name)
+tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+tokenizer.pad_token = tokenizer.eos_token
+
+ppo_trainer = PPOTrainer(config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
+
+# === 4. 加载奖励模型 ===
+sentiment_pipe = pipeline("sentiment-analysis", model="model/distilbert-imdb", device=device)
+sent_kwargs = {"top_k": None, "function_to_apply": "none", "batch_size": 16}
+
+# === 5. PPO 训练循环 ===
+for epoch, batch in tqdm(enumerate(ppo_trainer)):  # 逐 batch 训练
+    query_tensors = batch["input_ids"]
+    
+    # Rollout: 生成 response
+    response_tensors = []
+    for query in query_tensors:
+        gen_len = output_length_sampler()
+        response = model.generate(
+            query.unsqueeze(0), max_new_tokens=gen_len, **gen_kwargs
+        ).squeeze()
+        response_tensors.append(response)
+    
+    # Evaluation: 计算奖励
+    texts = [tokenizer.decode(q) + tokenizer.decode(r) for q, r in zip(query_tensors, response_tensors)]
+    pipe_outputs = sentiment_pipe(texts, **sent_kwargs)
+    rewards = [item["score"] for output in pipe_outputs for item in output if item["label"] == "POSITIVE"]
+    
+    # Optimization: PPO 更新
+    stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+
+# === 6. 保存模型 ===
+model.save_pretrained("model/gpt2-imdb-pos-v2")
+tokenizer.save_pretrained("model/gpt2-imdb-pos-v2")</code></pre>
+</div>
+
+<!-- 第十节：总结 -->
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">本章小结</div>
+  <p>本章完整解析了 RLHF 的训练流程，从背景动机到算法细节，从代码实现到效果分析。</p>
+  <ul>
+    <li>RLHF 的核心创新在于用"偏好学习"替代"正确答案学习"，通过奖励模型让模型学会"什么是人类认为更好的"</li>
+    <li>PPO 三步循环——Rollout、Evaluation、Optimization——形成闭环，策略模型在奖励信号的驱动下持续优化生成策略</li>
+    <li>KL 散度约束是 RLHF 的安全机制，防止模型在追求奖励的过程中丢失语言能力</li>
+    <li>BERT 情感分类器作为奖励模型，可以自动化地提供积极的情感反馈，实现无需人工标注的 RLHF 训练</li>
+    <li>训练效果显著：reward 均值从 0.59 提升到 2.24，模型学会了在各种语境下生成情感积极的内容</li>
+    <li>RLHF 是 ChatGPT、Claude 等模型的核心训练范式，也是安全对齐的重要技术基础</li>
+  </ul>
+  <p>至此，「动手学大模型」系列博客的 Agent 与安全相关内容已全部覆盖——从 GUI 智能体的构建（Ch9），到智能体安全评测（Ch10），再到 RLHF 安全对齐（Ch11），我们完成了一条从"能力构建"到"风险评测"再到"安全优化"的完整技术链条。</p>
+</div>
+
+<!-- 课件精读 -->
+<div class="ch fade-in">
+  <div class="ch-label">课件</div>
+  <div class="ch-title">课件原文精读</div>
+  <p>以下内容来自本章 PDF 课件原文（24页），保留讲义的完整结构供对照参考。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">定位</div>
+  <div class="ch-title">RLHF 在机器学习三范式中的位置</div>
+  <p>机器学习三范式韦恩图揭示了 RLHF 的独特地位：它位于监督学习（数据驱动、标签明确）与强化学习（延迟奖励、探索驱动）的交叉区域。RLHF 通过人类反馈信号，将预训练语言模型从"知识库"转变为"助手"，解决的是模型能力与人类意图对齐的最后一公里问题。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">机制</div>
+  <div class="ch-title">[CLS] 双任务分类与恶意微调风险</div>
+  <p>原生嵌入安全审计通道的多任务学习设计（[CLS] 双任务框架）在预训练阶段就内置了安全审核能力。恶意微调（malicious fine-tuning）的危害在于：代码漏洞植入可以在不触发关键词的情况下破坏全话题安全性，这种攻击具有跨领域泛化的特性，使得事后修复成本极高。</p>
+</div>
+
+
+
+<div class="ch fade-in">
+  <div class="ch-label">课件</div>
+  <div class="ch-title">课件原文精读</div>
+  <p>以下为本章 PDF 课件原文（共24页），按页面顺序呈现，保留讲义的原始措辞与结构。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第1页</div>
+  <div class="ch-title">页面原文</div>
+<p>动手学大模型对齐</p>
+<p>董凌众</p>
+<p>上海交通大学计算机学院</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第2页</div>
+  <div class="ch-title">页面原文</div>
+<p>“AI对齐”的脆弱性远超任何人的预期</p>
+<p>看似被"驯服"的AI系统内部或许潜藏着一颗黑暗之心。只需施加最微小的训练调整，就能让整个系</p>
+<p>统"变质"，引发全面而深刻的道德崩溃和价值观扭曲。</p>
+<p>[1] Betley J, Tan D, Warncke N, et al. Emergent Misalignment: Narrow finetuning can produce broadly misaligned LLMs[J]. arXiv preprint arXiv:2502.17424, 2025.</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第3页</div>
+  <div class="ch-title">页面原文</div>
+<p>02</p>
+<p>03</p>
+<p>04</p>
+<p>01</p>
+<p>RLHF</p>
+<p>PPO</p>
+<p>前沿工作</p>
+<p>概述</p>
+<p>从强化学习</p>
+<p>到从人类反馈中学习</p>
+<p>从策略梯度下降</p>
+<p>到近端策略优化</p>
+<p>显式安全信号</p>
+<p>安全层识别</p>
+<p>如何让机器始终能符</p>
+<p>合人类的意图？</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第4页</div>
+  <div class="ch-title">页面原文</div>
+<p>通用人工智能安全：罗伯特维纳之问</p>
+<p>If we use, to achieve our purposes, a mechanical</p>
+<p>agency with whose operation we cannot</p>
+<p>interface effectively..… we had better be quite</p>
+<p>sure that the purpose put into the machine is</p>
+<p>the purpose which we really desire…</p>
+<p>我们应该如何让机器始终能符合人类的意图？</p>
+<p>Robert Weiner 1960</p>
+<p>控制论鼻祖</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第5页</div>
+  <div class="ch-title">页面原文</div>
+<p>与人类价值观对齐的大语言模型</p>
+<p>不同层面的对齐</p>
+<p>合文化</p>
+<p>符合国家区域文化</p>
+<p>合情</p>
+<p>价值观层面对齐</p>
+<p>符合道德情理</p>
+<p>合法</p>
+<p>符合法律法规</p>
+<p>安全性层面对齐</p>
+<p>讲事实讲逻辑</p>
+<p>合事实</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第6页</div>
+  <div class="ch-title">页面原文</div>
+<p>01</p>
+<p>02</p>
+<p>03</p>
+<p>04</p>
+<p>概述</p>
+<p>RLHF</p>
+<p>PPO</p>
+<p>前沿工作</p>
+<p>如何让机器始终能符</p>
+<p>合人类的意图？</p>
+<p>从强化学习</p>
+<p>到从人类反馈中学习</p>
+<p>从策略梯度下降</p>
+<p>到近端策略优化</p>
+<p>显式安全信号</p>
+<p>安全层识别</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第7页</div>
+  <div class="ch-title">页面原文</div>
+<p>强化学习RL</p>
+<p>强化学习（Reinforcement Learning, RL），是机器学习的范式和方法论之一，用于描述和解决智能</p>
+<p>体（Agent）在与环境（Environment）的交互过程中通过学习策略以达成回报最大化或实现特定目</p>
+<p>标的问题。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第8页</div>
+  <div class="ch-title">页面原文</div>
+<p>强化学习RL</p>
+<p>强化学习中有两个可以进行交互的对象：</p>
+<p>• 智能体（Agent）：感知环境状态（State），根据反馈奖励（Reward）选择合适动作（Action）</p>
+<p>最大化长期收益，在交互过程进行学习；</p>
+<p>• 环境（Environment）：接收智能体执行的一系列动作，对这一系列动作进行评价并转换为一</p>
+<p>种可量化的信号，最终反馈给智能体。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第9页</div>
+  <div class="ch-title">页面原文</div>
+<p>强化学习RL 基本概念</p>
+<p>策略(Policy)：定义智能体在特定时间t 选择的行为方式，策略是环境状态到动作的映射。</p>
+<p>奖励函数(Reward Function)：在每一步中，环境向智能体发送一个奖励收益Reward，而这个收</p>
+<p>益通过奖励函数计算得到。</p>
+<p>价值函数(Value Function)：从长远的角度看什么是好的，一个状态的价值是一个智能体从这个状</p>
+<p>态开始，对将来累积的总收益的期望。</p>
+<p>环境模型(Environment Model)：是一种对环境的反应模式的模拟，它允许对外部环境的行为进</p>
+<p>行推断。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第10页</div>
+  <div class="ch-title">页面原文</div>
+<p>强化学习RL 基本概念</p>
+<p>策略(Policy)：定义智能体在特定时间t 选择的行为方式，策略是环境状态到动作的映射。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第11页</div>
+  <div class="ch-title">页面原文</div>
+<p>强化学习RL 基本概念</p>
+<p>价值函数(Value Function)：从长远的角度看什么是好的，一个状态的价值是一个智能体从这个状</p>
+<p>态开始，对将来累积的总收益的期望。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第12页</div>
+  <div class="ch-title">页面原文</div>
+<p>RLHF：从人类反馈中学习</p>
+<p>Native 强化学习里，有Environment 和Reward Model，但大语言模型强化学习没有奖励函数，只</p>
+<p>有一些人类/专家的示范，怎么办呢？</p>
+<p>OpenAI 使用的大语言模型构建流程</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第13页</div>
+  <div class="ch-title">页面原文</div>
+<p>RLHF：从人类反馈中学习</p>
+<p>通过人类标注数据训练得到Reward Model（相当于有了人类标注数据，则相信它是不错的，然后</p>
+<p>反推人类因为什么样的奖励函数才会采取这些行为），有了奖励函数之后，就可以使用一般的强化</p>
+<p>学习的方法去找出最优策略/动作。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第14页</div>
+  <div class="ch-title">页面原文</div>
+<p>03</p>
+<p>01</p>
+<p>04</p>
+<p>02</p>
+<p>PPO</p>
+<p>概述</p>
+<p>前沿工作</p>
+<p>RLHF</p>
+<p>从策略梯度下降</p>
+<p>到近端策略优化</p>
+<p>如何让机器始终能符</p>
+<p>合人类的意图？</p>
+<p>显式安全信号</p>
+<p>安全层识别</p>
+<p>从强化学习</p>
+<p>到从人类反馈中学习</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第15页</div>
+  <div class="ch-title">页面原文</div>
+<p>强化学习与深度学习结合</p>
+<p>强化学习可以按照方法学习策略来划分成Value-based 和Policy-based 两种。在深度强化学习领域</p>
+<p>将深度学习与基于值Q-Learning 算法相结合产生了DQN 算法，通过经验回放池与目标网络成功的</p>
+<p>将深度学习算法引入了强化学习算法。其中最具代表性分别是Q-Learning 与Policy Gradient 算法。</p>
+<p>•Value Based</p>
+<p>◦Learn value function</p>
+<p>PPO</p>
+<p>◦implicit policy</p>
+<p>Q-Learning</p>
+<p>REINFORCE</p>
+<p>•Policy Based</p>
+<p>◦no value function</p>
+<p>◦learn policy</p>
+<p>•Actor-Critic</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第16页</div>
+  <div class="ch-title">页面原文</div>
+<p>PG Policy Gradient 策略梯度下降</p>
+<p>Value-based：比较a1, a2, a3 三个个动作的期待值（Q-value），选取Q最大的那个作为本次选择的</p>
+<p>动作。</p>
+<p>Policy-based：有一个计算此刻选择哪个动作的函数（actor），并得到概率概率𝑝(𝑠,𝑎)，根据概率</p>
+<p>𝑝(𝑠,𝑎) 选取动作。</p>
+<p>相比于Q-learning 和DQN，策略梯度下降PG 的神经网络不再输出Q 值，而是直接输出采用动作</p>
+<p>的概率，能够更好地处理连续的动作。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第17页</div>
+  <div class="ch-title">页面原文</div>
+<p>PG Policy Gradient 策略梯度下降</p>
+<p>在实际实验中，会让actor 和environment 进行互动，产生一系列采样数据（Episode sample /</p>
+<p>Trajectory），即获得很多(𝑠,𝑎)  的Pair（表示在状态𝑠下采取动作𝑎，得到当前奖励𝑅(𝜏)，然后将</p>
+<p>这些数据送入训练过程中计算，并更新模型的参数𝜃。</p>
+<p>𝐺𝑖𝑣𝑒𝑛𝑃𝑜𝑙𝑖𝑐𝑦𝜋𝜃</p>
+<p>Update Model</p>
+<p>𝜏1</p>
+<p>1, 𝑎1</p>
+<p>1)</p>
+<p>𝑅𝜏1</p>
+<p>(𝑠1</p>
+<p>1, 𝑎2</p>
+<p>1)</p>
+<p>𝑅𝜏1</p>
+<p>𝜃←𝜃+ 𝜂∇ത𝑅𝜃</p>
+<p>(𝑠2</p>
+<p>⋮</p>
+<p>⋮</p>
+<p>2, 𝑎1</p>
+<p>2)</p>
+<p>𝜏2</p>
+<p>Data Sample</p>
+<p>𝑅𝜏2</p>
+<p>(𝑠1</p>
+<p>𝑅𝜏2</p>
+<p>2, 𝑎2</p>
+<p>2)</p>
+<p>(𝑠2</p>
+<p>⋮</p>
+<p>⋮</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第18页</div>
+  <div class="ch-title">页面原文</div>
+<p>Proximal Policy Optimization PPO 算法原理</p>
+<p>对于PG 算法来说，最大的问题是在策略参数更新后，还要需要重新使用同环境互动收集数据再进</p>
+<p>行下一轮迭代。</p>
+<p>PPO 算法是利用了重要性采样的思想，在不知道策略路径的概率p 情况下，通过模拟一个近似的q</p>
+<p>分布，只要p 同q 分布不差得太远，通过多轮迭代可以快速参数收敛。</p>
+<p>PPO算法结合Actor-Critic 方式，Agent 由两部分组成，Actor 负责与环境互动收集样本，等同于原</p>
+<p>来PG 的情况，其更新即PPO 梯度的更新，添加了Critic，用于负责评判Actor 的动作好坏。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第19页</div>
+  <div class="ch-title">页面原文</div>
+<p>Proximal Policy Optimization PPO 算法原理</p>
+<p>PPO算法结合Actor-Critic 方式，Agent 由两部分组成，Actor 负责与环境互动收集样本，等同于原</p>
+<p>来PG 的情况，其更新即PPO 梯度的更新，添加了Critic，用于负责评判Actor 的动作好坏。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第20页</div>
+  <div class="ch-title">页面原文</div>
+<p>04</p>
+<p>01</p>
+<p>02</p>
+<p>03</p>
+<p>前沿工作</p>
+<p>概述</p>
+<p>RLHF</p>
+<p>PPO</p>
+<p>显式安全信号</p>
+<p>安全层识别</p>
+<p>如何让机器始终能符</p>
+<p>合人类的意图？</p>
+<p>从强化学习</p>
+<p>到从人类反馈中学习</p>
+<p>从策略梯度下降</p>
+<p>到近端策略优化</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第21页</div>
+  <div class="ch-title">页面原文</div>
+<p>显式安全信号</p>
+<p>Q: 是否能将模型识别恶意请求的能力视为一个隐式的二分类任务</p>
+<p>解决方案</p>
+<p>训练阶段：显式化安全二分类任务训练：受BERT启发，在每个输入（input）序列的开头引入[CLS]，该token接入分类</p>
+<p>头classification head ，将输入（input）/上文（context）分类为恶意/良性</p>
+<p>部署阶段：Strategic Attention Mechanism + Strategic Decoding Strategy</p>
+<p>[1] Li J, Kim J-E. Safety alignment can be not superficial with explicit safety signals</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第22页</div>
+  <div class="ch-title">页面原文</div>
+<p>一个符合直觉的例子：</p>
+<p>正常：What is the next season of spring？</p>
+<p>Ans：balabal（各种回答）</p>
+<p>恶意：How to commit suicide？</p>
+<p>Ans：No！Reject to anser！</p>
+<p>安全层识别</p>
+<p>Q: 安全层真的存在吗？</p>
+<p>验证方法</p>
+<p>对比正常vs 恶意输入在各层的向量变化</p>
+<p>模型的不同层</p>
+<p>构造大量数据取平均值</p>
+<p>余弦相似度对比</p>
+<p>使用余弦相似度和角度差异衡量</p>
+<p>安全层处相似度显著下降，角度差显著上升，表明模型开始做“安全判断”</p>
+<p>“本文提出对对齐的LLM内部层进行三阶段划分：(i)初步句子确认，（ii）恶意意图检测，以及（iii）语义分析和理解。”</p>
+<p>[1] Li S, Yao L, Zhang L, et al. Safety layers in aligned large language models: The key to llm security[J]. arXiv preprint arXiv:2408.17003, 2024..</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第23页</div>
+  <div class="ch-title">页面原文</div>
+<p>References</p>
+<p>[1] 投入数亿美元的大模型“对齐”，脆弱得像饺子皮</p>
+<p>[2] Betley J, Tan D, Warncke N, et al. Emergent Misalignment: Narrow finetuning can produce</p>
+<p>broadly misaligned LLMs[J]. arXiv preprint arXiv:2502.17424, 2025.</p>
+<p>[3] ChatGPT狂飙：强化学习RLHF与PPO！</p>
+<p>[4]张奇、桂韬、郑锐、黄萱菁，大语言模型理论与实践，https://intro-llm.github.io/, 2023.</p>
+<p>[5] Li J, Kim J-E. Safety alignment can be not superficial with explicit safety signals</p>
+<p>[6] Li S, Yao L, Zhang L, et al. Safety layers in aligned large language models: The key to llm</p>
+<p>security[J]. arXiv preprint arXiv:2408.17003, 2024..</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第24页</div>
+  <div class="ch-title">页面原文</div>
+<p>Thank you</p>
+<p>www.sjtu.edu.cn</p>
+<p>饮水思源</p>
+<p>爱国荣校</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">优化</div>
+  <div class="ch-title">价值函数与策略分类</div>
+  <p>RLHF 的优化基础是价值函数 V(s)（状态期望累积奖励）和 Q(s,a)（状态-动作期望累积奖励）。训练四阶段成本阶梯显示：千卡·月（预训练）→ 百卡·天（微调）→ 小时级（推理），体现了规模化后的效率收益。策略分类中，随机性策略适合探索阶段，确定性策略适合利用阶段。</p>
+</div>
+
+<!-- 相关资源 -->
+<div class="section fade-in">
+  <div class="section-title">相关资源</div>
+  <div class="meta" style="margin-top:0.5rem;">
+    <span>🔗 <a href="https://github.com/Lordog/dive-into-llms/tree/main/documents/chapter11" target="_blank">GitHub: chapter11 源码与课件</a></span>
+    <span>🔗 <a href="https://github.com/huggingface/trl/blob/main/examples/notebooks/gpt2-sentiment.ipynb" target="_blank">TRL 官方示例：GPT-2 情感微调</a></span>
+    <span>📄 <a href="/articles/dive-into-llms-ch10-agent-safety/">← Ch10 · 智能体安全</a></span>
+    <span>📄 <a href="/articles/dive-into-llms/">← 总索引</a></span>
+  </div>
+</div>

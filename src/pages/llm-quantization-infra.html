@@ -1,0 +1,192 @@
+---
+title: "LLM 量化入门：INT8、FP8、Outlier 与截断误差"
+description: "从推理部署视角解释大模型量化：为什么 INT8/FP8 能省显存、权重量化和激活量化有什么不同、outlier 为什么麻烦，以及 3σ 截断题该怎么判断。"
+date: 2026-06-11T10:00:52
+created_at: 2026-06-11T10:00:52
+updated_at: 2026-06-11T10:07:38
+tags: [LLM, 量化, INT8, FP8, AI Infra]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: "LLM 量化入门"
+hero_sub: "INT8、FP8、Outlier 与截断误差"
+hero_tagline: "量化不是把数字变短，而是在动态范围、精度和异常值之间重新分配预算"
+mathjax: true
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">8</span><span class="label">bit</span></div>
+  <div class="stat"><span class="num b">3σ</span><span class="label g">截断规则</span></div>
+  <div class="stat"><span class="num">0.27%</span><span class="label">双侧尾部</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Motivation</div>
+  <div class="ch-title">为什么 LLM 部署绕不开量化</div>
+
+  <p>大模型推理的第一性约束通常不是“参数会不会算”，而是<strong>显存、带宽和吞吐</strong>。FP16/BF16 权重比 FP32 已经少了一半显存，但当模型规模进入几十亿、上百亿参数后，权重、KV cache、激活和临时 buffer 仍然会挤满 GPU。量化的目标，就是用更少 bit 表示模型中的数值，让矩阵乘法、显存占用和内存带宽压力一起下降 #LLM-int8-2022# #GPTQ-2022#。</p>
+
+  <p>但量化并不是简单地把 FP16 “压成 INT8”。真正的问题是：一个张量里的数值分布往往不均匀，大部分值集中在零附近，少数 outlier 却非常大。如果为了容纳这些极端值而扩大量化范围，普通值会被分到很粗的刻度里；如果强行截断 outlier，又会引入 clipping error。LLM 量化的大部分技巧，都是在这两个坏结果之间找平衡 #SmoothQuant-2022#。</p>
+
+  <div class="callout"><strong>核心直觉</strong>：量化不是“低精度一定更差”，而是“把有限刻度放在哪里”。好的量化方法会把刻度分配给真正常见、真正影响输出的数值区域。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、量化到底在做什么</div>
+
+  <p>最常见的线性量化可以理解为三步：先选定一个数值范围，再把这个连续范围切成有限个格子，最后用整数索引表示每个格子。反量化时，再把整数索引乘回 scale，近似恢复原始浮点值。</p>
+
+  <div class="def-box">
+    <h3>线性量化</h3>
+    <p>给定浮点数 $x$、scale $s$ 和 zero point $z$，常见的 affine quantization 写作：</p>
+
+$$
+q = \mathrm{round}\Bigl(\frac{x}{s}\Bigr) + z
+$$
+
+    <p>反量化时近似恢复为：</p>
+
+$$
+\hat{x} = s(q-z)
+$$
+
+    <p>如果使用对称量化，zero point 通常固定为 0，公式会更简单。</p>
+  </div>
+
+  <p>INT8 的优势在于硬件友好：8-bit 整数矩阵乘法可以显著降低内存读写量，并在支持的硬件上提高吞吐。FP8 则保留浮点格式，有指数位和尾数位，更适合需要动态范围的训练或推理场景。NVIDIA Transformer Engine 中常见的 FP8 格式包括 E4M3 和 E5M2：E4M3 给更多尾数位，精度更好；E5M2 给更多指数位，动态范围更大 #NVIDIA-FP8-Docs#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、权重量化和激活量化不是同一个问题</div>
+
+  <p><strong>权重量化</strong>处理的是模型参数。权重在部署前已经固定，可以离线扫描、分组、校准，甚至用近似二阶信息来决定哪些权重更敏感。GPTQ 这类方法就是典型的 post-training weight quantization：不重新训练完整模型，而是在量化过程中尽量补偿权重量化对输出的影响。AWQ 则从激活感知的角度保护少数重要权重通道，用于低 bit weight-only quantization #GPTQ-2022# #AWQ-2023#。</p>
+
+  <p><strong>激活量化</strong>处理的是运行时中间结果。激活依赖输入，分布会随 token、batch 和层而变化，因此更难提前固定范围。更麻烦的是，LLM 中的激活 outlier 往往具有系统性：少数通道或特征维度会持续出现大幅值。LLM.int8() 的重要发现之一，就是大模型中会出现影响量化效果的 outlier features，需要用混合精度分解等方式单独处理 #LLM-int8-2022#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>对象</th><th>是否固定</th><th>主要难点</th><th>典型方法</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>权重</td><td>部署前固定</td><td>压缩后保持输出误差小</td><td>GPTQ、AWQ、分组量化</td></tr>
+        <tr><td>激活</td><td>随输入变化</td><td>动态范围变化、outlier 通道</td><td>SmoothQuant、LLM.int8()、校准集统计</td></tr>
+        <tr><td>KV cache</td><td>推理时累积</td><td>长上下文显存占用大，误差会影响后续 token</td><td>KIVI、KVQuant、分层精度策略</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>如果瓶颈不是权重而是长上下文推理中的 KV cache，那么量化对象又会变成 attention 的 key/value 缓存。KIVI 直接面向 KV cache，把 key cache 和 value cache 用不同粒度进行低 bit 表示；KVQuant 则围绕长上下文推理中的 KV cache activations 做低精度量化，用更小的缓存换更长上下文或更大 batch #KIVI-2024# #KVQuant-2024#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、Outlier 为什么会破坏量化</div>
+
+  <p>假设一个激活张量里 99.9% 的值都落在 $[-1,1]$，但少数值达到 20。如果量化范围设成 $[-20,20]$，INT8 的 256 个刻度要覆盖很宽的区间，零附近的普通值会被粗糙地表示；如果范围设成 $[-1,1]$，那些 20 会被截断成 1，极端值的信息直接丢掉。</p>
+
+  <p>这就是 outlier 的麻烦：它们数量很少，却支配了 scale 的选择。量化误差因此分成两类：一种是普通值被粗刻度表示造成的 rounding error，另一种是超出范围的值被压到边界造成的 clipping error。</p>
+
+  <div class="review-box">
+    <h3>量化误差速查</h3>
+    <ul>
+      <li><strong>Rounding error</strong>：数值在量化范围内，但只能落到最近的离散刻度。</li>
+      <li><strong>Clipping error</strong>：数值超出量化范围，被强行截断到最小值或最大值。</li>
+      <li><strong>Scale 太大</strong>：能覆盖 outlier，但普通值精度变差。</li>
+      <li><strong>Scale 太小</strong>：普通值精度较好，但 outlier 被截断。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、SmoothQuant 的思路：把难点从激活挪到权重</div>
+
+  <p>SmoothQuant 的出发点是：激活 outlier 让 activation quantization 很难，但权重是固定的，离线处理空间更大。它通过数学等价变换，把一部分量化难度从激活迁移到权重上：激活按通道缩小，权重按对应通道放大，矩阵乘法结果保持等价，但激活分布变得更平滑，更适合 W8A8 推理 #SmoothQuant-2022#。</p>
+
+  <div class="def-box">
+    <h3>迁移 outlier 的直觉</h3>
+    <p>对矩阵乘法 $Y=XW$，可以插入一个对角缩放矩阵 $S$：</p>
+
+$$
+Y = XW = (XS^{-1})(SW)
+$$
+
+    <p>如果某些激活通道幅值太大，就把这些通道在 $X$ 侧缩小，并把对应比例乘到 $W$ 侧。输出不变，但激活量化更容易。</p>
+  </div>
+
+  <p>这个思路说明了一点：LLM 量化不是孤立地压缩某个张量，而是在模型计算图里重新分配数值范围。哪一侧更容易承受误差，就把难点迁移到哪一侧。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、INT8 和 FP8 的差别</div>
+
+  <p>INT8 是整数格式，通常需要显式 scale 把整数映射回实数。它适合成熟的整数矩阵乘硬件，也适合权重和激活都能稳定校准的场景。FP8 是 8-bit 浮点格式，保留指数位，因此在动态范围变化较大的场景下更灵活。Hopper 之后的 NVIDIA GPU 和 Transformer Engine 对 FP8 提供了更完整的训练与推理支持 #NVIDIA-FP8-Docs#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>格式</th><th>特点</th><th>适合场景</th><th>主要风险</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>INT8</td><td>整数刻度，依赖 scale / zero point</td><td>推理加速、W8A8、权重压缩</td><td>范围选不好会放大 rounding 或 clipping error</td></tr>
+        <tr><td>FP8 E4M3</td><td>4 位指数、3 位尾数</td><td>更重视有效数字精度的前向计算</td><td>动态范围小于 E5M2</td></tr>
+        <tr><td>FP8 E5M2</td><td>5 位指数、2 位尾数</td><td>更重视动态范围的反向或梯度相关计算</td><td>尾数更少，局部精度更粗</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">六、题库：3σ 截断会损失多少信息</div>
+
+  <div class="example-box">
+    <h3>题目</h3>
+    <p>在对大模型（LLM）的权重或激活值进行 INT8 或 FP8 量化时，题库里常把权重或激活近似写成正态分布 $N(0,\sigma^2)$。这个假设来自中心极限定理式的工程近似：多次累加、归一化或校准后的数值常被先用高斯模型估算尾部概率。需要注意，现代 LLM 更常见的是 LayerNorm 或 RMSNorm，而不是 CNN 里常见的 Batch Normalization；本题真正考的是高斯分布的 $3\sigma$ 尾部概率。</p>
+    <p>为了减少量化后的平均偏差，选择截断阈值 $T$，将范围 $[-T,T]$ 之外的离群值强制映射为 $-T$ 或 $T$。若设定 $T=3\sigma$，基于高斯分布的性质，这种“3σ 截断法则”会导致大约多少比例的原始数据信息产生截断失真（Clipping Error）？</p>
+    <ol type="A">
+      <li>约 0.01%</li>
+      <li>约 4.5%</li>
+      <li>约 31.7%</li>
+      <li>约 0.27%</li>
+    </ol>
+  </div>
+
+  <p>这道题的数学核心是标准正态分布的三西格玛规则。若 $X \sim N(0,\sigma^2)$，令 $Z=X/\sigma$，则 $Z\sim N(0,1)$。截断误差发生在 $|X|>3\sigma$，也就是 $|Z|>3$ #Empirical-Rule#。</p>
+
+$$
+P(|X|>3\sigma)=P(|Z|>3)=2(1-\Phi(3))\approx 0.0027
+$$
+
+  <p>因此双侧尾部概率约为 $0.27\%$，答案是 <strong>D. 约 0.27%</strong>。</p>
+
+  <div class="callout"><strong>易错点</strong>：$3\sigma$ 内约覆盖 99.73% 的数据，截断损失看的是外侧两端尾部，所以是 $100\%-99.73\%=0.27\%$，不是单侧尾部的 0.135%。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">七、部署时怎么判断量化方案</div>
+
+  <p>真正部署时，不要只看“bit 数更低”。同样是 8-bit，权重量化、激活量化、KV cache 量化的风险完全不同；同样是 INT8，per-tensor、per-channel、per-token 和 group-wise scale 的效果也不同。一个实用的判断顺序是：</p>
+
+  <ol>
+    <li><strong>先确认瓶颈</strong>：是权重显存、KV cache、内存带宽，还是计算吞吐。</li>
+    <li><strong>再确认量化对象</strong>：只量化权重，还是 W8A8，是否包含 KV cache。</li>
+    <li><strong>检查 outlier</strong>：激活是否有稳定 outlier 通道，是否需要 SmoothQuant 或混合精度处理。</li>
+    <li><strong>用任务指标验证</strong>：困惑度、准确率、延迟、吞吐和显存必须一起看。</li>
+  </ol>
+
+  <p>量化的工程目标不是“数值尽可能短”，而是“在目标硬件上，用可接受的误差换到真实的吞吐和显存收益”。如果量化后需要大量 fallback、反量化或特殊 kernel，理论压缩率不一定会变成线上收益。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="LLM-int8-2022">Dettmers, T. et al. <em>LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale</em>. 2022. <a href="https://arxiv.org/abs/2208.07339" target="_blank">arXiv:2208.07339</a></li>
+    <li data-cite-key="SmoothQuant-2022">Xiao, G. et al. <em>SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models</em>. 2022. <a href="https://arxiv.org/abs/2211.10438" target="_blank">arXiv:2211.10438</a></li>
+    <li data-cite-key="GPTQ-2022">Frantar, E. et al. <em>GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers</em>. 2022. <a href="https://arxiv.org/abs/2210.17323" target="_blank">arXiv:2210.17323</a></li>
+    <li data-cite-key="AWQ-2023">Lin, J. et al. <em>AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration</em>. 2023. <a href="https://arxiv.org/abs/2306.00978" target="_blank">arXiv:2306.00978</a></li>
+    <li data-cite-key="KIVI-2024">Liu, Z. et al. <em>KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache</em>. 2024. <a href="https://arxiv.org/abs/2402.02750" target="_blank">arXiv:2402.02750</a></li>
+    <li data-cite-key="KVQuant-2024">Hooper, C. et al. <em>KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization</em>. 2024. <a href="https://arxiv.org/abs/2401.18079" target="_blank">arXiv:2401.18079</a></li>
+    <li data-cite-key="Empirical-Rule">Khan Academy. <em>Normal distribution problems: Empirical rule</em>. <a href="https://www.khanacademy.org/math/ap-statistics/density-curves-normal-distribution-ap/stats-normal-distributions/v/ck12-org-normal-distribution-problems-empirical-rule" target="_blank">Khan Academy</a></li>
+    <li data-cite-key="NVIDIA-FP8-Docs">NVIDIA. <em>Using FP8 and FP4 with Transformer Engine</em>. <a href="https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html" target="_blank">Transformer Engine Documentation</a></li>
+  </ul>
+</div>
+

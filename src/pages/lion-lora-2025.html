@@ -1,0 +1,240 @@
+---
+title: "LiON-LoRA 深度解读：让视频扩散模型同时听懂相机和运动"
+description: "ICCV 2025 LiON-LoRA 论文解读：从 LoRA 融合的线性可缩放、正交性与范数一致性出发，统一视频扩散模型的空间相机控制和时间运动控制。"
+date: 2026-06-02T14:05:23
+created_at: 2026-06-02T14:05:23
+updated_at: 2026-06-02T14:38:28
+tags: [LiON-LoRA, LoRA, 视频扩散, 可控生成, ICCV2025]
+categories: ["AI"]
+subcategory: "扩散模型"
+mathjax: true
+notify: true
+hero_title: "LiON-LoRA"
+hero_sub: "ICCV 2025 · Zhejiang University / Alibaba DAMO Academy / Hupan Lab"
+hero_tagline: "把 LoRA 从风格插件变成可线性调节的相机与运动控制器"
+---
+<div class="stats">
+  <div class="stat"><span class="num">3</span><span class="label">LoRA 融合原则</span></div>
+  <div class="stat"><span class="num b">4k</span><span class="label g">训练步数</span></div>
+  <div class="stat"><span class="num">100</span><span class="label">相机场景样本</span></div>
+  <div class="stat"><span class="num b">172</span><span class="label l">静态相机运动视频</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么视频扩散模型还不会“同时听话”</div>
+
+  视频扩散模型已经能生成相当真实的片段，但一旦涉及精确控制，问题就暴露出来了。我们可以让模型学会某种风格、某个主体，甚至单独学会“向前推镜头”或“绕场景旋转”，可当我们希望它同时执行复合相机轨迹、并且还能线性调节对象运动强度时，现有 LoRA 方案往往就不够稳了。#Zhang et al., 2025# 指出，这不是因为 LoRA 本身没用，而是因为大家过去更多把 LoRA 当作高层属性插件，忽略了它在低层几何控制中的融合机制问题。
+
+  LiON-LoRA 的核心主张很直接：要让 LoRA 真正适合视频扩散的空间与时间控制，就必须重新审视三个性质——==Linear scalability==、==Orthogonality==、==Norm consistency==。论文不是简单叠加新模块，而是先把“为什么普通 LoRA 融合会失败”讲清楚，再给出一个参数高效、且无需联合训练的多 LoRA 融合框架。最终，它既能在少量数据下稳定控制复杂相机轨迹，也能把对象运动强度做成近似线性的可调量。
+
+  <div class="photo">
+    <img src="media/images/lion-lora-2025/teaser.png" alt="LiON-LoRA teaser" loading="lazy">
+    <div class="cap">图 1：LiON-LoRA 可同时线性控制相机轨迹与对象运动强度（来源：LiON-LoRA, Fig.1）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">普通 LoRA 融合到底卡在哪里</div>
+
+  要理解 LiON-LoRA 的动机，我们得先承认一个事实：LoRA 在风格迁移、主体定制这类任务里表现很好，是因为这些任务更偏高层语义融合；而相机控制是低层几何信号，它对特征空间的稳定性要求完全不同。#Zhang et al., 2025# 把问题拆成两点：第一，普通 LoRA 融合不稳定；第二，LoRA 缩放并不线性。
+
+  所谓“不稳定”，指的是当我们把“前进”和“左环绕”两个相机 LoRA 按系数混合时，结果并不是平滑过渡，而可能出现方向突变。这说明简单的权重线性组合不足以描述低层运动空间。所谓“非线性”，指的是调整 adapter scale $\lambda$ 并不能精确控制相机幅度：$\lambda$ 太小，控制无效；$\lambda$ 太大，又会破坏基础模型的泛化。更关键的是，$\lambda$ 本质上只是注入强度，并不是模型输入的一部分，因此很难做到对轨迹幅度的显式、解耦调节。
+
+  <div class="callout"><strong>核心矛盾</strong>：高层 LoRA 融合关注“风格是否兼容”，低层相机 LoRA 融合关注“几何信号是否正交、尺度是否一致、控制是否线性”。这三件事不能靠同一个 $\lambda$ 解决。</div>
+
+  论文用一张二维示意图把这个问题讲得很直观：如果两个 LoRA 特征不正交，融合就会互相增强或抵消；如果它们的范数差异很大，某一个 LoRA 就会在融合中占据主导。也就是说，LoRA 融合不只是“加权求和”的问题，更是向量空间结构的问题。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">LiON-LoRA 如何重塑 LoRA 融合</div>
+
+  LiON-LoRA 的方法可以理解为三层修复：先确认浅层具备正交性，再用范数归一化稳定融合，最后用 scaling token 把“控制量”变成模型能线性响应的输入。
+
+  <h3 class="section-title">3.1 浅层正交性：低层相机控制天然可解耦</h3>
+
+  论文首先做了一个逐层相似度分析。结果显示，在视频扩散 Transformer 的前几层，不同相机 LoRA 的输出平均 cosine similarity 仅为 $0.06 \pm 0.06$，几乎正交；而到了后面的深层，相关性才明显上升。这个观察非常重要，因为它说明低层 transformer block 本身就倾向于编码低频、全局的相机运动，而且不同相机原语在这些层里已经形成了相对独立的子空间。
+
+  <div class="photo">
+    <img src="media/images/lion-lora-2025/cossim.png" alt="Cosine similarity of camera LoRAs" loading="lazy">
+    <div class="cap">图 2：浅层 LoRA 输出近似正交，深层耦合增强（来源：LiON-LoRA, Fig.4）</div>
+  </div>
+
+  这意味着，我们不必强行让所有层都正交，只要利用好浅层的正交结构，就足以支撑稳定的低层相机控制。后续的高频细节生成则由深层负责，这与已有研究中“VDM 前几层编码相机、后几层编码高频内容”的发现是一致的 #Bahmani et al., 2024# #Sun et al., 2024#。
+
+  <h3 class="section-title">3.2 范数一致性：让融合不再被某个 LoRA 带偏</h3>
+
+  即便特征方向足够正交，如果不同 LoRA 的输出范数差别很大，融合仍然会失衡。论文观察到，不同相机 LoRA 在不同样本、不同 transformer block 上的输出范数差异显著，而且这种差异并不均匀。这就导致我们无法用一个全局固定的 adapter scale 来平衡它们。
+
+  LiON-LoRA 的解决办法非常简洁：对每个 LoRA 输出做 layer-wise post-normalization。形式上，对于第 $i$ 个 LoRA 的更新 $\Delta W_i$，归一化后的更新为：
+
+  <div class="def-box">
+    <h3>LoRA 范数归一化</h3>
+    <p style="text-align:center">\[ \Delta \hat{W}_i = \frac{\alpha}{\|\Delta W_i\|} \Delta W_i \]</p>
+    <p>其中 $\alpha$ 是统一缩放因子，通常取所有 LoRA 范数的均值，即 $\alpha = \frac{1}{k}\sum_i \|\Delta W_i\|$。</p>
+  </div>
+
+  这一步的直觉很简单：先把各个 LoRA 拉到相近的“音量”，再做融合，就不会出现某个 LoRA 突然盖过其他 LoRA 的情况。论文实验也表明，这一简单操作就能显著提升复合相机运动的平滑度。
+
+  <div class="photo">
+    <img src="media/images/lion-lora-2025/norm.png" alt="Norm consistency across LoRAs" loading="lazy">
+    <div class="cap">图 3：不同相机 LoRA 的输出范数存在显著差异（来源：LiON-LoRA, Fig.5）</div>
+  </div>
+
+  <h3 class="section-title">3.3 Scaling Token：把控制量变成模型输入</h3>
+
+  如果说前两步是在修复“融合空间”，那么第三步就是在修复“控制接口”。LiON-LoRA 不再依赖 adapter scale $\lambda$ 来隐式调节运动幅度，而是引入一个专门的 scaling token，把控制值 $S \in [s, 1]$ 显式编码进模型输入序列。
+
+  具体做法是：先对 $S$ 做 Fourier positional embedding $\gamma(S)$，再通过线性投影得到 scaling token $E$，然后把它拼接到视频与文本 token 序列后面：
+
+  <div class="def-box">
+    <h3>Scaling Token 构造</h3>
+    <p style="text-align:center">\[ \gamma(S) = \big[ \sin(2^j \pi S), \cos(2^j \pi S) \big]_{j=0}^{J-1} \]</p>
+    <p style="text-align:center">\[ E = \mathrm{linear}(\gamma(S)) \]</p>
+    <p style="text-align:center">\[ H' = [H; E] \in \mathbb{R}^{(n+1) \times d} \]</p>
+    <p>其中 $H$ 是原始视觉/文本 token 序列，$n$ 为序列长度，$d$ 为通道维度。</p>
+  </div>
+
+  这里有一个重要设计：不同相机 LoRA 使用各自独立的投影层来编码 $S$，避免共享编码器带来的耦合。这样，scaling token 既能提供线性可控性，又不会破坏前面提到的正交性。
+
+  <div class="photo">
+    <img src="media/images/lion-lora-2025/scaling.png" alt="Linear scalability comparison" loading="lazy">
+    <div class="cap">图 4：相比调整 adapter scale，scaling token 提供更稳定、更线性的控制（来源：LiON-LoRA, Fig.10）</div>
+  </div>
+
+  <h3 class="section-title">3.4 Training-Free Multi-LoRA Fusion</h3>
+
+  当我们要同时融合多个 LoRA 时，直接把多个 scaling token 一起塞进去，可能会让它们彼此干扰。LiON-LoRA 的解法是：每个 LoRA 只在自己的 attention 子空间里 attend 自己的 scaling token。也就是说，虽然拼接后的序列是 $H' = [H; E_1; \dots; E_k]$，但第 $i$ 个 LoRA 实际参与 self-attention 的子序列是 $[H; E_i]$。attention 结束后，hidden states 取平均，scaling tokens 保留拼接，从而保证控制信号彼此解耦。
+
+  {{< mermaid >}}
+graph TD
+    A["输入视频/文本 tokens H"] --> B["拼接 scaling tokens<br/>H' = [H; E1; ...; Ek]"]
+    B --> C1["LoRA1 attention 子空间<br/>[H; E1]"]
+    B --> C2["LoRA2 attention 子空间<br/>[H; E2]"]
+    B --> Ck["LoRAk attention 子空间<br/>[H; Ek]"]
+    C1 --> D["Average hidden states"]
+    C2 --> D
+    Ck --> D
+    D --> E["输出 H_out"]
+  {{< /mermaid >}}
+
+  这套融合方式最大的优点是 ==training-free==：各个 LoRA 可以独立训练，推理时再按需组合，不需要额外联合微调。它既支持多相机轨迹融合，也支持相机与对象运动的混合控制。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练方法：用极少数据换来强泛化</div>
+
+  LiON-LoRA 的训练策略体现了“参数高效”的真正含义。基础模型采用 CogVideoX，训练分辨率为 $480 \times 720$，LoRA rank 设为 256，仅训练 4,000 步，学习率为 $5 \times 10^{-4}$，使用 4 张 NVIDIA H20 GPU，batch size 为 16。推理时使用 DDIM 采样 50 步，classifier-free guidance scale 为 6 #Zhang et al., 2025#。
+
+  相机控制训练数据来自 DL3DV：对每个基本相机原语（水平/垂直偏移、前后移动、绕中心轨道旋转），先用 3D Gaussian Splatting 重建场景，再渲染对应轨迹视频。每个基本原语使用 100 个重建场景。对象运动控制则收集了 172 个静态相机视频，并通过 CoTracker 边界点和 optical flow 过滤掉运动过小或不符合要求的样本，以确保相机与对象运动解耦。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      训练效率亮点
+    </div>
+    <div class="admonition-content"><p>相比许多竞品动辄 50k+ 步的微调，LiON-LoRA 只用 4k 步就能获得稳定可控性。这不仅节省算力，更重要的是减少了对基础模型泛化能力的侵蚀。</p></div>
+  </div>
+
+  对对象运动强度的训练还有一个细节：为了避免相机运动干扰 motion scaling 的学习，这部分只在静态相机视频上进行。也就是说，LiON-LoRA 把“空间控制”和“时间控制”的训练数据做了明确分离，这也是它能统一两类控制的重要原因。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验验证：精度、线性与消融</div>
+
+  论文从基础相机姿态、复杂融合轨迹、运动强度线性度、以及组件消融四个维度验证了方法有效性。
+
+  <h3 class="section-title">5.1 基础与复杂相机控制</h3>
+
+  在基础相机姿态上，LiON-LoRA 全面优于 CogVideoX、MotionCtrl、CameraCtrl、CamI2V 和 DimensionX-S*。RotErr 降至 0.776，TransErr 降至 0.167，ATE 降至 0.295，FVD 降至 136.0。相比 CamI2V，FVD 下降约 37.8%，说明不仅控制更准，生成质量也更稳定。
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Method</th><th>RotErr ↓</th><th>TransErr ↓</th><th>ATE ↓</th><th>FVD ↓</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>CogVideoX</td><td>4.974</td><td>0.765</td><td>0.980</td><td>387.6</td></tr>
+        <tr><td>MotionCtrl</td><td>2.254</td><td>0.269</td><td>0.408</td><td>290.9</td></tr>
+        <tr><td>CameraCtrl</td><td>1.737</td><td>0.192</td><td>0.458</td><td>218.9</td></tr>
+        <tr><td>CamI2V</td><td>1.033</td><td>0.215</td><td>0.370</td><td>294.6</td></tr>
+        <tr><td>DimensionX-S*</td><td>1.223</td><td>0.201</td><td>0.359</td><td>193.3</td></tr>
+        <tr><td><strong>LiON-LoRA</strong></td><td><strong>0.776</strong></td><td><strong>0.167</strong></td><td><strong>0.295</strong></td><td><strong>136.0</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  在复杂融合轨迹上，LiON-LoRA 依然在 TransErr、ATE、FVD 上领先，分别为 0.197、0.345、172.8。RotErr 为 1.044，略高于 CamI2V 的 0.924，但整体仍显著优于多数基线。这说明 LiON-LoRA 的优势不仅在单一原语上，更体现在多运动组合时的稳定性。
+
+  <h3 class="section-title">5.2 运动强度的线性可控性</h3>
+
+  论文用 Pearson correlation 衡量控制值 $S$ 与光流幅度之间的线性关系。结果表明，scaling token 能在微调早期就快速建立强相关，而传统 adapter scale 几乎无法形成有效线性关系。这意味着 LiON-LoRA 真正把“运动强度”变成了一个可预测、可调节的量，而不是只能靠肉眼试出来的玄学参数。
+
+  <div class="photo">
+    <img src="media/images/lion-lora-2025/pearson.png" alt="Pearson correlation of motion strength" loading="lazy">
+    <div class="cap">图 5：Scaling token 与光流幅度的 Pearson 相关显著优于 adapter scale（来源：LiON-LoRA, Fig.6）</div>
+  </div>
+
+  <h3 class="section-title">5.3 数据量与组件消融</h3>
+
+  消融实验进一步验证了各组件的必要性。去掉 scaling token、LiON-fusion 或 LoRA norm 都会导致性能下降，其中去掉 LiON-fusion 影响最大，FVD 从 172.8 升至 254.5。这说明 training-free 的解耦融合机制并非锦上添花，而是复合控制稳定性的关键。
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Variant</th><th>RotErr ↓</th><th>TransErr ↓</th><th>ATE ↓</th><th>FVD ↓</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>W/O scale token</td><td>1.317</td><td>0.230</td><td>0.377</td><td>179.3</td></tr>
+        <tr><td>W/O LiON-fusion</td><td>1.863</td><td>0.269</td><td>0.427</td><td>254.5</td></tr>
+        <tr><td>W/O LoRA norm</td><td>1.436</td><td>0.265</td><td>0.392</td><td>227.8</td></tr>
+        <tr><td><strong>Full model</strong></td><td><strong>1.044</strong></td><td><strong>0.197</strong></td><td><strong>0.345</strong></td><td><strong>172.8</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  数据量消融也很有说服力：仅用 100 个样本训练 4k 步，就能达到 RotErr 0.802、TransErr 0.143、ATE 0.331、FVD 175.3。相比之下，很多基于 Plücker embedding 的方法通常需要更大规模数据和 10k+ 步微调。这说明 LiON-LoRA 的控制能力主要来自结构设计，而不是单纯堆数据。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">讨论：它解决了什么，还没解决什么</div>
+
+  LiON-LoRA 最值得记住的贡献，不是某个单一技巧，而是它把“LoRA 融合”从一个工程经验问题重新表述成了一个可分析的向量空间问题。正交性解释了为什么浅层适合解耦，范数一致性解释了为什么融合会失衡，scaling token 解释了为什么控制量必须进入模型输入。这三者合起来，才让 LoRA 从“风格插件”变成了“几何控制器”。
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      当前局限
+    </div>
+    <div class="admonition-content"><p>论文主要验证了离散相机原语及其组合，但对更连续、更自由的 6-DoF 相机路径、以及与文本语义强耦合的复杂运动指令，尚未充分展开。此外，motion scaling 依赖静态相机视频，若实际数据中难以完全去除相机抖动，可能仍需额外清洗或鲁棒训练策略。</p></div>
+  </div>
+
+  对未来工作而言，LiON-LoRA 提供了一个很好的起点：既然 LoRA 融合可以被结构化地修复，那么类似的思路也许可以推广到其他低层控制信号，比如深度、法线、光照方向等。另一个值得探索的方向是，把 scaling token 与更丰富的运动表示结合，让“线性可控”不止停留在幅度上，也能扩展到轨迹形状、速度曲线等更细粒度的维度。
+
+  <div class="callout"><strong>一句话总结</strong>：LiON-LoRA 证明了，视频扩散模型的可控性瓶颈未必在模型规模，而在我们是否用对了 LoRA 的融合方式。</div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Zhang-et-al.-2025">
+      Zhang, Y., Cao, C., Yu, C., & Zhu, J. (2025). LiON-LoRA: Rethinking LoRA Fusion to Unify Controllable Spatial and Temporal Generation for Video Diffusion. <em>ICCV 2025</em>.
+      <a href="https://openaccess.thecvf.com/content/ICCV2025/papers/Zhang_LiON-LoRA_Rethinking_LoRA_Fusion_to_Unify_Controllable_Spatial_and_Temporal_ICCV_2025_paper.pdf" target="_blank">PDF</a>
+      · <a href="https://arxiv.org/abs/2507.05678" target="_blank">arXiv:2507.05678</a>
+      · <a href="https://fuchengsu.github.io/lionlora.github.io/" target="_blank">Project Page</a>
+    </li>
+    <li data-cite-key="Bahmani-et-al.-2024">
+      Bahmani, S., Skorokhodov, I., Qian, G., Siarohin, A., Menapace, W., Tagliasacchi, A., Lindell, D. B., & Tulyakov, S. (2024). AC3D: Analyzing and Improving 3D Camera Control in Video Diffusion Transformers. <em>arXiv:2411.18673</em>.
+      <a href="https://arxiv.org/abs/2411.18673" target="_blank">arXiv:2411.18673</a>
+    </li>
+    <li data-cite-key="Sun-et-al.-2024">
+      Sun, W., Chen, S., Liu, F., Chen, Z., Duan, Y., Zhang, J., & Wang, Y. (2024). DimensionX: Create Any 3D and 4D Scenes from a Single Image with Controllable Video Diffusion. <em>arXiv:2411.04928</em>.
+      <a href="https://arxiv.org/abs/2411.04928" target="_blank">arXiv:2411.04928</a>
+    </li>
+  </ul>
+</div>

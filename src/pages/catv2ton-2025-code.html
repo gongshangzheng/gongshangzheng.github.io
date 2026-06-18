@@ -1,0 +1,176 @@
+---
+title: CatV2TON 代码解读：仓库结构、基座模型与参数高效训练
+description: 从官方代码仓库反查 CatV2TON 的工程结构、EasyAnimateV4/HunyuanDiT 基座、28 层 DiT、89.90M 可训练参数，以及为什么它不是开源 LoRA 训练脚本。
+date: 2026-06-02T14:19:38
+created_at: 2026-06-02T14:19:38
+updated_at: 2026-06-02T14:20:03
+tags: [CatV2TON, virtual-try-on, EasyAnimate, HunyuanDiT, LoRA]
+categories: [AI]
+subcategory: "多模态"
+mathjax: true
+hero_title: CatV2TON 代码解读
+hero_sub: 官方仓库 · EasyAnimateV4-XL-2-InP · 参数高效迁移
+hero_tagline: 读代码回答三个问题：仓库怎么组织、基座到底是谁、训练时改了哪些层
+page_style: |
+  .hero { height: 44vh; }
+  .repo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+  .repo-card { padding: 14px 16px; border: 1px solid var(--border-color, #ddd); border-radius: 14px; background: var(--bg-block); }
+  .repo-card strong { display: block; margin-bottom: 6px; }
+  .answer-table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 0.94rem; }
+  .answer-table th, .answer-table td { border: 1px solid var(--border-color, #ddd); padding: 8px 10px; vertical-align: top; }
+  .answer-table th { background: var(--bg-block); font-weight: 700; }
+  .code-path { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.92em; }
+  .sources li { margin-bottom: 8px; }
+  @media (max-width: 760px) { .repo-grid { grid-template-columns: 1fr; } }
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">6</span><span class="label">核心目录</span></div>
+  <div class="stat"><span class="num b">28</span><span class="label g">DiT Blocks</span></div>
+  <div class="stat"><span class="num">89.90M</span><span class="label">可训练参数</span></div>
+  <div class="stat"><span class="num b">0</span><span class="label l">开源训练脚本</span></div>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">先说结论：这不是 Wan 2.2，也不是“开源了 LoRA 训练脚本”</h2>
+
+  <p>我把官方仓库拉到了本地 <code>~/code/CatV2TON</code>，读完后最关键的判断是：CatV2TON 代码里的默认基座是 <code>alibaba-pai/EasyAnimateV4-XL-2-InP</code>，模型类名是 <code>HunyuanTransformer3DModel</code>，论文也说明 DiT backbone 初始化自 EasyAnimateV4，而 EasyAnimateV4 是在 HunyuanDiT 基础上 fine-tune 的 #CatV2TON#。所以它不是 Wan 2.2 路线；如果一定在“Wan 2.2 还是混元”之间二选一，答案更接近<strong>混元 / HunyuanDiT 系</strong>。</p>
+
+  <div class="callout"><strong>一句话版：</strong>仓库发布的是推理与评测代码；训练细节主要来自论文。代码里保留了 EasyAnimate 的通用 LoRA 工具，但 CatV2TON 自己的训练入口没有开源，推理时加载的是已训练好的 <code>attention</code> 与 <code>posenet</code> 权重。</div>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="catv2ton-2025.html"><span class="nav-label">父页</span><span class="nav-title">CatV2TON 深度解读</span></a>
+    <a class="nav-card current" href="catv2ton-2025-code.html"><span class="nav-label">当前页</span><span class="nav-title">代码仓库解读</span></a>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">问题 1：代码仓库的整体结构是怎么样的？</h2>
+
+  <p>这个仓库不是一个从零写起的“小项目”，而是把 CatV2TON 的任务逻辑包在 EasyAnimate、DensePose、Detectron2 等组件之上。最外层只有几个真正属于 CatV2TON 的入口：图像/视频试穿推理、图像/视频指标评测，以及 <code>modules/pipeline.py</code> 里的 V2TON 推理流程。</p>
+
+  <div class="repo-grid">
+    <div class="repo-card"><strong><code>eval_image_try_on.py</code></strong>图像试穿评测入口。默认 <code>base_model_path</code> 是 <code>alibaba-pai/EasyAnimateV4-XL-2-InP</code>，默认 <code>resume_path</code> 是 <code>zhengchong/CatV2TON</code>，实际加载 <code>512-64K</code> 子目录。</div>
+    <div class="repo-card"><strong><code>eval_video_try_on.py</code></strong>视频试穿评测入口。根据数据集选择 <code>512-64K</code> 或 <code>256-128K</code>，并支持 <code>slice_frames</code>、<code>pre_frames</code>、<code>use_adacn</code>。</div>
+    <div class="repo-card"><strong><code>modules/pipeline.py</code></strong>CatV2TON 最核心的工程文件：初始化 VAE、DiT、PoseNet；实现 temporal concatenation、denoising、overlapping clip inference 和 AdaCN。</div>
+    <div class="repo-card"><strong><code>modules/posenet.py</code></strong>轻量姿态编码器。它按基座 transformer config 构造，但只保留一个 <code>HunyuanDiTBlock</code>，用于把 DensePose latent 编成可加到 DiT 的 pose embedding。</div>
+    <div class="repo-card"><strong><code>easyanimate/</code></strong>内嵌 EasyAnimate 代码，包含 <code>models/transformer3d.py</code>、MagViT VAE、pipeline、LoRA 工具和 UI 等。CatV2TON 的 DiT 类来自这里。</div>
+    <div class="repo-card"><strong><code>densepose/</code> 与 <code>detectron2/</code></strong>人体 DensePose 相关依赖。仓库把这些代码也带进来了，便于生成 pose 条件。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="answer-table">
+      <thead><tr><th>目录 / 文件</th><th>作用</th><th>读代码时的定位</th></tr></thead>
+      <tbody>
+        <tr><td><span class="code-path">README.md</span></td><td>论文链接、权重链接、评测和推理命令</td><td>用户入口，不含训练命令</td></tr>
+        <tr><td><span class="code-path">eval_image_metrics.py</span> / <span class="code-path">eval_video_metrics.py</span></td><td>计算图像与视频指标</td><td>复现实验指标用</td></tr>
+        <tr><td><span class="code-path">data/</span></td><td>视频数据读取与预处理工具</td><td>主要服务评测/推理数据组织</td></tr>
+        <tr><td><span class="code-path">modules/cloth_masker.py</span>、<span class="code-path">modules/densepose.py</span></td><td>衣服 mask 与 DensePose 条件处理</td><td>把原始图片/视频转成模型条件</td></tr>
+        <tr><td><span class="code-path">modules/fid_metrics/</span></td><td>FID/VFID 等指标实现</td><td>视频质量评测依赖</td></tr>
+        <tr><td><span class="code-path">easyanimate/utils/lora_utils.py</span></td><td>EasyAnimate 通用 LoRA 合并/创建工具</td><td>存在 LoRA 工具，但不是 CatV2TON 训练入口</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>从调用链看，推理入口先下载或读取 <code>base_model_path</code> 与 <code>resume_path</code>，然后构造 <code>V2TONPipeline</code>。这个 pipeline 会从 EasyAnimateV4 读取 MagViT VAE、HunyuanTransformer3DModel 和 scheduler，再从 CatV2TON checkpoint 里加载 <code>attention</code> 与 <code>posenet</code> 两部分权重。</p>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">问题 2：模型基于哪个大模型？多少层？多大参数量？</h2>
+
+  <p>代码里的直接证据在 <code>eval_image_try_on.py</code>：<code>--base_model_path</code> 默认值就是 <code>alibaba-pai/EasyAnimateV4-XL-2-InP</code>。论文进一步说明，CatV2TON 的 DiT backbone 初始化自 EasyAnimateV4，而 EasyAnimateV4 是基于 HunyuanDiT fine-tune 的视频生成模型；视频 VAE 使用预训练 MagViT #CatV2TON#。</p>
+
+  <div class="def-box">
+    <h3>基座归属</h3>
+    <p>不是 Wan 2.2。代码类名是 <code>HunyuanTransformer3DModel</code>，论文说 EasyAnimateV4 fine-tuned based on HunyuanDiT。因此 CatV2TON 应理解为 <strong>EasyAnimateV4 / HunyuanDiT 系 DiT</strong> 上的试穿适配。</p>
+  </div>
+
+  <p>层数方面，本地 <code>easyanimate/models/transformer3d.py</code> 中 <code>HunyuanTransformer3DModel</code> 的默认 <code>num_layers</code> 是 <strong>28</strong>，并据此构造 <code>self.blocks = nn.ModuleList([... for layer in range(num_layers)])</code>。PoseNet 也读取同一份 transformer config，但实现上只实例化一个 <code>HunyuanDiTBlock</code>，不是复制完整 28 层。</p>
+
+  <div class="table-wrap">
+    <table class="answer-table">
+      <thead><tr><th>问题</th><th>答案</th><th>依据</th></tr></thead>
+      <tbody>
+        <tr><td>基座模型</td><td><code>alibaba-pai/EasyAnimateV4-XL-2-InP</code></td><td>推理参数默认值；论文 implementation details</td></tr>
+        <tr><td>Wan 2.2 还是混元</td><td>混元 / HunyuanDiT 系，不是 Wan 2.2</td><td><code>HunyuanTransformer3DModel</code> 类名；论文称 EasyAnimateV4 fine-tuned based on HunyuanDiT</td></tr>
+        <tr><td>DiT 层数</td><td>28 个 transformer blocks</td><td><code>HunyuanTransformer3DModel(num_layers=28)</code></td></tr>
+        <tr><td>可训练参数量</td><td>89.90M</td><td>论文称 Pose Encoder 完全解锁、整体可训练部分 89.90M，少于 backbone 20% #CatV2TON#</td></tr>
+        <tr><td>总参数量</td><td>代码/论文未给出一个明确总数；按“89.90M 少于 20%”只能推出 backbone 至少约 449.5M</td><td>这是由论文比例反推的下界，不应误写成官方总参数</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      不要把 89.90M 写成总参数量
+    </div>
+    <div class="admonition-content"><p>89.90M 是论文报告的可训练参数，不是整个 EasyAnimateV4/HunyuanDiT backbone 的总参数。仓库发布的推理代码也没有提供一个直接打印总参数的配置或脚本。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">问题 3：本文如何训练 LoRA？加到了哪些层之上？</h2>
+
+  <p>这里要先纠正一个说法：CatV2TON 论文和开源仓库更准确地说是<strong>参数高效训练 attention + Pose Encoder</strong>，而不是公开了一个标准 LoRA 训练脚本。仓库里确实有 <code>easyanimate/utils/lora_utils.py</code>，但这是 EasyAnimate 通用 LoRA 工具；CatV2TON 的 README 没有训练命令，仓库根目录也没有 <code>train.py</code>、<code>finetune.py</code> 或专门的 LoRA 训练配置。</p>
+
+  <p>从推理加载方式可以反推训练产物。<code>modules/pipeline.py</code> 初始化 DiT 后，会把无关模块设为 <code>None</code>，再遍历 <code>transformer3d.named_modules()</code>，把名字里包含 <code>attn1</code> 的模块收集成 <code>attn_blocks</code>，从 checkpoint 的 <code>attention</code> 目录加载权重；PoseNet 则从 checkpoint 的 <code>posenet</code> 目录加载权重。加载完成后，推理阶段全部 <code>requires_grad_(False)</code>。</p>
+
+  <div class="def-box">
+    <h3>代码能确认的训练对象</h3>
+    <p>CatV2TON checkpoint 分成两块：<code>attention</code> 与 <code>posenet</code>。前者对应 backbone 中名为 <code>attn1</code> 的 self-attention 模块，后者对应一个轻量 Pose Encoder。论文口径是 Pose Encoder fully unlocked，同时 backbone 只解锁涉及交互的 self-attention layers，最终可训练参数为 89.90M #CatV2TON#。</p>
+  </div>
+
+  <p>所以，如果把用户问题里的“LoRA”理解成“参数高效微调”，答案是：它不是把 LoRA adapter 加到 Wan/Hunyuan 的所有线性层上，而是<strong>训练 self-attention 交互层和 Pose Encoder</strong>。在代码层面，这个 self-attention 交互层具体落在 <code>attn1</code> 模块；Pose Encoder 是 <code>modules/posenet.py</code> 中的单个 <code>HunyuanDiTBlock</code>。</p>
+
+  <div class="table-wrap">
+    <table class="answer-table">
+      <thead><tr><th>对象</th><th>是否属于 CatV2TON 可训练部分</th><th>代码证据</th><th>解释</th></tr></thead>
+      <tbody>
+        <tr><td>Backbone self-attention</td><td>是</td><td><code>if "attn1" in name: attn_blocks.append(param)</code></td><td>推理加载 <code>finetuned_model_path/attention</code>，对应论文说的 self-attention layers。</td></tr>
+        <tr><td>Pose Encoder</td><td>是</td><td><code>PoseNet(**config)</code> + <code>load_checkpoint_in_model(..., "posenet")</code></td><td>一个由 PatchEmbed、time embedding 和单个 HunyuanDiTBlock 构成的轻量姿态编码器。</td></tr>
+        <tr><td>Cross-attention / text path</td><td>否</td><td>初始化时将 <code>attn2</code>、<code>norm2</code> 等设为 <code>None</code></td><td>试穿任务不依赖文本 prompt，服装/人物条件通过 temporal concatenation 进入 self-attention。</td></tr>
+        <tr><td>EasyAnimate 通用 LoRA</td><td>不是 CatV2TON 训练入口</td><td><code>easyanimate/utils/lora_utils.py</code></td><td>工具会给 Transformer/Text Encoder 的 Linear/Conv2d 创建 LoRA，但仓库没有调用它训练 CatV2TON。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>如果严格问“LoRA 加到了哪些层之上”，只能回答：<strong>官方 CatV2TON 仓库没有开源其 LoRA 训练脚本，因此无法从仓库确认一个 CatV2TON 专属 LoRA target_modules 列表</strong>。能确认的是 EasyAnimate 通用 LoRA 工具会扫描 <code>Transformer2DModel</code>、<code>Transformer3DModel</code>、<code>HunyuanTransformer3DModel</code> 中的 <code>Linear</code>、<code>LoRACompatibleLinear</code>、<code>Conv2d</code>、<code>LoRACompatibleConv</code>，默认跳过名字包含 <code>attn_temporal</code> 的子模块；但这只是通用工具能力，不等于 CatV2TON 论文训练方案。</p>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">关键实现：temporal concatenation 在代码里在哪里？</h2>
+
+  <p>论文讲 temporal concatenation，代码里对应 <code>modules/pipeline.py</code> 的 <code>denoising()</code>：<code>conditioned_latents</code> 是 garment 条件，<code>masked_latents</code> 是 masked person 条件，二者通过 <code>torch.cat(..., dim=2)</code> 沿 frame/time 维拼接。mask 条件也用同样方式拼接，最后和 masked latents 在 channel 维组合成 <code>inpaint_latents</code>。</p>
+
+  <pre><code class="language-python">masked_latents_cat = torch.cat([conditioned_latents, masked_latents], dim=2)
+mask_latents_cat = torch.cat([conditioning_mask_latents, mask_latents], dim=2)
+inpaint_latents = torch.cat([mask_latents_cat, masked_latents_cat], dim=1)</code></pre>
+
+  <p>输出时 <code>return latents[:, :, 1:]</code>，也就是把作为条件放进时间序列的 garment 帧去掉，只保留真正生成的人物试穿帧。这正好对应论文的核心思想：服装不是走一个额外 GarmentNet，而是作为同一时序 token 序列的一部分参与 DiT self-attention。</p>
+
+  <p>视频长序列则在 <code>video_try_on()</code> 里分片处理。代码把 <code>slice_frames</code> 和 <code>pre_frames</code> 换算到 latent 时间维，每个 clip 生成后，把前一段输出的重叠帧作为下一段 prompt；若启用 <code>use_adacn</code>，就用重叠区域的统计量对当前 clip 做归一化校正。这和论文的 Overlapping Clip-based Inference + AdaCN 完全对应 #CatV2TON#。</p>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">最终回答速查</h2>
+
+  <div class="review-box">
+    <h3>三个问题的简明答案</h3>
+    <ul>
+      <li><strong>仓库结构</strong>：外层是评测/推理入口；<code>modules/</code> 是 CatV2TON 核心逻辑；<code>easyanimate/</code> 是基座视频 DiT 与 VAE 相关代码；<code>densepose/</code>、<code>detectron2/</code> 是姿态条件依赖。</li>
+      <li><strong>基座模型</strong>：默认 <code>alibaba-pai/EasyAnimateV4-XL-2-InP</code>；论文说 EasyAnimateV4 基于 HunyuanDiT fine-tune，所以不是 Wan 2.2，而是 HunyuanDiT 系。代码类 <code>HunyuanTransformer3DModel</code> 默认 28 层。</li>
+      <li><strong>参数量</strong>：论文报告可训练参数 89.90M，少于 backbone 20%；仓库/论文没有给出一个可直接引用的总参数量。</li>
+      <li><strong>训练/LoRA</strong>：严格说官方仓库没有 CatV2TON LoRA 训练脚本。论文训练的是 Pose Encoder + backbone self-attention layers；代码推理加载 <code>attention</code> 与 <code>posenet</code> 两块权重。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <h2 class="ch-title">参考来源</h2>
+  <ol class="sources">
+    <li id="ref-CatV2TON" data-cite-key="CatV2TON"><a href="https://arxiv.org/html/2501.11325v1" target="_blank">#CatV2TON# — Chong et al., CatV2TON: Taming Diffusion Transformers for Vision-Based Virtual Try-On with Temporal Concatenation, 2025</a></li>
+    <li id="ref-CatV2TONRepo" data-cite-key="CatV2TONRepo"><a href="https://github.com/Zheng-Chong/CatV2TON" target="_blank">#CatV2TONRepo# — Zheng-Chong/CatV2TON official GitHub repository</a></li>
+    <li id="ref-EasyAnimateV4" data-cite-key="EasyAnimateV4"><a href="https://modelscope.cn/models/PAI/EasyAnimateV4-XL-2-InP" target="_blank">#EasyAnimateV4# — PAI/EasyAnimateV4-XL-2-InP model card</a></li>
+  </ol>
+</div>

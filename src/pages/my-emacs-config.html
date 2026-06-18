@@ -1,0 +1,297 @@
+---
+title: "我的 Emacs 配置：从偷配置开始，到把编辑器变成工作台"
+description: "读 Emacs Redux 的配置巡礼后，反过来梳理自己的 Emacs 配置：启动优化、基础默认值、Evil 与 leader key、Git、Org-roam、补全、外观、Rime 五笔和 Python 环境。"
+date: 2026-06-10T11:35:15
+created_at: 2026-06-10T11:35:15
+updated_at: 2026-06-10T11:42:21
+categories: ["编程"]
+subcategory: "编辑器"
+tags: ["Emacs", "Emacs Lisp", "编辑器", "配置", "Org mode", "Rime"]
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2</span><span class="label">启动文件</span></div>
+  <div class="stat"><span class="num b">9</span><span class="label g">配置层</span></div>
+  <div class="stat"><span class="num">1</span><span class="label">leader map</span></div>
+  <div class="stat"><span class="num b">351</span><span class="label l">主配置行</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">导言</div>
+  <div class="ch-title">配置不是原创作品，而是一套长期偷来的工作习惯</div>
+
+  Bozhidar Batsov 在 Emacs Redux 那篇配置巡礼里，做了一件非常 Emacs 的事：去 Doom Emacs、Purcell、Centaur、Prot 等成熟配置里翻小技巧，然后把那些几乎零成本、但能改善体验的设置拿出来 #Emacs Redux, 2026#。这很像 Emacs 配置真正的生长方式：不是从零设计一套完美系统，而是不断从别人那里偷来一个变量、一个 hook、一个按键、一段窗口管理逻辑，最后长成一个只有自己能完全解释的编辑环境。
+
+  我的 Emacs 配置也是这样来的。它没有追求“最小主义”，也不是 Doom 或 Spacemacs 那种完整发行版；它更像一个逐步堆出来的个人工作台：用 `early-init.el` 处理启动期，用 `config.el` 管包、默认值、Evil、Git、Org-roam、补全、主题、输入法和 Python 环境。它服务的不是单一目标，而是写文章、做笔记、查代码、改博客、处理 Git、输入中文和临时跑一点 Python。
+
+  <div class="callout"><strong>核心判断</strong>：这份配置的中心不是“更像 Vim”或“更像 IDE”，而是把 Emacs 改造成一个以文本为中心的个人操作台。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">启动期：先让 Emacs 快速变成可用状态</div>
+
+  我的配置拆成 `early-init.el` 和 `config.el`。`early-init.el` 做的事情很少，但它决定了启动时的第一印象：先把 `gc-cons-threshold` 拉到最大，启动完成后再降回 16MB；同时关闭菜单栏、工具栏和滚动条，避免图形界面先闪一下默认样式再被配置覆盖。
+
+  <pre><code class="language-lisp">;; early-init.el
+(setq gc-cons-threshold most-positive-fixnum)
+(add-hook 'emacs-startup-hook
+          (lambda () (setq gc-cons-threshold (* 16 1024 1024))))
+
+(push '(menu-bar-lines . 0) default-frame-alist)
+(push '(tool-bar-lines . 0) default-frame-alist)
+(push '(vertical-scroll-bars) default-frame-alist)</code></pre>
+
+  这部分和 Emacs Redux 文中提到的性能小设置属于同一类：它们不改变编辑模型，只减少无意义的等待和干扰。原文提到的 `read-process-output-max`、`redisplay-skip-fontification-on-input`、`bidi-display-reordering` 等设置，已经被我吸收到 `config.el` 里 #Emacs Redux, 2026#。也就是说，这篇文章不是只解释一份静态配置，而是在解释一套正在把外部经验沉淀成本地默认值的工作方式。
+
+  <pre><code class="language-lisp">;; Assume left-to-right text to avoid unnecessary bidi scanning.
+(setq-default bidi-display-reordering 'left-to-right
+              bidi-paragraph-direction 'left-to-right)
+(setq bidi-inhibit-bpa t)
+
+;; Defer syntax highlighting while typing for smoother input.
+(setq redisplay-skip-fontification-on-input t)
+
+;; Improve throughput for subprocess-heavy tools such as language servers.
+(setq read-process-output-max (* 4 1024 1024))
+
+;; Reduce rendering work and visual noise in non-selected windows.
+(setq-default cursor-in-non-selected-windows nil)
+(setq highlight-nonselected-windows nil)</code></pre>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>启动期设置</th><th>作用</th><th>我的取舍</th></tr></thead>
+      <tbody>
+        <tr><td>`gc-cons-threshold`</td><td>减少启动时频繁 GC</td><td>启动期放大，启动后恢复到 16MB</td></tr>
+        <tr><td>`default-frame-alist`</td><td>提前关闭 GUI 组件</td><td>菜单栏、工具栏、滚动条都不要</td></tr>
+        <tr><td>`inhibit-startup-screen`</td><td>跳过欢迎页</td><td>启动后直接进入工作状态</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">基础默认值：把小摩擦一次性磨平</div>
+
+  `config.el` 开头先初始化包源：MELPA、Org ELPA、GNU ELPA。然后打开 `package-install-upgrade-built-in`，并显式保证 `transient` 和 `use-package` 可用。这说明我的配置还停留在比较传统的 `package.el + use-package` 路线，没有切到 straight.el 或 elpaca。它的好处是简单直接，坏处是版本锁定和可复现性不如更现代的包管理方案。
+
+  基础体验上，我关闭启动页、清空 scratch 初始文本、禁用响铃、禁用对话框；打开当前行高亮、列号、像素级滚动；统一 UTF-8；禁止缩进插入 tab；保留 auto-save，但不生成备份文件和 lockfile。再往下是 `recentf-mode`、`savehist-mode`、保存前删除行尾空白、`yes-or-no-p` 改成 `y-or-n-p`、`electric-pair-mode` 自动补括号。
+
+  <pre><code class="language-lisp">(setq inhibit-startup-screen t)
+(setq initial-scratch-message nil)
+(setq ring-bell-function 'ignore)
+(setq use-dialog-box nil)
+
+(global-hl-line-mode 1)
+(column-number-mode 1)
+(pixel-scroll-precision-mode 1)
+
+(prefer-coding-system 'utf-8)
+(setq-default indent-tabs-mode nil)
+(setq-default tab-width 4)
+
+(recentf-mode 1)
+(savehist-mode 1)
+(add-hook 'before-save-hook 'delete-trailing-whitespace)</code></pre>
+
+  这类设置没有什么炫技成分，但它们决定了每天打开 Emacs 后会不会被细节打断。Emacs Redux 原文里关于 kill ring 的设置也已经进入我的基础层：`save-interprogram-paste-before-kill` 防止系统剪贴板被 kill 覆盖，`kill-do-not-save-duplicates` 去重；再加上 `savehist-mode`，搜索历史和 minibuffer 历史也能跨会话保留 #Emacs Redux, 2026#。如果把配置看成长期居住的房间，这些变量就是门把手、灯开关和椅子高度。
+
+  <div class="callout"><strong>我的习惯</strong>：先把每天都会遇到的摩擦消掉，再谈复杂插件。默认值层写得好，后面的插件层才不会变成补丁堆。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">Evil 与 leader key：保留 Vim 的移动，把 Emacs 变成命令面板</div>
+
+  我的配置里最重要的交互层是 Evil。`evil-mode` 提供 Vim 式 normal、insert、visual、motion 状态；`evil-collection` 让 Dired、Magit、Help 等常见 buffer 的按键也尽量统一；`evil-org` 则把 Org mode 的标题移动、折叠和 agenda 操作接进 Evil 体系。
+
+  <pre><code class="language-lisp">(use-package evil
+  :init
+  (setq evil-want-integration t)
+  (setq evil-want-keybinding nil)
+  (setq evil-want-C-u-scroll t)
+  (setq evil-want-C-i-jump nil)
+  (setq evil-respect-visual-line-mode t)
+  (setq evil-undo-system 'undo-redo)
+  :config
+  (evil-mode 1)
+  (evil-global-set-key 'motion "j" 'evil-next-visual-line)
+  (evil-global-set-key 'motion "k" 'evil-previous-visual-line))</code></pre>
+
+  但真正把配置串起来的是自定义 `leader-key-map`。我把 `SPC` 绑定成 normal/motion 状态下的 leader，然后把常用入口放进去：`SPC SPC` 执行 `M-x`，`SPC w` 保存，`SPC q` 关闭当前 buffer，`SPC b b` 切 buffer，`SPC f f` 找文件，`SPC /` 用 ripgrep 搜项目。
+
+  <pre><code class="language-lisp">(defvar leader-key-map (make-sparse-keymap))
+(define-key evil-normal-state-map (kbd "SPC") leader-key-map)
+(define-key evil-motion-state-map (kbd "SPC") leader-key-map)
+
+(define-key leader-key-map (kbd "SPC") 'execute-extended-command)
+(define-key leader-key-map (kbd "w")   'save-buffer)
+(define-key leader-key-map (kbd "q")   'kill-current-buffer)
+(define-key leader-key-map (kbd "b b") 'consult-buffer)
+(define-key leader-key-map (kbd "f f") 'find-file)
+(define-key leader-key-map (kbd "/")   'consult-ripgrep)</code></pre>
+
+  这套按键的意义不是“抄 Doom 的 SPC”，而是把命令组织成肌肉记忆。Emacs 原生命令非常多，如果全部靠 `M-x` 搜索，认知负担会很高；如果全部靠零散快捷键，又容易记不住。leader key 提供了中间层：常用命令有固定路径，不常用命令仍然可以回到 `M-x`。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">Git 层：Magit 是这份配置里最像“应用”的插件</div>
+
+  我的 Git 配置以 Magit 为中心：`C-x g` 打开 `magit-status`，`C-x M-g` 打开 `magit-dispatch`；leader 下则有 `SPC g g`、`SPC g b`、`SPC g l`、`SPC g f`。Magit 的 buffer 展示方式被设置成“除了 diff 以外尽量复用同一个 window”，这样 Git 状态不会把窗口布局炸得太碎。
+
+  <pre><code class="language-lisp">(use-package magit
+  :bind (("C-x g"   . magit-status)
+         ("C-x M-g" . magit-dispatch))
+  :custom
+  (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
+  (magit-repository-directories '(("~/projects" . 2)
+                                   ("~/Org" . 1)))
+  (magit-save-repository-buffers 'dontask)
+  (magit-diff-refine-hunk 'all))</code></pre>
+
+  这里还有三块增强：`forge` 管 GitHub/GitLab 这类远端协作信息，`magit-todos` 在 Magit 中显示 TODO，`diff-hl` 在代码、Org、Dired 和 Magit refresh 后标记文件变更。也就是说，这一层不是简单“在 Emacs 里跑 git”，而是把版本控制变成一种持续可见的编辑上下文。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>插件</th><th>解决的问题</th><th>在我的配置中的位置</th></tr></thead>
+      <tbody>
+        <tr><td>Magit</td><td>交互式 Git porcelain</td><td>Git 操作主入口</td></tr>
+        <tr><td>Forge</td><td>远端 issue / PR / topic 数据</td><td>接在 Magit 后</td></tr>
+        <tr><td>magit-todos</td><td>在仓库状态里看到待办标记</td><td>项目卫生检查</td></tr>
+        <tr><td>diff-hl</td><td>边栏显示新增、修改、删除</td><td>持续反馈当前 buffer 的变更</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">Org 与 Org-roam：写作、笔记和知识库放在同一条线上</div>
+
+  Org 是这份配置的另一个核心。我的 `org-directory` 是 `~/Org/`，`org-roam-directory` 是 `~/Org/roam/`。Org 基础设置偏写作体验：启动缩进、隐藏 emphasis 标记、源码块原生高亮、源码块里 tab 按源码语言处理、关闭 babel 执行确认、源码编辑缩进设为 0。
+
+  <pre><code class="language-lisp">(use-package org
+  :ensure nil
+  :config
+  (setq org-directory "~/Org/")
+  (setq org-startup-indented t)
+  (setq org-hide-emphasis-markers t)
+  (setq org-src-fontify-natively t)
+  (setq org-src-tab-acts-natively t)
+  (setq org-confirm-babel-evaluate nil)
+  (setq org-edit-src-content-indentation 0))</code></pre>
+
+  Org-roam 提供长期笔记入口：`C-c n f` 找节点，`C-c n i` 插入节点，`C-c n c` capture，`C-c n j` 写当天 daily。相同命令也挂到 leader 的 `n` 前缀下。这里的设计思路很清楚：Org 是文档格式，Org-roam 是知识库索引，leader key 是日常入口。
+
+  `org-modern` 则处理视觉层，把星号、列表、TODO、tag、时间戳、表格、代码块和进度显示得更接近现代编辑器。对我来说，这不是纯美化，因为 Org 文件会被长时间阅读和编辑；视觉噪音少一点，写作时就更容易把注意力放在内容结构上。
+
+  <div class="callout"><strong>工作流</strong>：笔记进入 `Org-roam`，文章和课程材料仍是普通文本，Git 层追踪变化，Emacs 同时承担写作环境和知识库入口。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">补全与查找：Vertico、Orderless、Marginalia、Consult 组成轻量选择系统</div>
+
+  我的补全栈很典型：`vertico` 负责 minibuffer 垂直候选列表，`orderless` 负责无序匹配，`marginalia` 给候选项加注释，`consult` 提供更强的命令入口。配置很短，但影响很大。
+
+  <pre><code class="language-lisp">(use-package vertico
+  :init (vertico-mode))
+
+(use-package orderless
+  :config
+  (setq completion-styles '(orderless basic)))
+
+(use-package marginalia
+  :init (marginalia-mode))
+
+(use-package consult
+  :bind (("C-s"   . consult-line)
+         ("C-x b" . consult-buffer)))</code></pre>
+
+  这套组合把 Emacs 里大量“选择一个东西”的动作统一起来：找 buffer、找文件、搜当前行、搜项目、看命令、跳符号，本质都是从候选集合里快速缩小范围。它比大型补全框架更轻，也更贴近 Emacs 内置 completion API。
+
+  `which-key` 则是 leader key 的说明书。它在用户停顿 0.5 秒后显示当前前缀下还有哪些键，这对自定义前缀尤其重要。没有 `which-key`，leader key 很容易变成“只有配置作者本人靠记忆才能用”的黑盒。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">外观层：主题、modeline 和输入法不是装饰，而是长期舒适度</div>
+
+  外观上，我使用 `doom-themes` 的 `doom-one`，并开启 `doom-themes-org-config` 和 `doom-themes-visual-bell-config`。mode line 使用 `doom-modeline`，显示 LSP、编码、minor modes、项目、VCS、环境版本等信息；文件名显示方式是 `truncate-upto-project`，避免路径占满整条状态栏。
+
+  <pre><code class="language-lisp">(use-package doom-themes
+  :config
+  (load-theme 'doom-one t)
+  (doom-themes-org-config)
+  (doom-themes-visual-bell-config))
+
+(use-package doom-modeline
+  :init (doom-modeline-mode 1)
+  :custom
+  (doom-modeline-height 30)
+  (doom-modeline-buffer-file-name-style 'truncate-upto-project)
+  (doom-modeline-minor-modes t)
+  (doom-modeline-buffer-encoding t))</code></pre>
+
+  更个人化的是 Rime。我的配置把 Rime 数据目录指向 macOS 的 `~/Library/Rime/` 和 Emacs 自己的 `~/.emacs.d/rime/`，候选框用 posframe 垂直显示，预编辑内联显示，离开 minibuffer 时自动关闭中文输入。`shift-l` 用于 inline ascii，Evil 进入 insert/normal 状态时也会主动切到 ascii，避免 normal state 下中文输入法干扰命令。
+
+  <pre><code class="language-lisp">(use-package rime
+  :custom
+  (rime-share-data-dir "~/Library/Rime/")
+  (rime-user-data-dir "~/.emacs.d/rime/")
+  (rime-show-candidate 'posframe)
+  (rime-posframe-style 'vertical)
+  (rime-show-preedit 'inline)
+  (rime-deactivate-when-exit-minibuffer t)
+  (rime-inline-ascii-trigger 'shift-l))</code></pre>
+
+  这里还能看出一条很个人的线：我不只是把 Rime 接进 Emacs，还写了 `rime-wubi-dict-adder`，用于把选中文字或附近文字加入五笔词库。它和我之前写过的“在 Emacs 里维护五笔词库”的小工具是一脉相承的：输入法不是系统外部工具，而是写作环境的一部分。
+
+  <div class="callout"><strong>个人化边界</strong>：主题可以抄，modeline 可以抄，但输入法、中文编辑和五笔词库这些东西，最后一定会长成非常个人的配置。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第八章</div>
+  <div class="ch-title">开发环境：目前偏轻量，Python 是默认脚本语言</div>
+
+  编程相关配置目前并不重。Emacs Lisp 模式下把 `tab-width` 设为 2，并打开 `outline-minor-mode`，方便在 Lisp 配置文件中按标题或折叠结构阅读。Python 则统一指向 `~/.venv/bin/python3`，Org Babel 也使用同一个 Python；`pyvenv` 启动时自动激活 `~/.venv`，并在 modeline 追踪虚拟环境变化。
+
+  <pre><code class="language-lisp">(add-hook 'emacs-lisp-mode-hook
+          (lambda ()
+            (setq tab-width 2)
+            (outline-minor-mode 1)))
+
+(setq python-shell-interpreter (expand-file-name "~/.venv/bin/python3"))
+(setq python-shell-interpreter-args "-i")
+(setq org-babel-python-command (expand-file-name "~/.venv/bin/python3"))
+
+(use-package pyvenv
+  :config
+  (pyvenv-activate (expand-file-name "~/.venv"))
+  (pyvenv-tracking-mode 1))</code></pre>
+
+  这说明我的 Emacs 现在更像写作与轻开发环境，而不是重型 IDE。它能处理 Python 脚本、博客构建、配置编辑、Git 和 Org；同时已经为语言服务器类进程设置了更大的 `read-process-output-max`。边界也很清楚：配置里没有单独声明 Eglot、tree-sitter、debugger、formatter 或 test runner，因此这篇文章不把它包装成完整 IDE 配置。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结语</div>
+  <div class="ch-title">好的 Emacs 配置应该能解释自己的使用者</div>
+
+  读别人配置最有用的地方，不是复制某个变量，而是看到别人怎样判断“什么值得自动化”。Emacs Redux 那篇文章列出的许多技巧都很小：剪贴板不要丢、kill ring 不要重复、脚本保存后自动 chmod、`ffap` 不要偷偷 ping hostname、`C-x 1` 可以变成可恢复的窗口操作、帮助窗口可以自动选中 #Emacs Redux, 2026#。这些技巧没有宏大架构，但它们直接对应日常使用中的小痛点。
+
+  反过来看我的配置，它最能解释我的几类需求：我需要 Vim 式移动，所以有 Evil；我需要写大量中文和文章，所以有 Rime、五笔词库工具、Org、Org-roam；我需要频繁改博客和项目，所以有 Magit、diff-hl、Consult ripgrep；我不想把时间浪费在窗口闪烁和默认 UI 上，所以启动期直接清理 GUI。
+
+  <div class="callout"><strong>最终形态</strong>：Emacs 配置不是一次完成的工程，而是一份越来越能暴露自己工作方式的文本。偷来的配置最后会变成自己的配置，因为只有留下来的那部分，才是真正经常被使用的部分。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">参考</div>
+  <div class="ch-title">Sources</div>
+  <ul class="sources">
+    <li data-cite-key="Emacs-Redux-2026">Bozhidar Batsov. (2026). <em>Stealing from the Best Emacs Configs</em>. Emacs Redux. <a href="https://emacsredux.com/blog/2026/04/07/stealing-from-the-best-emacs-configs/" target="_blank">原文链接</a></li>
+    <li data-cite-key="Tang-Emacs-Config-2026">汤问. (2026). <em>本地 Emacs 配置</em>. `~/.emacs.d/early-init.el` 与 `~/.emacs.d/config.el`。</li>
+  </ul>
+</div>

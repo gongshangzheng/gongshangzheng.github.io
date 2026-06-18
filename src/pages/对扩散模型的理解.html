@@ -1,0 +1,205 @@
+---
+title: "ProgressiveDiTok v0.2-对扩散模型再理解——怎么处理条件信息？"
+description: ""
+date: 2026-02-20T00:00:00
+created_at: 2026-02-20T00:00:00
+updated_at: 2026-05-19T10:23:00
+tags: [post]
+categories: [AI]
+mathjax: true
+source: hugo-blog
+subcategory: "扩散模型"
+---
+
+
+<h2>加噪与去噪</h2>
+<p>扩散模型在最开始，是一个去噪模型。它的核心过程有两个，一个是加噪过程，一个是去噪过程。</p>
+<p>我们可以把加噪过程写成以下的形式：</p>
+<p>\(p(\mathrm x_t\mid\mathrm x_0)\)</p>
+<p>其中：</p>
+<ul>
+<li><p>\(\mathrm x_0\) 是真实图像，服从分布\(p(\mathrm x_0)\) 。虽然我们不知道真实的 \(p(\mathrm x_0)\) ，但是模型在数据集上进行了训练，可以学会拟合 \(p(\mathrm x_0)\)</p>
+</li>
+<li><p>\(\mathrm x_t\) 表示加噪到时间步 \(t\) 时得到的图像， \(\mathrm x_t\) 服从分布 \(\mathcal{N}\left(\mathbf{x}_{0}, \sigma_{t}^{2} \mathbf{I}\right)\), \(\sigma_t\propto t\)</p>
+<p>而后我们进行去噪过程，要将真实图像从 \(x_t\) 中恢复出来。</p>
+<p>也就是 \(p(\mathrm x_0 \mid  \mathrm x_t)\)</p>
+<p>如果想要直接从 \(x_t\) 中恢复出 \(x_0\) 来，其实比较困难。尤其是当噪声很大的时候 \(x_t\) 离目标图像很远，随便一点误差都会导致距离目标位置很远。</p>
+<p>这个过程有一点像是黄金矿工：如果你想要抓一个远处的黄金，一钩下去很容易钩歪。</p>
+<p>为了解决这个问题，我们可以把这个过程重塑为一个渐近式去噪的过程：</p>
+</li>
+</ul>
+<p>\[
+p_\theta(\mathbf{x}_{t-\Delta t} \mid \mathbf{x}_t) = \mathcal{N}(\mathbf{x}_{t-\Delta t}; \mu_\theta(\mathbf{x}_t, t), \Sigma_\theta(\mathbf{x}_t, t))
+\]</p>
+<p>由于模型能够理解图像的真实分布 \(p(\mathrm x_0)\), 所以模型每一步去噪以后，都可以对图像当前的位置进行判断，从而了解到在当前位置，要向什么方向前进才能更接近于真实图像。</p>
+<p>这个过程可以表示为：</p>
+<p>\(p_{\theta,\mathrm x_0\sim p( \mathrm x_0) }(\mathrm x_{t-\Delta t}\mid \mathrm x_t)\)</p>
+<p>这就相当于在黄金矿工里面，你每一次下钩以后，你的钩子只前进 1 米，然后在新的位置，你的钩子再次开始摇摆，然后你可以再次发射钩子。很显然，这使得我们的模型更容易到达目的地。</p>
+<p>再举一个例子，这就相当于我们有一个龙珠探测器，可以用于寻找龙珠，它离龙珠越近，它的信号越强烈。自然是需要边找边看龙珠探测器的信号有没有变强。</p>
+<p>具体如何从 \(\mathrm x_t\) 去噪得到 \(\mathrm x_{t-\Delta t}\), 可以参考以下的常微分方程（ODE），本文主要提供一个框架上的推导，不对具体公式做解释：</p>
+<p>\[dx_t = -2\dot{\sigma}_t\sigma_t \nabla_{x_t} \log p(x_t; \sigma_t) dt + \sqrt{2\dot{\sigma}_t\sigma_t} dw_t\]</p>
+<p>这个公式来自于 <a href="">EDM</a> 论文。</p>
+<h2>条件信息</h2>
+<p>这里有一个问题：我们只知道 \(\mathrm x_t\) 与 \(p(\mathrm x_0)\), 但我们居然不知道 \(x_0\) 本身的任何信息。当然， \(\mathrm x_t\) 本身就带有部分 \(\mathrm x_0\) 的信息。</p>
+<p>按流形假设，分布 \(p(\mathrm x_0)\) 是一个流形，流形中距离 \(\mathrm x_t\) 最近的点自然最有可能是 \(\mathrm x_0\).</p>
+<p>但是，我们在去噪过程中毕竟不知道 \(\mathrm x_0\) 本身，这使得我们最终的目的地是不可知的，它可能很像真实图像，但是它最终大概率只是 \(p(\mathrm x_0)\) 上距离 \(\mathrm x_0\) 比较接近的一个点：它很真实，它很像 \(\mathrm x_0\), 但它不是 \(\mathrm x_0\).</p>
+<p>既然我们的目标是要重建出 \(\mathrm x_0\), 那么最简单的一点：我们直接把 \(\mathrm x_0\) 当成条件信息传给模型，就有：</p>
+<p>\(p_\theta(\mathrm x_{t-\Delta  t}\mid \mathrm x_t, \mathrm x_0)\)</p>
+<p>这个逻辑是清晰的，模型知道 \(x_0\) 再从 \(x_t\) 中逐步重建出 \(x_0\) ……</p>
+<p>很好，但有什么用呢？简直就是脱裤子放屁，模型学会了一个恒等映射。</p>
+<p>这个模型自然是没有用的，但是有了它以后，方便我们理解后面的过程。</p>
+<p>在真实任务中，我们虽然不知道 \(\mathrm x_0\), 但我们总能知道有关于 \(\mathrm x_0\) 的某些信息，我们将这些信息统称为条件信息。</p>
+<p>在文生图任务中，我们提供的文本是这个条件信息；图像重建任务中，损坏的图像可以提供这个条件信息；图像编辑任务中，修改指令可以提供这个条件信息。</p>
+<p>我们用 \(y\) 来表示这个条件信息。这个符合使用与 <a href="">DiT</a> 保持了一致。</p>
+<p>有了\(y\) 以后，我们把扩散模型工作的过程重新表达为：</p>
+<p>\[p(\mathrm x_0 \mid \mathrm y) \propto p(\mathrm y \mid \mathrm x_0) p(\mathrm x_0)\]</p>
+<p>其中， \(\propto\) 右侧表达从 \(\mathrm x_0\) 中提取出条件信息 \(\mathrm y\) 。</p>
+<p>\(\mathrm y\) 可以表示为 \(\mathrm y=\mathcal A(\mathrm x_0)+\mathrm n\)其中， \(\mathcal A\) 是观测过程， \(\mathrm n\sim \mathcal N(0, \beta^2_y \mathrm I)\)</p>
+<p>\(p(\mathrm y\mid\mathrm  x_0)=\mathcal N(\mathcal A(\mathrm x_0),\beta^2_y\mathrm I)\)</p>
+<p>这是一个逆问题。</p>
+<p>逆问题要从部分的、带噪的观测（measurement） \(y\) 中恢复出原始图像 \(x_0\) 。</p>
+<p>我们把上面的表述再说一遍，方便读者理解：在文生图任务中，\(\mathrm y\)我们提供的文本；图像重建任务中，\(\mathrm y\) 是损坏的图像；图像编辑任务中，\(\mathrm y\) 是修改指令。</p>
+<p>对于图像编辑任务，这个逆问题完全可以表示成：</p>
+<p>\(p_\theta(\mathrm x_{t-\Delta t}\mid \mathrm x_t, \mathrm x_0, \mathrm y)\)</p>
+<p>不过大多的逆问题依然不知道 \(\mathrm x_0\), 因此我们也将这个过程表达为两步的过程。因此，我们也就能很顺畅地将图像的重建过程划分出编码过程与解码过程。</p>
+<p>条件提取过程（编码器过程）：</p>
+<p>\[p_{\theta_\text{enc}}(\mathrm y \mid \mathrm x_0) \]</p>
+<p>去噪过程（解码器过程）：</p>
+<p>对于每一个 \(t\) ，我们有去噪过程：</p>
+<p>\[p_{\theta_\text{dec}}(\mathrm x_{t-\Delta t}\mid \mathrm x_t, \mathrm y)\]</p>
+<p>因为多了一步从 \(\mathrm x_0\) 中进行观测，从而得到 \(\mathrm y\), 再从 \(\mathrm y\) 中恢复出 \(\mathrm x_0\) 的过程，我们也就多了一个条件 \(\mathrm y\).</p>
+<p>我们的条件信息从 \(p(\mathrm x_t)\) 变成了 \(p(\mathrm x_t, \mathrm y)=p(\mathrm x_t)p(\mathrm y\mid \mathrm x_t)\)</p>
+<p>由此，我们对第一节得到的方程进行修改：</p>
+<p>\[
+\text d\mathrm x_t = -2\dot{\sigma}_t\sigma_t \nabla_{\mathrm x_t} \log p(\mathrm x_t; \sigma_t) \text dt -2\dot{\sigma}_t\sigma_t \nabla_{\mathrm x_t} \log p(\mathrm y |\mathrm  x_t) \text dt+ \sqrt{2\dot{\sigma}_t\sigma_t} \text dw_t
+\]</p>
+<p>因为条件信息的作用是替代 \(\mathrm x_0\), 提供原始信息，在不同的扩散时间步中，始终给模型提供一个目标指导，所以一般来说，不同的扩散时间步中， \(y\) 的信息是不会变的。</p>
+<h2>随时间步变化的条件信息： \(y\rightarrow y_t\)</h2>
+<p>在上一节中，我们的条件信息是与时间无关的，这其实有一些死板，这意味着，无论什么时候，条件信息所表示的都是 \(\mathrm x_0\) 的结构信息。</p>
+<p>也就是\(\mathrm y=\mathcal A(\mathrm x_0)+\mathrm n\). 且  \(\mathrm n\sim \mathcal N(0, \beta^2_y \mathrm I)\)</p>
+<p>如果 \(\mathrm y\) 本身就是 \(\mathrm x_0\), 也就是说没有信息损失， \(\beta_\mathrm y^2\)  为 0，这没有什么影响，因为它始终可以提供完整的目标图像信息。</p>
+<p>但由于 \(\mathrm y\) 并不能提供 \(\mathrm x_0\) 中完整的信息，这就表示，我们虽然显式地、始终如一地向扩散模型提供了原始图像的信息指导，可是这种信息指导始终是带噪的，而且这种噪声并没有随着去噪过程进行而被消解。</p>
+<p>可是去噪过程随着去噪接近了目标，其实会提供出新的信息，也就是说，如果 \(\mathrm y\) 能充分利用前一步去噪的结果，对 \(\mathrm y_t\) 进行更新，其实可以让 \(\mathrm y\) 本身也实现去噪。</p>
+<p>但是和 \(\mathrm x_t\) 一样，在去噪的过程中，\(\mathrm y\) 的信息会损失，我们不希望有这种信息损失，那怎么办呢……没错，把 \(\mathrm y\) 本身也保存。因此我们有：</p>
+<p>\(p_\theta(\mathrm  y_{t}\mid\mathrm  y,\mathrm  y_{t+\Delta t}, \mathrm x_t, t)\)</p>
+<p>我们之前假设了真实向模型中传递 \(\mathrm x_0\) 的情况，其过程也可以表达为： \(p_\theta(\mathrm x_{t}\mid \mathrm x_0, \mathrm x_{t+\Delta t}, \mathrm y, t)\)</p>
+<p>这个式子和我们更新 \(y\) 的过程有类似之处。</p>
+<p>（加不加 \(t\) 是一样的，因为 \(\mathrm x_t\) 里面隐式包含了 \(t\). ）</p>
+<p>我们可以一起看一下 <a href="">DiT</a> 的结构：</p>
+<p>标签 \(y\) 在每一轮去噪都是相同的，修改的是时间步 \(t\).</p>
+<p>有：</p>
+<p>\(p(\mathrm y_t\mid y, t)\)</p>
+<p>但是时间步 \(t\) 中其实没有任何有效信息，因此 \(\mathrm y\) 没有被进行有效的信息更新，只是多传递了 \(t\) 的信息而已。当然，在 DiT Block 中，依然会隐式地对 \(\mathrm y_t\) 进行建模，但这种隐式解模的效果不一定好。至少从 DDT 的研究中可以得出，这种建模的效果其实不行。</p>
+<p>再看 <a href="">DDT</a>:</p>
+<p>DDT 解耦了 Condition Encoder 与 Velocity Decoder,</p>
+<p>其中 Condition Encoder 所做的工作就是：</p>
+<p>\(p_\theta(\mathrm y_{t}\mid \mathrm x_t, \mathrm y, t)\)</p>
+<p>没有传递 \(\mathrm y_{t+\Delta t}\), 不过这实际上影响不大。首先，扩散模型的结构束缚，导致 DDT 其实不太方便传入 \(\mathrm y_{t+\Delta t}\), 其次，Velocity Decoder 的工作是 \(p_\theta(\mathrm x_t \mid \mathrm x_{t+\Delta t}, \mathrm y_{t+\Delta t}, t)\) 因此，\(\mathrm x_t\) 中包含了 \(\mathrm y_{t+\Delta t}\) 的信息。</p>
+<p>在 DDT 结构下，将 \(\mathrm y\) 更新到 \(\mathrm y_t\) 的过程就变成显式被解耦的了，而结果也表明， DDT 的效果确实要比 DiT 更好， FID 尤其出色。</p>
+<h2>条件信息反馈回路</h2>
+<p>现在我们将条件扩散模型重新解释成了编码器、解码器结构，同时我们发现，发展到 DDT, 扩散模型的 \(y_t\) 实际上一直在通过 \(\mathrm x_t\) 的去噪过程，对 \(\mathrm y\) 的条件信息进行更新，从而确保模型可以对 \(\mathrm y\) 提供的信息保真。</p>
+<p>但是我们发现，现在对于 \(\mathrm y_t\) 的更新其实局限在了解码器端。</p>
+<p>\[p_\theta(\mathrm  y_{t}\mid\mathrm  y,\mathrm  y_{t+\Delta t}, \mathrm x_t, t)\]</p>
+<p>这个过程足够好吗？</p>
+<p>对于图像重建，编码器是对图像造成损伤的过程， \(\mathrm y\) 也许就是我们能得到的所有信息，自然，我们只能做到这一步。</p>
+<p>但是如果我们要做图像编解码传输，这却是不一定的：</p>
+<p><strong>我们始终有办法接触到原始图像！</strong></p>
+<p>那我们是不是可以进一步思考：</p>
+<p>我们现在有了 Encoder 用于从原始图像中提取图像的信息 \(\mathrm y=\mathcal A(\mathrm x_0) + n\)，为什么我们要把 \(y\) 一口气传递，而后让模型进行多步扩散，在解码端更新 \(\mathrm y_t\) 呢？</p>
+<p>我们可以在编码器端就完成对图像的 \(\mathrm y\) 的更新。</p>
+<p>也就是说：</p>
+<p>\[\mathrm y_t=\mathcal A(\mathrm x_0, \mathrm x_{t} )+ \mathrm n\]</p>
+<p>现在， \(\mathrm y_t\) 所传递的信息变得物理意义不那么明确了。不过我们可以确定的是，它部分表达了从 \(\mathrm x_{t}\) 恢复到 \(\mathrm x_0\) 的速度场。虽然由于 \(\mathrm y_t\) 维度的限制，它可能不能表达完整的速度场，但是至少它可以表达一个分量，确保模型能够向着 \(\mathrm x_0\) 靠近。</p>
+<p>最简单地，我们给出一个方便理解的表达，以证明这种方法的可行性：</p>
+<p>\[\mathrm y_t=\frac {x_{t}-x_0} {t}[s:s+d]\]</p>
+<p>其中 \(d\) 是 \(\mathrm y_t\) 的维度。</p>
+<p>那么模型只需要预测一个 \(s\) 并令速度为：</p>
+<p>\[\mathrm v_t[i]= \mathrm y_t[i] \text{ if }s&lt;i&lt;s+d \text{ else } 0\]</p>
+<p>\[\arg\min_s x_0 -  (x_{t}- t v_t)\]</p>
+<p>这个学习目标是简单的且有效的。这确保了我们学习的有效性。模型可以根据 \(\mathrm x_t\) 动态更新 \(\mathrm y_t\) 从而了条件信息的准确，能有效地提高重建的准确度。</p>
+<p>当然，我们还需要对 \(\mathrm y_t\) 进行量化。</p>
+<p>那么假设 \(\mathrm y_t\) 可以在 \([0, 0.25, 0.5, 0.75, 1]\) 中取值。</p>
+<p>很显然，我们依然可以传递去噪方向的信息。</p>
+<p>当然，这里的问题是，编码器不知道 \(\mathrm x_t\) 的信息，我们也不能将整个 \(\mathrm x_t\) 的信息传回到编码端。</p>
+<p>我们只能从解码端将部分信息传回到编码端。</p>
+<p>幸好，我们上方计算 \(\mathrm v_t\) 实际上也只使用到了 \(\mathrm x_t\) 中 \(d\) 维的信息，其余的信息都是冗余的。</p>
+<p>因此，我们假设模型在解码端完成了对需要更新的维度的选择，在编码器端只进行简单的速度计算，从而传递了 \(\mathrm x_t\) 部分维度的去噪方向。这依然能有效地实现对模型进行去噪。</p>
+<p>我们将 \(t\) 时刻解码端传回到编码端的信息表示为 \(\mathrm m_t\).</p>
+<p>因此，我们需要构建一个图像重建反馈回路：</p>
+<p>编码器端生成出 \(\mathrm y_t\) 传递给解码端，解码端借此更新生成图像 \(\mathrm x_{t-\Delta t}\).</p>
+<p>编码器端同时生成出 \(\mathrm m_{t-\Delta t}\) 传递给编码端，编码端借此更新图像条件信息 \(\mathrm y_{t-\Delta t}\).</p>
+<p>具体的结构我们可以可以继续使用 1D Tokenizer 进行实现。</p>
+<p>Encoder 端与 Decoder 端在图像的 tokens 之上都拼接上 latent tokens, 而后 latent tokens 在 Encoder 和 Decoder 端传递。</p>
+<p>具体的，我们的一个去噪过程可以表达为：</p>
+<p>\[\left\{\begin{array}{l}
+ &amp;\text{Encoder } \mathcal E:&amp;p_\theta(\mathrm y_t\mid {\mathrm x_0}, \mathrm{m}_t)\\
+&amp;\text{Quantizer}\mathcal Q_1:&amp;p_\theta(\mathrm{\tilde y}_t\mid \mathrm{y}_t )\\
+  &amp;\text{Decoder } \mathcal D:&amp;p_\theta(\hat{\mathrm{x}}_{t-\Delta t}\oplus\mathrm{m}_{t-\Delta t}\mid \hat{\mathrm{x}}_{t}, \mathrm{\tilde y}_t)\\
+ &amp;\text{Quantizer }\mathcal Q_2:&amp;p_\theta(\mathrm{\tilde m}_{t-\Delta t}\mid \mathrm{m}_{t-\Delta t} )
+\end{array} \right. \]</p>
+<h2>条件信息反馈回路的训练</h2>
+<p>我们已经构建好了条件信息反馈的回路。下一个问题就是：</p>
+<p>我们要如何能实现对这个反馈回路的训练？</p>
+<p>对于一个流匹配的扩散模型，它在推理的时间，处理的是</p>
+<p>\[p_{\theta,\mathrm x_0\sim p( \mathrm x_0) }(\mathrm x_{t-\Delta t}\mid \mathrm x_t)\]</p>
+<p>但是在训练时，模型实际上推理的是</p>
+<p>\[p_\theta(\mathrm x_0\mid \mathrm x_t)\]</p>
+<p><a href="">DDPM</a> 中，模型预测的是时间步为 \(t\) 时的总噪声； Flow Matching 中，模型预测的是时间步为 \(t\) 时，向着原始图像前进的速度场；<a href="">JiT</a> 中，模型直接预测的就是 \(\mathrm x_0\).</p>
+<p>无论是哪一个，训练过程都绕过了模型去噪对上一时刻的依赖，模型学会的是去噪能力，这种能力在噪声量任意时，都是等价的。</p>
+<p>我们只需要随机采样时间步 \(t\), 训练模型在时间为 \(t\) 的条件下对模型进行去噪，让模型去噪结果尽可能地接近于原始图像即可。</p>
+<p>然而，如果我们要构建起条件信息反馈回路，我们可以看到，我们的编码器始终依赖于上一轮去噪时解码端输出的 \(\mathrm m_t\). 这导致我们不能直接开始训练编码器。</p>
+<p>不过，我们注意到，当 \(t=1\) 时，有\(\mathrm m_1\), 它并不是一个解码端的输出，而可以是一个可学习参数。</p>
+<p>同时，我们考虑到 \(\mathrm y_t\) 与 \(\mathrm y_1\) 应该是相似的，毕竟二者的传递的都是 \(x_0\) 的部分信息，只不过前者更适用于 \(t\) 时刻的解码过程。但是， \(\mathrm y_t\) 是用来与 \(\mathrm{\hat x}_t\) 搭配，为后者指明去噪方向的。但由于模型去噪得到的 \(\hat{\mathrm x}_t\) 我们同样无法得到，只能用 \(\mathrm x_t\) 来近似。对于它来说 \(\mathrm y_1\) 反而是更合适的选择。</p>
+<p>因此，要想得到我们需要的 \(\mathrm m_t\) ，我们需要经过一个比较复杂的过程：</p>
+<ul>
+<li>第零步：随机采样时间 \(t_1\in[0, 1]\) 与时间步 \(t_2\in[0, t_1]\)</li>
+<li>第一步：\(p_\theta(\mathrm y_1\mid {\mathrm x_0}, \mathrm{m}_1)\)  使用可学习的 \(\mathrm m_1\) 从 \(\mathrm x_0\) 中学习到 \(\mathrm y_1\)</li>
+<li>第二步：\(p_\theta(\mathrm{\tilde y}_1\mid \mathrm{y}_1 )\)</li>
+<li>第三步：\(p_\theta(\hat{\mathrm{x}}_{0\mid t_1}\oplus\mathrm{m}_{t_2}\mid {\mathrm{x}}_{t_1}, \mathrm{\tilde y}_1)\) 使用正向加噪得到的 \(\mathrm x_{t_1}\) 进行去噪。</li>
+<li>第四步：求第一次损失——无修正损失</li>
+<li>第五步：通过 \(\hat{{\mathrm x}}_{0\mid t_1}\) 与 \({\mathrm x}_{t_1}\) 加权，可以得到 \[\hat {\mathrm x}_{t_2}=\frac {t_1-t_2}{t_1}\hat{{\mathrm x}}_{0\mid t_1}+\frac {t_2} {t_1} {\mathrm x}_{t_1}\]</li>
+<li>第四步：\(p_\theta(\mathrm{\tilde m}_{t_2}\mid \mathrm{m}_{t_2} )\)</li>
+<li>第五步：\(p_\theta(\mathrm y_{t_2}\mid {\mathrm x_0}, \mathrm{\tilde m}_{t_2})\)  使用解码器端输出量化得到的 \(\mathrm {\tilde m}_{t_2}\) 从 \(\mathrm x_0\) 中学习到 \(\mathrm y_{t_2}\)</li>
+<li>第六步：\(p_\theta(\mathrm{\tilde y}_{t_2}\mid \mathrm{y}_{t_2})\)</li>
+<li>第三步：\(p_\theta(\hat{\mathrm{x}}_{0}\oplus\mathrm{m}_{0}\mid {\mathrm{\hat x}}_{t_2}, \mathrm{\tilde y}_{t_2})\) 这一步的 \(\hat{\mathrm x}_{t_2}\) 必须使用去噪过程中的输出，不然就无法训练编码端的输出结果纠正解码端的方向。</li>
+<li>第四步：求第二次损失——有修正损失</li>
+</ul>
+<p>这就完成了一个完整的反向传播过程，并且多了一个超参数：</p>
+<p>\[L_\text{total}=w(t_1, t_2)L_1+\left(1-w(t_1, t_2)\right)L_2\]</p>
+<p>以重建损失为例，我们有：</p>
+<p>\[\hat{\mathrm x}_0=\mathrm{x}_{t_1}-\hat {\mathrm{v}}_{t_1}(t_1 - t_2 )-\hat {\mathrm{v}}_{t_2}t_2\]</p>
+<p>而实际上的 \({\mathrm v}_{t_1}=\mathrm v\) （\(x_{t_1}\) 是加噪得到的，所以它的方向就是 \(\mathrm x_{1} - \mathrm x_0\) 的方向）却为：</p>
+<p>\[\mathrm v_{t_1}=\frac {\mathrm x_{t_1} -\mathrm x_0}{t_1}\]</p>
+<p>也即：</p>
+<p>\[\mathrm x_0=\mathrm x_{t_1}-\mathrm v_{t_1}t_1\]</p>
+<p>两式相减.</p>
+<p>\[\hat{\mathrm x}_0-{\mathrm{x}}_0=(\mathrm v_{t_1}-\hat{\mathrm v}_{t_1})(t_1-t_2)+(\mathrm v_{t_1}-\hat{\mathrm v}_{t_2})t_2\]</p>
+<p>如果求 \(x\)-loss, 就只需要求解：</p>
+<p>\[L_2(\mathrm x_0)=\left\|\mathrm x_0-\mathrm {\hat x}_0\right\|^2_2\]</p>
+<p>但这样就无法即约束 \(\mathrm v_{t_1}\) 又约束 \(\mathrm v_{t_2}\), 也没有利用到时间 \(t_2\) 这一信息。</p>
+<p>因此我们使用损失：</p>
+<p>\[L_2(\mathrm v_1)=\frac {t_1-t_2}{t_1}\left\|\mathrm v_{t_1}-\hat {\mathrm{v}}_{t_1}\right\|^2_2+\frac {t_2}{t_1}\left\|{\mathrm{v}}_{t_1}-\hat {\mathrm{v}}_{t_2}\right\|^2_2\]</p>
+<p>借此，我们训练了模型修正去噪方向的能力。</p>
+<h2>代码实现</h2>
+<p>我们的模型被称为 progressiveDiTok.</p>
+<p>它由以下几个组件构成：</p>
+<ul>
+<li>Encoder: 编码器，使用 <a href="">ViT-5</a> 架构，但是添加了额外的 latent tokens, 用于学习图像中的信息。这些信息会被当作解码条件信息 \(\mathrm y\)。</li>
+<li>Quantizer1: 解码条件信息量化器，用于对解码条件信息进行量化</li>
+<li>Decoder: 解码器，用于原始噪声进行解码，从而得到去噪结果，同时，它也会将 latent tokens 中的条件信息调整为编码条件信息 \(\mathrm m\).</li>
+<li>Quantizer2: 编码条件信息量化器，用于对编码条件信息进行量化</li>
+</ul>
+<p>由于存在一些 token 维度问题，我们需要添加以下这些额外的中间层，进行维度的转换：</p>
+<ul>
+<li>Encoder Patch Embed: 学习 <a href="">JiT</a> 使用了 <kbd>BottleneckPatchEmbed</kbd> 。它可以把图像切成 Patch, 并转换成到 Encoder 所需要的 <kbd>embed_dim</kbd>.</li>
+<li>Encoder Latent Embed: 因为量化器的元素的维度主要和码本大小相关，并不需要与 Encoder 或 Decoder 的维度相关，因此我们需要使用一个线性层，对 \(\tilde{\mathrm m}_t\) 进行嵌入。</li>
+<li>Quantizer1 Latent Embed: 与 Encoder Latent Embed 是一个逆向的过程，重新将 latent tokens 的维度压缩回 \(\mathcal Q_1\) 量化器所需的的维度。</li>
+<li>Decoder Patch Embed &amp; Decoder Latent Embed &amp; Quantizer2 Latent Embed: 同理。因为 Decoder 也需要接受图像以及 Latent Tokens, 最后也需要将其转换到 \(\mathcal Q_2\) 量化器所需要的维度，这些组件与服务于 Encoder 与 \(\mathcal Q_1\) 的同构，但是会有不同的参数。</li>
+</ul>
+<p><kbd>forward</kbd> 过程：</p>
+<h2>解耦退火后验采样</h2>
+<p>我们现在的扩散过程每一步输出的结果只能将图像从模糊渐渐变清晰，在这个过程中得到的图像其实不太能看。</p>
+<p>那么有没有可以，我们得到这样一个过程：每次一步扩散得到的结果都合乎人类感知——看着清晰，但保真度可能一般。但是每一次扩散又能给模型提供新的信息，让模型在真实性上也越来越好，模型从清晰但失真，越来越逼近真实图像的清晰且正确？</p>
+<p>可以参考<a href="">DAPS</a>.</p>
+<p>解码端可以边解码，边把图像显示给用户。显示给用户的图像为第二列的 \({\mathrm {\hat x}_0}(\mathrm x_t)\)</p>
+<p>DAPS 提供的是一个后验采样框架，也就是说，与我们的模型训练过程无关，我们可以将模型训练完以后，再测试 DAPS 在我们的模型上使用的效果。</p>

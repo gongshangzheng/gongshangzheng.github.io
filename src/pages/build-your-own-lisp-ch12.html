@@ -1,0 +1,186 @@
+---
+title: "函数 — Lambda 与闭包"
+description: "Build Your Own Lisp 第 12 章：实现函数定义和调用，包括 Lambda 表达式、闭包和词法作用域。"
+date: 2026-05-28T00:00:00
+created_at: 2026-05-28T15:19:46
+updated_at: 2026-05-28T16:00:00
+tags: [C, Lisp, 函数, Lambda, 闭包, 词法作用域]
+categories: [编程]
+subcategory: "BuildYourOwnLisp"
+hero_title: "函数"
+hero_sub: "Build Your Own Lisp · 第 12 章"
+hero_tagline: "实现函数定义和调用，包括 Lambda 表达式和闭包"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter 12 · 函数</div>
+  <div class="ch-title">Lambda 与闭包</div>
+
+  <div class="info-box">
+    <h3>章节信息</h3>
+    <p><strong>原书章节</strong>：第 12 章 Functions</p>
+    <p><strong>中文翻译</strong>：<a href="https://github.com/ksco/BuildYourOwnLispCn">KSCO (GitHub)</a></p>
+    <p><strong>原书地址</strong>：<a href="https://buildyourownlisp.com/chapter12_functions">buildyourownlisp.com</a></p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">函数定义</div>
+
+  <p>在上一章中，我们添加了变量和环境。现在我们可以给内置函数赋予名字，但还不能定义自己的函数。本章将改变这一点。</p>
+
+  <p>在 Lisp 中，定义函数的方式是使用 <code>\</code>（或 <code>lambda</code>）符号。它接受两个参数：第一个参数是形式参数列表（要绑定的变量名），第二个参数是函数体（一个表达式，将在函数被调用时求值）。</p>
+
+  <div class="def-box">
+    <h3>Lambda 表达式</h3>
+    <p>Lambda 表达式是一种匿名函数，它由两部分组成：</p>
+    <ul>
+      <li><strong>形式参数</strong>：函数接受的参数名列表</li>
+      <li><strong>函数体</strong>：一个表达式，在函数被调用时求值</li>
+    </ul>
+    <p>示例：<code>\ {x y} {+ x y}</code> 定义了一个接受两个参数并返回它们之和的函数。</p>
+  </div>
+
+  <p>为了实现函数，我们需要一个新的 <code>lval</code> 类型来表示函数。这个类型需要存储：</p>
+  <ul>
+    <li>形式参数列表</li>
+    <li>函数体</li>
+    <li>定义函数时的环境（用于实现闭包）</li>
+  </ul>
+
+  <pre><code class="language-c">typedef struct {
+  lbuiltin builtin;
+  lenv* env;
+  lval* formals;
+  lval* body;
+} func;</code></pre>
+
+  <p>对于内置函数，我们只需要 <code>builtin</code> 字段。对于用户定义的函数，我们需要 <code>env</code>、<code>formals</code> 和 <code>body</code> 字段。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">闭包</div>
+
+  <p>当我们定义一个函数时，我们需要记住定义它时的环境。这是因为函数可能引用了定义它时环境中存在的变量。这种将函数与其定义环境结合在一起的技术叫做<em>闭包</em>（closure）。</p>
+
+  <div class="def-box">
+    <h3>闭包（Closure）</h3>
+    <p>闭包是一个函数与其定义时的环境的组合。它"封闭"了定义时可见的所有变量，使得这些变量在函数被调用时仍然可用。</p>
+    <p>闭包使得函数可以访问其定义作用域中的变量，即使函数在该作用域之外被调用。</p>
+  </div>
+
+  <p>闭包是函数式编程的核心概念之一。它让我们可以：</p>
+  <ul>
+    <li>创建捕获外部变量的函数</li>
+    <li>实现数据隐藏和封装</li>
+    <li>创建工厂函数和高阶函数</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">函数调用</div>
+
+  <p>当我们调用一个用户定义的函数时，我们需要：</p>
+  <ol>
+    <li>将形式参数绑定到实际参数</li>
+    <li>在函数的环境中求值函数体</li>
+    <li>返回求值结果</li>
+  </ol>
+
+  <p>这个过程可以用以下代码实现：</p>
+
+  <pre><code class="language-c">lval* lval_call(lenv* e, lval* f, lval* a) {
+
+  /* If Builtin then simply apply that */
+  if (f->builtin) { return f->builtin(e, a); }
+
+  /* Record Argument Counts */
+  int given = a->count;
+  int total = f->formals->count;
+
+  /* While arguments still remain to be processed */
+  while (a->count) {
+
+    /* If we've ran out of formal arguments to bind */
+    if (f->formals->count == 0) {
+      lval_del(a);
+      return lval_err("Function passed too many arguments. "
+        "Got %i, Expected %i.", given, total);
+    }
+
+    /* Pop the first symbol from the formals */
+    lval* sym = lval_pop(f->formals, 0);
+
+    /* Pop the next argument from the list */
+    lval* val = lval_pop(a, 0);
+
+    /* Bind a copy into the function's environment */
+    lenv_put(f->env, sym, val);
+
+    /* Delete symbol and value */
+    lval_del(sym);
+    lval_del(val);
+  }
+
+  /* Argument list is now bound so can be cleaned up */
+  lval_del(a);
+
+  /* If all formals have been bound evaluate */
+  if (f->formals->count == 0) {
+
+    /* Set the parent environment */
+    f->env->par = e;
+
+    /* Evaluate and return */
+    return builtin_eval(f->env,
+      lval_add(lval_sexpr(), lval_copy(f->body)));
+  } else {
+    /* Otherwise return partially evaluated function */
+    return lval_copy(f);
+  }
+}</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">词法作用域</div>
+
+  <p>我们的函数使用<em>词法作用域</em>（lexical scoping），这意味着函数只能访问它定义时可见的变量，而不是调用时可见的变量。</p>
+
+  <div class="def-box">
+    <h3>词法作用域 vs 动态作用域</h3>
+    <p><strong>词法作用域</strong>：函数可以访问定义时作用域中的变量</p>
+    <p><strong>动态作用域</strong>：函数可以访问调用时作用域中的变量</p>
+    <p>大多数现代编程语言（包括 Lisp 的大多数方言）使用词法作用域，因为它更可预测且更容易推理。</p>
+  </div>
+
+  <p>为了实现词法作用域，我们在定义函数时捕获环境，并在调用函数时使用捕获的环境。这确保了函数总是访问相同的变量，无论它在哪里被调用。</p>
+</div>
+
+<div class="review-box fade-in">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>Lambda 表达式</strong>：匿名函数，由形式参数和函数体组成</li>
+    <li><strong>闭包</strong>：函数与其定义环境的组合</li>
+    <li><strong>词法作用域</strong>：函数只能访问定义时可见的变量</li>
+    <li><strong>形式参数</strong>：函数定义时声明的参数名</li>
+    <li><strong>实际参数</strong>：函数调用时传入的值</li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="build-your-own-lisp-ch11.html"><span class="nav-label">上一章</span><span class="nav-title">变量</span></a>
+  <a class="nav-card current" href="build-your-own-lisp.html"><span class="nav-label">枢纽页</span><span class="nav-title">Build Your Own Lisp</span></a>
+  <a class="nav-card" href="build-your-own-lisp-ch13.html"><span class="nav-label">下一章</span><span class="nav-title">条件分支</span></a>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li><a href="https://buildyourownlisp.com/chapter12_functions" target="_blank">Build Your Own Lisp — Chapter 12: Functions</a></li>
+    <li><a href="https://github.com/ksco/BuildYourOwnLispCn" target="_blank">BuildYourOwnLispCn — 中文翻译</a></li>
+  </ul>
+</div>
+
+</div>

@@ -1,0 +1,146 @@
+---
+title: "KV Cache、PagedAttention 与调度器：现代推理引擎到底在优化什么"
+description: "为什么 LLM serving 的核心矛盾常常不是 FLOPs，而是 KV cache 的管理与显存效率？从 PagedAttention、内存碎片到调度策略，梳理推理引擎的系统级优化逻辑。"
+date: 2026-06-02T00:03:23
+created_at: 2026-06-02T00:03:23
+updated_at: 2026-06-02T00:10:45
+tags: [KV Cache, PagedAttention, vLLM, 调度器, AI Infra, LLM 推理]
+categories: [AI]
+subcategory: "AI Infra"
+hero_title: KV Cache、PagedAttention 与调度器
+hero_sub: 现代推理引擎到底在优化什么
+hero_tagline: 为什么 LLM serving 的核心矛盾，常常不是算力而是显存
+mathjax: false
+hub: ai-infra-series-hub
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">60–80%</span><span class="label">传统系统 KV cache 浪费</span></div>
+  <div class="stat"><span class="num b">&lt;4%</span><span class="label g">PagedAttention 浪费</span></div>
+  <div class="stat"><span class="num">24×</span><span class="label">vLLM 吞吐提升</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列三</div>
+  <div class="ch-title">为什么推理引擎的战场从计算移向了显存</div>
+
+  上一篇讲了 prefill 和 decode 的分工、KV cache 的基本作用，以及 continuous batching 为什么必须存在。但如果把这些概念继续往下推，一个更深层的问题就会浮现：<strong>如果推理系统的瓶颈并不总是算力，那它通常卡在哪里？</strong>
+
+  答案出奇地一致——在大多数真实部署场景中，LLM serving 的第一性约束不是 FLOPs，而是<strong>显存，尤其是 KV cache 的管理效率</strong>。vLLM 在引入 PagedAttention 时就指出，传统系统因为碎片化和过度预留，会浪费 60%–80% 的 KV cache 显存；而采用分页式管理后，浪费可以降到 4% 以下，这直接带来了吞吐量的数量级提升 #vLLM-2023#。这一篇就围绕 KV cache 这条主线，解释现代推理引擎到底在优化什么。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">一、KV cache 为什么成了推理系统的核心对象</div>
+
+  在 Transformer 的 attention 机制中，每个已处理 token 都会生成一组 key 和 value 张量。这些张量被缓存下来，供后续 decode 阶段复用，避免重复计算。这就是 KV cache。
+
+  但它有三个非常棘手的特征：
+
+  <ul>
+    <li><strong>体积随序列长度线性增长</strong>：一个 13B 模型的单条序列，KV cache 可以轻松占到 1.7GB 以上。</li>
+    <li><strong>长度事先不可知</strong>：用户输入和模型输出长度在请求到来前都无法精确预测。</li>
+    <li><strong>需要按请求独立维护</strong>：不同请求之间的 KV cache 不能混用，除非做了 prefix sharing。</li>
+  </ul>
+
+  这三个特征加在一起，导致了一个很现实的问题：<strong>显存不够用，而且用得不聪明。</strong> 如果系统按最大可能长度为每条请求预分配一大块连续显存，那么大部分空间会在请求结束前一直处于空闲或半空闲状态。传统 serving 系统正是因此出现了严重的内部碎片和过度预留 #vLLM-2023# #vLLM-PagedAttention-Docs#。
+
+  <div class="callout"><strong>核心判断</strong>：现代 LLM serving 的性能差异，很大程度上不来自“模型算得更快”，而来自“KV cache 放得更紧凑、读得更高效”。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">二、PagedAttention：把 KV cache 管理变成虚拟内存问题</div>
+
+  vLLM 提出的 PagedAttention，核心洞察非常简洁：<strong>不要把 KV cache 当成连续内存去分配，而把它切成固定大小的块（block），按需分配、按需回收。</strong>
+
+  这和操作系统管理虚拟内存的思路几乎一样：
+
+  <ul>
+    <li>逻辑上连续的 token 序列，可以映射到物理上不连续的内存块；</li>
+    <li>每个块的大小固定，分配和回收变得标准化；</li>
+    <li>碎片只出现在最后一个未填满的块里。</li>
+  </ul>
+
+  结果非常显著：vLLM 报告，在 PagedAttention 下，KV cache 的显存浪费从传统方案的 60%–80% 降到了 4% 以下。释放出来的显存可以直接用来容纳更多并发请求，从而把吞吐提升数倍 #vLLM-2023#。
+
+  但 PagedAttention 的意义还不只是“省内存”。因为它把 KV cache 拆成了块，系统就可以更灵活地做<strong>内存共享</strong>。比如在 parallel sampling 场景下，多个输出序列来自同一个 prompt，prompt 部分的 KV cache 块可以被直接共享，而不是各自复制一份。更进一步，系统还能实现 Copy-on-Write：只有当某个序列真正需要修改共享块时，才为它分配独立副本 #vLLM-2023# #vLLM-PagedAttention-Docs#。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">三、从 PagedAttention 到更广泛的 cache 策略</div>
+
+  PagedAttention 解决的是“KV cache 怎么存”的问题，但推理系统里关于 cache 的优化远不止于此。随着框架演进，至少还有三类相关策略值得了解：
+
+  <div class="section fade-in">
+    <div class="section-title">3.1 Prefix Caching：不同请求共享 prompt 前缀</div>
+    当多个用户输入了相同的系统 prompt 或相似的上下文开头时，系统可以只计算一次前缀部分的 KV cache，然后在多个请求之间共享。SGLang 的 RadixAttention 就是这类思路的代表：它自动识别不同请求之间的共享前缀，复用 KV cache，避免重复计算 #SGLang-HiCache-2025# #SGLang-RadixAttention#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.2 Hierarchical KV Cache：让缓存跨层级流动</div>
+    当显存仍然不够时，系统可以引入分层存储：把一部分 KV cache 从 GPU HBM 卸载到 CPU DRAM，甚至 NVMe 存储。llm-d 的设计中就包含了 hierarchical KV cache offloading，把缓存按照热度和访问模式在不同层级之间迁移，以在成本和延迟之间做权衡 #CNCF-llm-d-2026#。
+  </div>
+
+  <div class="section fade-in">
+    <div class="section-title">3.3 KV Cache Compression：当空间真的不够时</div>
+    另一个方向是主动压缩 KV cache 本身，而不是仅仅优化它的布局。量化、剪枝、以及基于 attention 稀疏性的选择性丢弃，都是正在被探索的路线。这些方法在极端长上下文场景下尤其有吸引力 #LLM-Inference-Survey-2025#。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">四、调度器不只是“排个队”</div>
+
+  有了更高效的 KV cache 管理，系统还需要一个机制来决定：在每一轮 forward 中，哪些请求应该被放入 batch、以什么顺序处理、以及什么时候该做 prefill、什么时候该做 decode。
+
+  这就是 scheduler 的工作。但它远比“排队”复杂。一个好的推理调度器至少要同时考虑：
+
+  <ul>
+    <li><strong>批次构成</strong>：哪些请求这一轮可以一起跑？它们的序列长度差异会不会导致效率损失？</li>
+    <li><strong>prefill/decode 混合</strong>：完全分离两个阶段可以减少互相干扰，但混合执行可以提高 GPU 利用率；怎么取舍？</li>
+    <li><strong>延迟预算</strong>：某些请求对首 token 时间（TTFT）敏感，某些对总生成时间敏感，调度策略需要不同对待。</li>
+    <li><strong>显存预算</strong>：KV cache 的分配和回收必须与调度同步，不能出现“调度决定跑 32 条请求，但显存只能装下 20 条”的情况。</li>
+  </ul>
+
+  这也是为什么今天的主流推理框架几乎都有自己的 scheduler，而且 scheduler 的设计差异往往是框架之间性能差异的重要来源 #vLLM-2023# #LLM-Inference-Survey-2025#。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">五、为什么这些优化会指向同一个结论</div>
+
+  把 PagedAttention、prefix caching、hierarchical offloading、scheduler 策略这些碎片拼在一起，会看到一个更清晰的图景：
+
+  <div class="info-box">
+    <h3>推理引擎的系统观</h3>
+    <p>现代 LLM 推理引擎的核心任务，可以概括为一句话：<strong>在显存、带宽和延迟的硬约束下，尽可能高效地组织和复用 KV cache，同时保持对并发请求的公平调度。</strong></p>
+  </div>
+
+  它不是在比“谁的 attention 实现更数学上优雅”，而是在比：
+
+  <ul>
+    <li>谁更能把显存碎片压到最小；</li>
+    <li>谁更能识别请求之间的共享机会；</li>
+    <li>谁更能在 prefill 和 decode 之间做出合理的阶段切换；</li>
+    <li>谁更能把延迟敏感请求和吞吐敏感请求分开处理。</li>
+  </ul>
+
+  这也是为什么 inference framework 的 benchmark 数字，往往不能直接比较——因为它们可能优化的是不同维度的矛盾。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-title">六、为下一篇铺路：不同框架的设计取舍</div>
+
+  当我们理解了 KV cache 管理是推理系统的核心矛盾之后，下一个很自然的问题就是：<strong>不同推理框架在这个矛盾上做出了什么不同的选择？</strong>
+
+  vLLM 把问题抓在了 PagedAttention 和通用 serving throughput 上；SGLang 则在 KV 复用、调度、路由和结构化执行上走得更远。下一篇就会从这里切入，比较它们各自的设计取舍。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="vLLM-2023">Kwon, W. et al. <em>vLLM: Easy, Fast, and Cheap LLM Serving with PagedAttention</em>. 2023. <a href="https://vllm.ai/blog/2023-06-20-vllm" target="_blank">vLLM Blog</a></li>
+    <li data-cite-key="vLLM-PagedAttention-Docs">vLLM Documentation. <em>Paged Attention</em>. <a href="https://docs.vllm.ai/en/latest/design/paged_attention" target="_blank">Docs</a></li>
+    <li data-cite-key="SGLang-HiCache-2025">SGLang Team. <em>SGLang HiCache: Fast Hierarchical KV Caching</em>. 2025. <a href="https://lmsys.org/blog/2025-09-10-sglang-hicache/" target="_blank">lmsys.org</a></li>
+    <li data-cite-key="SGLang-RadixAttention">SGLang Documentation. <em>RadixAttention</em>. <a href="https://docs.sglang.ai/" target="_blank">Docs</a></li>
+    <li data-cite-key="CNCF-llm-d-2026">Costa, C., Coleman, C., & Shaw, R. <em>Welcome llm-d to the CNCF: Evolving Kubernetes into SOTA AI infrastructure</em>. 2026. <a href="https://www.cncf.io/blog/2026/03/24/welcome-llm-d-to-the-cncf-evolving-kubernetes-into-sota-ai-infrastructure" target="_blank">CNCF Blog</a></li>
+    <li data-cite-key="LLM-Inference-Survey-2025">Anonymous authors. <em>A Survey of LLM Inference Systems</em>. 2025/2026. <a href="https://arxiv.org/abs/2506.21901" target="_blank">arXiv</a></li>
+  </ul>
+</div>

@@ -1,0 +1,261 @@
+---
+title: "JeelizFaceFilter 源码解读：纯 WebGL 跑神经网络的实时人脸追踪库"
+description: "深入剖析 JeelizFaceFilter——一个不依赖任何 3D 引擎、把深度学习推理直接跑在 GPU 上的轻量人脸检测/追踪库。从架构分层、JS API、检测数据流到 Three.js 适配器的完整源码解读。"
+date: 2026-06-04T17:42:36
+created_at: 2026-06-04T17:42:36
+updated_at: 2026-06-04T17:42:36
+tags: [github, source-code, WebGL, face-tracking, deep-learning, JavaScript]
+categories: [编程]
+subcategory: "前端"
+---
+<!-- ============================================================
+  本模板展示所有构建系统支持的语法。
+  详细规范参见 ~/.hanako/skills/html-blog/references/
+  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
+  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
+  ============================================================ -->
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">~112KB</span><span class="label">核心库体积</span></div>
+  <div class="stat"><span class="num b">0</span><span class="label g">第三方依赖</span></div>
+  <div class="stat"><span class="num">8</span><span class="label">最多同时追踪人脸</span></div>
+  <div class="stat"><span class="num b">100%</span><span class="label l">客户端推理</span></div>
+</div>
+
+<!-- ============================================================
+  正文：JeelizFaceFilter 源码解读
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">背景与动机</div>
+  <div class="ch-title">为什么需要一个"纯前端"的人脸追踪库</div>
+
+  AR 人脸滤镜——给脸戴上虚拟眼镜、面具、动态妆容——背后都需要一个能力：<strong>实时知道脸在画面里的哪个位置、朝向如何</strong>。传统做法要么把视频流传到服务端跑模型（有延迟、有隐私顾虑、有带宽成本），要么依赖体积庞大的 WASM/原生 SDK。
+
+  <strong>JeelizFaceFilter</strong> 给出了另一种答案：把神经网络推理直接编译进 WebGL 着色器，跑在用户的 GPU 上。整个库 <code>~112KB</code>、<strong>零第三方依赖</strong>、<strong>100% 客户端推理</strong>，视频帧从摄像头到检测结果全程不出浏览器。
+
+  <div class="photo">
+    <img src="media/images/jeeliz-face-filter/demo.webp" alt="JeelizFaceFilter 实时人脸追踪演示">
+    <div class="caption">官方演示：库实时输出人脸的位置、缩放与三轴旋转，3D 内容据此叠加到脸上（图片来源：项目 README）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">项目概览</div>
+  <div class="ch-title">一句话定位与核心卖点</div>
+
+  <p>JeelizFaceFilter 是一个 <strong>JavaScript/WebGL 的轻量实时人脸检测与追踪库</strong>，专为增强现实人脸滤镜设计。它从 WebRTC 摄像头视频流中实时检测人脸，输出可直接驱动 3D 引擎的姿态参数。</p>
+
+  <p>它的核心特性可以归纳为：</p>
+
+  <ul>
+    <li><strong>WebGL Deep Learning</strong>：神经网络推理跑在 GPU 上，精度<em>自适应</em>——硬件越好，每秒处理的检测越多。</li>
+    <li><strong>多脸追踪</strong>：最多同时检测并追踪 8 张人脸。</li>
+    <li><strong>完整姿态输出</strong>：位置、缩放、三轴旋转（rx/ry/rz），外加表情系数（如张嘴程度）。</li>
+    <li><strong>引擎无关</strong>：通过 helper 适配层对接 THREE.js、BABYLON.js、A-FRAME，也支持 Canvas2D、CSS3D 这类更轻量的渲染方式。</li>
+    <li><strong>鲁棒性</strong>：对各种光照条件稳定，支持 HD 视频，移动端友好。</li>
+  </ul>
+
+  <h3 class="section-title">仓库地图</h3>
+
+  <p>仓库结构清晰，按"核心库 / 适配层 / 模型 / 演示"四块组织：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>目录</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>/dist/</code></td><td>核心库脚本，<code>jeelizFaceFilter.js</code>（112KB 压缩版）及其 module 变体</td></tr>
+      <tr><td><code>/neuralNets/</code></td><td>训练好的神经网络模型，<code>NN_DEFAULT.json</code> 为默认，另有多个表情/场景特化模型</td></tr>
+      <tr><td><code>/helpers/</code></td><td>对接各 3D 引擎的适配器，如 <code>JeelizThreeHelper.js</code></td></tr>
+      <tr><td><code>/demos/</code></td><td>按 2D/3D 引擎分类的示例代码</td></tr>
+      <tr><td><code>/libs/</code></td><td>演示用的第三方 3D 引擎（库本身不依赖）</td></tr>
+      <tr><td><code>/reactThreeFiberDemo/</code></td><td>React/Vite/Three-Fiber 脚手架示例</td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">架构与设计</div>
+  <div class="ch-title">从摄像头到 3D 内容的分层结构</div>
+
+  <p>整个系统可以分成五层：底层是 GPU 上的神经网络推理，往上是统一的数据契约 <code>detectState</code>，再往上是各引擎的适配层，最终落到具体的 3D 渲染。库本身只负责前两层，适配与渲染交给 helper 和宿主应用。</p>
+
+  {{< mermaid >}}
+graph TD
+    Cam["摄像头 (WebRTC)"] --> Video["videoTexture<br/>WebGL 视频纹理"]
+    Video --> NN["神经网络推理<br/>(WebGL Shader, GPU)"]
+    NN --> State["detectState<br/>detected / x / y / s / rx / ry / rz / expressions"]
+    State --> Helper["引擎适配层<br/>JeelizThreeHelper / Babylon / Canvas2D"]
+    Helper --> Engine["3D 引擎<br/>THREE.Object3D 等"]
+    Engine --> Scene["AR 场景渲染"]
+
+    style NN fill:#e3f2fd
+    style State fill:#fff3e0
+    style Helper fill:#e8f5e9
+  {{< /mermaid >}}
+
+  <h3 class="section-title">主调用链：一次检测如何流动</h3>
+
+  <p>使用方只需调用 <code>JEELIZFACEFILTER.init()</code> 并传入回调。初始化完成后，库进入渲染循环，每一帧都把最新的 <code>detectState</code> 通过 <code>callbackTrack</code> 交还给应用：</p>
+
+  {{< mermaid >}}
+sequenceDiagram
+    participant App as 应用代码
+    participant FF as JEELIZFACEFILTER
+    participant GPU as WebGL / GPU
+    participant Helper as ThreeHelper
+
+    App->>FF: init({canvasId, NNCPath,<br/>callbackReady, callbackTrack})
+    FF->>GPU: 加载 NN_DEFAULT.json<br/>编译着色器
+    FF-->>App: callbackReady(errCode, spec)
+    loop 每一渲染帧
+        GPU->>GPU: 视频纹理 → 神经网络推理
+        GPU-->>FF: 原始检测结果
+        FF->>FF: 稳定化 (floating average)
+        FF-->>App: callbackTrack(detectState)
+        App->>Helper: detect(detectState)
+        Helper->>Helper: 映射到 Object3D<br/>position/rotation/scale
+    end
+  {{< /mermaid >}}
+
+  <h3 class="section-title">最简上手：30 行跑通人脸框</h3>
+
+  <p>官方 Canvas2D demo 是理解 API 的最佳起点——它不引入任何 3D 引擎，只在脸周围画一个黄色边框：</p>
+
+  <pre><code class="language-javascript">JEELIZFACEFILTER.init({
+  canvasId: 'jeeFaceFilterCanvas',
+  NNCPath: '../../../neuralNets/',  // NN_DEFAULT.json 所在目录
+  callbackReady: function(errCode, spec){
+    if (errCode){ console.log('ERROR =', errCode); return; }
+    CVD = JeelizCanvas2DHelper(spec);
+    CVD.ctx.strokeStyle = 'yellow';
+  },
+  // 每一渲染帧都会被调用：
+  callbackTrack: function(detectState){
+    if (detectState.detected > 0.8){          // 置信度阈值
+      const faceCoo = CVD.getCoordinates(detectState);
+      CVD.ctx.clearRect(0, 0, CVD.canvas.width, CVD.canvas.height);
+      CVD.ctx.strokeRect(faceCoo.x, faceCoo.y, faceCoo.w, faceCoo.h);
+      CVD.update_canvasTexture();
+    }
+    CVD.draw();
+  }
+});</code></pre>
+  <p class="code-caption">来源：<code>demos/canvas2D/faceTrack/main.js</code></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">关键实现 · 设计点一</div>
+  <div class="ch-title">detectState：稳定的数据契约</div>
+
+  <p>整个库与外界沟通的唯一接口，就是回调里那个 <code>detectState</code> 对象。它把"脸在哪、多大、怎么转、表情如何"压缩成一组归一化数值：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>detected</code></td><td>检测置信度，0~1，常用 <code>&gt; 0.8</code> 作为"检测到"的阈值</td></tr>
+      <tr><td><code>x</code> / <code>y</code></td><td>人脸中心在视口中的归一化坐标</td></tr>
+      <tr><td><code>s</code></td><td>检测窗口的相对尺寸（越大表示脸越近）</td></tr>
+      <tr><td><code>rx</code> / <code>ry</code> / <code>rz</code></td><td>头部绕三轴的旋转角（弧度）</td></tr>
+      <tr><td><code>expressions</code></td><td>表情系数数组，如 <code>expressions[0]</code> 为张嘴程度（0 闭合 → 1 全开）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>有一个容易踩坑的设计细节，README 专门强调过：<strong>这个对象的引用在每帧之间不变</strong>，是出于内存优化考虑而复用的。如果你想把某一帧的值留到回调之外使用，<strong>必须拷贝属性值，而不能持有对象引用</strong>，否则下一帧的数据会覆盖它。</p>
+
+  <p>多脸模式下，<code>detectState</code> 变成一个数组，长度等于最大检测人脸数，每个元素都是上面这个结构。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">关键实现 · 设计点二</div>
+  <div class="ch-title">从 2D 检测窗口反算 3D 位姿</div>
+
+  <p>库只输出 2D 视口里的归一化坐标（<code>x/y/s</code>）和旋转角，那么如何把一个 3D 物体（比如一副眼镜）准确"贴"到脸上？答案在 <code>JeelizThreeHelper.js</code> 的 <code>render()</code> 里——它用相机的视场角（FoV）做反投影，把 2D 检测窗口换算成视图坐标系下的 3D 位置。</p>
+
+  <p>核心思路是：检测窗口的尺寸 <code>s</code> 反映了脸到相机的距离——窗口越大、脸越近、深度越小。结合相机 FoV 就能解出深度 <code>D</code>，再用 <code>x/y</code> 投影出横纵坐标：</p>
+
+  <pre><code class="language-javascript">// tan(水平 FoV / 2)
+const halfTanFOVX = Math.tan(camera.aspect * camera.fov * Math.PI/360);
+
+// 检测窗口相对宽度
+const W = detectState.s * _scaleW;
+// 立方体前表面到相机的距离（窗口越大 → 距离越近）
+const DFront = 1 / (2 * W * halfTanFOVX);
+const D = DFront + 0.5;  // 单位立方体中心到相机的距离
+
+// 由归一化 x/y 反投影出视图坐标系下的 3D 坐标
+const z = -D;  // 视图坐标系 Z 朝后，故取负
+const x = detectState.x * _scaleW * D * halfTanFOVX;
+const y = detectState.y * _scaleW * D * halfTanFOVX / _canvasAspectRatio;
+
+// 三轴旋转：注意欧拉顺序为 "ZYX"
+threeCompositeObject.rotation.set(
+  detectState.rx + _settings.rotationOffsetX,
+  detectState.ry,
+  detectState.rz, "ZYX");
+threeCompositeObject.position.applyEuler(threeCompositeObject.rotation);
+_threeTranslation.set(x, y + pivotOffsetY, z + pivotOffsetZ);
+threeCompositeObject.position.add(_threeTranslation);</code></pre>
+  <p class="code-caption">来源：<code>helpers/JeelizThreeHelper.js</code> 的 <code>render()</code>（已精简注释）</p>
+
+  <p>这段代码是"引擎适配层"的精华：库负责<em>检测</em>，helper 负责把检测结果<em>翻译</em>成具体引擎（这里是 THREE.js）能理解的 <code>position</code> / <code>rotation</code>。换一个引擎，只需重写这层翻译，库本身一行不动。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">关键实现 · 设计点三</div>
+  <div class="ch-title">WebGL Deep Learning 与抗抖动稳定化</div>
+
+  <p>库的招牌技术是 Jeeliz 自研的 <strong>WebGL Deep Learning</strong>：神经网络不是用 WASM 或 CPU 跑，而是把权重和前向计算编译成 WebGL 着色器，借助 GPU 的并行能力推理。这也是它对 WebGL 能力有硬性要求的原因：</p>
+
+  <ul>
+    <li>有 <code>WebGL2</code> 时直接用，无需额外扩展；</li>
+    <li>只有 <code>WebGL1</code> 时，必须支持 <code>OES_TEXTURE_FLOAT</code> 或 <code>OES_TEXTURE_HALF_FLOAT</code> 扩展（浮点纹理用于承载中间计算）；</li>
+    <li>两者都不满足，则判定设备不兼容，回调返回 <code>GL_INCOMPATIBLE</code>。</li>
+  </ul>
+
+  <p>神经网络的原始输出是<strong>有噪声</strong>的——直接用会导致 3D 内容抖动。库内置了一套稳定化机制：先算一个稳定因子 <code>k</code>（0~1），<code>k</code> 接近 0 表示检测质量差或用户在快速运动，此时<em>偏向响应速度</em>；<code>k</code> 接近 1 表示检测稳定、用户基本不动，此时<em>偏向平滑</em>。两次检测之间按 <code>k</code> 推出的混合系数 <code>alpha</code> 做浮动平均（默认 <code>alphaRange = [0.05, 1.0]</code>），在"跟手"和"不抖"之间动态权衡。</p>
+
+  <div class="info-box">
+    <strong>设计取舍</strong>：把"响应 vs 稳定"做成一个随检测质量自动滑动的连续参数，而不是固定平滑系数，是这类实时追踪库的关键工程经验——用户快速转头时不能拖影，静止时又不能抖动。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">工程评价</div>
+  <div class="ch-title">优点、局限与可迁移经验</div>
+
+  <h3 class="section-title">优点</h3>
+  <ul>
+    <li><strong>极致轻量</strong>：112KB、零依赖，对加载性能和隐私都友好，视频帧不出浏览器。</li>
+    <li><strong>清晰的分层</strong>：核心检测库与引擎适配层彻底解耦，<code>detectState</code> 作为稳定契约，新增引擎成本极低。</li>
+    <li><strong>API 极简</strong>：一个 <code>init()</code> 加两个回调即可跑通，上手门槛低。</li>
+  </ul>
+
+  <h3 class="section-title">局限与复现风险</h3>
+  <ul>
+    <li><strong>依赖 WebGL 浮点纹理</strong>：老旧设备或受限的 WebGL1 环境可能直接不兼容。</li>
+    <li><strong>模型黑盒</strong>：神经网络以 JSON 权重形式提供，库聚焦推理，训练/精度细节不开放。</li>
+    <li><strong>对象引用复用</strong>：<code>detectState</code> 引用不变这一优化，对不熟悉的使用者是隐蔽的陷阱。</li>
+  </ul>
+
+  <h3 class="section-title">可迁移经验</h3>
+  <ul>
+    <li><strong>用一个稳定的数据契约解耦上下游</strong>：<code>detectState</code> 让"检测"和"渲染"互不感知，是适配多引擎的关键。</li>
+    <li><strong>把"响应 vs 稳定"参数化</strong>：随质量自适应的浮动平均，适用于任何实时信号驱动 UI 的场景。</li>
+    <li><strong>把重计算下沉到 GPU</strong>：当目标平台是浏览器、又要避免服务端往返时，WebGL 着色器是值得考虑的推理载体。</li>
+  </ul>
+
+  <div class="sources">
+    <h3 class="section-title">参考来源</h3>
+    <ul>
+      <li data-cite-key="jeeliz-repo">JeelizFaceFilter GitHub 仓库：<code>github.com/jeeliz/jeelizFaceFilter</code></li>
+      <li data-cite-key="jeeliz-readme">项目 README：Features / Architecture / Specifications / Under the hood</li>
+      <li data-cite-key="jeeliz-three">引擎适配器源码：<code>helpers/JeelizThreeHelper.js</code></li>
+      <li data-cite-key="jeeliz-demo">最简示例：<code>demos/canvas2D/faceTrack/main.js</code></li>
+    </ul>
+  </div>
+</div>

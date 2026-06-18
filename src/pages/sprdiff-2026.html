@@ -1,0 +1,304 @@
+---
+title: "图像压缩论文精读（八）：SPRDiff，超低码率压缩里的语义锚点与像素锚点"
+description: "解读 SPRDiff 如何用 triple-encoder 与语义/像素双条件，在低于 0.03 bpp 的图像压缩中平衡真实感、像素保真和码率。"
+date: 2026-06-04T10:01:41
+created_at: 2026-06-04T10:01:41
+updated_at: 2026-06-04T10:10:58
+tags: [图像压缩, 扩散模型, SD-Turbo, DINOv2, 学习式压缩]
+categories: ["AI"]
+subcategory: "图像压缩"
+sub_id: 1700
+mathjax: true
+notify: true
+hero_title: "SPRDiff"
+hero_sub: "Ultra-Low Bitrate Image Compression · arXiv 2026"
+hero_tagline: "不是只让压缩图像看起来真实，而是让它在极低码率下仍然像原图。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">&lt;0.03</span><span class="label">bpp 超低码率</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">编码器融合</span></div>
+  <div class="stat"><span class="num">1</span><span class="label">步扩散重建</span></div>
+  <div class="stat"><span class="num b">265.90</span><span class="label l">ms 推理时间</span></div>
+</div>
+
+<div class="callout"><strong>论文信息：</strong>SPRDiff 是 2026 年 arXiv v1 预印本。作者包括 Hao Wei、Yanhui Zhou、Chenyang Ge、Saeed Anwar 与 Ajmal Mian，机构覆盖西安交通大学和西澳大利亚大学。论文声明代码与模型将发布到 <a href="https://github.com/cshw2021/SPRDiff" target="_blank">SPRDiff 官方仓库</a>；截至本文写作时，仓库中可核查内容为 README、数据集入口与结果图，尚未开放安装、权重、训练和测试代码。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么超低码率压缩这么难</div>
+
+  图像压缩最朴素的目标，是把一张图变成尽可能短的 bitstream，再从 bitstream 里尽可能还原原图。问题在于，当码率低到 0.03 bpp 以下时，编码器已经没有足够预算逐像素描述图像：一张 $512\times512$ 的 RGB 图，如果只给 0.02 bpp，总码流大约只有 5243 bit。这个预算甚至不够逐一说明墙面纹理、栅栏边缘、窗帘细线和脸部细节。于是压缩算法必须开始“猜”。
+
+  传统 JPEG、VVC 或早期学习式压缩方法的猜法偏保守：保住大轮廓，牺牲高频细节。结果通常是边缘变软、纹理被抹平。生成式压缩的猜法更激进：借助 GAN 或扩散模型的生成先验，把缺失细节补得更像自然图像。但这会带来另一个风险：图像看起来真实了，却不一定忠于原图。SPRDiff 这篇论文要处理的正是这个矛盾：压缩不是无条件生成，重建图不仅要“好看”，还要“像原图”#Wei et al., 2026#。
+
+  <div class="callout"><strong>核心矛盾：</strong>超低码率压缩里的难点不是单独提高 PSNR，也不是单独降低 LPIPS，而是在码率、像素失真和感知真实感之间找到可用的平衡点。</div>
+
+  这个矛盾在 rate-distortion-perception 理论里早已有形式化讨论：当码率固定时，追求更逼真的感知分布往往会牺牲逐像素失真；反过来，只追求失真指标又容易得到过度平滑的图像#Blau and Michaeli, 2019#。SPRDiff 的贡献在于，它没有把这个三角关系当作不可调和的宿命，而是问了一个更工程化的问题：如果扩散模型已经能提供强生成先验，能不能给它更准确的条件，让它既发挥想象力，又不要乱想？
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/comparison-radar.png" alt="SPRDiff 与扩散式极端压缩方法在 Kodak 上的雷达图对比" loading="lazy">
+    <div class="cap">图 1：论文在 Kodak 数据集上比较 OSCAR、DiffEIC、StableCodec 与 SPRDiff。SPRDiff 的平均 bpp 更低，同时在多个质量指标上更均衡（来源：论文 Fig.2）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">一个核心洞察：扩散模型需要两个锚点</div>
+
+  近两年扩散式图像压缩的基本思路是：不要指望 bitstream 保存所有像素细节，而是只保存足够的条件信息，再让预训练扩散模型补全缺失内容。DiffEIC、RDEIC、StableCodec、OSCAR 都属于这条路线的不同变体#Li et al., 2024# #Zhang et al., 2025# #Guo et al., 2025#。它们的共同优势是能在极低码率下生成更自然的纹理；共同问题是条件不够强时，扩散模型会“自由发挥”。
+
+  SPRDiff 对这个问题的诊断很清楚：现有方法缺少有效的 semantic condition 和 pixel-level condition。只给文本 prompt，例如“a high-resolution, 8K, ultra-realistic image”，可以鼓励图像变清晰，但这个 prompt 并不知道原图里的栅栏在哪里、猫脸的纹理边界在哪里。只给压缩 latent，又容易因为码率太低而信息不足。于是论文提出了两个锚点：语义锚点 $F_s$ 告诉扩散模型“这是什么”，像素锚点 $F_p$ 告诉扩散模型“它应该长在哪里、边界和结构应如何贴近原图”。
+
+  {{< mermaid >}}
+  graph LR
+    X[原始图像 x] --> TE[Triple-encoder]
+    TE --> FUSE[特征融合]
+    FUSE --> LC[Latent Compression]
+    LC --> BIT[低码率 bitstream]
+    BIT --> RECON[失真感知粗重建]
+    RECON --> FS[语义条件 Fs]
+    RECON --> FP[像素条件 Fp]
+    FS --> DIFF[单步扩散重建]
+    FP --> DIFF
+    DIFF --> OUT[最终重建图像]
+  {{< /mermaid >}}
+
+  这个设计的直觉类似给画师两份参考：一份是“语义说明书”，告诉画面里有哪些对象和关系；另一份是“像素草图”，告诉对象的大致位置、边界和局部结构。只有语义说明书，画师可能画得漂亮但不忠实；只有像素草图，画面可能结构正确但纹理发糊。SPRDiff 要做的是让扩散模型同时拿到这两份参考。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>典型优点</th><th>典型风险</th><th>SPRDiff 的回应</th></tr></thead>
+      <tbody>
+        <tr><td>传统/学习式 RD 压缩</td><td>像素更稳定，码率可控</td><td>极低码率下过度平滑</td><td>引入扩散先验补足纹理</td></tr>
+        <tr><td>文本或语义生成式压缩</td><td>视觉真实感强</td><td>在弱条件下会语义漂移或改写细节</td><td>用 $F_s$ 替代泛化 prompt</td></tr>
+        <tr><td>单 latent 条件扩散压缩</td><td>流程简单，能接入预训练模型</td><td>压缩 latent 信息不足</td><td>用 triple-encoder 强化表示</td></tr>
+        <tr><td>SPRDiff</td><td>语义与像素双约束</td><td>模型复杂度更高</td><td>单步扩散与 LoRA 降低推理成本</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">SPRDiff 架构详解</div>
+
+  SPRDiff 的完整架构可以拆成四段：编码端的 triple-encoder，压缩端的 latent compression，解码端的 distortion-aware reconstruction，以及最后的 one-step diffusion reconstruction。每一段都在回答同一个问题：极低码率下应该保留什么信息，才能让扩散模型重建时不跑偏？
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/arch.png" alt="SPRDiff 方法架构图" loading="lazy">
+    <div class="cap">图 2：SPRDiff 总体架构。左侧 triple-encoder 负责构建更丰富的压缩 latent，右侧通过 $F_p$ 与 $F_s$ 指导单步扩散重建（来源：论文 Fig.3）。</div>
+  </div>
+
+  <h3 class="section-title">Triple-encoder：为什么单个 VAE encoder 不够</h3>
+
+  Stable Diffusion 这类 latent diffusion 模型通常依赖 VAE encoder 把图像映射到 latent space#Rombach et al., 2022#。这个 latent space 对生成很友好，但对压缩不一定友好：VAE 的目标不是在极低码率下服务熵编码，也不是最大限度保留像素级结构。论文指出，近期方法常依赖冻结 VAE encoder 提取表示，这会导致空间信息损失，并且 latent 与学习式压缩的 entropy model 不完全对齐。
+
+  SPRDiff 因此把编码器拆成三路：
+
+  <div class="def-box">
+    <h3>三路编码器的职责</h3>
+    <ul>
+      <li><strong>$\mathcal{E}_{doe}$</strong>：distortion-oriented encoder，继承学习式压缩模型的像素保真能力，关注边缘、局部纹理和空间结构。</li>
+      <li><strong>$\mathcal{E}_{vae}$</strong>：pretrained VAE encoder，保持与 SD-Turbo / latent diffusion 生成先验的兼容。</li>
+      <li><strong>$\mathcal{E}_{soe}$</strong>：semantic-oriented encoder，使用 DINOv2 这类自监督视觉表征，捕获高层语义信息#Oquab et al., 2024#。</li>
+    </ul>
+  </div>
+
+  按论文的模块定义，三路特征分别来自三个编码器：
+
+  $$
+  E_p=\mathcal{E}_{doe}(x),\quad E_{vae}=\mathcal{E}_{vae}(x),\quad E_s=\mathcal{E}_{soe}(x)
+  $$
+
+  其中 $E_p$ 更像“像素地图”，$E_s$ 更像“语义地图”，$E_{vae}$ 则是和扩散模型先验接轨的中间语言。随后，论文用空间对齐和通道融合把三者合成 refined feature。这里不是简单堆模块，而是在压缩前尽量把“原图是什么”和“原图长什么样”同时放进有限的信息预算里。
+
+  <h3 class="section-title">Latent compression：把有用信息压到 bitstream</h3>
+
+  融合后的特征不会直接进入扩散模型，而是先经过 latent encoder 得到 $Y$，再量化成 $\hat{Y}$ 并做熵编码。论文将 latent compression 写成编码、量化与解码三个连续步骤：
+
+  $$
+  Y=\mathcal{E}_l(\bar{E}),\quad \hat{Y}=Q(Y),\quad \hat{E}=\mathcal{D}_l(\hat{Y})
+  $$
+
+  这一步继承了学习式图像压缩的基本范式：用可学习变换把图像映射到更容易压缩的 latent，再用 entropy model 估计概率并编码#Balle et al., 2017#。SPRDiff 的不同之处在于，压缩对象不是单一 VAE latent，而是经过语义与像素增强后的 refined feature。
+
+  <h3 class="section-title">Distortion-aware reconstruction：先造一个可靠的粗重建</h3>
+
+  解码端最值得注意的是，SPRDiff 没有直接让扩散模型吃 $\hat{Y}$。它先通过 transform block 和 distortion-oriented decoder 得到一个 coarse reconstruction $\bar{x}$。这个 $\bar{x}$ 未必足够漂亮，但它承担了一个关键角色：给后续条件提取提供一个结构可靠的中间图。
+
+  在这个基础上，模型提取两类条件：
+
+  $$
+  F_p=\mathcal{P}(\hat{E}),\quad F_s=\mathcal{E}_{soe}(\bar{x})
+  $$
+
+  $F_p$ 来自轻量 projector，负责像素级约束；$F_s$ 来自语义编码器，负责语义级约束。这个设计比 generic text prompt 更贴近压缩任务，因为 prompt 只能描述“自然图像应该清晰”，却不能描述“这张图具体哪里有窗帘、哪里有栅栏”。
+
+  <div class="callout"><strong>方法关键：</strong>$F_s$ 防止扩散模型语义漂移，$F_p$ 防止它在局部结构上乱补。两者一起把生成先验从“自由生成”拉回“条件重建”。</div>
+
+  <h3 class="section-title">One-step diffusion：把扩散先验变成可用编解码器</h3>
+
+  多步扩散压缩的问题很现实：质量可以很高，但解码慢。压缩任务常常对延迟敏感，尤其在边缘设备、远程传输或大规模图片库里，几秒钟的解码时间很难接受。SPRDiff 使用 SD-Turbo 风格的单步扩散先验，并用 LoRA 微调相关模块#Sauer et al., 2024#。这让它保留扩散模型的生成能力，同时把推理成本压到更接近实用的区间。
+
+  当然，单步扩散也更依赖条件质量。多步采样可以逐渐修正错误，一步生成则要求输入条件本身足够明确。这也是 SPRDiff 为什么要花这么多设计在 triple-encoder 和 dual-feature extraction 上：如果条件不强，单步扩散很容易一步跑偏。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练方法：先学压缩，再学真实感</div>
+
+  SPRDiff 的训练分两阶段。第一阶段先关闭 discriminator，重点训练率、失真和感知之间的基础平衡；第二阶段再加入 adversarial distillation，让重建图像的分布更接近真实图像。
+
+  第一阶段损失写作：
+
+  $$
+  L_{stage1}=\lambda_d\|\hat{x}-x\|_2^2+\lambda_l\|\phi(\hat{x})-\phi(x)\|_2^2+\lambda_i\|\bar{x}-x\|_2^2+\lambda_bR(\hat{Y})
+  $$
+
+  这里四项各有分工：$\|\hat{x}-x\|_2^2$ 约束最终重建的像素失真；$\|\phi(\hat{x})-\phi(x)\|_2^2$ 用 VGG 特征度量感知差异；$\|\bar{x}-x\|_2^2$ 保证中间粗重建别偏离太远；$R(\hat{Y})$ 则把码率纳入优化目标。第二阶段加入：
+
+  $$
+  L_{stage2}=L_{stage1}+\lambda_aL_{adv}
+  $$
+
+  这意味着论文没有把真实感和像素保真分开处理，而是把它们统一进一个训练流程里。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>训练设置</th><th>原文给出的数值</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>LSDIR + Flickr2W，共 105,736 张图</td><td>覆盖大规模自然图像分布</td></tr>
+        <tr><td>测试数据</td><td>Kodak 24、CLIC2020 428、Tecnick 100</td><td>覆盖自然图、高质量图和高分辨率图</td></tr>
+        <tr><td>第一阶段</td><td>30k iterations，学习率 $10^{-4}$，$\lambda_b=0.5$</td><td>先学习基础压缩与重建</td></tr>
+        <tr><td>第二阶段</td><td>30k iterations，初始学习率 $5\times10^{-5}$</td><td>联合 discriminator 微调</td></tr>
+        <tr><td>学习率衰减</td><td>28k 到 $10^{-5}$，29k 到 $10^{-6}$</td><td>后期稳定收敛</td></tr>
+        <tr><td>码率控制</td><td>$\lambda_b\in\{8,4,2\}$</td><td>得到不同码率点</td></tr>
+        <tr><td>固定权重</td><td>$\lambda_d=2,\lambda_i=2,\lambda_l=1,\lambda_a=0.1$</td><td>平衡像素、感知、中间重建和对抗项</td></tr>
+        <tr><td>LoRA rank</td><td>VAE encoder 16，denoising U-Net 32</td><td>低成本适配 SD-Turbo</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      复现难点
+    </div>
+    <div class="admonition-content"><p>官方仓库已经发布 README 和结果图，并列出数据集入口；但截至本文写作时，仓库目录中尚未提供安装步骤、模型权重、训练脚本和测试脚本。因此，当前可核查的是论文方法与结果图，完整复现实验还缺少代码级入口。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验验证：平衡比单项最优更重要</div>
+
+  论文的实验评价包含两类指标。第一类是 distortion fidelity，如 PSNR 和 MS-SSIM，衡量重建图与原图在像素和结构上的接近程度。第二类是 perceptual fidelity / realism，如 LPIPS、DISTS、FID、KID，衡量视觉感知和分布相似性。作者特别指出，FID/KID 是分布级指标，并不完全适合 image-to-image compression；压缩任务最终仍要看重建图是否忠于输入图。
+
+  主实验结论可以概括为：SPRDiff 不是每个单项永远第一，但它在极低码率下给出了更稳定的综合权衡。论文称，在 Kodak 与 Tecnick 上，SPRDiff 同时取得更好的 perceptual fidelity 和 pixel-level fidelity；在 CLIC2020 上，RDEIC 的 PSNR 最高，但 LPIPS 和 DISTS 明显更差，说明它牺牲了感知质量。StableCodec 的 FID/KID 有竞争力，但在其他 image-to-image fidelity 指标上不如 SPRDiff#Wei et al., 2026#。
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/extreme-comparisons-clic2020.png" alt="SPRDiff 在 CLIC2020 上与其他极端压缩方法的视觉对比" loading="lazy">
+    <div class="cap">图 3：CLIC2020 上的定性对比。论文强调 SPRDiff 在更低码率下保住了更多纹理和结构细节（来源：论文 Fig.7）。</div>
+  </div>
+
+  从这组视觉对比能看出，极低码率下的失败不只有“糊”一种形态。token-based 方法容易出现块状伪影和不自然纹理；GLC 在局部细节上缺少真实感；DiffEIC、ResULIC、RDEIC 和 StableCodec 虽然能借助扩散先验生成自然纹理，但猫脸纹理、字母边界和人脸结构仍会发生平滑、变形或与原图不一致。SPRDiff 的优势不是把每个像素都恢复回来，而是在同样约束下让纹理、边缘和语义结构同时更贴近输入图。
+
+  <h3 class="section-title">复杂度：更快于 DiffEIC，但仍重于 StableCodec</h3>
+
+  模型复杂度表提供了一个很实用的视角。SPRDiff 在单张 $512\times512$ 图、单张 RTX 3090 上，参数量为 1,344.23M，encoding time 为 200.87ms，decoding time 为 330.92ms，inference time 为 265.90ms。在 0.0285 bpp 下，论文报告 PSNR 23.15、MS-SSIM 0.8133、LPIPS 0.2793、DISTS 0.1072。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标</th><th>SPRDiff 数值</th><th>怎样理解</th></tr></thead>
+      <tbody>
+        <tr><td>参数量</td><td>1,344.23M</td><td>大模型级 codec，部署成本不低</td></tr>
+        <tr><td>Encoding time</td><td>200.87ms</td><td>编码端仍有明显计算开销</td></tr>
+        <tr><td>Decoding time</td><td>330.92ms</td><td>解码端受扩散先验影响更重</td></tr>
+        <tr><td>Inference time</td><td>265.90ms</td><td>明显快于多步 DiffEIC，但慢于更轻的 StableCodec</td></tr>
+        <tr><td>bpp</td><td>0.0285</td><td>处于论文关注的超低码率区间</td></tr>
+        <tr><td>PSNR / MS-SSIM</td><td>23.15 / 0.8133</td><td>像素与结构保真度仍保持可用</td></tr>
+        <tr><td>LPIPS / DISTS</td><td>0.2793 / 0.1072</td><td>感知距离较低，视觉质量较好</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">消融一：triple-encoder 是否真的有用</h3>
+
+  论文在 0.02 bpp 下比较了三种编码设置：只用 VAE encoder、VAE + distortion-oriented encoder，以及完整 triple-encoder。结果显示，从 only VAE 到 triple-encoder，PSNR 从 21.89 提升到 22.12，MS-SSIM 从 0.7590 提升到 0.7687，LPIPS 从 0.3213 降到 0.3106，DISTS 从 0.1148 降到 0.1106。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>编码器设置</th><th>PSNR ↑</th><th>MS-SSIM ↑</th><th>LPIPS ↓</th><th>DISTS ↓</th></tr></thead>
+      <tbody>
+        <tr><td>only $\mathcal{E}_{vae}$</td><td>21.89</td><td>0.7590</td><td>0.3213</td><td>0.1148</td></tr>
+        <tr><td>$\mathcal{E}_{vae}+\mathcal{E}_{doe}$</td><td>22.01</td><td>0.7637</td><td>0.3173</td><td>0.1135</td></tr>
+        <tr><td>triple-encoder</td><td><strong>22.12</strong></td><td><strong>0.7687</strong></td><td><strong>0.3106</strong></td><td><strong>0.1106</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/val-loss.png" alt="Triple-encoder 的 rate-distortion-perception 验证损失曲线" loading="lazy">
+    <div class="cap">图 4：Triple-encoder 让第一阶段训练收敛到更低的 rate-distortion-perception validation loss（来源：论文 Fig.8）。</div>
+  </div>
+
+  <h3 class="section-title">消融二：语义条件和像素条件分别贡献什么</h3>
+
+  语义条件实验很有意思。论文比较了没有语义条件、使用 CLIP 抽取 generic text prompt、使用 $F_s$ 三种方案。结果显示，generic prompt 不仅没有稳定提升感知保真，甚至会降低 PSNR；而从中间重建图中提取的 $F_s$ 能带来更高 PSNR 和更低 LPIPS。这说明压缩任务需要的是“这张图自己的语义”，不是一条泛化的高清图片咒语。
+
+  像素条件实验则移除轻量 projector $\mathcal{P}$，也就是去掉 $F_p$。结果显示，使用 $F_p$ 在低码率区间有稳定收益，视觉上尤其体现在眼睛、手部和局部边界这些细结构上。换句话说，$F_s$ 解决“别认错东西”，$F_p$ 解决“别画错位置和细节”。
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/ablation-comparison.png" alt="语义表征和像素表征的消融可视化" loading="lazy">
+    <div class="cap">图 5：语义表征和像素表征的消融。论文显示 $F_s$ 与 $F_p$ 都能改善低码率重建（来源：论文 Fig.9/Fig.10/Fig.11 相关素材）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">局限与启发</div>
+
+  SPRDiff 的局限不是小修小补的问题，而是生成式压缩必须面对的根本风险：当 bitstream 太短时，模型会在“忠实还原”和“合理生成”之间做选择。论文展示了一个复杂背景中的小人脸案例。SPRDiff 的视觉效果仍然比竞品更好，码率也更低，但人脸身份被改写了。这说明 $F_s$ 和 $F_p$ 虽然能显著约束扩散模型，却不能保证所有细粒度身份信息都被保留。
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/limitation-original.png" alt="人脸重建局限案例的原始图" loading="lazy">
+    <div class="cap">图 6：论文局限案例中的原始图。人脸只占图像很小区域，背景复杂（来源：论文 Fig.12）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/sprdiff-2026/limitation-sprdiff-face.png" alt="SPRDiff 人脸重建局限案例" loading="lazy">
+    <div class="cap">图 7：SPRDiff 在更低 bpp 下生成了视觉上合理的结果，但脸部身份偏离原图（来源：论文 Fig.12）。</div>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      生成式压缩的边界
+    </div>
+    <div class="admonition-content"><p>如果下游任务关心身份、医学病灶、遥感小目标或安防证据，单纯“看起来合理”不够。SPRDiff 这类方法需要 ROI-aware coding、任务感知约束或可验证的细节保真机制。</p></div>
+  </div>
+
+  另一个局限是复杂度。SPRDiff 虽然用单步扩散大幅减少了多步采样开销，但 1.3B 级别参数和数百毫秒级推理时间仍不是传统 codec 那种轻量工具。对实际系统而言，更稳妥的落地方式是分层使用：高码率或实时场景继续用传统/学习式 codec，极低带宽、离线归档或对感知质量要求极高的场景再启用 SPRDiff 这类生成式 codec。
+
+  <div class="callout"><strong>可操作启发：</strong>如果你要设计下一代生成式压缩模型，不要只问“用哪个生成模型当 decoder”，更要问“哪些条件能让 decoder 不乱生成”。SPRDiff 给出的答案是：至少要有一个语义锚点和一个像素锚点。</div>
+
+  更具体地说，SPRDiff 给了三个工程判断。第一，极低码率下不能只依赖文本 prompt，语义条件最好来自压缩图像自身的中间重建。第二，像素条件不必保存原图所有细节，但必须约束边界、布局和局部结构，否则扩散模型会把“真实感”变成“改写”。第三，用 LoRA 适配 SD-Turbo、先训练压缩重建再加入对抗蒸馏，是一种比直接端到端强行联合优化更可控的路线。
+
+  对我来说，这篇论文最有价值的地方不是某一个指标，而是它把生成式压缩从“靠先验补细节”推进到“用结构化条件约束先验”。沿着这条路线，AI codec 的设计重点会从“保存所有细节”转向“保存足够强、足够可控的条件”，让大模型在一个被约束的空间里重建。
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Wei-et-al.-2026">Wei, H. et al. (2026). <em>Exploiting Semantic and Pixel Representations for Ultra-Low Bitrate Image Compression</em>. <a href="https://arxiv.org/html/2606.01608v1" target="_blank">arXiv:2606.01608v1</a></li>
+    <li data-cite-key="Blau-and-Michaeli-2019">Blau, Y. and Michaeli, T. (2019). <em>Rethinking Lossy Compression: The Rate-Distortion-Perception Tradeoff</em>. <a href="https://proceedings.mlr.press/v97/blau19a.html" target="_blank">ICML 2019</a></li>
+    <li data-cite-key="Rombach-et-al.-2022">Rombach, R. et al. (2022). <em>High-Resolution Image Synthesis with Latent Diffusion Models</em>. <a href="https://arxiv.org/abs/2112.10752" target="_blank">arXiv:2112.10752</a></li>
+    <li data-cite-key="Li-et-al.-2024">Li, Z. et al. (2024). <em>Towards Extreme Image Compression with Latent Feature Guidance and Diffusion Prior</em>. <a href="https://arxiv.org/abs/2404.18820" target="_blank">arXiv:2404.18820</a></li>
+    <li data-cite-key="Zhang-et-al.-2025">Zhang, T. et al. (2025). <em>StableCodec: Taming One-Step Diffusion for Extreme Image Compression</em>. <a href="https://arxiv.org/abs/2506.21977" target="_blank">arXiv:2506.21977</a></li>
+    <li data-cite-key="Guo-et-al.-2025">Guo, J. et al. (2025). <em>OSCAR: One-Step Diffusion Codec Across Multiple Bit-rates</em>. <a href="https://arxiv.org/abs/2505.16091" target="_blank">arXiv:2505.16091</a></li>
+    <li data-cite-key="Oquab-et-al.-2024">Oquab, M. et al. (2024). <em>DINOv2: Learning Robust Visual Features without Supervision</em>. <a href="https://arxiv.org/abs/2304.07193" target="_blank">arXiv:2304.07193</a></li>
+    <li data-cite-key="Sauer-et-al.-2024">Sauer, A. et al. (2024). <em>Adversarial Diffusion Distillation</em>. <a href="https://arxiv.org/abs/2311.17042" target="_blank">arXiv:2311.17042</a></li>
+    <li data-cite-key="Balle-et-al.-2017">Ballé, J. et al. (2017). <em>End-to-end Optimized Image Compression</em>. <a href="https://arxiv.org/abs/1611.01704" target="_blank">arXiv:1611.01704</a></li>
+  </ul>
+</div>

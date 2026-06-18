@@ -1,0 +1,235 @@
+---
+title: "实时通信（一）：网络基础，延迟、抖动、丢包与拥塞控制"
+description: "深入讲解实时通信的网络基础：TCP/UDP、RTT、排队延迟、抖动、丢包、带宽估计、拥塞控制，以及为什么实时音视频更关心尾延迟而不是平均吞吐。"
+date: 2026-06-11T17:54:18
+created_at: 2026-06-11T17:54:18
+updated_at: 2026-06-12T10:11:16
+tags: [RTC, WebRTC, RTP, UDP, TCP, FEC, NACK, 拥塞控制, 延迟, 抖动, 丢包]
+categories: [编程]
+subcategory: "实时通信"
+sub_id: 10
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">RTT</span><span class="label">往返延迟</span></div>
+  <div class="stat"><span class="num b">Jitter</span><span class="label g">到达抖动</span></div>
+  <div class="stat"><span class="num">Loss</span><span class="label">丢包</span></div>
+  <div class="stat"><span class="num b">Queue</span><span class="label g">排队</span></div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="realtime-communication-hub.html"><span class="nav-label">系列目录</span><span class="nav-title">实时通信工程总览</span></a>
+  <a class="nav-card current" href="realtime-communication-network-basics.html"><span class="nav-label">第 1 篇</span><span class="nav-title">网络基础</span></a>
+  <a class="nav-card" href="realtime-communication-webrtc-core.html"><span class="nav-label">下一篇</span><span class="nav-title">WebRTC 核心</span></a>
+</div>
+
+<div class="def-box">
+  <h3>本篇先解决哪些词</h3>
+  <p><strong>物理层</strong> 解释比特如何穿过线缆、光纤和无线信道；<strong>TCP</strong> 解释可靠有序的字节流；<strong>UDP</strong> 解释不保证到达的数据报；<strong>RTP/RTCP</strong> 解释实时媒体如何标时间、排顺序和回传质量；<strong>FEC/NACK</strong> 解释丢包后如何提前纠错或请求重传。先理解这些，再看 WebRTC 才不会被缩写淹没。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">预备章</div>
+  <div class="ch-title">先把“通信”这件事分层看清楚</div>
+
+实时通信不是一个单独协议能完成的事情。一次语音通话从麦克风到扬声器，要经过物理介质、链路接入、IP 路由、传输协议、媒体协议和应用逻辑。分层的意义是：每层只解决自己能解决的问题，上层不要把所有问题都误判成“网络不好”。
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>层次</th><th>它负责什么</th><th>实时通信里常见问题</th></tr></thead>
+<tbody>
+<tr><td>物理层</td><td>把比特变成电信号、光信号或无线电波，在网线、光纤、Wi-Fi、蜂窝网络上传播</td><td>距离、信号衰减、无线干扰、弱信号、基站切换</td></tr>
+<tr><td>数据链路层</td><td>在同一个局域网或接入链路内传帧，处理 MAC 地址、Wi-Fi 重传、以太网帧</td><td>Wi-Fi 竞争、链路层重传、局域网拥塞</td></tr>
+<tr><td>网络层</td><td>用 IP 地址跨网络转发包，决定从源主机到目标主机走哪条路</td><td>路由绕路、跨运营商、NAT、防火墙、路径 MTU</td></tr>
+<tr><td>传输层</td><td>用端口把数据交给具体应用，并提供 TCP 或 UDP 这样的传输语义</td><td>TCP 队头阻塞、UDP 丢包、拥塞控制、端口不可达</td></tr>
+<tr><td>应用 / 媒体层</td><td>定义业务协议和媒体协议，例如 HTTP、WebSocket、RTP、RTCP、WebRTC</td><td>编码码率、关键帧、Jitter Buffer、NACK、FEC、A/V Sync</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="def-box">
+  <h3>物理层不是“代码层”，但它会决定代码的上限</h3>
+  <p><strong>物理层</strong> 关心比特如何穿过真实世界：铜线里的电信号、光纤里的光脉冲、空气里的无线电波。它不认识 TCP、UDP 或 WebRTC，只负责尽力把 0 和 1 传过去。弱网中的信号衰减、Wi-Fi 干扰、蜂窝切换，本质上都可能先从物理层或链路层表现出来，再向上变成 RTT 抖动、丢包和码率下降。</p>
+</div>
+
+<div class="callout"><strong>排障顺序</strong>：先分清问题发生在哪一层。DNS 失败不是 RTP 问题，Wi-Fi 干扰不是编码器问题，TCP 队头阻塞也不是 WebRTC 自身的媒体算法问题。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">实时通信的敌人不是慢，而是不确定</div>
+
+普通文件下载关心总耗时，实时音视频关心每一小段声音和画面能不能按时到。一个视频包晚到 500 ms，即使最终没丢，对播放器也几乎等价于丢了：它错过了播放时刻。
+
+<div class="def-box">
+  <h3>实时通信里的四个基础指标</h3>
+  <p><strong>Latency</strong> 是端到端延迟；<strong>RTT</strong> 是往返时间；<strong>Jitter</strong> 是包到达间隔的波动；<strong>Packet Loss</strong> 是包没有按时到达或完全丢失。RTC 系统不是追求零延迟，而是在可接受延迟内吸收抖动、恢复丢包、避免排队失控。</p>
+</div>
+
+<div class="callout"><strong>核心判断</strong>：实时系统最怕 bufferbloat。带宽不足会降清晰度，排队失控会让互动感直接消失。</div>
+
+延迟通常由传播、传输、处理和排队组成。传播延迟来自物理距离，无法用代码消除；传输延迟来自链路速率和包大小；处理延迟来自编码、解码、加密、转发；排队延迟则来自路由器、系统 socket buffer、发送队列和服务端媒体队列。实时通信优化最常见的战场就是排队延迟。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">先讲清楚 TCP 和 UDP 是什么</div>
+
+在进入 WebRTC 之前，先要分清网络栈里的两个基础传输协议：<strong>TCP</strong> 和 <strong>UDP</strong>。它们都工作在 IP 之上，负责把一台机器上的应用数据送到另一台机器上的应用端口；区别在于，TCP 把网络伪装成一条可靠、有序的字节流，UDP 则只提供最小的数据报投递能力。
+
+<div class="def-box">
+  <h3>TCP：Transmission Control Protocol</h3>
+  <p><strong>TCP</strong> 的全称是 Transmission Control Protocol，传输控制协议。它提供连接、可靠传输、有序交付、丢包重传、流量控制和拥塞控制。应用层看到的是一条连续字节流：只要连接还在，发出去的数据最终会按顺序交给对端，除非连接失败。</p>
+</div>
+
+<h3 class="section-title">TCP 三次握手：为什么连接要来回三步</h3>
+
+TCP 不是“发一个包就开始传业务数据”。它先要建立连接状态，让两端确认彼此都能收发，并同步初始序列号。这个过程就是三次握手。
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>步骤</th><th>方向</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td>1. SYN</td><td>客户端 → 服务端</td><td>客户端说：我要建立连接，这是我的初始序列号</td></tr>
+<tr><td>2. SYN-ACK</td><td>服务端 → 客户端</td><td>服务端说：我收到了，也给你我的初始序列号</td></tr>
+<tr><td>3. ACK</td><td>客户端 → 服务端</td><td>客户端说：我也收到了你的确认，连接可以开始传数据</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout"><strong>三次握手的本质</strong>：不是形式主义，而是确认“双向通信都可达”并同步双方的序列号。少一次，服务端无法确认客户端是否真的收到自己的响应；多一次，通常又没有必要。</div>
+
+<div class="def-box">
+  <h3>UDP：User Datagram Protocol</h3>
+  <p><strong>UDP</strong> 的全称是 User Datagram Protocol，用户数据报协议。它不建立连接，不保证可靠，不保证顺序，也不自动重传。应用层发出的每个数据报都相对独立：网络尽力送达，送不到就丢，先后顺序也可能变化。</p>
+</div>
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>问题</th><th>TCP 的答案</th><th>UDP 的答案</th></tr></thead>
+<tbody>
+<tr><td>要不要先建立连接？</td><td>要。通过握手建立连接状态</td><td>不要。应用可以直接发数据报</td></tr>
+<tr><td>丢包怎么办？</td><td>传输层自动重传，直到成功或连接失败</td><td>传输层不管，由应用自己决定是否补救</td></tr>
+<tr><td>乱序怎么办？</td><td>传输层重排，按顺序交付给应用</td><td>应用自己识别乱序、重排或丢弃</td></tr>
+<tr><td>会不会阻塞后续数据？</td><td>会。前面的字节没补齐，后面的字节不能越过它</td><td>不会天然阻塞。新包到了就可以交给应用处理</td></tr>
+<tr><td>典型场景</td><td>网页、文件下载、接口请求、数据库连接</td><td>实时音视频、游戏状态同步、DNS、低延迟遥测</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">为什么媒体更偏爱 UDP</h3>
+
+TCP 适合网页、文件、接口请求，但对实时媒体有一个根本问题：<strong>队头阻塞</strong>。只要前面的字节没补齐，后面的字节即使已经到达，也不能交给应用层。对视频来说，这可能意味着为了等一个过期包，把后面已经可播放的新画面也堵住。
+
+UDP 把选择权交给应用层：哪些包值得等，哪些包过期就丢，哪些关键帧需要重发，码率如何降，是否打开 FEC 或 NACK。WebRTC 正是建立在这种思路上：媒体通常走 UDP/RTP，可靠性和拥塞控制由实时媒体栈自己做。
+
+<h3 class="section-title">WebRTC：不是一个协议，而是一套实时媒体协议栈</h3>
+
+<strong>WebRTC</strong> 可以理解为浏览器和客户端里的实时音视频通信能力集合。它把采集、编码、网络探测、NAT 穿透、安全传输、RTP 媒体发送、RTCP 反馈、拥塞控制和播放缓冲串起来，让两个端或多个端可以低延迟传音视频和数据。
+
+<div class="def-box">
+  <h3>WebRTC 在网络栈中的位置</h3>
+  <p>WebRTC 的媒体面通常运行在 <strong>UDP</strong> 之上，用 <strong>RTP</strong> 承载音视频帧，用 <strong>RTCP</strong> 回传接收质量、丢包、抖动、码率估计等控制信息；同时用 DTLS/SRTP 做加密，用 ICE/STUN/TURN 解决 NAT 和连通性问题。也就是说，UDP 只负责尽力投递数据报，真正的实时媒体语义主要由 RTP/RTCP 和 WebRTC 媒体栈完成。</p>
+</div>
+
+<h3 class="section-title">UDP 和 RTP 的关系：UDP 送包，RTP 说明这个包是什么</h3>
+
+UDP 只知道“从 A 端口发一个数据报到 B 端口”，它不知道这个数据报里是音频、视频、关键帧还是普通帧。<strong>RTP</strong> 负责给实时媒体数据加上时间戳、序列号、载荷类型、同步源标识等信息，让接收端可以判断包的顺序、播放时间和属于哪一路媒体流。
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>协议</th><th>解决的问题</th><th>它不解决什么</th></tr></thead>
+<tbody>
+<tr><td>UDP</td><td>按端口发送独立数据报</td><td>不保证到达、不保证顺序、不知道媒体时间</td></tr>
+<tr><td>RTP</td><td>描述实时媒体包的序列、时间戳、载荷类型和同步源</td><td>本身不负责 NAT 穿透，也不保证一定可靠送达</td></tr>
+<tr><td>RTCP</td><td>反馈接收质量、丢包、抖动、RTT、关键帧请求等控制信息</td><td>不直接承载主要音视频帧</td></tr>
+<tr><td>WebRTC</td><td>把采集、编码、RTP/RTCP、加密、拥塞控制、NAT 穿透和播放串成工程系统</td><td>不是单一网络包格式</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">FEC 和 NACK：实时媒体怎么补救丢包</h3>
+
+UDP 不自动重传，实时媒体就必须自己决定“丢了以后怎么办”。最常见的两种机制是 <strong>FEC</strong> 和 <strong>NACK</strong>。
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>机制</th><th>全称</th><th>怎么工作</th><th>适合场景</th><th>代价</th></tr></thead>
+<tbody>
+<tr><td>FEC</td><td>Forward Error Correction，前向纠错</td><td>发送端额外发送冗余校验数据；接收端即使丢了少量原始包，也可能用冗余信息恢复</td><td>RTT 较高、重传来不及、音频或低延迟视频</td><td>占用额外带宽，丢包过多时仍然恢复不了</td></tr>
+<tr><td>NACK</td><td>Negative Acknowledgement，否定确认</td><td>接收端发现 RTP 序列号缺口后，通过 RTCP NACK 告诉发送端“这个包没收到”，发送端选择性重传</td><td>RTT 较低、包还没过播放截止时间、视频关键数据值得补</td><td>增加一次往返，晚到的重传包可能已经过期</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout"><strong>选择原则</strong>：FEC 是“提前买保险”，NACK 是“丢了再追件”。弱网高 RTT 下更依赖 FEC；低 RTT 下 NACK 更省带宽；生产系统通常会根据媒体类型、码率、RTT、丢包率和播放缓冲动态组合。</div>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>维度</th><th>TCP</th><th>UDP + RTP/WebRTC</th></tr></thead>
+<tbody>
+<tr><td>可靠性</td><td>传输层保证全部送达</td><td>应用层选择性恢复</td></tr>
+<tr><td>顺序</td><td>严格有序，可能队头阻塞</td><td>可乱序到达，由 jitter buffer 重排</td></tr>
+<tr><td>实时性</td><td>旧数据可能阻塞新数据</td><td>过期包可以丢弃</td></tr>
+<tr><td>适合场景</td><td>文件、网页、API</td><td>音视频、游戏、实时控制</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout"><strong>一句话区分</strong>：TCP 更像“保证每页都按顺序送到的快递”，UDP 更像“按时送达优先的现场广播”。实时音视频宁愿丢掉过期画面，也不愿为了补旧包把新画面全部堵住。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">拥塞控制：不是“尽量发”，而是“别把队列打爆”</div>
+
+实时通信的发送端需要持续估计可用带宽。发少了，画质差；发多了，路由器和服务端队列堆积，延迟上升，最后丢包和卡顿一起出现。现代 RTC 的拥塞控制会综合丢包、延迟梯度、RTT、接收端反馈和码率变化，动态调整编码码率、分辨率、帧率和发送节奏。
+
+{{< mermaid >}}
+graph LR
+    A["发送端编码器"] --> B["RTP 包发送"]
+    B --> C["网络队列 / 丢包 / 抖动"]
+    C --> D["接收端统计"]
+    D --> E["RTCP feedback"]
+    E --> F["带宽估计 / 拥塞控制"]
+    F --> A
+{{< /mermaid >}}
+
+<div class="admonition warning">
+  <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>排障时不要只看平均码率</div>
+  <div class="admonition-content"><p>平均码率正常但用户仍觉得卡，常见原因是 p95/p99 延迟、jitter、关键帧请求、发送队列和解码队列异常。实时通信排障要看时间序列，而不是只看单个平均值。</p></div>
+</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">生产排障：先问是哪一种坏</div>
+
+真实线上问题通常不是“网络不好”四个字能解释。要先判断坏的是建连、上行、下行、编码、解码、渲染，还是服务端转发。网络层常用的切入口包括 RTT 是否升高、jitter 是否突刺、丢包是上行还是下行、NACK/PLI/FIR 是否频繁、发送码率是否被带宽估计压低、socket 或 pacer 队列是否堆积。
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>现象</th><th>可能原因</th><th>优先看什么</th></tr></thead>
+<tbody>
+<tr><td>声音断续</td><td>上行丢包、jitter buffer underrun、音频编码过载</td><td>audio jitter、concealed samples、RTT、上行 loss</td></tr>
+<tr><td>画面糊但不卡</td><td>拥塞控制降码率、simulcast 订阅低层</td><td>target bitrate、actual bitrate、selected spatial layer</td></tr>
+<tr><td>画面卡住后恢复</td><td>关键帧丢失、PLI 后等待新关键帧</td><td>PLI/FIR 次数、keyframe interval、decoder dropped frames</td></tr>
+<tr><td>延迟越来越大</td><td>队列堆积、jitter buffer 过大、发送节奏失控</td><td>pacer queue、jitter buffer delay、render delay</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="sources">
+  <h2>Sources</h2>
+  <ol>
+    <li data-cite-key="RFC9293-TCP">RFC 9293. <a href="https://datatracker.ietf.org/doc/html/rfc9293" target="_blank">Transmission Control Protocol (TCP)</a>.</li>
+    <li data-cite-key="RFC768-UDP">RFC 768. <a href="https://datatracker.ietf.org/doc/html/rfc768" target="_blank">User Datagram Protocol (UDP)</a>.</li>
+    <li data-cite-key="RFC3550-RTP">RFC 3550. <a href="https://datatracker.ietf.org/doc/html/rfc3550" target="_blank">RTP: A Transport Protocol for Real-Time Applications</a>.</li>
+    <li data-cite-key="RFC4585-AVPF">RFC 4585. <a href="https://datatracker.ietf.org/doc/html/rfc4585" target="_blank">Extended RTP Profile for RTCP-Based Feedback</a>.</li>
+    <li data-cite-key="RFC5109-FEC">RFC 5109. <a href="https://datatracker.ietf.org/doc/html/rfc5109" target="_blank">RTP Payload Format for Generic Forward Error Correction</a>.</li>
+    <li data-cite-key="W3C-WebRTC">W3C. <a href="https://www.w3.org/TR/webrtc/" target="_blank">WebRTC: Real-Time Communication in Browsers</a>.</li>
+    <li data-cite-key="WebRTC-Stats">W3C. <a href="https://www.w3.org/TR/webrtc-stats/" target="_blank">Identifiers for WebRTC's Statistics API</a>.</li>
+    <li data-cite-key="RMCAT-IETF">IETF RMCAT. <a href="https://datatracker.ietf.org/wg/rmcat/about/" target="_blank">RTP Media Congestion Avoidance Techniques</a>.</li>
+  </ol>
+</div>

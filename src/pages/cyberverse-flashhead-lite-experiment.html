@@ -1,0 +1,184 @@
+---
+title: "数字人工程解读（二）：CyberVerse 实验记录——FlashHead Lite + wav2vec2 的端到端耗时拆解"
+description: "记录 CyberVerse 在 SoulX-FlashHead-1_3B Lite 与 wav2vec2-base-960h 配置下的一次实时数字人实验：从 Avatar 生成、Go 编排、VP8 编码到 WebRTC 发布，拆解各阶段耗时与主要瓶颈。"
+date: 2026-06-12T14:18:24
+created_at: 2026-06-12T14:18:24
+updated_at: 2026-06-12T14:25:40
+tags: [CyberVerse, FlashHead, 数字人, WebRTC, 性能分析]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 2010
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3.713s</span><span class="label">首个视频 chunk</span></div>
+  <div class="stat"><span class="num b">0.514s</span><span class="label g">FlashHead 单 chunk</span></div>
+  <div class="stat"><span class="num">0.5–0.7s</span><span class="label">VP8 编码</span></div>
+  <div class="stat"><span class="num b">≈4.8s</span><span class="label g">发布队列峰值</span></div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card" href="cyberverse-realtime-digital-human-agent.html"><span class="nav-label">上一篇</span><span class="nav-title">CyberVerse 源码解读</span></a>
+  <a class="nav-card current" href="cyberverse-flashhead-lite-experiment.html"><span class="nav-label">本文 · 实验记录</span><span class="nav-title">FlashHead Lite 耗时拆解</span></a>
+  <a class="nav-card" href="digital-human-hub.html"><span class="nav-label">系列目录</span><span class="nav-title">数字人系列总目录</span></a>
+</div>
+
+<div class="callout"><strong>实验结论</strong>：在 <code>./checkpoints/SoulX-FlashHead-1_3B Lite</code> + <code>./checkpoints/wav2vec2-base-960h</code> 组合下，当前日志显示 FlashHead 单个视频 chunk 生成速度并不是持续播放阶段的主要瓶颈；更明显的问题出现在 Go 侧 DirectPeer 的 <strong>VP8 编码与发布队列积压</strong>。首帧端到端仍有约 <strong>3.713 秒</strong>，但这需要更多跨阶段 trace 才能精确拆分。#CyberVerse-local-experiment-2026-06-12#</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验配置</div>
+  <div class="ch-title">这次测的是什么</div>
+
+这次实验记录的是 CyberVerse 实时数字人链路在一个轻量 Avatar 后端组合下的表现。Avatar 模型使用 <code>./checkpoints/SoulX-FlashHead-1_3B Lite</code>，音频特征模型使用 <code>./checkpoints/wav2vec2-base-960h</code>。链路仍然是 CyberVerse 的标准实时路径：Python Inference Server 负责 Avatar 推理，Go API Server 负责编排、VP8 编码和 WebRTC 发布。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="table-wrap param-table">
+<table>
+<thead><tr><th>项目</th><th>配置 / 观测值</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>Avatar checkpoint</td><td><code>./checkpoints/SoulX-FlashHead-1_3B Lite</code></td><td>用于从音频驱动数字人视频帧。</td></tr>
+<tr><td>Audio feature checkpoint</td><td><code>./checkpoints/wav2vec2-base-960h</code></td><td>用于提取语音特征，供 Avatar 后端使用。</td></tr>
+<tr><td>视频 chunk</td><td><code>24 frames</code>，<code>512x512</code>，<code>20 fps</code></td><td>一个 chunk 约等于 1.2 秒视频。</td></tr>
+<tr><td>音频消耗</td><td><code>19200 samples</code></td><td>若按 16 kHz 采样率计算，也是约 1.2 秒音频。</td></tr>
+<tr><td>推流编码</td><td><code>VP8</code>，<code>1800 kbps</code></td><td>Go 侧 DirectPeer 日志中观测到的编码配置。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">原始日志片段</h3>
+
+以下是本次实验里最关键的几类日志。它们分别对应 Python 侧 Avatar 生成、Go 编排侧首个视频 chunk、Go DirectPeer 侧编码与发布。#CyberVerse-local-experiment-2026-06-12#
+
+<pre><code class="language-text">INFO:inference.plugins.avatar.flash_head_plugin:FlashHead video chunk generated: chunk_index=3338 num_frames=24 512x512 fps=20 consumed_samples=19200 is_final=False elapsed=0.514
+
+2026/06/12 14:12:03 TTFF std pipeline session=dc3b9d12-96e9-4144-a327-c47cd1508352 first_video_chunk=3.713s
+
+2026/06/12 14:12:03 voice_trace event=direct_vp8_encode_started sid=dc3b9d12-96e9-4144-a327-c47cd1508352 turn=2 reply=standard seg=1 queue_ms=532 bitrate_kbps=1800
+2026/06/12 14:12:04 voice_trace event=direct_vp8_encode_done    sid=dc3b9d12-96e9-4144-a327-c47cd1508352 turn=2 reply=standard seg=1 encode_ms=677
+2026/06/12 14:12:04 voice_trace event=direct_publish_started    sid=dc3b9d12-96e9-4144-a327-c47cd1508352 turn=2 reply=standard seg=1 queue_ms=1210
+2026/06/12 14:12:04 voice_trace event=direct_first_video_sample_written sid=dc3b9d12-96e9-4144-a327-c47cd1508352 turn=2 reply=standard seg=1 publish_ms=24</code></pre>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">阶段拆解</div>
+  <div class="ch-title">各阶段花了多少时间</div>
+
+<h3 class="section-title">1. Python Avatar 生成：单 chunk 约 0.514 秒</h3>
+
+FlashHead 日志显示，一个 <code>24</code> 帧、<code>512x512</code>、<code>20 fps</code> 的视频 chunk 生成耗时为 <strong>0.514 秒</strong>。因为 24 帧在 20 fps 下对应约 <strong>1.2 秒</strong>视频，所以这个样本里的 Avatar 生成速度快于实时播放速度。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="callout"><strong>阶段判断</strong>：仅从这个样本看，FlashHead Lite 不是持续输出阶段的主瓶颈。它生成 1.2 秒视频只用了 0.514 秒，理论上有余量。</div>
+
+<h3 class="section-title">2. Go 编排到首个视频 chunk：约 3.713 秒</h3>
+
+Go 侧日志给出了标准链路的首个视频 chunk 时间：<code>first_video_chunk=3.713s</code>。这不是单纯的 Avatar 推理耗时，而是端到端链路里的一个关键 TTFF 指标，前面可能包含用户语音结束、ASR、LLM、TTS、Avatar 启动、gRPC 流传输等多个阶段。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="admonition warning">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    不要把 3.713 秒直接归因给 FlashHead
+  </div>
+  <div class="admonition-content"><p>当前日志只说明 Go 标准链路拿到首个视频 chunk 用了 3.713 秒。要进一步判断是 ASR、LLM、TTS、Avatar warmup 还是 gRPC 传输导致，需要同时打开 <code>flashhead_generation_started</code>、<code>go_avatar_first_video_received</code>、TTS 首包、LLM 首 token 等 trace。</p></div>
+</div>
+
+<h3 class="section-title">3. VP8 编码：前几段约 0.5–0.7 秒</h3>
+
+VP8 是一种面向实时视频传输的视频压缩编码格式。它的作用不是“生成数字人画面”，而是把 FlashHead 产出的原始 RGB 视频帧压缩成浏览器 WebRTC 可以接收和播放的视频 payload。换句话说，FlashHead 负责“画面内容”，VP8 编码负责“把画面压小并打包成可传输的视频流”。#CyberVerse-source-code-2026-06-12#
+
+在 CyberVerse 里，这一步主要由 Go 侧负责：<code>server/internal/direct/peer.go</code> 的 <code>DirectPeer.runEncoder</code> 从 <code>encodeCh</code> 取出 <code>RawAVSegment</code>，打印 <code>direct_vp8_encode_started</code>，然后调用 <code>mediapeer.EncodeRGBChunkToVP8SamplesWithBitrate</code>。真正执行编码的函数在 <code>server/internal/mediapeer/segment.go</code>：它启动 <code>ffmpeg</code> 子进程，用 <code>libvpx</code> 把 <code>rgb24</code> 原始帧编码成 VP8，并输出 IVF 容器；随后再用 Pion 的 <code>ivfreader</code> 解析成 <code>media.Sample</code>，交给 DirectPeer 后续发布。#CyberVerse-source-code-2026-06-12#
+
+<pre><code class="language-text">DirectPeer.runEncoder
+  -> mediapeer.EncodeRGBChunkToVP8SamplesWithBitrate
+     -> ffmpeg -c:v libvpx -deadline realtime -cpu-used 8 -f ivf
+     -> ivfreader.ParseNextFrame
+     -> []media.Sample
+  -> publishCh
+  -> WebRTC video track</code></pre>
+
+DirectPeer 日志显示，前几段 VP8 编码耗时分别大约为 <code>677ms</code>、<code>485ms</code>、<code>632ms</code>、<code>543ms</code>、<code>592ms</code>。这个阶段已经明显接近甚至超过一个短 segment 可以承受的实时预算。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>Segment</th><th>编码等待 queue_ms</th><th>VP8 编码 encode_ms</th><th>发布等待 queue_ms</th><th>写入 publish_ms</th></tr></thead>
+<tbody>
+<tr><td>seg 1</td><td>532ms</td><td>677ms</td><td>1210ms</td><td>24ms</td></tr>
+<tr><td>seg 2</td><td>643ms</td><td>485ms</td><td>1867ms</td><td>26ms</td></tr>
+<tr><td>seg 3</td><td>839ms</td><td>632ms</td><td>2803ms</td><td>25ms</td></tr>
+<tr><td>seg 4</td><td>924ms</td><td>543ms</td><td>3375ms</td><td>27ms</td></tr>
+<tr><td>seg 5</td><td>1479ms</td><td>592ms</td><td>3931ms</td><td>25ms</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">4. WebRTC 发布写入：本身不慢，但队列已经堆起来</h3>
+
+<code>direct_first_video_sample_written</code> 里的 <code>publish_ms</code> 多数只有 <strong>17–29ms</strong>，说明真正写入 WebRTC 的动作并不慢。问题在于 <code>direct_publish_started</code> 前面的 <code>queue_ms</code> 从 1.2 秒一路增长到接近 4.8 秒，说明发布侧开始处理时，前面已经积压了大量待发布的视频段。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="callout"><strong>关键区别</strong>：<code>publish_ms</code> 小，不代表发布链路没有问题；这里的问题不是“写得慢”，而是“轮到它写之前已经等太久”。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">瓶颈定位</div>
+  <div class="ch-title">主要时间瓶颈在哪里</div>
+
+<h3 class="section-title">持续播放阶段：DirectPeer VP8 编码与队列积压是主瓶颈</h3>
+
+从日志趋势看，上游持续产生 segment，而 Go 侧 DirectPeer 的编码与发布消费速度跟不上，导致队列逐步累积。尤其是发布队列从 <code>1210ms</code> 增长到 <code>4850ms</code> 左右后才趋于稳定，这说明系统进入了一个带着数秒 backlog 播放的状态。#CyberVerse-local-experiment-2026-06-12#
+
+{{< mermaid >}}
+flowchart TD
+  A["Avatar 视频 chunk 到达"] --> B["direct_segment_enqueued"]
+  B --> C["等待 VP8 编码队列"]
+  C --> D["direct_vp8_encode_started"]
+  D --> E["VP8 编码\n约 0.5–0.7 秒"]
+  E --> F["direct_vp8_encode_done"]
+  F --> G["等待发布队列\n最高约 4.8 秒"]
+  G --> H["direct_publish_started"]
+  H --> I["写入 WebRTC\n约 17–29ms"]
+{{< /mermaid >}}
+
+<h3 class="section-title">首帧阶段：3.713 秒需要更细 trace 才能归因</h3>
+
+首个视频 chunk 的 <code>3.713s</code> 是用户实际体验里非常重要的延迟，但当前日志不足以把它精确分摊到 ASR、LLM、TTS、Avatar 生成或 gRPC 传输。它只能说明标准链路首帧还偏慢，不能单独证明 FlashHead 是首帧瓶颈。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>候选瓶颈</th><th>当前证据</th><th>判断</th><th>下一步需要的日志</th></tr></thead>
+<tbody>
+<tr><td>FlashHead 单 chunk 生成</td><td><code>elapsed=0.514</code>，生成 24 帧 / 1.2 秒视频</td><td>不像持续阶段主瓶颈</td><td>连续 chunk 的 <code>elapsed</code> 分布、首个 chunk 生成开始时间</td></tr>
+<tr><td>首帧端到端链路</td><td><code>first_video_chunk=3.713s</code></td><td>确认偏慢，但无法单点归因</td><td>ASR final、LLM first token、TTS first audio、Avatar first request、Avatar first response</td></tr>
+<tr><td>VP8 编码</td><td>多段 <code>encode_ms</code> 为 0.5–0.7 秒</td><td>明确是重要耗时点</td><td>编码器初始化、preset、线程数、是否每段重建 encoder</td></tr>
+<tr><td>WebRTC 写入</td><td><code>publish_ms</code> 多为 17–29ms</td><td>写入动作本身不慢</td><td>RTP pacing、轨道阻塞、是否按 segment 串行等待</td></tr>
+<tr><td>发布队列</td><td><code>queue_ms</code> 增至约 4.8 秒</td><td>明确存在积压</td><td>队列长度、消费协程数、背压策略、丢帧策略</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">优化优先级</h3>
+
+<div class="review-box">
+  <h3>排查顺序</h3>
+  <ul>
+    <li><strong>第一优先级：DirectPeer VP8 编码</strong>。检查是否每个 segment 都重新初始化 encoder，确认编码参数、线程数、preset 与分辨率是否适合实时链路。</li>
+    <li><strong>第二优先级：发布队列与背压策略</strong>。当前队列积压到约 4.8 秒，如果目标是实时对话，应该考虑丢弃过期帧、合并 segment 或限制上游生产速度。</li>
+    <li><strong>第三优先级：首帧链路 trace</strong>。补齐 ASR、LLM、TTS、Avatar 的首包时间，确认 3.713 秒主要耗在哪个阶段。</li>
+    <li><strong>第四优先级：Avatar 生成稳定性</strong>。继续收集 FlashHead 连续 chunk 的 <code>elapsed</code>，确认是否有偶发慢 chunk 或首轮 warmup。</li>
+  </ul>
+</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">实验小结</div>
+  <div class="ch-title">这组模型组合的当前状态</div>
+
+这次结果可以概括为三句话。第一，<code>SoulX-FlashHead-1_3B Lite</code> 在样本日志中生成 1.2 秒视频只花了 0.514 秒，持续生成能力看起来有余量。第二，端到端首个视频 chunk 仍然需要 3.713 秒，这会影响用户第一次看到数字人回应的体感。第三，持续播放阶段最明显的工程瓶颈在 Go DirectPeer 侧：VP8 编码耗时偏高，发布队列积压到约 4.8 秒，而真正写 WebRTC 的 <code>publish_ms</code> 很低。#CyberVerse-local-experiment-2026-06-12#
+
+<div class="callout"><strong>一句话结论</strong>：如果目标是降低“持续对话时的滞后感”，优先优化 Go 侧 VP8 编码和发布队列；如果目标是降低“第一句话出来前的等待”，需要补齐首帧 trace 后再定位 ASR / LLM / TTS / Avatar 的真实占比。</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="CyberVerse-local-experiment-2026-06-12">CyberVerse 本地实验日志（2026-06-12）：使用 <code>./checkpoints/SoulX-FlashHead-1_3B Lite</code> 与 <code>./checkpoints/wav2vec2-base-960h</code> 的 Avatar 生成、Go 编排、DirectPeer VP8 编码与 WebRTC 发布日志。</li>
+    <li data-cite-key="CyberVerse-source-code-2026-06-12">CyberVerse 源码（2026-06-12）：<code>server/internal/direct/peer.go</code> 的 <code>DirectPeer.runEncoder</code>，以及 <code>server/internal/mediapeer/segment.go</code> 的 <code>EncodeRGBChunkToVP8SamplesWithBitrate</code>。</li>
+  </ul>
+</div>
+</div>

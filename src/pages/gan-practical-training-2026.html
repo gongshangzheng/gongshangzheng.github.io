@@ -1,0 +1,133 @@
+---
+title: GAN 实践训练指南：Loss、正则化、归一化、采样与排障
+description: 面向实践的 GAN 训练技巧整理，覆盖 loss 选择、判别器约束、归一化、TTUR、truncation trick、指标解读和常见训练故障。
+date: 2026-06-02T17:12:45
+created_at: 2026-06-02T17:12:45
+updated_at: 2026-06-02T17:12:45
+tags: [GAN, training-tricks, regularization, normalization, FID, mode-collapse]
+categories: [AI]
+subcategory: "GAN"
+mathjax: true
+notify: true
+hero_title: GAN 实践训练指南
+hero_sub: 从 loss 选择到 mode collapse 排障
+hero_tagline: 不把 GAN 训崩，靠的是系统配方而不是单个 trick
+page_style: |
+  .metric-table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 0.94rem; }
+  .metric-table th, .metric-table td { border: 1px solid var(--border-color, #ddd); padding: 8px 10px; vertical-align: top; }
+  .metric-table th { background: var(--bg-block); font-weight: 700; }
+  .sources li { margin-bottom: 8px; }
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">5</span><span class="label">排障维度</span></div>
+  <div class="stat"><span class="num b">FID/IS</span><span class="label g">核心指标</span></div>
+  <div class="stat"><span class="num">D↔G</span><span class="label">动态平衡</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">训练 GAN 前，先承认它不是普通监督学习</div>
+
+  <p>GAN 训练的第一条实践原则是：不要把生成器 loss 或判别器 loss 当成普通监督学习的准确进度条。因为 GAN 是双人博弈，两个模型的目标同时变化，loss 震荡不一定代表失败，loss 平滑也不一定代表样本变好。Goodfellow 的 tutorial 已经把评估、稳定性和 mode collapse 列为 GAN 的核心开放问题 #Goodfellow, 2016#。</p>
+
+  <p>更可靠的做法是同时观察样本、FID/IS、判别器输出、梯度范数、模式覆盖和训练是否突然崩溃。Kurach 等人的大规模研究也提示，GAN 结果受正则化、归一化、架构、超参和数据集共同影响，不能只凭某个技巧判断优劣 #Kurach et al., 2018#。</p>
+
+  <div class="photo">
+    <img src="media/images/gan-research-2026/stability-toolkit.svg" alt="GAN stability toolkit" loading="lazy">
+    <div class="cap">图 1：实践中的 GAN 稳定性来自多组件协同，而不是单个超参。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">Loss 选择：先保证梯度信号有意义</div>
+
+  <p>原始 GAN 目标在理论上优雅，但实践中可能出现梯度变差。WGAN 通过 Wasserstein 距离让 critic loss 更接近样本质量变化；WGAN-GP 再用 gradient penalty 替代粗糙的 weight clipping；很多现代图像 GAN 则常用 non-saturating loss 或 hinge loss 搭配谱归一化判别器 #Arjovsky et al., 2017# #Gulrajani et al., 2017# #Miyato et al., 2018#。</p>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>现象</th><th>优先检查</th><th>可尝试调整</th></tr></thead>
+      <tbody>
+        <tr><td>生成器几乎不变</td><td>判别器是否过强、梯度是否消失</td><td>降低 D 学习率、使用 non-saturating / WGAN-GP</td></tr>
+        <tr><td>样本突然崩塌</td><td>D/G 更新比例、正则强度、batch 统计</td><td>增加判别器约束、调低学习率、回滚 checkpoint</td></tr>
+        <tr><td>纹理好但结构错</td><td>感受野和长程依赖</td><td>加入 attention、增强条件约束</td></tr>
+        <tr><td>FID 好但肉眼差</td><td>指标是否偏向特定特征</td><td>增加人工检查、P&R、多数据切片评估</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">判别器约束：强，但不要失控</div>
+
+  <p>判别器是 GAN 的训练信号来源，所以不能太弱；但判别器如果变化过快，又会让生成器拿到不稳定或无用梯度。WGAN-GP 通过输入梯度惩罚约束 critic 的局部变化速度，谱归一化则通过限制权重矩阵最大奇异值控制每层 Lipschitz 常数 #Gulrajani et al., 2017# #Miyato et al., 2018#。</p>
+
+  <div class="def-box">
+    <h3>实践中的判别器原则</h3>
+    <p>目标不是削弱判别器，而是让判别器的反馈连续、平滑、不过度依赖局部伪影。一个强但平滑的判别器，通常比一个弱判别器更适合作为生成器教师。</p>
+  </div>
+
+  <p>如果训练经常震荡，可以优先尝试谱归一化或 R1/gradient penalty；如果计算预算紧张，谱归一化通常更轻量；如果使用 WGAN 系列目标，gradient penalty 的几何意义更直接。Li 等人的 survey 也把正则化和归一化视为 GAN 稳定训练的核心先验注入方式 #Li et al., 2020#。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">架构和采样：质量、多样性与可控性的三角</div>
+
+  <p>架构选择决定了模型能否表达目标数据。DCGAN 的卷积约束让自然图像生成更稳定，PGGAN 的渐进增长降低了高分辨率训练难度，SAGAN 的 self-attention 补足了卷积长程依赖短板，StyleGAN 的 mapping network 和 style modulation 则让潜空间更可控 #Radford et al., 2015# #Karras et al., 2017# #Zhang et al., 2018# #Karras et al., 2018#。</p>
+
+  <p>采样策略同样影响结果。BigGAN 使用 truncation trick 提升保真度：从更靠近潜变量中心的区域采样，通常能得到更真实的图像，但也会牺牲多样性 #Brock et al., 2018#。因此，实践中不要只问“图像是否更好看”，还要问“覆盖了多少模式”。</p>
+
+  <div class="table-wrap">
+    <table class="metric-table">
+      <thead><tr><th>目标</th><th>推荐方向</th><th>代价</th></tr></thead>
+      <tbody>
+        <tr><td>更高保真度</td><td>truncation、强判别器、感知损失</td><td>可能降低多样性</td></tr>
+        <tr><td>更多多样性</td><td>放宽 truncation、监控 P&R</td><td>可能出现低质量样本</td></tr>
+        <tr><td>更强可控性</td><td>条件输入、StyleGAN 潜空间、编辑方向</td><td>需要额外标注或语义验证</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">评估：FID 有用，但不要迷信</div>
+
+  <p>FID 和 Inception Score 是 GAN 论文中最常见的指标。FID 比较真实样本和生成样本在预训练 Inception 特征空间中的均值与协方差，通常越低越好；IS 衡量生成样本是否清晰且类别分布多样，通常越高越好。但这些指标依赖预训练分类器特征，不等于人类完整感知 #Brock et al., 2018# #Karras et al., 2019#。</p>
+
+  <div class="def-box">
+    <h3>FID 的常见形式</h3>
+    <p style="text-align:center">\[FID=\lVert\mu_r-\mu_g\rVert_2^2 + Tr(\Sigma_r+\Sigma_g-2(\Sigma_r\Sigma_g)^{1/2}).\]</p>
+    <p>它衡量真实图像和生成图像在特征空间的统计差异，但不保证覆盖所有语义错误。</p>
+  </div>
+
+  <p>StyleGAN2 指出，基于分类器的 metric 可能偏向纹理而不是形状 #Karras et al., 2019#。所以真实项目中应组合使用 FID、P&R、人工检查、任务指标和失败样本分析；如果是医学、遥感、工业检测等高风险场景，还必须验证生成内容是否会引入虚假结构。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结语</div>
+  <div class="ch-title">一套可执行的 GAN 训练默认配方</div>
+
+  <p>如果今天从零训练图像 GAN，一个务实起点是：使用成熟架构；判别器加谱归一化；loss 从 non-saturating 或 hinge loss 开始；高分辨率任务先低分辨率闭环；同时记录 FID、样本网格、梯度范数和 checkpoint；遇到崩溃先定位 D/G 平衡，而不是盲目换模型。</p>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Goodfellow-2016">Goodfellow, I. (2016). NIPS 2016 Tutorial: Generative Adversarial Networks. <a href="https://arxiv.org/abs/1701.00160" target="_blank">arXiv:1701.00160</a>.</li>
+      <li data-cite-key="Radford-et-al.-2015">Radford, A. et al. (2015). Unsupervised Representation Learning with Deep Convolutional Generative Adversarial Networks. <a href="https://arxiv.org/abs/1511.06434" target="_blank">arXiv:1511.06434</a>.</li>
+      <li data-cite-key="Arjovsky-et-al.-2017">Arjovsky, M. et al. (2017). Wasserstein GAN. <a href="https://arxiv.org/abs/1701.07875" target="_blank">arXiv:1701.07875</a>.</li>
+      <li data-cite-key="Gulrajani-et-al.-2017">Gulrajani, I. et al. (2017). Improved Training of Wasserstein GANs. <a href="https://arxiv.org/abs/1704.00028" target="_blank">arXiv:1704.00028</a>.</li>
+      <li data-cite-key="Miyato-et-al.-2018">Miyato, T. et al. (2018). Spectral Normalization for Generative Adversarial Networks. <a href="https://arxiv.org/abs/1802.05957" target="_blank">arXiv:1802.05957</a>.</li>
+      <li data-cite-key="Karras-et-al.-2017">Karras, T. et al. (2017). Progressive Growing of GANs for Improved Quality, Stability, and Variation. <a href="https://arxiv.org/abs/1710.10196" target="_blank">arXiv:1710.10196</a>.</li>
+      <li data-cite-key="Zhang-et-al.-2018">Zhang, H. et al. (2018). Self-Attention Generative Adversarial Networks. <a href="https://arxiv.org/abs/1805.08318" target="_blank">arXiv:1805.08318</a>.</li>
+      <li data-cite-key="Brock-et-al.-2018">Brock, A. et al. (2018). Large Scale GAN Training for High Fidelity Natural Image Synthesis. <a href="https://arxiv.org/abs/1809.11096" target="_blank">arXiv:1809.11096</a>.</li>
+      <li data-cite-key="Karras-et-al.-2018">Karras, T. et al. (2018). A Style-Based Generator Architecture for Generative Adversarial Networks. <a href="https://arxiv.org/abs/1812.04948" target="_blank">arXiv:1812.04948</a>.</li>
+      <li data-cite-key="Karras-et-al.-2019">Karras, T. et al. (2019). Analyzing and Improving the Image Quality of StyleGAN. <a href="https://arxiv.org/abs/1912.04958" target="_blank">arXiv:1912.04958</a>.</li>
+      <li data-cite-key="Kurach-et-al.-2018">Kurach, K. et al. (2018). A Large-Scale Study on Regularization and Normalization in GANs. <a href="https://arxiv.org/abs/1807.04720" target="_blank">arXiv:1807.04720</a>.</li>
+      <li data-cite-key="Li-et-al.-2020">Li, Z. et al. (2020). A Systematic Survey of Regularization and Normalization in GANs. <a href="https://arxiv.org/abs/2008.08930" target="_blank">arXiv:2008.08930</a>.</li>
+    </ul>
+  </div>
+</div>

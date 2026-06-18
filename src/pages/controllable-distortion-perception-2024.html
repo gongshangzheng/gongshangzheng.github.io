@@ -1,0 +1,526 @@
+---
+title: "图像压缩论文精读（三）：可控失真感知压缩，Latent Diffusion 的可调镜头"
+description: "解读 Controllable Distortion-Perception Tradeoff Through Latent Diffusion for Neural Image Compression：一个固定码流下可调 PSNR 与感知质量的 decoder-side plug-and-play 模块。"
+date: 2026-06-01T17:55:27
+created_at: 2026-06-01T17:55:27
+updated_at: 2026-06-03T11:59:32
+tags: [图像压缩, 扩散模型, 神经编解码, 感知质量, LPIPS]
+categories: ["AI"]
+subcategory: "图像压缩"
+sub_id: 1200
+mathjax: true
+notify: true
+hero_title: "Latent Diffusion 如何给神经图像压缩装上可调镜头"
+hero_sub: "AAAI 2025 / arXiv:2412.11379 · Neural Image Compression · R-D-P Tradeoff"
+hero_tagline: "固定 codec、固定码流，只在解码端用 latent diffusion 调节 PSNR 与感知真实感。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">158.75%</span><span class="label">LPIPS-BDRate 改善</span></div>
+  <div class="stat"><span class="num b">≈1dB</span><span class="label g">PSNR 代价上限</span></div>
+  <div class="stat"><span class="num">10</span><span class="label">DDIM 推理步数</span></div>
+  <div class="stat"><span class="num b">331ms</span><span class="label l">4090 单图延迟</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">一条码流，两种审美：为什么压缩需要可调重建</div>
+
+  神经图像压缩最难受的地方，不在于“压得不够小”，而在于同一张压缩图像往往被两个审美标准同时拉扯：一个标准问它和原图像素是否足够接近，另一个标准问它看起来是否足够自然。前者对应 PSNR、SSIM 这类失真指标，后者对应 LPIPS、FID、DISTS 等感知指标。本文讨论的正是这个老问题的新解法：在不改变已有神经图像 codec 的码流和编码端的前提下，让接收端自己选择偏“保真”还是偏“好看” #Zhou et al., 2024#。论文作者为 Chuqin Zhou、Guo Lu、Jiangchuan Li、Xiangyu Chen、Zhengxue Cheng、Li Song 与 Wenjun Zhang，文章 arXiv 编号为 2412.11379，后续版本对应 AAAI 2025 论文页面 #Zhou et al., 2024#。
+
+  读这篇论文，可以先抓住一个主线：作者不是重新发明一个压缩器，而是在一个已经训练好的压缩器后面接上“可控重建层”。压缩码流仍然由原来的 encoder、量化器和熵模型产生；新增模块只在 decoder 侧工作，拿到 decoded latent 后再决定要不要把它推向更感知友好的 latent 区域 #Zhou et al., 2024#。这让本文和许多 generative compression 工作的出发点不太一样：它关心的不是“生成模型能不能压缩图像”，而是“已有压缩系统能不能被升级成可调系统”。
+
+  传统 VAE-based neural image compression 通常沿着 transform coding 的路径工作：分析变换把图像映射到 latent，量化和熵编码负责压缩，综合变换再从 latent 还原图像。Ballé 等人的 scale hyperprior 奠定了这条路线的基本范式 #Ballé et al., 2018#，Cheng2020 进一步用高斯混合似然和 attention 提升了 rate-distortion 性能 #Cheng et al., 2020#。这类方法擅长优化 MSE 或 PSNR，但低码率下经常把纹理平均掉，重建结果会变得干净、平滑，也有点“塑料”。
+
+  另一条路是感知压缩。HiFiC 用 GAN loss 让低码率重建图像更像自然图像 #Mentzer et al., 2020#，CDC 则把条件扩散模型引入压缩重建过程 #Yang and Mandt, 2023#。它们能补回纹理，却也会带来另一个代价：像素级保真度下降，高频细节可能不再严格对应原图。Blau 和 Michaeli 的 rate-distortion-perception 理论把这个现象说得很直白：在给定 rate 下，distortion 与 perception 之间存在根本 trade-off，不能指望一个 operating point 同时最优 #Blau and Michaeli, 2019#。因此，本文真正解决的问题不是“让 PSNR 和 LPIPS 同时无代价变好”，而是把这个 trade-off 从训练阶段固定下来的模型选择，改造成推理阶段可调的用户选择。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/overview.png" alt="本文方法概览：在 decoder 侧加入 plug-and-play adaptive latent fusion module" loading="lazy">
+    <div class="cap">图 1：论文总览图包含三张子图。(a) 是推理阶段：原 encoder、量化器、熵编解码和 decoder 都沿用 base codec，新增的 Adaptive Latent Fusion 模块只插在 decoded latent $\hat{y}$ 与 decoder $g_s$ 之间，并由 $\tau$ 控制输出 latent $\tilde{y}$。(b) 是训练 auxiliary encoder：灰色虚线框内的原 codec 冻结，绿色 $g'_a$ 被训练成感知导向 encoder，用 perception loss 给出目标 latent $\bar{y}$。(c) 是训练 fusion module：原 codec 与 auxiliary encoder 冻结，只训练绿色 fusion 模块，让它学会从 $\hat{y}$ 生成接近 $\bar{y}$、又能被固定 decoder 解码的 $\tilde{y}$。（来源：Zhou et al., 2024, Fig.1）</div>
+  </div>
+
+  图 1 的阅读顺序最好从左到右。子图 (a) 先告诉我们部署形态：用户并不需要重新编码图像，也不需要发送额外 side information；接收端拿到原码流后，先照常恢复 $\hat{y}$，再用 $\tau$ 决定要把 $\hat{y}$ 保持在 distortion-oriented 位置，还是推向 perception-oriented 位置。子图 (b) 解释“感知方向”从哪里来：作者额外训练一个 auxiliary encoder $g'_a$，让它在同一个固定 decoder 下产生更偏感知质量的 latent。子图 (c) 则把两者接起来：fusion module 学的不是像素后处理，而是从原 decoded latent 到感知 latent 的可控移动。
+
+  <div class="callout"><strong>本文最值得记住的一句话：</strong>它没有试图消灭 distortion-perception trade-off，而是把 trade-off 变成一个用户可调旋钮。</div>
+
+  这个旋钮就是 $\tau\in[0,1]$。当 $\tau=1$ 时，输出严格退回原始 base codec；当 $\tau=0$ 时，输出偏向 diffusion 变换后的感知导向 latent；中间值则提供连续折中 #Zhou et al., 2024#。换一个类比：原 codec 像一支锐度很高但容易糊掉纹理的镜头，本文方法给它装了一个可调的后组镜片，让你在“解析力”和“观感”之间旋转焦距。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/result.png" alt="tau controls PSNR and LPIPS tradeoff on reconstructed flower image" loading="lazy">
+    <div class="cap">图 2：$\tau$ 的直观含义。三张重建图使用同一个码流：$\tau=1$ 最接近原 codec，PSNR 最高但 LPIPS 最差；$\tau=0$ 更偏感知质量，LPIPS 更低但 PSNR 下降；$\tau=0.5$ 落在中间。这张图比曲线更直接地说明“可控”不是换模型，而是解码端在同一 latent 附近选择不同重建点。（来源：Zhou et al., 2024, Fig.1 局部）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：已有 codec 缺的不是更强 decoder，而是可控 operating point</div>
+
+  如果只追求一个固定目标，图像压缩反而简单。PSNR 派把误差压低，感知派把图像变真实，各自优化各自的指标。但真实系统里的需求不稳定：医学图像、遥感图像、科研图像更在意像素忠实；社交媒体、缩略图、低码率浏览更在意观感。一个压缩系统如果只能提供一种重建风格，就会把用户锁死在某个点上。
+
+  这里的关键词是 operating point。它可以理解成一套压缩系统在“码率、失真、感知质量”三维空间里的落点。传统 codec 通常在训练时就把这个点固定住：用 MSE 训练，落点偏 PSNR；用 GAN 或 perceptual loss 训练，落点偏 LPIPS/FID。本文希望把 operating point 的选择推迟到推理阶段，而且是在同一码流下完成选择。这就是图 1(a) 中 $\tau$ 的意义：它不是码率参数，也不是重新训练模型的超参数，而是解码时选择重建风格的控制量 #Zhou et al., 2024#。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>优势</th><th>主要问题</th></tr></thead>
+      <tbody>
+        <tr><td>失真导向 NIC</td><td>Ballé 2018, Cheng2020</td><td>PSNR / MS-SSIM 强，码率模型成熟</td><td>低码率下纹理被平均，视觉上容易糊</td></tr>
+        <tr><td>GAN 感知压缩</td><td>HiFiC</td><td>低码率纹理更自然，FID/LPIPS 更好</td><td>训练不稳定，像素保真度下降，trade-off 固定</td></tr>
+        <tr><td>Diffusion 压缩</td><td>CDC</td><td>生成质量更稳，感知指标强</td><td>图像域采样开销大，通常替换 decoder，难以复用已有 codec</td></tr>
+        <tr><td>可调 realism</td><td>MRIC</td><td>尝试在单模型内调节现实感</td><td>需要从头训练完整模型，控制曲线不够线性</td></tr>
+        <tr><td>本文</td><td>Adaptive Latent Fusion</td><td>固定码流，decoder-side 插件，$\tau$ 连续控制</td><td>仍需为 base codec 训练额外模块</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  本文的约束很工程化：给定一个已经训练好的 neural image codec，不重新训练它，不改编码器，不改熵模型，不改 bitstream，只在 decoder side 增加一个模块 #Zhou et al., 2024#。这个约束比“训练一个更强的新 codec”更苛刻，但也更贴近已有系统升级。已有 codec 的码流可能已经部署，编码端可能跑在边缘设备上，重新发版的成本很高；而解码端后处理或插件模块更容易演进。
+
+  这也是图 1 三张子图要分开的原因。(a) 关心“上线后怎么跑”，所以只保留一个输入码流和一个 $\tau$ 旋钮；(b) 关心“感知目标从哪里学来”，所以先训练一个只在训练期存在的 auxiliary encoder；(c) 关心“真正要部署的模块怎么学”，所以固定前两者，只训练 Adaptive Latent Fusion。这样拆开后，论文的工程边界就很清楚：编码端不动，码流不动，原 decoder 不动，新增能力集中在 decoder 前的 latent interface。
+
+  {{< mermaid >}}
+  graph LR
+    A[固定码流 / fixed bitstream] --> B{接收端选择 operating point}
+    B --> C[τ=1: 原始 codec\n高 PSNR / 低失真]
+    B --> D[τ=0.5: 折中重建\n保真与观感平衡]
+    B --> E[τ=0: 感知导向\n更低 LPIPS / 更自然纹理]
+  {{< /mermaid >}}
+
+  一个自然的问题是：为什么不直接在像素域做后处理？原因在于压缩重建的误差并不只是像素噪声，它已经被 codec 的 latent 表示和 decoder 结构塑形。像素域扩散需要在大分辨率图像上迭代，计算重；而 latent space 里信息已经被压缩成更低维、更语义化的表示。本文把 diffusion 放在 decoded latent 上，相当于在“图像生成之前”调整原因，而不是在“图像生成之后”修补结果。这也是它比 CDC 这类图像域扩散方法快的关键原因之一 #Zhou et al., 2024#。
+
+  <div class="callout"><strong>核心设计动机：</strong>现有 codec 的 encoder/decoder 一旦训练完成就锁死了 distortion-perception tradeoff。要让模型可调，就需要一个 latent fusion 模块作为旋钮。但 fusion module 怎么知道“感知优先的 latent”长什么样？Base codec 只产生保真导向的 $\hat{y}$，没有现成的感知 target。作者的解法是训练一个辅助编码器 $g'_a$ 作为 teacher，专门产出感知优先的 latent $\bar{y}$，让 fusion module 学会把 $\hat{y}$ 拉向 $\bar{y}$ 的分布。<strong>$g'_a$ 是训练时的脚手架，fusion module 才是推理时真正用的可调旋钮。</strong></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">方法核心：Adaptive Latent Fusion 到底在融合什么</div>
+
+  这一节先把符号说清楚。普通 VAE codec 的路径是：输入图像 $x$ 经过分析变换 $g_a$ 得到 latent，量化与熵编码形成码流；解码端从码流恢复量化 latent $\hat{y}$，再用固定 decoder $g_s$ 重建图像。典型 rate-distortion 目标可以写成：
+
+  <div class="def-box">
+    <h3>基础神经图像压缩目标</h3>
+    <p>传统 distortion-oriented codec 通常优化码率和失真之和：</p>
+    <p>\[\min \mathcal{R}(Q(g_a(x))) + \beta\cdot\mathcal{L}(x,g_s(Q(g_a(x))))\]</p>
+    <p>其中 $Q$ 表示量化，$\mathcal{R}$ 表示量化 latent 的 bitrate，$g_a$ 和 $g_s$ 分别是 encoder 与 decoder，$\mathcal{L}$ 在失真导向方法中通常取 MSE。这个目标解释了为什么多数 NIC 模型天然偏向像素保真，而不是视觉真实感。</p>
+  </div>
+
+  本文不动这套 codec。Adaptive Latent Fusion 模块 $\mathcal{D}$ 做的事情非常具体：它接收 base codec 解码出来的 latent $\hat{y}$，再结合扩散过程中的当前 noisy latent 与时间条件，输出一个新的 latent $\tilde{y}$；最后仍然由原来的固定 decoder $g_s$ 把 $\tilde{y}$ 解成图像 $\tilde{x}$ #Zhou et al., 2024#。所以它不是像素域滤镜，也不是新 decoder，而是插在“latent → decoder”接口处的 latent 改写器。
+
+  <div class="callout"><strong>一句话理解 Adaptive Latent Fusion：</strong>它学习一条从原始 decoded latent $\hat{y}$ 到感知导向 latent 的可控路径；$\tau$ 决定沿这条路径走多远。</div>
+
+  更细地说，全文最容易混淆的是三种 latent：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>符号</th><th>从哪里来</th><th>什么时候可用</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>$\hat{y}$</td><td>原 codec 的码流经 arithmetic decoding 得到</td><td>训练和推理都可用</td><td>保真导向的起点，也是 diffusion condition</td></tr>
+        <tr><td>$\bar{y}$</td><td>辅助编码器 $g'_a(x)$ 输出</td><td>只在训练时可用</td><td>告诉 fusion module：感知导向 latent 大概应该长什么样</td></tr>
+        <tr><td>$\tilde{y}$</td><td>Adaptive Latent Fusion $\mathcal{D}$ 输出</td><td>训练和推理都产生</td><td>最终送入固定 decoder 的可控 latent</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这里最关键的直觉是：decoder $g_s$ 只认识自己训练过的 latent 分布。如果我们随便把两个 latent 做线性插值，很容易把表示推到 decoder 不擅长的位置。Adaptive Latent Fusion 的作用，就是用 latent diffusion 学一条更可靠的移动路径：既能朝 $\bar{y}$ 的感知方向靠近，又尽量保持 $g_s$ 能解码。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/codec.png" alt="本文训练与推理框架" loading="lazy">
+    <div class="cap">图 3：论文框架。左侧是推理：只需要原码流、固定 decoder、fusion module 和用户给定的 $\tau$。中间是训练辅助编码器：固定原 codec，只训练 $g'_a$，让它产生感知导向 latent $\bar{y}$。右侧是训练 fusion module：固定原 codec 和 $g'_a$，只训练 $\mathcal{D}$ 从 $\hat{y}$ 预测接近 $\bar{y}$ 的可解码 latent。（来源：Zhou et al., 2024, Fig.2）</div>
+  </div>
+
+  <h3 class="section-title">辅助编码器：它不是推理模块，而是训练老师</h3>
+
+  辅助编码器 $g'_a$ 的作用，是给 $\mathcal{D}$ 提供一个感知导向的目标 latent。论文假设 base codec 是 distortion-oriented，于是原始 $\hat{y}$ 更偏 PSNR；作者额外复制一个与原 encoder 结构相同的 $g'_a$，把它直接接到固定 decoder $g_s$ 前面训练，只优化 perceptual loss，例如 LPIPS #Zhou et al., 2024#。训练完成后，$g'_a(x)=\bar{y}$ 就成为“如果想让固定 decoder 生成更自然图像，latent 应该往哪里移动”的老师信号。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>对比项</th><th>原始 encoder $g_a$</th><th>辅助 encoder $g'_a$</th></tr></thead>
+      <tbody>
+        <tr><td>是否属于原 codec</td><td>是，和 entropy model、decoder $g_s$ 共同组成 base codec</td><td>否，是为训练 fusion module 额外引入的 teacher</td></tr>
+        <tr><td>训练目标</td><td>率失真目标：低码率 + 低像素失真，通常偏 PSNR/MSE</td><td>感知目标：让固定 decoder 输出更接近 LPIPS 等感知指标偏好的图像</td></tr>
+        <tr><td>输出 latent</td><td>$\hat{y}$：由码流恢复，偏保真，推理时接收端真实可获得</td><td>$\bar{y}$：由原图直接编码得到，偏感知，只能训练时获得</td></tr>
+        <tr><td>是否参与码流</td><td>参与。$g_a(x)$ 会被量化、熵编码并传输</td><td>不参与。$\bar{y}$ 不被量化、不进码流、不发送给接收端</td></tr>
+        <tr><td>推理阶段是否使用</td><td>编码端使用；解码端从码流恢复 $\hat{y}$</td><td>不使用。推理时没有原图 $x$，无法计算 $g'_a(x)$</td></tr>
+        <tr><td>在本文中的角色</td><td>提供原始压缩表示，是 fusion 的起点和条件</td><td>提供训练目标，告诉 $\mathcal{D}$ 感知友好的 latent 应该往哪里移动</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键区别：</strong>$g_a$ 是“真正压缩图像的人”，它的输出必须能变成码流；$g'_a$ 是“训练时的老师”，它不负责压缩，只负责生成 $\bar{y}$ 作为感知导向的监督信号。</div>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      为什么必须先训练辅助编码器？
+    </div>
+    <div class="admonition-content">
+      <p>因为 fusion module 需要一个明确的感知优先目标：$\bar{y}$。原始 codec 只能给出 $\hat{y}$，而 $\hat{y}$ 是按 rate-distortion 目标训练出来的，天然更偏低失真和高 PSNR。如果直接让 $\mathcal{D}$ 学回 $\hat{y}$，它只会退化成 identity mapping，不会获得感知质量提升。</p>
+      <p>辅助编码器的作用就是制造这个 teacher latent：$\bar{y}=g'_a(x)$。它在固定 decoder $g_s$ 的前提下，用 LPIPS 等 perceptual loss 训练，让 $\bar{y}$ 代表“在同一个 decoder 里，更感知友好的 latent 应该长什么样”。随后训练 $\mathcal{D}$ 时，$\bar{y}$ 提供 latent-level supervision，图像重建 loss 则检查 $g_s(\mathcal{D}(\cdot))$ 是否真的变好。</p>
+    </div>
+  </div>
+
+  这也解释了为什么辅助编码器不能出现在推理阶段。推理时接收端只有码流，没有原图 $x$；如果还要计算 $g'_a(x)$，就等于要求接收端拿到未压缩原图，压缩任务本身就失去意义。因此，$g'_a$ 只负责训练时提供 supervision，真正部署时被丢掉。
+
+  <div class="def-box">
+    <h3>辅助编码器训练目标</h3>
+    <p>冻结原 decoder $g_s$，只训练 $g'_a$，使 $g_s(g'_a(x))$ 在感知指标上接近原图：</p>
+    <p>\[\min_{g'_a}\;\mathcal{L}_{perc}\bigl(x, g_s(g'_a(x))\bigr)\]</p>
+    <p>训练好后，$\bar{y}=g'_a(x)$ 被当作 fusion module 的目标 latent。注意，$\bar{y}$ 不需要被量化或传输，因为它只在训练阶段存在。</p>
+  </div>
+
+  <h3 class="section-title">Adaptive Latent Fusion：输入、输出和内部机制</h3>
+
+  $\mathcal{D}$ 的输入不是单独的 $\hat{y}$，而是三件东西：当前 noisy latent、原始 decoded latent $\hat{y}$、以及噪声时间 $t/T$。这里有两类条件信息：$\hat{y}$ 是内容条件，告诉模型“这张图原本是什么”；$t/T$ 是时间条件，告诉模型“当前处在什么噪声强度”。网络输出的是一个 clean transformed feature，而不是噪声本身 #Zhou et al., 2024#。
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      条件信息如何融入 fusion module？
+    </div>
+    <div class="admonition-content">
+      <p>论文中的 condition 主要是原始 decoded latent $\hat{y}$。它不是简单地和当前 noisy latent $\tilde{y}_t$ 做逐元素相加，而是先经过条件分支编码成 condition feature，再和主分支 feature 做 concatenation。主分支处理当前 noisy latent 与时间条件，条件分支处理 $\hat{y}$；二者拼接后再进入后续 ResBlock 和 attention block。</p>
+      <p>因此，$\hat{y}$ 的作用是内容锚定：它约束 diffusion 不要凭空生成另一张图，而是在原始压缩表示的结构、颜色和语义附近移动。$t/T$ 的作用是噪声级别提示：它告诉网络当前是早期强噪声步骤，还是后期细化步骤。二者共同决定 $\mathcal{D}(\tilde{y}_t,\hat{y},t/T)$ 在每一步应该预测什么样的 clean latent。</p>
+    </div>
+  </div>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      扩散发生在哪里：不是 decoder，而是 $\mathcal{D}$
+    </div>
+    <div class="admonition-content">
+      <p>本文的 diffusion 不发生在图像 decoder $g_s$ 里。$g_s$ 始终是冻结的普通解码器，它只认识一个输入：latent；只做一件事：把最终 latent $\tilde{y}_0$ 映射成图像 $\tilde{x}=g_s(\tilde{y}_0)$。它不负责采样、不负责去噪，也不在每个 diffusion step 中迭代更新 latent。</p>
+      <p>真正做扩散/去噪的是 Adaptive Latent Fusion module $\mathcal{D}$。推理时从纯噪声 $\tilde{y}_T\sim\mathcal{N}(0,I)$ 开始，每一步把当前 noisy latent $\tilde{y}_t$、原始 decoded latent $\hat{y}$ 和时间条件 $t/T$ 输入 $\mathcal{D}$，由 $\mathcal{D}$ 预测 clean latent。随后采样公式把这个预测结果推进到下一步 $\tilde{y}_{t-1}$。直到最后得到 $\tilde{y}_0$，才调用一次固定 decoder $g_s$ 生成图像。</p>
+      <p>因此可以把两者分工记成：$\mathcal{D}$ 负责“在 latent 空间里走扩散轨迹”，$g_s$ 负责“把轨迹终点翻译成图像”。这也是为什么论文称它为 latent diffusion，而不是 image-domain diffusion decoder。</p>
+    </div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/architecture.png" alt="adaptive latent fusion module architecture" loading="lazy">
+    <div class="cap">图 4：Adaptive Latent Fusion module 架构。它类似 latent diffusion 的 U-Net/ResNet 堆叠：每个单元包含 time-aware ResNet blocks 和 attention block；原始 latent $\hat{y}$ 作为条件分支被编码后与主分支拼接，帮助网络在去噪时不偏离原码流信息。（来源：Zhou et al., 2024, Fig.4）</div>
+  </div>
+
+  为什么不让网络像 DDPM 那样预测噪声？论文的理由是压缩 latent 通道数大，而且 $\hat{y}$ 本身已经提供了很强条件；直接预测 transformed feature 更自然，也更贴近“把一个可解码 latent 改成另一个可解码 latent”的任务 #Zhou et al., 2024#。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/diffusion.png" alt="latent diffusion process" loading="lazy">
+    <div class="cap">图 5：latent diffusion 过程。训练时从 $\hat{y}$ 加噪得到 $\hat{y}_t$，让 $\mathcal{D}$ 学会预测接近 $\bar{y}$ 的 transformed feature；推理时从噪声 $\tilde{y}_T$ 开始逐步去噪，并在每一步用 $\tau$ 把预测 feature 与原始 $\hat{y}$ 融合。（来源：Zhou et al., 2024, Fig.3）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练与推理：两阶段训练，一个可调解码流程</div>
+
+  现在把过程按时间线整理。本文不是端到端训练一个新 codec，而是“三段式”：先准备一个已经训练好的 base codec；再训练只在训练期使用的 auxiliary encoder；最后训练真正部署的 Adaptive Latent Fusion 模块。推理时只保留 base codec、$\mathcal{D}$ 和用户给定的 $\tau$。
+
+  <h3 class="section-title">Stage 0：已有 base codec 保持冻结</h3>
+
+  base codec 已经训练完毕。编码端 $g_a$、量化与熵模型、算术编解码、解码端 $g_s$ 都不再更新。后续所有训练都围绕一个目标展开：在不改变它们的前提下，学习如何改写 decoded latent $\hat{y}$。
+
+  <h3 class="section-title">Stage 1：训练辅助编码器 $g'_a$</h3>
+
+  第一阶段只训练辅助编码器。输入原图 $x$，输出 $\bar{y}=g'_a(x)$，再送入固定 decoder 得到 $g_s(\bar{y})$。损失函数使用 perceptual loss，让这个重建更像人眼偏好的自然图像。训练完成后，$g'_a$ 的参数冻结；它以后只负责给第二阶段产生 teacher target。
+
+  <div class="code-tabs">
+    <div class="code-tabs-header">
+      <button class="code-tab-btn active" data-tab="stage1-flow">流程图</button>
+      <button class="code-tab-btn" data-tab="stage1-algorithm">算法</button>
+    </div>
+    <div class="code-tab-content active" data-panel="stage1-flow">
+      {{< mermaid >}}
+      flowchart TD
+        X1[/训练图像 x/] --> GAP1([辅助编码器 g_a_prime])
+        GAP1 --> YBAR1[感知目标 latent y_bar]
+        YBAR1 --> GS1([冻结 decoder g_s])
+        GS1 --> XBAR1[辅助重建 x_bar]
+        X1 --> L1{perceptual loss}
+        XBAR1 --> L1
+        L1 --> U1([只更新 g_a_prime])
+      {{< /mermaid >}}
+    </div>
+    <div class="code-tab-content" data-panel="stage1-algorithm">
+      <pre><code class="language-text">Algorithm 1: Train auxiliary encoder g'_a
+Input: training image x, frozen decoder g_s
+Freeze: base codec encoder g_a, entropy model, decoder g_s
+Initialize: auxiliary encoder g'_a with encoder-like architecture
+repeat
+  y_bar = g'_a(x)
+  x_bar = g_s(y_bar)
+  loss = perceptual_loss(x, x_bar)   # e.g. LPIPS-oriented objective
+  update only g'_a
+until convergence
+Output: frozen auxiliary encoder g'_a, target latent y_bar = g'_a(x)</code></pre>
+    </div>
+  </div>
+
+  这个 loss 有两个输入：原图 $x$ 和辅助重建 $g_s(g'_a(x))$。它不训练 $g_s$，只训练 $g'_a$，目的是得到一个可作为 teacher target 的 $\bar{y}$。
+
+  <h3 class="section-title">Stage 2：训练 Adaptive Latent Fusion $\mathcal{D}$</h3>
+
+  第二阶段训练真正要部署的模块 $\mathcal{D}$。对同一张训练图，先通过 base codec 得到 $\hat{y}$，再通过辅助编码器得到 $\bar{y}$。然后随机采样扩散时间 $t$ 和噪声 $\epsilon$，把 $\hat{y}$ 加噪成 $\hat{y}_t$：
+
+  <div class="code-tabs">
+    <div class="code-tabs-header">
+      <button class="code-tab-btn active" data-tab="stage2-flow">流程图</button>
+      <button class="code-tab-btn" data-tab="stage2-algorithm">算法</button>
+    </div>
+    <div class="code-tab-content active" data-panel="stage2-flow">
+      {{< mermaid >}}
+      flowchart TD
+        X2[/训练图像 x/] --> GA2([冻结原编码器 g_a])
+        GA2 --> Q2([量化与熵编解码])
+        Q2 --> YH2[decoded latent y_hat]
+        YH2 --> NOISE2([加噪得到 y_hat_t])
+        YH2 --> D2([Adaptive Latent Fusion D])
+        NOISE2 --> D2
+        T2[/时间条件 t_over_T/] --> D2
+        X2 --> GAP2([冻结辅助编码器 g_a_prime])
+        GAP2 --> YBAR2[teacher latent y_bar]
+        D2 --> YP2[预测 latent y_pred]
+        YP2 --> L_LAT{latent loss}
+        YBAR2 --> L_LAT
+        YP2 --> GS2([冻结 decoder g_s])
+        GS2 --> XP2[重建图像 x_pred]
+        XP2 --> L_IMG{image loss}
+        X2 --> L_IMG
+        L_LAT --> L_ALL{总损失}
+        L_IMG --> L_ALL
+        L_ALL --> U2([只更新 D])
+      {{< /mermaid >}}
+    </div>
+    <div class="code-tab-content" data-panel="stage2-algorithm">
+      <pre><code class="language-text">Algorithm 2: Train Adaptive Latent Fusion D
+Input: image x, frozen base codec (g_a, entropy model, g_s), frozen auxiliary encoder g'_a
+repeat
+  y_hat = decode_latent(encode_and_entropy_code(x))   # base codec decoded latent
+  y_bar = g'_a(x)                                     # perceptual target latent, teacher only
+  t ~ Uniform({0, ..., T_train})
+  epsilon ~ Normal(0, I)
+  y_hat_t = sqrt(alpha_t) * y_hat + sqrt(1 - alpha_t) * epsilon
+
+  y_pred = D(y_hat_t, y_hat, t / T_train)
+  x_pred = g_s(y_pred)
+
+  loss_latent = ||y_bar - y_pred||_2^2
+  loss_image = perceptual_or_reconstruction_loss(x, x_pred)
+  loss = lambda * loss_latent + loss_image
+  update only D
+until convergence
+Output: frozen D for decoder-side deployment</code></pre>
+    </div>
+  </div>
+
+  图里有两个 loss：latent loss 比较 $\mathcal{D}$ 输出的 $\tilde{y}$ 与 teacher latent $\bar{y}$；image loss 比较 decoder 输出 $g_s(\tilde{y})$ 与原图 $x$。$\bar{y}$ 只进入 loss，不作为 $\mathcal{D}$ 的输入。
+
+  <div class="def-box">
+    <h3>训练时的 latent 加噪</h3>
+    <p>\[\hat{y}_{t}=\sqrt{\alpha_t}\hat{y}+\sqrt{1-\alpha_t}\epsilon\]</p>
+    <p>其中 $\alpha_t=\prod_{s=1}^{t}(1-\beta_s)$ 来自 noise scheduler，$t/T$ 作为伪连续时间条件输入网络。$\hat{y}_t$ 是主输入，$\hat{y}$ 是 condition，$\bar{y}$ 是目标。</p>
+  </div>
+
+  训练损失有两层含义：第一项在 latent 空间把 $\mathcal{D}$ 的输出拉向 $\bar{y}$；第二项把输出送进固定 decoder，用图像空间的 perceptual loss 检查最终图像是否真的更自然 #Zhou et al., 2024#。
+
+  <div class="def-box">
+    <h3>Adaptive Latent Fusion 的训练损失</h3>
+    <p>\[\min \lambda\|\bar{y}-\mathcal{D}(\hat{y}_t,\hat{y},t/T)\|_2^2+\mathcal{L}(x,g_s(\mathcal{D}(\hat{y}_t,\hat{y},t/T)))\]</p>
+    <p>第一项是 teacher forcing：学习辅助编码器给出的感知 latent；第二项是 decoder check：确保这个 latent 被 $g_s$ 解码后仍然对应好图像。</p>
+  </div>
+
+  <h3 class="section-title">Inference：用户给一个 $\tau$，解码端生成对应重建</h3>
+
+  推理时，辅助编码器已经不用了，训练图像也不存在。接收端只有码流。流程是：先按 base codec 解码得到 $\hat{y}$；然后从高斯噪声 $\tilde{y}_T\sim\mathcal{N}(0,I)$ 开始做 DDIM-like 采样；每一步让 $\mathcal{D}$ 预测 clean feature，再用 $\tau$ 把这个预测 feature 与原始 $\hat{y}$ 融合；最后把 $\tilde{y}_0$ 输入固定 decoder $g_s$。
+
+  <div class="code-tabs">
+    <div class="code-tabs-header">
+      <button class="code-tab-btn active" data-tab="inference-flow">流程图</button>
+      <button class="code-tab-btn" data-tab="inference-algorithm">算法</button>
+    </div>
+    <div class="code-tab-content active" data-panel="inference-flow">
+      {{< mermaid >}}
+      flowchart TD
+        BIT3[/输入码流 bitstream/] --> AD3([算术解码 AD])
+        AD3 --> YH3[原始 latent y_hat]
+        INIT3([初始化纯噪声 y_T]) --> LOOP3([去噪循环 t 从 T 到 1])
+        YH3 --> LOOP3
+        TAU3[/用户控制 tau/] --> LOOP3
+        LOOP3 --> IN3[/当前输入 y_t plus y_hat plus time/]
+        IN3 --> D3([Adaptive Latent Fusion D])
+        D3 --> CLEAN3[预测 clean latent]
+        CLEAN3 --> EPS3([反推预测噪声 epsilon])
+        CLEAN3 --> FUSE3([按 tau 融合 clean latent 和 y_hat])
+        YH3 --> FUSE3
+        TAU3 --> FUSE3
+        FUSE3 --> DDIM3([DDIM 更新到下一步 y_t_minus_1])
+        EPS3 --> DDIM3
+        DDIM3 --> CHECK3{是否完成全部步数}
+        CHECK3 -- 否 --> LOOP3
+        CHECK3 -- 是 --> Y03[最终 latent y_0]
+        Y03 --> GS3([冻结 decoder g_s])
+        GS3 --> OUT3[输出重建图像 x_tilde]
+      {{< /mermaid >}}
+    </div>
+    <div class="code-tab-content" data-panel="inference-algorithm">
+      <pre><code class="language-text">Algorithm 3: Decoder-side controllable inference
+Input: bitstream, user control tau in [0, 1], frozen D, frozen decoder g_s
+
+# 1. Recover the original decoded latent from the unchanged codec
+y_hat = arithmetic_decode(bitstream)
+
+# 2. Start DDIM-like latent sampling
+y_tilde = Normal(0, I)  # y_T
+for t = T_infer, ..., 1:
+  y_clean = D(y_tilde, y_hat, t / T_train)
+  epsilon = (y_tilde - sqrt(alpha_t) * y_clean) / sqrt(1 - alpha_t)
+
+  fused_clean = (1 - tau^2) * y_clean + tau^2 * y_hat
+  y_tilde = sqrt(alpha_{t-1}) * fused_clean \
+            + (1 - tau^2) * sqrt(1 - alpha_{t-1}) * epsilon
+
+# 3. Decode with the original decoder
+x_tilde = g_s(y_tilde)
+Output: reconstructed image x_tilde</code></pre>
+    </div>
+  </div>
+
+  这张推理图只对应部署阶段，没有辅助编码器，也没有 $\bar{y}$。它强调三件事：$\hat{y}$ 来自码流，是每一步的内容条件；$\tilde{y}_T$ 是随机初始化的纯噪声，是 DDIM-like 采样的起点；$g_s$ 只在循环结束后调用一次，不参与中间扩散循环。
+
+  <div class="def-box">
+    <h3>由预测 feature 反推噪声</h3>
+    <p>\[\epsilon(\tilde{y}_t,\hat{y},t/T)=\frac{\tilde{y}_t-\sqrt{\alpha_t}\mathcal{D}(\tilde{y}_t,\hat{y},t/T)}{\sqrt{1-\alpha_t}}\]</p>
+    <p>这使得模型虽然直接预测 clean feature，仍然可以嵌入 DDIM 采样形式。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>$\tau$ 控制的 latent fusion sampling</h3>
+    <p>\[\tilde{y}_{t-1}=\sqrt{\alpha_{t-1}}[(1-\tau^2)\mathcal{D}(\tilde{y}_t,\hat{y},t/T)+\tau^2\hat{y}]+(1-\tau^2)\sqrt{1-\alpha_{t-1}}\epsilon(\tilde{y}_t,\hat{y},t/T)\]</p>
+    <p>$\tau=0$ 时完全走 perception-oriented diffusion 分支；$\tau=1$ 时 $\tilde{y}_0=\hat{y}$，严格退回 base codec；中间值则连续混合两端。</p>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/res.png" alt="visualization of original image compressed latent and residual between transformed and compressed features" loading="lazy">
+    <div class="cap">图 6：特征残差可视化。左侧是原图，中间是压缩后的 latent $\hat{y}$，右侧是 $\tilde{y}^{(\tau=0)}-\hat{y}$ 的残差。亮色区域集中在门闩、边缘和局部纹理上，说明 fusion module 的作用不是平均地“加噪声”，而是把 $\hat{y}$ 沿着感知目标方向做局部、有结构的移动。（来源：Zhou et al., 2024, Appendix Fig.3）</div>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      复现时最该盯住的点
+    </div>
+    <div class="admonition-content"><p>论文给出了 optimizer、batch size、learning rate、crop size 和推理步数；但没有报告 $\lambda$、fusion module 的单元数 $M$、训练 epoch 或总步数。这里不额外编造未公开超参：可复现部分按论文显式给出的设置复述，未公开部分明确标为论文未报告。</p></div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>项目</th><th>设置</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>Flickr2W</td><td>正文明确给出的训练集；附录还在不同实验中涉及 Kodak、CLIC2020、COCO、ImageNet 等评估或额外设置</td></tr>
+        <tr><td>裁剪尺寸</td><td>256 × 256 random crop</td><td>训练 auxiliary encoder 与 fusion module</td></tr>
+        <tr><td>优化器</td><td>AdamW</td><td>原文明确给出</td></tr>
+        <tr><td>Batch size</td><td>32</td><td>原文明确给出</td></tr>
+        <tr><td>学习率</td><td>固定 5×10<sup>-5</sup></td><td>未报告 warmup 或 scheduler</td></tr>
+        <tr><td>推理步数</td><td>10 DDIM steps</td><td>速度与质量折中的默认设置</td></tr>
+        <tr><td>FID 计算</td><td>non-overlapping 256×256 patches</td><td>遵循 HiFiC 等压缩工作设置</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验验证：158.75% LPIPS-BDRate 改善到底说明什么</div>
+
+  论文的实验设计有两个层次。第一层验证 plug-and-play：把模块接到不同 base codec 上是否都有效。第二层验证 controllable tradeoff：改变 $\tau$ 是否真的能沿着 PSNR-LPIPS 曲线平滑移动。测试集包括 Kodak 和 CLIC2020 test set，指标覆盖 PSNR、SSIM、MS-SSIM、DISTS、LPIPS、FID、CLIP-IQA、NIQE #Zhou et al., 2024#。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/psnr_lpips.png" alt="PSNR LPIPS tradeoff on Kodak" loading="lazy">
+    <div class="cap">图 7：不同 $\tau$ 和不同 rate 下的 PSNR-LPIPS tradeoff。本文方法形成了较平滑的可控轨迹，而 MRIC 的部分 $\beta$ 区间变化不明显。（来源：Zhou et al., 2024, Fig.8）</div>
+  </div>
+
+  最醒目的数字来自 Cheng2020 base codec。Cheng2020 是典型 distortion-oriented 方法，原本 PSNR 强但感知质量弱。论文报告 Ours(Cheng2020, $\tau=0$) 相比原 Cheng2020 的 LPIPS-BDRate 改善 158.75%，平均 LPIPS gain 为 0.096，并强调 PSNR 牺牲不超过约 1 dB #Zhou et al., 2024#。这个数字的含义不是“全面无损提升”，而是“用大约 1 dB 量级的 PSNR 代价换来了非常大的感知指标改善”。它正好体现了本文的哲学：不假装 tradeoff 消失，而是让 tradeoff 足够可控。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>实验对象</th><th>关键结果</th><th>该结果说明什么</th></tr></thead>
+      <tbody>
+        <tr><td>Ours(Cheng2020, $\tau=0$)</td><td>LPIPS-BDRate 改善 158.75%，PSNR 牺牲约 1 dB 量级</td><td>失真导向 codec 可以通过 latent diffusion 移向感知导向端</td></tr>
+        <tr><td>高感知端对比 HiFiC</td><td>DISTS 可达到或超过 HiFiC，PSNR 明显更高</td><td>不是单纯生成更“花”的纹理，而是在感知与保真之间找到更好折中</td></tr>
+        <tr><td>Ours(HiFiC)</td><td>从 rate-distortion 曲线看，同等 PSNR 下所需 bitrate 更低</td><td>感知导向 codec 也可反向补偿失真指标</td></tr>
+        <tr><td>Ours(MSHyper)+VBR</td><td>LPIPS-BDRate 改善 170%</td><td>$\tau$ 控制可与 variable bitrate 正交组合，形成 rate-distortion-perception 三维控制</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  和 CDC 的对比也很关键。CDC 同样是 diffusion-based compression，但它在 image domain 做 conditional DDIM，并且把 diffusion 作为 decoder 的核心路径 #Yang and Mandt, 2023#。本文的模块在 latent domain 工作，且保留原 decoder。论文报告 Ours(Cheng2020, $\tau=0$) 在 PSNR 上显著优于 CDC-lpips，同时 LPIPS 接近；Ours(HiFiC, $\tau=0$) 相比 CDC 具有相近 distortion，但感知质量更好 #Zhou et al., 2024#。这说明 latent-domain 插件不是简单的后处理，它确实利用了 base codec 的压缩表示。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/quantitative.png" alt="quantitative reconstruction results" loading="lazy">
+    <div class="cap">图 8：定量与视觉结果示例。随着 $\tau$ 变化，重建在 PSNR 与 LPIPS 两端移动。（来源：Zhou et al., 2024, Fig.6）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/clic.png" alt="rate distortion perception curves on CLIC2020" loading="lazy">
+    <div class="cap">图 9：CLIC2020 上的多指标对比。PSNR、SSIM、MS-SSIM 代表失真侧，DISTS、LPIPS、FID、CLIP-IQA、NIQE 代表不同感知侧；这张图的重点不是某一条曲线单点最强，而是说明本文在多个感知指标上把 fixed codec 的弱项往前推，同时保留 base codec 原本擅长的区域。（来源：Zhou et al., 2024, Fig.7）</div>
+  </div>
+
+  消融实验解释了为什么“简单插值”不够。Variant-1 去掉 diffusion process、auxiliary encoder 和相关 loss，只保留简单变体，结果 PSNR BDRate 为 +6.91%，LPIPS 为 +4.69%；这里正值表示相对于 Ours 需要更多 bitrate 才能达到同等质量，因此都代表性能变差 #Zhou et al., 2024#。更重要的是，Fig.10 显示 Variant-1 的 PSNR 不随 $\tau$ 稳定变化。这意味着两个 latent 表示之间的路径不是一条普通直线。没有 diffusion 学到的流形移动，直接加权很容易走到 decoder 不擅长的区域。
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/fail.png" alt="Variant-1 PSNR is not monotonic with tau" loading="lazy">
+    <div class="cap">图 10：为什么不能只做 latent 加权插值。绿色曲线是完整方法，PSNR 随 $\tau$ 从感知端走向原 codec 端而稳定升高；蓝色 Variant-1 去掉 diffusion 与 auxiliary encoder 后，PSNR 在 $\tau=0.2$ 到 $0.6$ 一带反而大幅波动。这个失败案例说明 decoder 能接受的 latent 区域不是线性空间，简单混合会把表示推到不可靠位置。（来源：Zhou et al., 2024, Fig.10）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/controllable-distortion-perception-2024/step.png" alt="sampling timesteps ablation" loading="lazy">
+    <div class="cap">图 11：采样步数消融。论文采用 10 steps 作为默认设置；超过 10 steps 后 LPIPS 可能变差，因为扩散引入过多高频成分并造成内容漂移。（来源：Zhou et al., 2024, Fig.9）</div>
+  </div>
+
+  速度方面，本文默认 10 DDIM steps，在 NVIDIA 4090 上单图 331 ms；CDC 使用 17 steps，约 1381 ms；DiffBIR 使用 50 steps，约 6953 ms #Zhou et al., 2024#。这个速度仍然比普通 deterministic decoder 慢，但相对 image-domain diffusion 已经明显轻量。训练成本方面，论文未报告 GPU 数量、总训练时长或 FLOPs；因此本文只讨论已公开的推理开销，不推断训练成本。它适合“接收端可选高质量重建”的场景，而不一定适合所有实时压缩场景。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">讨论与启发：plug-and-play 是工程优势，也是能力上限</div>
+
+  这篇论文的贡献不在于发现了一个全新的压缩理论，而在于把几个已知事实组合到了一个很实用的位置上：R-D-P tradeoff 是根本矛盾，latent diffusion 比 pixel diffusion 更经济，已有 neural codec 的 latent 已经承载了足够强的图像信息，decoder-side 模块比重训整个 codec 更容易部署。最终得到的东西是一种“可控重建层”。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>是否改码流</th><th>生成模块位置</th><th>可控性</th><th>主要代价</th></tr></thead>
+      <tbody>
+        <tr><td>HiFiC</td><td>需要训练完整 codec</td><td>GAN decoder / perceptual training</td><td>固定 tradeoff</td><td>GAN 训练与失真下降</td></tr>
+        <tr><td>CDC</td><td>需要端到端设计</td><td>图像域 diffusion decoder</td><td>有限</td><td>采样开销较大</td></tr>
+        <tr><td>MRIC</td><td>需要从头训练</td><td>conditional generator</td><td>$\beta$ 可调但曲线不够线性</td><td>训练成本高</td></tr>
+        <tr><td>本文</td><td>不改原码流</td><td>decoder 前 latent fusion</td><td>$\tau$ 连续可调</td><td>需训练额外模块，受 fixed decoder 上限限制</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  它的局限也来自同一个设计。因为不改编码端，它不能创造码流中完全不存在的信息；因为固定 decoder，它的感知上限会被 base codec 的 latent 和 decoder 表达能力限制。论文自己也承认，在极低码率或追求最强感知指标时，固定 decoder 与 encoder-extracted features 会限制性能 #Zhou et al., 2024#。此外，方法需要为不同 base codec 训练对应模块，训练细节中 $\lambda$、模块规模 $M$、训练总步数等关键参数没有充分公开，这会影响复现。代码状态也需要单独说明：arXiv 页面有关联的 code/data/media 入口，但本次整理未找到独立官方 GitHub 仓库；如果要复现，应优先关注作者页面或论文关联资源更新。
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      读这篇论文时要避免的误解
+    </div>
+    <div class="admonition-content"><p>本文不是“同一码率下 PSNR 和 LPIPS 同时无代价变好”。它做的是在固定码流下扩大可选择的重建范围，让用户能用较小、明确的失真代价换取显著感知改善。</p></div>
+  </div>
+
+  对生成式图像压缩来说，这篇论文给出的启发很具体：生成模型未必非要替换整个 codec。很多时候，更好的位置是 codec latent 与 decoder 之间的接口层。这个位置既保留了传统 learned compression 的码流效率，又能引入生成模型的感知补偿能力。对于后续研究，可以沿着三条线继续走：第一，设计更轻量的 latent refiner，减少 10-step diffusion 的延迟；第二，把 $\tau$ 从全局标量扩展为空间自适应控制，让纹理区域和结构区域采用不同权衡；第三，把这种 decoder-side 可控思想迁移到视频压缩中，让运动区域、背景区域和人脸区域选择不同的 perception-distortion 策略。
+
+  <div class="callout"><strong>真正有价值的 takeaway：</strong>把生成模型放在“可控接口”上，而不是粗暴替换整套压缩系统，可能是生成式压缩走向工程部署的一条更稳路径。</div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Zhou-et-al.-2024">Zhou, C. et al. (2024). <em>Controllable Distortion-Perception Tradeoff Through Latent Diffusion for Neural Image Compression</em>. arXiv:2412.11379. <a href="https://arxiv.org/abs/2412.11379" target="_blank">arXiv</a></li>
+    <li data-cite-key="Ballé-et-al.-2018">Ballé, J. et al. (2018). <em>Variational Image Compression with a Scale Hyperprior</em>. ICLR. <a href="https://openreview.net/forum?id=rkcQFMZRb" target="_blank">OpenReview</a></li>
+    <li data-cite-key="Cheng-et-al.-2020">Cheng, Z. et al. (2020). <em>Learned Image Compression with Discretized Gaussian Mixture Likelihoods and Attention Modules</em>. CVPR. <a href="https://arxiv.org/abs/2001.01568" target="_blank">arXiv</a></li>
+    <li data-cite-key="Mentzer-et-al.-2020">Mentzer, F. et al. (2020). <em>High-Fidelity Generative Image Compression</em>. NeurIPS. <a href="https://arxiv.org/abs/2006.09965" target="_blank">arXiv</a></li>
+    <li data-cite-key="Yang-and-Mandt-2023">Yang, R. and Mandt, S. (2023). <em>Lossy Image Compression with Conditional Diffusion Models</em>. NeurIPS. <a href="https://arxiv.org/abs/2209.06950" target="_blank">arXiv</a></li>
+    <li data-cite-key="Agustsson-et-al.-2023">Agustsson, E. et al. (2023). <em>Multi-Realism Image Compression with a Conditional Generator</em>. CVPR. <a href="https://arxiv.org/abs/2212.13824" target="_blank">arXiv</a></li>
+    <li data-cite-key="Blau-and-Michaeli-2019">Blau, Y. and Michaeli, T. (2019). <em>Rethinking Lossy Compression: The Rate-Distortion-Perception Tradeoff</em>. ICML. <a href="https://arxiv.org/abs/1901.07821" target="_blank">arXiv</a></li>
+    <li data-cite-key="Rombach-et-al.-2022">Rombach, R. et al. (2022). <em>High-Resolution Image Synthesis with Latent Diffusion Models</em>. CVPR. <a href="https://arxiv.org/abs/2112.10752" target="_blank">arXiv</a></li>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J. et al. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS. <a href="https://proceedings.neurips.cc/paper/2020/hash/4c5bcfec8584af0d967f1ab10179ca4b-Abstract.html" target="_blank">NeurIPS</a></li>
+    <li data-cite-key="Song-et-al.-2021">Song, J. et al. (2021). <em>Denoising Diffusion Implicit Models</em>. ICLR. <a href="https://arxiv.org/abs/2010.02502" target="_blank">arXiv</a></li>
+  </ul>
+</div>

@@ -1,0 +1,282 @@
+---
+title: "数字人系列（五）：扩散基模与整帧数字人路线"
+description: "解释数字人从局部换嘴走向视频扩散基模与整帧/全身生成的技术路线：以 Wan2.1、MultiTalk、InfiniteTalk、OmniAvatar、LongCat-Video-Avatar、HunyuanVideo-Avatar、SkyReels-Audio、Live Avatar、StreamAvatar、LLIA 等工作为线索，拆解条件注入、身份保持、身体动作、长时一致性、流式实时和产品取舍。"
+date: 2026-06-08T14:28:19
+created_at: 2026-06-08T14:28:19
+updated_at: 2026-06-08T15:23:41
+tags: [数字人, 扩散模型, DiT, Wan2.1, InfiniteTalk, OmniAvatar, LongCat, LiveAvatar, StreamAvatar]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 50
+toc: true
+mathjax: true
+notify: true
+hero_title: "扩散基模与整帧数字人路线"
+hero_sub: "从视频大模型到整帧/全身 Avatar"
+hero_tagline: "系列（五）· 视频扩散基模 · 整帧生成 · 长时一致性 · 流式实时"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">14B</span><span class="label">典型视频基座</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">路线层级</span></div>
+  <div class="stat"><span class="num">∞</span><span class="label">长时生成目标</span></div>
+  <div class="stat"><span class="num b">45</span><span class="label l">FPS 样例</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Chapter Map</div>
+  <div class="ch-title">本篇在系列中的位置</div>
+
+  上一篇讨论的是 3DGS/NeRF 数字人：系统先训练固定身份的可渲染三维资产，再用音频驱动它。本篇单独讨论另一条正在成形的主线：把通用视频扩散基模改造成数字人生成器。它不只回答“运动变量怎么预测”，而是回答“一个已经学会生成视频的大模型，如何被音频、参考帧、人物身份和流式状态重新约束成数字人系统”。#Yang-et-al.-2025-InfiniteTalk# #Huang-et-al.-2025-LiveAvatar#
+
+  <div class="info-box">
+    <h3>阅读目标</h3>
+    <ul>
+      <li><strong>前情回顾</strong>：3DGS/NeRF 路线适合固定身份资产，但通用生成自由度受 person-specific 设定限制。</li>
+      <li><strong>本篇问题</strong>：视频扩散基模怎样接收音频、参考帧和人物身份，并扩展到整帧/全身生成。</li>
+      <li><strong>下一篇衔接</strong>：理解生成自由度后，再进入实时流式与蒸馏，讨论低延迟交互系统。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-3dgs-nerf-avatar.html"><span class="nav-label">上一篇</span><span class="nav-title">3DGS 与 NeRF 数字人路线</span></a>
+    <a class="nav-card current" href="digital-human-diffusion-foundation-avatar.html"><span class="nav-label">本文</span><span class="nav-title">扩散基模与整帧数字人路线</span></a>
+    <a class="nav-card" href="digital-human-streaming-distillation.html"><span class="nav-label">下一篇</span><span class="nav-title">实时流式与蒸馏</span></a>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">路线定义：什么叫“基于扩散基模”的数字人</div>
+
+  这里的“扩散基模”不是泛指任何用了 diffusion loss 的小模型，而是指一类已经在大规模视频数据上预训练、具备通用视频生成能力的模型，例如 video diffusion transformer、latent video diffusion 或 flow-matching 视频模型。数字人任务在这类基座上追加音频、人物参考、文本、稀疏帧、动作状态或交互状态，让模型从“生成视频”变成“生成一个会说话、会动、能持续存在的人”。OmniAvatar、MultiTalk、InfiniteTalk、HunyuanVideo-Avatar、SkyReels-Audio、Live Avatar 和 StreamAvatar 都属于这个方向的不同切面。#Gan-et-al.-2025-OmniAvatar# #Kong-et-al.-2025-MultiTalk# #Chen-et-al.-2025-HunyuanAvatar# #Fei-et-al.-2025-SkyReelsAudio# #Sun-et-al.-2025-StreamAvatar#
+
+  <div class="def-box">
+    <h3>扩散基模数字人的生成形式</h3>
+    <p>给定视频基座 \(F_\theta\)、参考身份 \(I\)、音频 \(A\)、文本/指令 \(Y\)、历史状态 \(H_t\) 与控制信号 \(C\)，数字人生成可以写成：</p>
+\[
+\hat{X}_{t:t+k}=F_\theta(z_t, I, A_{t:t+k}, Y, H_t, C)
+\]
+    <p>与局部换嘴不同，\(F_\theta\) 不是只补嘴部像素，而是在视频 latent 或 motion/video token 空间中共同决定脸、头动、身体、背景和时间连续性。</p>
+  </div>
+
+  这条路线和传统 talking head 的差别在于“能力来源”不同。SadTalker、VASA-1、Ditto 等工作更像是在专门的运动空间或人脸 latent 中学习音频到运动的映射；扩散基模路线则把已经学到的画面先验、时间建模能力和多模态控制能力保留下来，再用音频适配、LoRA、cross-attention、mask adapter、reference injection、self-forcing 或蒸馏把它收束到数字人任务。整帧/全身生成不是另一条平行路线，而是扩散基模在更大生成范围上的任务形态：模型不只改嘴，还要同时生成脸、头动、身体、衣服、背景和动作。#Tian-et-al.-2024-EMO# #Hu-et-al.-2023-AnimateAnyone# #Gan-et-al.-2025-OmniAvatar#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>路线</th><th>能力来源</th><th>数字人改造重点</th><th>典型工作</th><th>主要代价</th></tr></thead>
+      <tbody>
+        <tr><td>局部换嘴</td><td>原视频帧</td><td>嘴部/脸部 ROI 与音频同步</td><td>Wav2Lip、MuseTalk</td><td>表达自由度低</td></tr>
+        <tr><td>专用 talking head</td><td>3DMM、motion latent、人脸 latent</td><td>音频到表情、头动、姿态</td><td>SadTalker、VASA-1、Ditto</td><td>画面上限受中间表示约束</td></tr>
+        <tr><td>视频扩散基模</td><td>大规模视频生成先验</td><td>音频/身份/稀疏帧/整帧动作/流式状态注入</td><td>InfiniteTalk、OmniAvatar、LongCat-Video-Avatar、Live Avatar、StreamAvatar</td><td>训练和推理成本高</td></tr>
+        <tr><td>绑定资产系统</td><td>3D 角色、动作库、渲染系统</td><td>语义动作、表情和交互状态</td><td>SentiAvatar、商业 3D 数字人</td><td>资产生产和维护成本高</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">技术演进：这条路线正在分成四个层级</div>
+
+  从 2023 到 2026，扩散基模数字人不是沿一条直线演进，而是分成四个层级：先用扩散模型证明整帧人像动画的表现力，再把音频注入视频 DiT，然后处理长视频的续接，最后把多步扩散压成流式实时系统。#Hu-et-al.-2023-AnimateAnyone# #Tian-et-al.-2024-EMO# #Yang-et-al.-2025-InfiniteTalk# #Huang-et-al.-2025-LiveAvatar# #Sun-et-al.-2025-StreamAvatar#
+
+  <h3 class="section-title">第一层：整帧动画能力</h3>
+  Animate Anyone 证明了扩散模型可以用 ReferenceNet 和 pose guider 把静态人物图像变成可控视频，关键问题是保持参考图的细节一致性与跨帧连续性。它还不是音频驱动数字人，但为后续“参考身份 + 时序生成”的架构奠定了模式。EMO 则把 audio-to-video diffusion 直接用于 expressive portrait video，不经过 3D 模型或 facial landmark，说明音频可以直接驱动扩散生成更丰富的表情和歌唱动作。#Hu-et-al.-2023-AnimateAnyone# #Tian-et-al.-2024-EMO#
+
+  <h3 class="section-title">第二层：音频注入视频 DiT</h3>
+  OmniAvatar 把音频条件注入 Wan2.1-T2V-14B 这类视频基座，用 pixel-wise multi-hierarchical audio embedding 同时影响嘴型与身体动作，并用 LoRA 保留基座原有的 prompt-driven control。MultiTalk 面向多人对话视频，提出 L-RoPE 处理多路音频和多人绑定问题，并强调部分参数训练与多任务训练对保留基座指令跟随能力的重要性。HunyuanVideo-Avatar 进一步把 MM-DiT 用于多角色 audio-driven human animation，通过 character image injection、Audio Emotion Module 和 Face-Aware Audio Adapter 处理身份一致、情绪对齐和多角色独立音频注入。#Gan-et-al.-2025-OmniAvatar# #Kong-et-al.-2025-MultiTalk# #Chen-et-al.-2025-HunyuanAvatar#
+
+  <div class="photo">
+    <img src="media/images/digital-human-diffusion-foundation-avatar/omniavatar-pipeline.webp" loading="lazy">
+    <div class="cap">图 1：OmniAvatar 的音频条件注入流程。它在 Wan2.1 视频基座上加入多层级音频嵌入，用 LoRA 做适配，保留通用视频模型的画面和文本控制能力（来源：Gan et al., 2025, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">第三层：长视频与稀疏帧条件</h3>
+  InfiniteTalk 把传统 video dubbing 从“只改嘴”扩展为 sparse-frame video dubbing：保留稀疏关键帧来锚定身份、标志性手势和相机轨迹，其余画面由音频驱动生成。论文明确指出朴素 I2V 会累积误差，朴素 FL2V 会刚性复制参考帧；因此它用 context frames 做块间过渡，用参考帧位置采样调节控制强度。SkyReels-Audio 也把 talking portrait 放在 video diffusion transformer 上，支持多模态条件、无限长生成与编辑，并用 sliding-window denoising 融合跨片段 latent，维持长序列的一致性。#Yang-et-al.-2025-InfiniteTalk# #Fei-et-al.-2025-SkyReelsAudio#
+
+  <div class="photo">
+    <img src="media/images/digital-human-diffusion-foundation-avatar/infinitetalk-pipeline.webp" loading="lazy">
+    <div class="cap">图 2：InfiniteTalk 的流式生成 pipeline。上下文帧、参考帧、音频和 mask 被组合为条件，支持无限长稀疏帧配音（来源：Yang et al., 2025, Fig.4）。</div>
+  </div>
+
+  <h3 class="section-title">第四层：实时流式基模</h3>
+  Live Avatar 和 StreamAvatar 代表了更系统化的方向：不是只让视频基模更会生成数字人，而是把非因果、多步、离线的视频扩散模型改造成可流式、可长时、可交互的系统。Live Avatar 针对 14B 扩散模型做两阶段训练、长时策略和 Timestep-forcing Pipeline Parallelism，在 5 张 H800 上报告 45 FPS、TTFF 1.21 秒与超过 10,000 秒稳定推演。StreamAvatar 使用两阶段 autoregressive adaptation and acceleration，把高保真人体视频扩散模型改造成实时交互 avatar，并处理 talking/listening 两种会话状态。LLIA 则强调低延迟交互头像，使用 variable-length generation、consistency model training、INT8 量化和 pipeline parallelism，在 RTX 4090D 上报告 384×384 最高 78 FPS、512×512 45 FPS。#Huang-et-al.-2025-LiveAvatar# #Sun-et-al.-2025-StreamAvatar# #Yu-et-al.-2025-LLIA#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">技术 Taxonomy：不是“用了 diffusion”就属于同一类</div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>技术问题</th><th>典型做法</th><th>解决什么</th><th>代表工作</th></tr></thead>
+      <tbody>
+        <tr><td>身份注入</td><td>ReferenceNet、character image injection、reference cross-attention、reference sink</td><td>让人物外观跨帧一致</td><td>Animate Anyone、HunyuanVideo-Avatar、Live Avatar、StreamAvatar</td></tr>
+        <tr><td>音频注入</td><td>wav2vec2/audio encoder、audio cross-attention、multi-hierarchical audio embedding、Face-Aware Audio Adapter</td><td>把音素、韵律、情绪映射到脸和身体</td><td>InfiniteTalk、OmniAvatar、HunyuanVideo-Avatar</td></tr>
+        <tr><td>长时续接</td><td>context frames、sliding-window denoising、KV cache、reference-anchored positional re-encoding</td><td>防止块间跳变和身份漂移</td><td>InfiniteTalk、SkyReels-Audio、Live Avatar、StreamAvatar</td></tr>
+        <tr><td>基座保留</td><td>LoRA、部分参数训练、多任务训练</td><td>不破坏视频基模的画质和指令跟随</td><td>OmniAvatar、MultiTalk</td></tr>
+        <tr><td>实时化</td><td>few-step distillation、consistency model、DMD、自回归蒸馏、量化、TPP</td><td>把多步扩散变成低延迟系统</td><td>Live Avatar、StreamAvatar、LLIA</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{< mermaid >}}
+flowchart TD
+  B["视频扩散基模<br/>Video DiT / Flow Matching / Latent Diffusion"] --> I["身份条件<br/>reference image / sparse frames"]
+  B --> A["音频条件<br/>wav2vec2 / cross-attention / audio adapter"]
+  B --> C["控制条件<br/>text / pose / mask / emotion"]
+  I --> G["数字人生成器"]
+  A --> G
+  C --> G
+  H["历史状态<br/>context frames / KV cache / reference sink"] --> G
+  G --> O["talking head / full-body / streaming avatar"]
+  G --> R["蒸馏 + 量化 + 并行"]
+  R --> S["实时交互系统"]
+  {{< /mermaid >}}
+
+  <p><em>图 3：扩散基模数字人的共同结构。核心不是单个模块，而是把通用视频生成基座、身份条件、音频条件、历史状态和实时化策略组合成闭环。</em></p>
+
+  这张图也说明了为什么 InfiniteTalk 和 Live Avatar 可以放在同一条主线下，但不应被混成同一个问题。InfiniteTalk 的主问题是稀疏帧视频配音：怎样在保留关键帧约束的同时生成长视频；Live Avatar 的主问题是实时流式 audio-driven avatar：怎样把 14B 扩散模型从离线多步生成改造成长时低延迟系统。它们共享视频基座、音频条件、长时续接和误差控制这些机制，但任务约束不同，评测重点也不同。#Yang-et-al.-2025-InfiniteTalk# #Huang-et-al.-2025-LiveAvatar#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">整帧与全身生成：基模路线的自由度放大</div>
+
+  整帧/全身生成是扩散基模路线最自然的外延：模型不再只修改嘴部，而要生成完整画面，甚至根据音频同步生成头动、身体姿态、手势、衣服纹理和背景细节。自由度越大，表现力越强，失败空间也越大。OmniAvatar 将任务定位为 audio-driven full-body video generation；LongCat-Video-Avatar 则把自己定义为 unified DiT-based framework，目标是生成长时长、高真实感的 audio-driven human videos。#Gan-et-al.-2025-OmniAvatar# #LongCat-Video-Avatar-Page#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>维度</th><th>局部换嘴</th><th>整帧/全身生成</th></tr></thead>
+      <tbody>
+        <tr><td>生成范围</td><td>嘴部和局部脸</td><td>脸、身体、衣服、背景和动作</td></tr>
+        <tr><td>身份保持</td><td>天然较稳，因为原视频保留大部分外观</td><td>需要参考身份、跨帧注意力和长时锚点共同约束</td></tr>
+        <tr><td>动作能力</td><td>复用原视频动作</td><td>可生成头动、姿态、手势和舞台表演</td></tr>
+        <tr><td>主要风险</td><td>嘴部边界、牙齿、情绪不一致</td><td>身份漂移、手部畸变、背景闪烁、长时序漂移</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  OmniAvatar 的关键设计是把 wav2vec2 音频特征变成 pixel-wise multi-hierarchical audio embedding，注入 DiT 多个层级的 latent，让音频同时影响嘴型、表情和更大范围的身体节奏。它基于 Wan2.1-T2V-14B，却用 LoRA 做音频适配而非全量微调；这背后的工程判断是：全量微调可能破坏视频基座原有的画质和文本控制能力，LoRA 反而更容易保住基座先验。#Gan-et-al.-2025-OmniAvatar# #OmniAvatar-GitHub#
+
+  <div class="photo">
+    <img src="media/images/digital-human-diffusion-foundation-avatar/omniavatar-pipeline.webp" loading="lazy">
+    <div class="cap">图 4：OmniAvatar 的整体流程。wav2vec2 音频特征经多层级嵌入注入 DiT latent，在 Wan2.1 基座上用 LoRA 做音频适配，同时驱动嘴型与全身动作（来源：Gan et al., 2025, Fig.2）。</div>
+  </div>
+
+  LongCat-Video-Avatar 和 Animate Anyone 提醒我们，不要把“通用视频模型能生成有人说话的片段”等同于“数字人系统已经成立”。真实产品需要固定身份、可控台词、可控情绪、可控时长、可重复生成，还要处理品牌形象和合规审核。整帧路线更适合广告素材、虚拟主播片段、课程开场和可重试的离线内容生产；若业务目标是实时客服，仍需要后面的流式系统、少步蒸馏、量化和降级策略。#LongCat-Video-Avatar-1.5# #Hu-et-al.-2023-AnimateAnyone#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">长时一致性：基模路线的真正分水岭</div>
+
+  视频扩散基模生成几秒 demo 并不难，难的是长对话、长配音和连续互动。长时失败通常来自三类机制：第一，块状生成带来的边界跳变；第二，身份参考与生成帧分布不一致造成的漂移；第三，多步扩散和自回归历史共同放大细小错误。InfiniteTalk 用 context frames 和参考帧采样处理块间连续性；SkyReels-Audio 用 sliding-window denoising 融合片段；Live Avatar 用 History Corrupt、Adaptive Attention Sink 和 Rolling RoPE 抑制长时漂移；StreamAvatar 用 Reference Sink、RAPR 和 Consistency-Aware Discriminator 强化长期稳定。#Yang-et-al.-2025-InfiniteTalk# #Fei-et-al.-2025-SkyReelsAudio# #Huang-et-al.-2025-LiveAvatar# #Sun-et-al.-2025-StreamAvatar#
+
+  <div class="photo">
+    <img src="media/images/digital-human-diffusion-foundation-avatar/live-avatar-training.webp" loading="lazy">
+    <div class="cap">图 5：Live Avatar 的两阶段训练。Stage 1 用加噪 motion frame 学习时间上下文，Stage 2 用 rolling KV cache 与 Self-Forcing DMD 蒸馏形成少步流式模型（来源：Huang et al., 2025, Fig.2）。</div>
+  </div>
+
+  <div class="callout"><strong>关键判断</strong>：基模路线的强弱不能只看短视频画质，还要看模型是否定义了历史状态、参考锚点、位置编码重置和误差抑制机制。没有这些机制，长视频中的身份、肤色、背景和动作节奏都会逐步偏离。</div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>失败模式</th><th>机制来源</th><th>典型修复</th><th>对应工作</th></tr></thead>
+      <tbody>
+        <tr><td>块间跳变</td><td>每段视频独立生成，缺少动量</td><td>context frames、sliding-window latent fusion</td><td>InfiniteTalk、SkyReels-Audio</td></tr>
+        <tr><td>身份漂移</td><td>参考帧位置或分布与生成帧不一致</td><td>reference sink、AAS、character injection</td><td>Live Avatar、StreamAvatar、HunyuanVideo-Avatar</td></tr>
+        <tr><td>注意力衰减</td><td>sink 帧与当前块的 RoPE 相对距离超出训练范围</td><td>Rolling RoPE、RAPR</td><td>Live Avatar、StreamAvatar</td></tr>
+        <tr><td>多步推理太慢</td><td>扩散去噪串行执行</td><td>DMD、consistency distillation、TPP、pipeline parallelism</td><td>Live Avatar、LLIA、StreamAvatar</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实时化：从“视频模型”到“交互系统”</div>
+
+  只要还是多步扩散，模型就天然存在首帧延迟和串行去噪成本。实时化因此不是一个单点优化，而是一组共同约束：采样步数要少，历史状态要可缓存，注意力要因果化，VAE/UNet/DiT 与视频编码要能流水线化，系统还要处理 speaking、listening、idle 等会话状态。LLIA 讨论了 response latency，指出即使生成 FPS 超过播放 FPS，如果初始片段太长，用户仍会感到迟钝；StreamAvatar 和 Live Avatar 则把流式状态设计放到核心位置。#Yu-et-al.-2025-LLIA# #Sun-et-al.-2025-StreamAvatar# #Huang-et-al.-2025-LiveAvatar#
+
+  <div class="photo">
+    <img src="media/images/digital-human-diffusion-foundation-avatar/live-avatar-tpp.webp" loading="lazy">
+    <div class="cap">图 6：Live Avatar 的 Timestep-forcing Pipeline Parallelism。每张 GPU 固定负责一个去噪时间步，把串行扩散链改造成异步流水线（来源：Huang et al., 2025, Fig.3）。</div>
+  </div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>工作</th><th>实时化策略</th><th>公开指标</th><th>适用判断</th></tr></thead>
+      <tbody>
+        <tr><td>Live Avatar</td><td>DMD/Self-Forcing、长时策略、TPP</td><td>5 H800 上 45 FPS，TTFF 1.21s，10,000+ 秒稳定推演</td><td>高质量流式 avatar，但依赖多卡系统能力</td></tr>
+        <tr><td>LLIA</td><td>variable-length generation、consistency model、INT8、pipeline parallelism</td><td>RTX 4090D 上 384×384 78 FPS，512×512 45 FPS</td><td>更贴近低延迟交互头像</td></tr>
+        <tr><td>StreamAvatar</td><td>自回归适配、加速、adversarial refinement、Reference Sink/RAPR</td><td>论文强调实时效率和交互自然度，项目页给出系统演示</td><td>面向 talking/listening 双状态互动 avatar</td></tr>
+        <tr><td>InfiniteTalk</td><td>context frames 与分块续接</td><td>面向无限长稀疏帧配音，非低延迟对话优先</td><td>长视频配音与内容生成更适合</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这里需要区分两个“实时”。一个是模型吞吐实时，表示生成速度超过视频播放速度；另一个是交互实时，表示系统可以快速响应用户新输入、打断旧动作、切换听说状态，并在网络与编码链路中保持低延迟。Live Avatar 解决的是 14B 扩散模型能否以流式方式持续生成；LLIA 更直接讨论初始响应延迟；StreamAvatar 把 listening behavior 纳入生成目标。这些约束共同指向一个结论：基模路线若要进入产品，必须同时做算法蒸馏和系统流水线。#Huang-et-al.-2025-LiveAvatar# #Yu-et-al.-2025-LLIA# #Sun-et-al.-2025-StreamAvatar#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">产品选型：什么时候该选扩散基模与整帧路线</div>
+
+  扩散基模路线适合表达自由度高、画质要求高、身份/场景变化多、并且可以承担更高算力和工程复杂度的业务。广告、虚拟主播、长视频配音、多角色对话、品牌 IP 内容生产、强表现力直播形象，都可以从基模的视频先验中受益。若业务只要求已有素材换音频，Wav2Lip/MuseTalk 类局部方案仍然更稳；若业务只要求低成本客服头像，轻量 talking head 或绑定资产系统可能更容易上线。#Prajwal-et-al.-2020# #Zhang-et-al.-2024-MuseTalk# #Yang-et-al.-2025-InfiniteTalk#
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>业务目标</th><th>是否适合基模路线</th><th>原因</th><th>替代路线</th></tr></thead>
+      <tbody>
+        <tr><td>已有视频多语言配音</td><td>中等</td><td>InfiniteTalk 类稀疏帧配音可提升全身同步，但成本高于局部换嘴</td><td>Wav2Lip、MuseTalk</td></tr>
+        <tr><td>短视频虚拟主播</td><td>高</td><td>需要画质、身体动作、背景和风格控制</td><td>OmniAvatar、HunyuanVideo-Avatar、SkyReels-Audio</td></tr>
+        <tr><td>实时互动客服</td><td>谨慎</td><td>首帧延迟、并发成本和稳定性比画质更重要</td><td>轻量 talking head、LLIA 类低延迟方案</td></tr>
+        <tr><td>高端实时形象</td><td>高但昂贵</td><td>Live Avatar/StreamAvatar 类系统能保留基模画质并做流式生成</td><td>多卡推理、蒸馏、降级策略</td></tr>
+        <tr><td>固定 3D 角色长期运营</td><td>不一定</td><td>绑定资产和动作库更可控，合规和风格稳定性更强</td><td>SentiAvatar、3D/UE/动作库系统</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      选型边界
+    </div>
+    <div class="admonition-content"><p>扩散基模路线不应被当成“更大的模型一定更好”。它带来更高画质和更大表现空间，也带来更多不可忽略的系统问题：训练数据授权、长时身份漂移、推理成本、并发调度、内容安全和失败兜底。</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Summary</div>
+  <div class="ch-title">小结与下一篇衔接</div>
+
+  基于扩散基模的数字人路线，可以理解为视频生成大模型向数字人系统的专门化：先保留基座的画面、时序和多模态先验，再通过音频注入、参考身份、稀疏帧、历史状态、蒸馏和流水线把它约束到可控、可长时、可交互的 avatar。它解释了为什么 InfiniteTalk、OmniAvatar、Live Avatar、StreamAvatar 虽然任务不同，却属于同一条技术主线：它们都在回答“如何把通用视频基模变成会说话的人”。#Yang-et-al.-2025-InfiniteTalk# #Gan-et-al.-2025-OmniAvatar# #Huang-et-al.-2025-LiveAvatar# #Sun-et-al.-2025-StreamAvatar#
+
+  下一篇将进入实时流式与蒸馏。那里讨论的问题不再是“能生成多自由度画面”，而是“能不能边听边生成、低延迟响应、长时间不漂移”。
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="digital-human-3dgs-nerf-avatar.html"><span class="nav-label">上一篇</span><span class="nav-title">3DGS 与 NeRF 数字人路线</span></a>
+    <a class="nav-card current" href="digital-human-diffusion-foundation-avatar.html"><span class="nav-label">本文</span><span class="nav-title">扩散基模与整帧数字人路线</span></a>
+    <a class="nav-card" href="digital-human-streaming-distillation.html"><span class="nav-label">下一篇</span><span class="nav-title">实时流式与蒸馏</span></a>
+  </div>
+</div>
+
+<ul class="sources">
+  <li data-cite-key="Prajwal-et-al.-2020">Prajwal et al., “A Lip Sync Expert Is All You Need for Speech to Lip Generation In the Wild,” 2020.</li>
+  <li data-cite-key="Zhang-et-al.-2024-MuseTalk">Zhang et al., “MuseTalk: Real-Time High Quality Lip Synchronization with Latent Space Inpainting,” 2024.</li>
+  <li data-cite-key="Hu-et-al.-2023-AnimateAnyone">Hu et al., “Animate Anyone: Consistent and Controllable Image-to-Video Synthesis for Character Animation,” arXiv:2311.17117, 2023.</li>
+  <li data-cite-key="Tian-et-al.-2024-EMO">Tian et al., “EMO: Emote Portrait Alive -- Generating Expressive Portrait Videos with Audio2Video Diffusion Model under Weak Conditions,” arXiv:2402.17485, 2024.</li>
+  <li data-cite-key="Kong-et-al.-2025-MultiTalk">Kong et al., “Let Them Talk: Audio-Driven Multi-Person Conversational Video Generation,” arXiv:2505.22647, 2025.</li>
+  <li data-cite-key="Chen-et-al.-2025-HunyuanAvatar">Chen et al., “HunyuanVideo-Avatar: High-Fidelity Audio-Driven Human Animation for Multiple Characters,” arXiv:2505.20156, 2025.</li>
+  <li data-cite-key="Gan-et-al.-2025-OmniAvatar">Gan et al., “OmniAvatar: Efficient Audio-Driven Avatar Video Generation with Adaptive Body Animation,” arXiv:2506.18866, 2025.</li>
+  <li data-cite-key="OmniAvatar-GitHub">Omni-Avatar, “OmniAvatar official repository,” GitHub, 2025.</li>
+  <li data-cite-key="LongCat-Video-Avatar-Page">MeiGen-AI, “LongCat-Video-Avatar project page,” 2026.</li>
+  <li data-cite-key="LongCat-Video-Avatar-1.5">LongCat authors, “LongCat-Video-Avatar 1.5 Technical Report,” arXiv:2605.26486, 2026.</li>
+  <li data-cite-key="Fei-et-al.-2025-SkyReelsAudio">Fei et al., “SkyReels-Audio: Omni Audio-Conditioned Talking Portraits in Video Diffusion Transformers,” arXiv:2506.00830, 2025.</li>
+  <li data-cite-key="Yang-et-al.-2025-InfiniteTalk">Yang et al., “InfiniteTalk: Audio-driven Video Generation for Sparse-Frame Video Dubbing,” arXiv:2508.14033, 2025.</li>
+  <li data-cite-key="Yu-et-al.-2025-LLIA">Yu et al., “LLIA - Enabling Low-Latency Interactive Avatars: Real-Time Audio-Driven Portrait Video Generation with Diffusion Models,” arXiv:2506.05806, 2025.</li>
+  <li data-cite-key="Huang-et-al.-2025-LiveAvatar">Huang et al., “Live Avatar: Streaming Real-time Audio-Driven Avatar Generation with Infinite Length,” arXiv:2512.04677, 2025.</li>
+  <li data-cite-key="Sun-et-al.-2025-StreamAvatar">Sun et al., “StreamAvatar: Streaming Diffusion Models for Real-Time Interactive Human Avatars,” arXiv:2512.22065, 2025.</li>
+</ul>
