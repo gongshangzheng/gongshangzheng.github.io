@@ -91,11 +91,21 @@ hero_tagline: "红外轮廓压缩不应被视为通用图像压缩的子问题�
 
   <p>特别值得注意的是分割任务中冻结 RGB-DINOv2（45.46% mIoU）与 AnyThermal（53.47% mIoU）之间 8 个百分点的差距，这直接证明了<strong>热红外专用蒸馏的必要性</strong>——简单地将 RGB 预训练特征迁移到热红外域是不够的。</p>
 
+  <div class="photo">
+    <img src="media/images/ir-contour-cv-frontiers/anythermal_arch.webp" alt="AnyThermal teacher-student architecture">
+    <div class="cap">AnyThermal 的 teacher-student 架构：冻结的 DINOv2 ViT-B/14 处理 RGB 图像（左），可训练的 DINOv2 ViT-B/14 处理热红外图像（右），通过 CLS token 上的 InfoNCE 对比损失进行对齐 #AnyThermal-2026#。</div>
+  </div>
+
   <h3>2.2 T-CLIP：解耦双 LoRA 弥合热红外感知鸿沟</h3>
 
   <p>T-CLIP #TCLIP-2026# 由 IIT Delhi 和 NVIDIA 等机构提出，聚焦于另一个维度的问题：<strong>CLIP 等视觉-语言基础模型对热红外图像存在根本性的"感知鸿沟"（thermal perception gap）</strong>。量化来看，零样本 CLIP 在 KAIST 测试集上匹配的热红外图像-文本对的平均余弦相似度仅为 0.3449，对应的检索召回率 R@1 = 0.003——几乎是随机水平。更令人意外的是，标准的 LoRA 微调不仅未能改善，反而使余弦相似度降至 0.3322，说明朴素适配策略完全失效。</p>
 
   <p>T-CLIP 的核心洞察是：热红外图像承载着两个层次的信息——<strong>全局场景上下文</strong>（光照条件、天气、时间、整体热分布）和<strong>细粒度热特征</strong>（物体热签名、材料发射率、温度关系），而这两个层次的表征在几何上是高度分歧的。作者通过独立训练两个 LoRA 分支发现：全局 LoRA 特征的类内余弦相似度仅为 0.37（反映场景上下文的多样性），而细粒度 LoRA 特征的类内相似度高达 0.86（反映物理约束下热签名的紧凑性），两者的平均特征向量夹角达到 <strong>63.7°</strong>。这意味着联合优化会产生梯度干扰，顺序训练会导致灾难性遗忘。</p>
+
+  <div class="photo">
+    <img src="media/images/ir-contour-cv-frontiers/tclip_geometry.webp" alt="T-CLIP feature geometry divergence">
+    <div class="cap">T-CLIP 揭示的几何分歧：全局 LoRA 特征（场景上下文）与细粒度 LoRA 特征（热签名）的平均向量夹角达 63.7°，证明两个层次的表征在几何上高度不兼容，必须解耦训练 #TCLIP-2026#。</div>
+  </div>
 
   <p>为解决这一问题，T-CLIP 提出了<strong>解耦双 LoRA 框架</strong>：两个 LoRA 模块 \(\theta_g\) 和 \(\theta_f\) 分别作用于冻结 CLIP 的视觉和文本编码器，各自使用独立的 InfoNCE 对比损失进行优化，互不干扰。推理时通过加权融合 \(\alpha \cdot F_{\theta_g}(I) + (1-\alpha) \cdot F_{\theta_f}(I)\) 合并两路特征，最优 \(\alpha = 0.8\)（全局上下文主导）。</p>
 
@@ -212,6 +222,11 @@ hero_tagline: "红外轮廓压缩不应被视为通用图像压缩的子问题�
   <p>消融实验揭示了非对称设计的必要性：若对高频带也使用严格 MSE，性能反而下降 3.3 mAP（从 61.7 跌至 58.4），证明强迫学生网络复制教师的高频纹理在跨模态场景中是有害的。而 FreqKD 的组合策略取得了 64.1 mAP<sub>50</sub>，较无蒸馏基线提升 +2.4。</p>
 
   <p>CKA 分析进一步证实了"选择性对齐"的效果：FreqKD 使低频相似度从 0.82 升至 0.91，同时高频相似度从 0.13 降至 0.02，整体 CKA 从 0.65 降至 0.30。换言之，<strong>更好的 IR 性能来自于更精准的选择性迁移，而非更全面地模仿 RGB 教师</strong>。</p>
+
+  <div class="photo">
+    <img src="media/images/ir-contour-cv-frontiers/freqkd_arch.webp" alt="FreqKD frequency-decoupled distillation architecture">
+    <div class="cap">FreqKD 频率解耦蒸馏架构：对 RGB 教师与 IR 学生的特征做 2D FFT 后，以径向掩模 \(r_c=0.50\) 分离高低频带，对低频施加严格 MSE、对高频施加松弛 log-MSE（\(\eta=0.1\)），实现非对称选择性对齐 #FreqKD-2026#。</div>
+  </div>
 
   <p>训练采用两阶段流水线：Stage 1 冻结骨干网络，仅训练 LoRA 适配器（rank 64）进行表征学习；Stage 2 将 LoRA 合并回密集权重（\(W_{\text{merged}} = W_{\text{base}} + \alpha \cdot BA, \alpha=0.5\)），初始化 DINO-DETR 检测头进行端到端微调。该设计确保了 Stage 1 的增益纯粹来自表征学习，且同一检查点可跨数据集（FLIR ADAS +2.1 mAP<sub>50</sub>）、跨任务（MFNet 分割 +1.85 mIoU）、跨架构（ViT-L → ResNet-50 +1.0 mAP<sub>50</sub>）迁移。</p>
 
@@ -389,6 +404,11 @@ flowchart TD
     RPCA 的低秩+稀疏分解与轮廓压缩的核心需求形成了三重映射：(1) 稀疏分量 T ↔ 轮廓/边缘像素（空间域稀疏，需高保真编码）；(2) 低秩分量 B ↔ 纹理/辐射场区域（全局平滑，可紧凑表示）；(3) 迭代交替优化 ↔ 渐进式码率分配（由粗到精）。更重要的是，TSSM 中的可变形提示机制显式维护稀疏结构的拓扑完整性，这正是轮廓压缩区别于通用图像压缩的关键所在。虽然 RPCASSM 本身是检测网络而非编解码器，但其在表示层面验证了"低秩+稀疏"归纳偏置对红外图像结构分离的有效性，为学习式轮廓编码器提供了可直接借鉴的架构模式。
   </div>
 
+  <div class="photo">
+    <img src="media/images/ir-contour-cv-frontiers/rpcassm_arch.webp" alt="RPCASSM dual-branch architecture">
+    <div class="cap">RPCASSM 双分支架构：背景状态空间模块（BSSM，左）通过轴分解双向 SSM 建模低秩背景，目标状态空间模块（TSSM，右）通过密度聚类+可变形提示定位稀疏前景并在目标区域内执行交叉扫描 SSM。两者在 \(k\) 级迭代交替优化中耦合 #RPCASSM-2026#。</div>
+  </div>
+
   <h3>4.2 LoHGNet：洛伦兹流形上的层次化几何编码</h3>
 
   <p>如果说 RPCASSM 从信号分解角度建立了稀疏表征，那么 LoHGNet #LoHGNet-2026# 则从<strong>几何空间</strong>的角度重新思考了红外特征的表示问题。其核心论点是：欧几里得空间的平坦度量结构不适合表达极弱目标与复杂背景之间的层次化、非均匀几何关系；而具有恒定负曲率的洛伦兹（双曲）空间，因其体积指数级膨胀的特性，天然适合组织层次化特征结构。</p>
@@ -501,6 +521,11 @@ flowchart TD
   \[A_t = \sigma(\text{Conv}_{1\times1}(\|\nabla f_t\|_1))\]
 
   <p>将计算资源集中于热相关结构（边缘、轮廓）。两者协同贡献了 +5.9 dB 的增益。在 FLIR-IVSR 数据集上，HATIR 达到 32.47–33.87 PSNR / 0.84–0.87 SSIM，较所有基线提升 +3.5 至 +10.6 dB。</p>
+
+  <div class="photo">
+    <img src="media/images/ir-contour-cv-frontiers/hatir_pipeline.webp" alt="HATIR heat-aware diffusion pipeline">
+    <div class="cap">HATIR 热感知扩散复原管线：PhasorFlow 从频域热相位分析构建稳定区域掩模，调制跨帧注意力与光流精化；湍流感知解码器（TAD）包含 TMG（翘曲误差门控）和 IR-SAA（梯度幅度结构注意力），在每个去噪步骤注入物理引导 #HATIR-2026#。</div>
+  </div>
 
   <p>对于轮廓压缩而言，HATIR 的三个设计均可直接迁移：(1) PhasorFlow 的频率分析可替换为空间频率分析以区分真实轮廓与压缩伪影；(2) 热感知引导中的翘曲误差可替换为轮廓保真度误差（如 Canny/Sobel 边缘图差异），用边缘强度掩模替代相位掩模；(3) IR-SAA 的梯度幅度注意力本质上就是集成在网络中的边缘检测器，对轮廓图像的超分辨具有天然适用性。</p>
 
@@ -615,6 +640,11 @@ flowchart TD
   \]
 
   <p>较小的缩放因子保留重要组的动态范围和精度，较大的缩放因子则激进地压缩不重要组的数值范围从而降低码率。第三，<strong>CI-CTX 序列熵编码</strong>按组顺序解码，先解码的重要组获得更充分的上下文先验和更多比特，后续组以前面已解码组为条件进行预测。第四，<strong>TSCA 多任务适配</strong>通过轻量级通道注意力块（CAB）实现任务切换，无需重训整个编解码器即可在检测和分割之间灵活转换。</p>
+
+  <div class="photo">
+    <img src="media/images/ir-contour-cv-frontiers/ciicm_ctx.webp" alt="CI-ICM channel importance context model">
+    <div class="cap">CI-ICM 通道重要性驱动的序列熵编码：CIG 模块生成通道重要性权重并排序，FCGS 将 192 通道分为 5 个不均匀组（4,4,8,16,160）并施加差异化缩放，CI-CTX 按重要性顺序解码使关键通道获得更多比特 #CIICM-2026#。</div>
+  </div>
 
   <p>在 COCO2017 验证集上，以 ELIC 为锚点，CI-ICM 取得了 BD-mAP@50:95 <strong>+16.25%</strong> 的检测增益和 <strong>+13.72%</strong> 的分割增益，超越此前最优的 AdaptICMH 约 3 个百分点。消融实验证实每个模块的贡献：移除 CI-CTX 使检测 BD-mAP 下降 4.41%，移除缩放下降 1.68%，移除通道排序下降 3.51%。模型参数量为 15.7M，在 RTX 3090 上编码耗时 2.29s、解码 0.17s #CIICM-2026#。</p>
 
