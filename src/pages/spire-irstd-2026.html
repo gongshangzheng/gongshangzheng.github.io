@@ -1,0 +1,405 @@
+---
+title: "红外图像压缩论文精读（八）：SPIRE，单点监督引导的编码器红外小目标检测"
+description: "深度解读 SPIRE 如何将红外小目标检测从像素级分割重定义为质心概率回归，用 PRPS 物理先验监督 + encoder-only 架构在仅 0.29M 参数下达到 competitive 检测性能和极低虚警率"
+date: 2026-06-20T00:32:42
+created_at: 2026-06-20T00:32:42
+updated_at: 2026-06-20T00:38:00
+tags: [红外, 目标检测, 单点监督, 热图回归, encoder-only, IRSTD]
+categories: ["论文精读"]
+subcategory: "图像压缩"
+sub_id: 3570
+hub: "infrared-compression-hub"
+mathjax: true
+arxiv_id: "2604.05363"
+hero_title: "SPIRE"
+hero_sub: "ECCV 2026 · 红外小目标检测"
+hero_tagline: "单点监督 + 物理先验热图 + encoder-only，用 0.29M 参数颠覆分割范式"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.29M</span><span class="label">参数量</span></div>
+  <div class="stat"><span class="num b">97.05%</span><span class="label g">F1 (UAVB)</span></div>
+  <div class="stat"><span class="num">1.02</span><span class="label">Fa (×10⁻⁸)</span></div>
+  <div class="stat"><span class="num b">7.68G</span><span class="label l">FLOPs</span></div>
+</div>
+
+<!-- ============================================================
+  Part 1: 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">红外小目标检测的第一性原理：定位还是重建？</div>
+
+  红外小目标检测（IRSTD）是红外搜索与跟踪系统的基础模块，在军事侦察、边境监控、海上救援中承担着"从杂波背景中找到几个像素大小的热目标"的任务。这些目标极小（典型 2×2 到 9×9 像素）、极暗（信噪比可能仅几个量化级）、极稀疏（一张 640×640 的图上可能只有 1-3 个目标），使得 IRSTD 成为计算机视觉中最具挑战性的检测任务之一 #Ni-2026#。
+
+  主流 IRSTD 方法沿用了语义分割的 encoder-decoder 范式：用密集的像素级掩码标注训练一个 U-Net 风格的分割网络，推理时再通过连通域聚类把分割掩码转换为检测坐标。DNANet #DNANet-2023# 用密集嵌套注意力做多尺度融合，SCTransNet #SCTransNet-2024# 引入空间-通道交叉 Transformer 建模长程依赖。这些方法的 F1 不断刷新纪录，但代价是越来越重的架构——SCTransNet 用 11.19M 参数、63.22 GFLOPs 换来 F1=97.09%。
+
+  <div class="photo">
+    <img src="media/images/spire-irstd-2026/3problem.webp" alt="SPIRE 动机图" loading="lazy">
+    <div class="cap">图 1：SPIRE 的动机。现有方法面临三大局限——(a) 像素标注昂贵、正样本极度稀疏；(b) encoder-decoder 架构冗余，依赖大量特征融合和注意力；(c) 分割掩码转检测坐标引入定位不确定性。SPIRE 用单点监督 + encoder-only + 峰值提取同时解决三个问题（来源：SPIRE, Fig.1）</div>
+  </div>
+
+  SPIRE 的作者（国防科技大学 NUDT 团队）提出了一个尖锐的问题：<strong>IRST 系统真正需要的是可靠的目标定位，而不是精确的轮廓重建</strong>。既然小目标只占几个像素，且边界被杂波模糊，那么强迫网络去分割每一个目标像素——然后再把这些像素聚类回坐标——不仅标注昂贵（每张图 11.4s），而且引入了不必要的架构复杂度和定位误差累积 #Ni-2026#。
+
+  <div class="callout"><strong>一句话概括</strong>：SPIRE 将 IRSTD 从"像素级分割 + 连通域聚类"重定义为"质心概率回归 + 峰值提取"，用单点标注（每张图仅 1.4s）训练一个 encoder-only 网络（0.29M 参数），在 SIRST-UAVB 上达到 F1=97.05%、Fa=1.02×10⁻⁸——虚警率比最强基线 SCTransNet 低 5 倍。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 2: 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">从分割到回归：一场范式重定义</div>
+
+  理解 SPIRE 的价值，需要先看清现有 IRSTD 范式的三重耦合瓶颈。
+
+  <h3 class="section-title">瓶颈 1：标注成本与监督稀疏</h3>
+
+  像素级掩码标注面临两个问题。第一是<strong>标注成本</strong>：MCLC #MCLC-2023# 报告，单张红外图像的像素级标注平均需要 11.4 秒，而单点标注（只标注目标质心）仅需 1.4 秒——减少 87.72%。第二是<strong>监督稀疏</strong>：在 640×640 的输入上，典型目标仅占 4-81 个像素（0.001%-0.02%），极端的前景-背景不平衡导致 BCE 损失的梯度几乎完全被背景主导。
+
+  <h3 class="section-title">瓶颈 2：架构冗余</h3>
+
+  为了补偿监督信号的稀疏性，现有方法不得不堆叠多尺度融合和密集连接模块。DNANet 使用密集嵌套注意力在 5 个分辨率尺度间反复融合特征，SCTransNet 引入 Transformer 的长程注意力来抑制背景干扰。这些设计在通用视觉任务中是合理的，但对 IRSTD 来说是"用复杂性补偿监督不足"的间接路线——如果监督信号本身就足够稠密，就不需要这么重的架构来稳定优化。
+
+  <h3 class="section-title">瓶颈 3：定位不确定性</h3>
+
+  分割范式还有一个工程层面的隐患：检测坐标不是网络的直接输出，而是分割掩码经过 8-连通域聚类后的副产物。当一个真实目标在掩码上产生多个相邻连通块时（这在低 SNR 条件下非常常见），聚类可能把一个目标拆成多个检测，或者把噪声斑块聚成一个虚假检测——这种从"分割到定位"的转换引入了额外的误差和不稳定性。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>分割范式 (DNANet, SCTransNet)</th><th>单点监督分割 (LESPS, MCLC)</th><th>SPIRE 概率回归</th></tr></thead>
+      <tbody>
+        <tr><td>标注形式</td><td>像素级掩码</td><td>单点 → 伪掩码</td><td>单点 → PRPS 热图</td></tr>
+        <tr><td>架构</td><td>Encoder-Decoder</td><td>Encoder-Decoder</td><td>Encoder-Only</td></tr>
+        <tr><td>推理</td><td>掩码 → 连通域聚类</td><td>掩码 → 连通域聚类</td><td>热图 → 峰值提取</td></tr>
+        <tr><td>物理先验</td><td>无</td><td>无</td><td>红外 PSF 扩散 + 辐射梯度</td></tr>
+        <tr><td>定位路径</td><td>间接（分割→聚类）</td><td>间接（分割→聚类）</td><td>直接（峰值→坐标）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>SPIRE 的核心 insight</strong>：如果监督信号能直接编码红外小目标的物理特性（PSF 扩散 + 局部辐射梯度），那么一个轻量的单分支编码器就足以学到结构化的概率响应——不需要 decoder 来重建掩码，也不需要聚类来定位目标。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 3: 模型架构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">SPIRE 架构详解：PRPS + HRPE + 峰值提取</div>
+
+  SPIRE 的整体框架由三个模块组成：<strong>PRPS</strong>（离线构造监督信号）、<strong>HRPE</strong>（在线前向预测）、<strong>峰值提取</strong>（确定性推理）。三者的关系是：PRPS 把单点标注膨胀为与红外物理一致的概率响应图，HRPE 学习从红外图像到概率响应图的回归映射，峰值提取从预测响应图中提取目标质心坐标。
+
+  <div class="photo">
+    <img src="media/images/spire-irstd-2026/framework.webp" alt="SPIRE 整体框架" loading="lazy">
+    <div class="cap">图 2：SPIRE 框架。上半部分为 PRPS 监督构造流程（坐标映射 → 高斯先验 → 梯度感知调制 → 概率响应图 P*），下半部分为 HRPE 编码器 + 峰值提取推理（来源：SPIRE, Fig.3）</div>
+  </div>
+
+  <h3 class="section-title">PRPS：将单点标注变成物理一致的概率响应</h3>
+
+  PRPS（Point-Response Prior Supervision）是 SPIRE 的第一个核心创新。它要解决的问题是：单点 impulse 监督的梯度太稀疏（在 stride=4 的 160×160 热图上，单个正样本占比仅 0.004%），直接训练会导致梯度饥饿。
+
+  PRPS 的思路不是简单地用 Gaussian 替代 impulse，而是<strong>把红外小目标的物理成像特性编码进监督信号</strong>。具体分三步：
+
+  <strong>第一步：坐标映射 + 辐射峰值对齐</strong>。将原图坐标 $(x_k, y_k)$ 映射到热图网格：
+
+  $$(\tilde{x}_k, \tilde{y}_k) = \lfloor (x_k/s, \; y_k/s) + 0.5 \rfloor$$
+
+  然后在原图局部邻域中搜索最大强度位置 $(\tilde{x}_k^*, \tilde{y}_k^*)$，使监督中心对齐真实辐射峰值而非标注者的目测位置。
+
+  <strong>第二步：高斯先验</strong>。以辐射峰值为中心构造截断各向同性高斯，模拟红外 PSF（Point Spread Function）的能量扩散：
+
+  $$G_k(u,v) = \exp\!\left(-\frac{(u-\tilde{x}_k^*)^2+(v-\tilde{y}_k^*)^2}{2\sigma^2}\right), \quad \|(u,v)-(\tilde{x}_k^*,\tilde{y}_k^*)\|_\infty \le r$$
+
+  其中 $\sigma=2$ 控制扩散范围，$r=3\sigma=6$ 定义截断边界。高斯核不归一化（峰值保持为 1），核的有效覆盖面积约 $\pi r^2 \approx 113$ 个热图像素——将监督密度从 0.004% 提升到 0.44%，足以维持稳定的梯度信号。
+
+  <strong>第三步：梯度感知调制</strong>。这是 PRPS 与普通 Gaussian heatmap 的关键区别。从原图提取以目标为中心的 $(2r+1) \times (2r+1)$ patch，做对比度归一化：
+
+  $$C_k(u,v) = \frac{I_{patch}(u,v) - I_{patch}^{min}}{I_{patch}^{max} - I_{patch}^{min}}$$
+
+  然后将高斯先验与对比度图逐元素相乘：
+
+  $$H_k = \text{Norm}(G_k \odot C_k)$$
+
+  <div class="def-box">
+    <h3>梯度感知调制的物理含义</h3>
+    <p>$C_k$ 捕获了目标周围的真实辐射强度分布。在均匀背景上，$C_k$ 近似常数，PRPS 退化为标准 Gaussian；在梯度大的边缘（如目标靠近云层边界或热源附近），$C_k$ 使监督信号的形状沿梯度方向变形——更精确地匹配真实目标的能量分布，而非用固定圆形去近似。</p>
+  </div>
+
+  多个目标的响应图通过确定性聚合（取逐像素最大值）合并为最终监督图 $\mathbf{P}^*$。即使两个目标的高斯支撑区域重叠，质心回归仍保留各自独立的局部最大值。
+
+  <h3 class="section-title">HRPE：不需要 Decoder 的高分辨率编码器</h3>
+
+  HRPE（High-Resolution Probabilistic Encoder）是 SPIRE 的第二个核心创新——一个<strong>纯编码器、单分支、单分辨率</strong>的轻量网络。
+
+  <div class="callout"><strong>为什么 encoder-only 可行？</strong>因为一旦目标判别被建模为结构化概率响应回归（而非像素级掩码重建），就不需要 decoder 来做跨尺度特征补偿——概率响应图的"结构"已经在 PRPS 监督中被编码了。Encoder 只需要学到"从图像到响应图"的回归映射。</div>
+
+  HRPE 的结构简洁到可以用一段话描述：
+
+  <strong>Stem</strong>：两个 stride-2 的 3×3 卷积（+BN+ReLU），将分辨率降到 $H/s \times W/s$（$s=4$），通道扩到 $C_0=64$。之后接一个 Bottleneck 残差块做初步特征精炼。
+
+  <strong>Transition</strong>：1×1 卷积将通道从 64 降到 $C=32$。
+
+  <strong>级联通道重组</strong>：在恒定分辨率 $H' \times W'$ 上级联多个 ShuffleNet 风格的通道重组单元。每个单元将 $C$ 通道特征对半拆分为 $F_a$ 和 $F_b$：$F_a$ 做 identity，$F_b$ 经过 depthwise separable convolution + SE-style channel attention，然后拼接并做 channel shuffle：
+
+  $$F' = \text{Shuffle}\!\Big(\text{Cat}\big(F_a,\; \phi_{attn}(\text{DWConv}(F_b))\big)\Big)$$
+
+  这个 split–process–shuffle 设计借鉴自 ShuffleNet #ShuffleNet-2018#，在极低参数量下实现了有效的跨通道信息交换。
+
+  <strong>预测头</strong>：单个 1×1 卷积将 $C=32$ 通道映射到 1 通道输出 $\hat{\mathbf{P}} \in \mathbb{R}^{H' \times W'}$，不加激活函数，直接回归到 PRPS 目标。
+
+  {{< mermaid >}}
+  graph LR
+    A["输入 I<br>H×W×1"] --> B["Stem<br>2× stride-2 conv<br>C₀=64"]
+    B --> C["Bottleneck<br>Residual Block"]
+    C --> D["Transition<br>C=32"]
+    D --> E["Channel<br>Reorganization<br>×N"]
+    E --> F["1×1 Conv<br>→ P̂"]
+    F --> G["峰值提取<br>→ 检测坐标"]
+
+    style B fill:#ff8a65,color:#fff
+    style E fill:#ffd54f,color:#333
+    style F fill:#81c784,color:#fff
+    style G fill:#64b5f6,color:#fff
+  {{< /mermaid >}}
+
+  <h3 class="section-title">关键设计选择：为什么 stride=4？</h3>
+
+  HRPE 在整个网络中保持恒定的 output stride $s=4$。这个选择经过了严格的消融验证：stride=8 时 F1 从 97.05 暴跌到 86.91（-10.14），Fa 从 1.02 飙升到 22.38（+22 倍）；stride=2 时 F1 反而下降到 95.25，且 FLOPs 增加到 26.77G。
+
+  <div class="callout"><strong>直觉理解</strong>：stride=8 的激进下采样会直接抹除仅占数像素的小目标信号——在高 SNR 条件下也许还能保留，但在杂波主导的红外场景中是致命的。stride=2 虽然保留更多空间细节，但增加了结构冗余，没有带来判别性收益。stride=4 是"保留足够空间分辨率"和"控制计算成本"之间的最优平衡点。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 4: Training Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练管线：PRPS 构造 + MSE 回归</div>
+
+  SPIRE 的训练管线出奇地简单——不需要多阶段训练、伪掩码生成或课程学习策略。
+
+  <h3 class="section-title">监督信号离线构造</h3>
+
+  PRPS 监督图在数据预处理阶段离线构造，不参与网络的前向计算。对于每张训练图像，从单点标注出发，按 stride 映射 → 辐射峰值对齐 → Gaussian 先验 → 对比度调制 → 多目标聚合的顺序生成 $\mathbf{P}^* \in \mathbb{R}^{H' \times W'}$。这个监督图在训练过程中保持固定。
+
+  <h3 class="section-title">损失函数</h3>
+
+  SPIRE 使用标准的像素级 MSE 回归损失：
+
+  $$\mathcal{L} = \frac{1}{H' W'} \sum_{u,v} \|\hat{\mathbf{P}}(u,v) - \mathbf{P}^*(u,v)\|^2$$
+
+  论文特别强调：<strong>不需要特殊的 imbalance-aware loss</strong>（如 Focal Loss 或 Dice Loss）。原因在于 PRPS 已经通过 Gaussian-like 监督将正样本占比从 0.004% 提升到 0.44%，提供了足够稠密的梯度信号。这与分割范式形成鲜明对比——分割方法必须依赖 weighted BCE 或 Focal Loss 来应对极端不平衡。
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>配置项</th><th>值</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>SIRST-UAVB (3000), SIRST4 (3352)</td><td>✅ 论文披露</td></tr>
+        <tr><td>训练 GPU</td><td>RTX 4090 × 1</td><td>✅ 论文披露</td></tr>
+        <tr><td>优化器</td><td>Adam, lr=0.01</td><td>✅ 论文披露</td></tr>
+        <tr><td>LR 调度器</td><td>ReduceLROnPlateau (factor=0.01, patience=3)</td><td>✅ 论文披露</td></tr>
+        <tr><td>Batch size</td><td>10</td><td>✅ 论文披露</td></tr>
+        <tr><td>Epochs</td><td>400</td><td>✅ 论文披露</td></tr>
+        <tr><td>输入分辨率</td><td>640×640 (UAVB), 512×512 (SIRST4)</td><td>✅ 论文披露</td></tr>
+        <tr><td>PRPS σ / r</td><td>2 / 6</td><td>✅ 论文披露</td></tr>
+        <tr><td>Output stride s</td><td>4</td><td>✅ 论文披露</td></tr>
+        <tr><td>BN momentum</td><td>0.1</td><td>⚠️ 代码披露（论文未提及）</td></tr>
+        <tr><td>训练总时间</td><td>—</td><td>❌ 未披露</td></tr>
+        <tr><td>Checkpoint 选择策略</td><td>—</td><td>❌ 未披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      代码与论文的不一致
+    </div>
+    <div class="admonition-content"><p>论文声称使用单通道输入 $\mathbf{I} \in \mathbb{R}^{H \times W \times 1}$，但开源代码中 <code>SPIRENet</code> 的 stem 层实际使用 <code>nn.Conv2d(3, 64, ...)</code>（3 通道输入）。此外，预训练权重文件名标注为 <code>epoch230-lr0.005</code>，与论文声称的 400 epochs + lr=0.01 不一致。复现时需注意这些差异。</p></div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+  Part 5: Inference Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">推理管线：确定性峰值提取</div>
+
+  SPIRE 的推理过程不涉及掩码重建、连通域分析或任何学习型后处理——目标坐标通过纯确定性的峰值提取从预测响应图 $\hat{\mathbf{P}}$ 中获取。
+
+  <h3 class="section-title">四步峰值提取</h3>
+
+  <strong>Step 1：局部最大值提取</strong>。用 3×3 max-pooling NMS（stride=1）保留空间局部最大值，抑制邻域内的冗余响应：
+
+  $$\hat{\mathbf{P}}_{NMS}(u,v) = \hat{\mathbf{P}}(u,v) \cdot \mathbb{1}\left[\hat{\mathbf{P}}(u,v) = \max_{(u',v') \in \mathcal{N}_{3 \times 3}(u,v)} \hat{\mathbf{P}}(u',v')\right]$$
+
+  <strong>Step 2：阈值筛选</strong>。保留响应值大于阈值 $\tau$ 的候选点，限制最多输出 $N_{max}$ 个检测。
+
+  <strong>Step 3：亚像素质心细化</strong>。每个整数坐标峰值 $(u_0, v_0)$ 用热图响应的一阶有限差分符号确定亚像素偏移方向：
+
+  $$\Delta u = \frac{1}{s} \cdot \text{sign}\!\big(\hat{\mathbf{P}}(u_0{+}1, v_0) - \hat{\mathbf{P}}(u_0{-}1, v_0)\big)$$
+
+  偏移幅度固定为 $1/s$（stride=4 时为 0.25 像素）。这是一种极度简化的亚像素估计——不如抛物面拟合精确，但计算开销几乎为零。
+
+  <strong>Step 4：坐标逆映射</strong>。将热图坐标通过逆仿射变换 $\mathbf{T}^{-1}$ 映射回原图空间：
+
+  $$\begin{pmatrix} x_{det} \\ y_{det} \end{pmatrix} = \mathbf{T}^{-1} \begin{pmatrix} u_0 + \Delta u \\ v_0 + \Delta v \\ 1 \end{pmatrix}$$
+
+  <div class="callout"><strong>推理流程对比</strong>：分割方法的推理链路是"网络输出掩码 → 二值化 → 8-连通域聚类 → 计算簇质心"，涉及多个可调参数（二值化阈值、连通域最小面积）且容易将一个目标的多个相邻掩码碎片聚为多个检测。SPIRE 的链路是"网络输出热图 → NMS → 阈值 → 亚像素细化"，每一步都是确定性的，没有可调参数（除了全局阈值 $\tau$），且天然保证每个目标只产生一个峰值。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 6: 实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与结果分析</div>
+
+  <h3 class="section-title">评估协议</h3>
+
+  SPIRE 采用<strong>质心级评估</strong>：预测检测与真实质心的欧氏距离 $\le \delta=5$ 像素则判为 TP。所有方法（包括分割方法）的输出都被转换为质心坐标后统一评估，确保比较的公平性。报告指标包括 Precision、Recall（即检测概率 Pd）、F1 和虚警率 Fa（$= FP / N_{pixels}$）。
+
+  <h3 class="section-title">主实验：SIRST-UAVB + SIRST4</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>会议</th><th colspan="4">SIRST-UAVB</th><th colspan="4">SIRST4</th><th>FLOPs(G)</th><th>Params(M)</th></tr></thead>
+      <tbody>
+        <tr><td colspan="2"></td><td><strong>Pre</strong></td><td><strong>Rec</strong></td><td><strong>F1</strong></td><td><strong>Fa</strong></td><td><strong>Pre</strong></td><td><strong>Rec</strong></td><td><strong>F1</strong></td><td><strong>Fa</strong></td><td colspan="2"></td></tr>
+        <tr><td>ACM</td><td>WACV'21</td><td>87.01</td><td>71.16</td><td>78.29</td><td>34.04</td><td>90.17</td><td>70.38</td><td>79.05</td><td>44.08</td><td>2.51</td><td>0.40</td></tr>
+        <tr><td>DNANet</td><td>TIP'23</td><td>94.48</td><td>89.54</td><td>91.95</td><td>15.77</td><td>93.99</td><td>81.20</td><td>87.13</td><td>29.82</td><td>89.13</td><td>4.70</td></tr>
+        <tr><td>SCTransNet</td><td>TGRS'24</td><td>98.27</td><td>95.95</td><td>97.09</td><td>5.09</td><td>81.20</td><td>86.39</td><td>83.72</td><td>114.98</td><td>63.22</td><td>11.19</td></tr>
+        <tr><td>SDSNet</td><td>TGRS'25</td><td>97.60</td><td>96.29</td><td>96.94</td><td>7.12</td><td>87.35</td><td>88.27</td><td>87.81</td><td>73.48</td><td>42.42</td><td>2.49</td></tr>
+        <tr><td>L²SKNet</td><td>TGRS'25</td><td>95.83</td><td>89.04</td><td>92.31</td><td>11.70</td><td>92.89</td><td>91.42</td><td>92.16</td><td>40.20</td><td>43.09</td><td>0.90</td></tr>
+        <tr style="background:rgba(255,138,101,0.15)"><td><strong>SPIRE</strong></td><td>—</td><td><strong>99.82</strong></td><td>94.44</td><td>97.05</td><td><strong>1.02</strong></td><td><strong>95.00</strong></td><td><strong>94.21</strong></td><td><strong>94.60</strong></td><td><strong>28.53</strong></td><td>7.68</td><td><strong>0.29</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现 1</strong>：在 SIRST-UAVB 上，SPIRE 的 Precision 达到 99.82%（SOTA），虚警率仅 1.02×10⁻⁸——比第二低的 SCTransNet (5.09) 低 5 倍，比 DNANet (15.77) 低 15 倍。F1=97.05% 与 SCTransNet 的 97.09% 基本持平，但参数量仅为 SCTransNet 的 1/38。</div>
+
+  <div class="callout"><strong>关键发现 2</strong>：在 SIRST4 上，SPIRE 全面领先——F1=94.60%（比第二名 L²SKNet 高 2.44 个点），同时 FLOPs 比 SCTransNet 少 8 倍，参数量比 DNANet 少 16 倍。这说明 encoder-only 概率回归在更复杂的数据集上优势更明显。</div>
+
+  <div class="photo">
+    <img src="media/images/spire-irstd-2026/f1_pre_params_bubble_sirst_uavb.webp" alt="性能-效率对比" loading="lazy">
+    <div class="cap">图 3：SPIRE 在 SIRST-UAVB 上的性能-效率权衡。气泡大小表示参数量。SPIRE 在保持高 F1 和 Precision 的同时，参数量和 FLOPs 都远低于竞品（来源：SPIRE, Fig.2）</div>
+  </div>
+
+  <h3 class="section-title">消融实验 1：PRPS 监督形式</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>监督形式</th><th>Pre</th><th>Rec</th><th>F1</th><th>Fa</th></tr></thead>
+      <tbody>
+        <tr style="background:rgba(255,213,79,0.15)"><td><strong>PRPS (σ=2, r=6)</strong></td><td>99.82</td><td>94.44</td><td>97.05</td><td>1.02</td></tr>
+        <tr><td>单点 impulse</td><td>98.71</td><td>90.22</td><td>94.27</td><td>2.85</td></tr>
+        <tr><td>无约束 Gaussian</td><td>98.93</td><td>93.76</td><td>96.28</td><td>2.44</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  PRPS 比 impulse 监督高 2.78 个 F1，Fa 低 2.8 倍；比纯 Gaussian 高 0.77 个 F1，Fa 低 2.4 倍。Impulse 的梯度饥饿导致 Recall 下降 4.22 个点；纯 Gaussian 缺乏辐射梯度调制，虚警控制不如 PRPS。
+
+  <div class="photo">
+    <img src="media/images/spire-irstd-2026/abprps.webp" alt="PRPS 消融可视化" loading="lazy">
+    <div class="cap">图 4：PRPS 消融可视化。红色矩形为真实目标，红色圆圈为 TP，橙色圆圈为 FN。Impulse 监督产生多个虚假响应峰，纯 Gaussian 在杂波区域判别性不足，PRPS 产生单一干净的主峰（来源：SPIRE, Fig.4）</div>
+  </div>
+
+  <h3 class="section-title">消融实验 2：HRPE 分辨率与组件</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>Pre</th><th>Rec</th><th>F1</th><th>Fa</th><th>FLOPs</th><th>Params(10⁻²M)</th></tr></thead>
+      <tbody>
+        <tr style="background:rgba(129,199,132,0.15)"><td><strong>HRPE (s=4)</strong></td><td>99.82</td><td>94.44</td><td>97.05</td><td>1.02</td><td>7.68</td><td>29.47</td></tr>
+        <tr><td>s=2</td><td>99.63</td><td>91.23</td><td>95.25</td><td>0.81</td><td>26.77</td><td>26.56</td></tr>
+        <tr><td>s=8</td><td>90.05</td><td>83.98</td><td>86.91</td><td>22.38</td><td>3.05</td><td>33.27</td></tr>
+        <tr><td>w/o channel reorg</td><td>97.70</td><td>93.90</td><td>95.76</td><td>5.33</td><td>7.70</td><td>29.45</td></tr>
+        <tr><td>w/o reweighting</td><td>96.52</td><td>93.71</td><td>95.09</td><td>8.15</td><td>7.72</td><td>29.63</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>消融发现</strong>：stride=8 导致 F1 暴跌 10 个点——验证了"高分辨率表征是 IRSTD 生命线"。去掉 channel reorganization 主要影响虚警控制（Fa 从 1.02 升至 5.33），去掉 SE-style reweighting 影响更大（Fa 升至 8.15）。说明通道交互和自适应权重对抑制虚假峰值至关重要。</div>
+
+  <h3 class="section-title">定性对比</h3>
+
+  <div class="photo">
+    <img src="media/images/spire-irstd-2026/expIMG.webp" alt="定性对比结果" loading="lazy">
+    <div class="cap">图 5：SPIRE 与分割方法的定性对比。红框为真实目标，红圈为 TP，绿圈为 FP，橙圈为 FN。分割方法（DNANet, SCTransNet）常在单个目标周围产生多个相邻掩码响应，聚类后生成多余检测。SPIRE 每个目标只产生一个主峰，定位更干净（来源：SPIRE, Fig.5）</div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+  Part 7: 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">减法哲学的启示与局限</div>
+
+  <h3 class="section-title">SPIRE 在研究版图上的位置</h3>
+
+  SPIRE 站在三条研究线索的交汇点上：单点监督（LESPS #LESPS-2023#、MCLC #MCLC-2023# 验证了标注效率的可行性）、热图回归（HRNet #HRNet-2019# 确立了峰值提取范式）、轻量架构（ShuffleNet #ShuffleNet-2018# 提供了通道重组组件）。它的创新不在于任何一条线索的深化，而在于<strong>将三者同时做到极致，并彻底删除 decoder</strong>——这种"减法"在当前"加法为主"的 IRSTD 领域是反直觉的。
+
+  <h3 class="section-title">可操作的研究启发</h3>
+
+  第一，<strong>物理先验应该编码进监督信号而非网络结构</strong>。PRPS 的对比度调制比在 encoder 中加入物理约束更简单、更可控。这一思路可以迁移到其他有物理成像模型的任务中（如 SAR 目标检测、医学影像定位）。
+
+  第二，<strong>encoder-only 在"回归型"任务上有天然优势</strong>。当输出不是密集分割而是稀疏坐标/热图时，decoder 的多尺度融合收益有限，甚至引入冗余。这对设计实时 IRST 系统有直接的工程价值。
+
+  第三，<strong>centroid-level 评估改变了 IRSTD 的竞争格局</strong>。SPIRE 的 Precision 99.82% 和 Fa 1.02 在像素级 IoU 评估下可能不占优势，但在"能否准确定位目标"这一下游任务的核心需求上，它的优势非常明显。
+
+  <h3 class="section-title">局限与开放问题</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      局限性
+    </div>
+    <div class="admonition-content">
+      <p><strong>1. 代码与论文不一致</strong>：输入通道数（1 vs 3）、训练配置（400 epochs/lr=0.01 vs 权重文件名标注的 230 epochs/lr=0.005）存在矛盾，影响精确复现。</p>
+      <p><strong>2. 评估协议的宽容性</strong>：δ=5 像素的质心匹配阈值对 2-9 像素的目标来说相当宽松，可能掩盖定位精度的真实差异。</p>
+      <p><strong>3. 跨域泛化未验证</strong>：仅在两个数据集上测试，未评估跨传感器、跨场景的泛化能力。PRPS 的 σ 和 r 是否需要在新的红外成像条件下重新标定，是一个开放问题。</p>
+      <p><strong>4. 亚像素精度有限</strong>：sub-pixel refinement 使用 ±1/stride 的固定偏移，不如抛物面拟合精确。对于需要亚像素定位精度的应用（如目标测距），可能不够。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">与红外图像压缩系列的关联</h3>
+
+  [[infrared-compression-hub|红外图像压缩系列]] 的核心主张之一是：红外压缩需要在低码率下保留对下游任务（检测、识别、测温）真正重要的信息。SPIRE 的 centroid-level 概率回归为"什么信息是重要的"提供了一个精确答案——<strong>目标质心位置的可靠估计比像素级轮廓重建更重要</strong>。这意味着一个面向 IRSTD 的压缩系统不需要保留目标的精确形状，只需要保证热图响应的主峰位置不被偏移——这是一个比 PSNR/MSSIM 更符合下游任务需求的压缩目标。
+
+  上一篇精读 [[rpcassm-2026|RPCASSM]] 从稀疏-低秩分解角度解决 IRSTD，SPIRE 则从概率回归角度切入——两者代表了 IRSTD 领域"轻量化"浪潮的两种不同哲学。
+
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Ni-2026">Ni, R. et al. "Rethinking IRSTD: Single-Point Supervision Guided Encoder-only Framework is Enough for Infrared Small Target Detection." <em>arXiv:2604.05363</em>, 2026. <a href="https://arxiv.org/abs/2604.05363" target="_blank">arXiv</a> · <a href="https://github.com/NIRIXIANG/SPIRE-IRSTD" target="_blank">Code</a></li>
+    <li data-cite-key="DNANet-2023">Li, B. et al. "Dense Nested Attention Network for Infrared Small Target Detection." <em>IEEE TIP</em>, 2023.</li>
+    <li data-cite-key="SCTransNet-2024">Chen, M. et al. "SCTransNet: Spatial-Channel Cross Transformer for Infrared Small Target Detection." <em>IEEE TGRS</em>, 2024.</li>
+    <li data-cite-key="MCLC-2023">Wang, R. et al. "MCLC: Multi-level Constraints for Single-point Supervised Infrared Small Target Detection." 2023.</li>
+    <li data-cite-key="LESPS-2023">Wu, X. et al. "LESPS: Label-efficient Infrared Small-target Detection via Single-point Supervision." <em>CVPR</em>, 2023.</li>
+    <li data-cite-key="HRNet-2019">Sun, K. et al. "Deep High-Resolution Representation Learning for Visual Recognition." <em>CVPR</em>, 2019.</li>
+    <li data-cite-key="ShuffleNet-2018">Ma, N. et al. "ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design." <em>ECCV</em>, 2018.</li>
+  </ul>
+</div>
+
+<!-- ============================================================
+  章节导航
+  ============================================================ -->
+<div class="chapter-nav">
+  <a href="rpcassm-2026.html" class="prev">← 上一篇：RPCASSM 红外小目标检测</a>
+  <a href="infrared-compression-hub.html" class="up">↑ 返回红外图像压缩系列</a>
+</div>
