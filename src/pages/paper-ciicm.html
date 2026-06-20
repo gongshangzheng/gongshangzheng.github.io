@@ -3,7 +3,7 @@ title: "红外图像压缩论文精读（五）：CI-ICM，通道重要性驱动
 description: "深度解读 arXiv 2604.05347 CI-ICM 论文：发现学习式压缩潜空间中通道重要性的非均匀分布，提出 FCGS 不均匀分组与 CI-CTX 序列熵编码，在 COCO 检测/分割上取得 BD-mAP +16.25%/+13.72%，为红外轮廓关键通道识别提供范式。"
 date: 2026-06-17T21:00:00
 created_at: 2026-06-17T21:00:00
-updated_at: 2026-06-17T21:00:00
+updated_at: 2026-06-20T00:20:00
 tags: [红外图像, 图像压缩, ICM, 通道重要性, FCGS, 熵编码, 任务驱动压缩]
 categories: [AI]
 subcategory: "图像压缩"
@@ -34,6 +34,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
 
   <p>实验结果揭示了两个关键事实。第一，当逐个通道置零时，某些通道被移除后 mAP 几乎不变，而另一些通道被移除后 mAP 急剧下降；按组置零时，组 #1、#2、#5 的移除造成显著精度退化，而组 #0、#3、#7 的移除几乎没有影响。第二，添加低强度噪声（范围 \([-0.5, 0.5]\)）时精度基本不变，但高强度噪声（范围 \([-1, 1]\)）导致部分通道/组的精度大幅下降——这说明通道重要性不仅与"哪个通道"有关，还与"失真强度"有关 #Zhang-et-al.-2026#。</p>
 
+  <div class="photo">
+    <img src="media/images/paper-ciicm/zomap50_95.webp" alt="CI-ICM 通道移除实验" loading="lazy">
+    <div class="cap">图 1：按 CIG 重要性排序逐通道移除后的检测精度变化（左：mAP@50:95，右：mAP@75）。按重要性排序移除时，前 160 个通道移除后精度才开始下降，说明冗余通道高度集中（来源：论文 Fig. 3）。</div>
+  </div>
+
   <div class="def-box">
     <h3>核心洞察</h3>
     <p>潜空间 192 个通道中，大约 32 个通道承载了绝大部分任务关键信息，其余约 160 个通道可以在较大失真下仍保持任务精度。这意味着最优码率分配策略不应该是均匀的，而应该高度不均匀：给少数关键通道更多比特，给多数非关键通道更少比特。</p>
@@ -52,6 +57,29 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
   <div class="ch-title">四个模块如何协同工作：从重要性量化到多任务适配</div>
 
   <p>CI-ICM 的方法可以拆解为四个紧密协作的模块。CIG 负责量化每个通道的重要性；Channel Order Loss 确保编码器输出的特征按重要性降序排列；FCGS 根据排序结果进行不均匀分组和动态范围缩放；CI-CTX 利用分组结构做序列熵编码，让重要组获得更多比特；TSCA 则提供轻量级的任务切换能力。下面逐一展开。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ciicm/pipeline.webp" alt="CI-ICM 整体框架" loading="lazy">
+    <div class="cap">图 2：CI-ICM 整体框架。(a) 网络架构：在 TransTIC 基线骨干上叠加 CIG、FCGS、CI-CTX、TSCA；(b) 特征重排序、不均匀分组与缩放流程，深绿色块表示对机器视觉更重要的通道（来源：论文 Fig. 2）。</div>
+  </div>
+
+  {{< mermaid >}}
+graph LR
+    A["输入图像 x"] --> B["编码器 g_a"]
+    B --> C["潜特征 y"]
+    C --> D["CIG 重要性估计 W_c"]
+    D --> E["Channel Order Loss"]
+    C --> F["FCGS 重排序+分组+缩放"]
+    F --> G["CI-CTX 序列熵编解码"]
+    G --> H["解码器 g_s"]
+    H --> I["重建图像 x_hat"]
+    I --> J["机器视觉任务模型"]
+    K["TSCA CAB"] -.-> B
+    K -.-> H
+    classDef core fill:#2d5a3d,stroke:#4a9,stroke-width:2px,color:#fff
+    class D,F,G core
+  {{< /mermaid >}}
+  <div class="cap" style="text-align:center; margin-top:-0.5rem; color:var(--muted); font-size:0.9rem;">图 2（续）：CI-ICM 数据流抽象图。CIG、FCGS、CI-CTX 构成码率分配主干，TSCA 以旁路方式对编解码器做任务适配。</div>
 
   <h3>2.1 CIG：通道重要性生成模块</h3>
 
@@ -106,6 +134,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
 
   <p>缩放因子的确定过程也很有方法论价值。论文首先初始化缩放表为 \([1, 1, 2, 10, 10^4]\)，然后逐个调整每个 \(s_i\)，同时固定其他 \(s_j\)（\(j \neq i\)），测量缩放后的先验参数 \(\Phi_{ch}^i\) 与原始先验 \(\Phi_{ch-org}^i\) 之间的 MSE。实验发现每个 \(s_i\) 只影响自己对应组的先验精度，对其他组几乎无影响——这意味着缩放因子之间近似独立，可以逐个优化。最终通过在 COCO2017 验证集上搜索使 mAP@50:95 最大的 \(s_i\)，并用二次函数拟合得到最优值 #Zhang-et-al.-2026#。</p>
 
+  <div class="photo">
+    <img src="media/images/paper-ciicm/feature_flow.webp" alt="CI-ICM 特征重排序、分组与缩放流程" loading="lazy">
+    <div class="cap">图 3：FCGS 内部流程。192 通道潜特征先按 CIG 权重降序重排，再被划分为 \([4,4,8,16,160]\) 五个不均匀组，最后分别除以缩放因子 \([1,1.85,2.27,3.71,10^{4.38}]\)（来源：论文 Fig. 2b）。</div>
+  </div>
+
   <div class="callout"><strong>设计直觉：</strong>FCGS 的不均匀分组本质上是一种硬编码的"注意力"。与传统 soft attention 不同，它不依赖运行时计算，而是在架构层面预设了"前 4 个通道最重要、最后 160 个通道最不重要"的先验。这个先验来自通道移除实验的经验证据，并通过 channel order loss 在训练中持续强化。</div>
 
   <h3>2.4 CI-CTX：通道重要性感知上下文熵编码</h3>
@@ -122,6 +155,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
 
   <p>这里的关键耦合在于：因为 FCGS 把重要通道放进了小组（4、4、8、16），所以前面的组包含的通道数少，每个通道分到的比特自然更多；后面的组包含 160 个通道，但由于有前面组的上下文帮助，概率估计更准，加上缩放因子极大，实际消耗的比特很少。这种"小组高保真 + 大组低保真"的策略正是 CI-ICM 码率分配的核心机制。</p>
 
+  <div class="photo">
+    <img src="media/images/paper-ciicm/CI-CTX.webp" alt="CI-CTX 序列解码过程" loading="lazy">
+    <div class="cap">图 4：CI-CTX 的序列化解码过程。第 0 组仅依赖超先验 \(\Phi_z^0\) 解码，后续每组依次利用已解码的前序组作为通道上下文 \(\Phi_{ch}^i\)，实现"重要组优先、后续组借用上下文"的码率分配（来源：论文 Fig. 4）。</div>
+  </div>
+
   <p>在每个组内部，CI-CTX 还使用了并行棋盘格空间上下文模块 #He-et-al.-2022# 进一步提升编码效率。</p>
 
   <h3>2.5 TSCA：任务特定通道适配</h3>
@@ -132,6 +170,16 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
 
   <p>TSCA 的轻量化体现在两个方面。第一，它只在 Stage 3 训练，此时 CI-ICM 的所有其他参数都冻结，只更新 CAB 的参数，训练仅需 10 个 epoch。第二，新增一个任务只需要训练一个新的 CAB，不需要重新训练整个 codec。这使得 CI-ICM 在实际部署中可以灵活扩展任务支持，而不必为每个任务从头训练一个完整的压缩模型 #Zhang-et-al.-2026#。</p>
 
+  <div class="photo">
+    <img src="media/images/paper-ciicm/TSCA.webp" alt="TSCA 模块结构" loading="lazy">
+    <div class="cap">图 5：TSCA 模块结构。一组并行的 Channel Attention Block (CAB) 各自对应一个下游任务，任务确定后仅激活匹配的 CAB；每个 CAB 通过 Global Max/Average Pooling 提取通道统计量并生成增强因子 \(\gamma\)（来源：论文 Fig. 7）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-ciicm/training.webp" alt="CI-ICM 三阶段训练流程" loading="lazy">
+    <div class="cap">图 6：CI-ICM 三阶段训练流程。深绿色表示高重要性特征，深蓝色表示高重要性权重；Stage 1 训练 CIG，Stage 2 联合训练重排序与码率分配模块，Stage 3 仅训练 TSCA 适配新任务（来源：论文 Fig. 8）。</div>
+  </div>
+
   <div class="admonition note">
     <div class="admonition-title">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
@@ -139,9 +187,30 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
     </div>
     <div class="admonition-content">
       <p><strong>Stage 1</strong>：冻结 TransTIC 基线，单独训练 CIG 模块，建立稳定的通道重要性估计器。使用 \(L_{basic}\) 作为损失。</p>
-      <p><strong>Stage 2</strong>：端到端联合训练整个 CI-ICM 框架（包括编码器重排序、FCGS、CI-CTX），使用 \(L_{total}\) 作为损失，训练 30 个 epoch，学习率 \(10^{-4}\)，batch size 12。</p>
+      <p><strong>Stage 2</strong>：端到端联合训练整个 CI-ICM 框架（包括编码器重排序、FCGS、CI-CTX），使用 \(L_{total}\) 作为损失，训练 30 个 epoch，学习率 \(10^{-4}\)，batch size 12。损失权重 \(\varphi_k = 0.1\)（TSCA）、\(\varphi_{CIG} = 0.3\)。</p>
       <p><strong>Stage 3</strong>：冻结所有参数，仅训练 TSCA 中的 CAB，训练 10 个 epoch，学习率 \(10^{-4}\)，batch size 32。为新任务添加 CAB 时也只需执行此阶段。</p>
+      <p>四个码率点通过 Lagrange 乘子 \(\lambda \in \{2, 1, 0.5, 0.2\}\) 控制，每个 \(\lambda\) 训练一个独立模型。</p>
     </div>
+  </div>
+
+  <h3>2.6 训练配置披露</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>论文披露内容</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据集与规模</td><td>COCO2017 训练集（约 118k 图像）</td><td>论文披露</td></tr>
+        <tr><td>验证/测试集</td><td>COCO2017 验证集（5,000 图像）</td><td>论文披露</td></tr>
+        <tr><td>训练硬件</td><td>NVIDIA GeForce RTX 3090 GPU</td><td>论文披露</td></tr>
+        <tr><td>软件框架</td><td>PyTorch</td><td>论文披露</td></tr>
+        <tr><td>初始化</td><td>TransTIC 预训练 checkpoint</td><td>论文披露</td></tr>
+        <tr><td>优化器 + 学习率</td><td>未明确说明优化器；lr = \(10^{-4}\)</td><td>部分披露</td></tr>
+        <tr><td>Batch size + Epoch</td><td>Stage 1/2: batch 12, 30 epochs；Stage 3: batch 32, 10 epochs</td><td>论文披露</td></tr>
+        <tr><td>码率控制</td><td>\(\lambda \in \{2, 1, 0.5, 0.2\}\)，每码率一个模型</td><td>论文披露</td></tr>
+        <tr><td>Channel order loss 权重</td><td>\(\varphi_k = 0.1\)，\(\varphi_{CIG} = 0.3\)</td><td>论文披露</td></tr>
+        <tr><td>训练时长</td><td>未明确给出总时长</td><td>未披露</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -171,6 +240,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
 
   <p>CI-ICM 在目标检测上相对 ELIC 取得 BD-mAP@50:95 +16.25%，相对当时 SOTA 的 AdaptICMH 高出 3.12 个百分点。在实例分割上，CI-ICM 取得 BD-mAP@50:95 +13.72%，相对 AdaptICMH 高出 2.44 个百分点 #Zhang-et-al.-2026#。</p>
 
+  <div class="photo">
+    <img src="media/images/paper-ciicm/map50_95.webp" alt="CI-ICM 目标检测率-精度曲线" loading="lazy">
+    <div class="cap">图 7：COCO2017 目标检测率-精度曲线（mAP@50:95）。CI-ICM 在同等码率下显著优于 ELIC、MLIC、TransTIC、AdaptICMH 等基线（来源：论文 Fig. 9a）。</div>
+  </div>
+
   <div class="table-wrap">
     <table>
       <thead><tr><th>编码方案</th><th>BD-mAP@50:95 (分割)</th><th>BD-mAP@50 (分割)</th><th>BD-mAP@75 (分割)</th></tr></thead>
@@ -186,6 +260,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
   </div>
 
   <p>值得注意的是，CI-ICM 的 CIG 权重、FCGS 和 CI-CTX 都是基于目标检测任务训练的，实例分割仅在 Stage 3 通过 TSCA 微调。即便如此，它在分割任务上仍然大幅领先所有基线，说明通道重要性的排序具有一定的跨任务鲁棒性。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ciicm/map50_95_insseg.webp" alt="CI-ICM 实例分割率-精度曲线" loading="lazy">
+    <div class="cap">图 8：COCO2017 实例分割率-精度曲线（mAP@50:95）。CI-ICM 在分割任务上同样保持领先（来源：论文 Fig. 10）。</div>
+  </div>
 
   <h3>3.2 消融实验</h3>
 
@@ -204,6 +283,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
   </div>
 
   <p>三个消融结论清晰：CI-CTX（含分组）的贡献最大（-4.41%），说明序列熵编码和不均匀分组是码率分配的核心机制；通道排序的贡献次之（-3.51%），验证了"先排好序才能正确分组"的逻辑链；缩放的贡献最小但仍显著（-1.68%），表明动态范围调整是对分组策略的有效补充。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ciicm/abl_std_map50_95.webp" alt="CI-ICM 消融实验曲线" loading="lazy">
+    <div class="cap">图 9：消融实验率-精度曲线（左：目标检测 mAP@50:95，右：实例分割 mAP@50:95）。w/o CI-CTX 掉点最大，验证不均匀分组与序列上下文是核心增益来源（来源：论文 Fig. 12a-b）。</div>
+  </div>
 
   <p>TSCA 的消融则以"匹配 vs 不匹配"模式对比。当使用为目标任务训练的 CAB（Matched）时，检测 BD-mAP@50:95 为 +16.25%；当错误地使用为另一任务训练的 CAB（Unmatched）时，降至 +12.67%。分割任务上也观察到类似差距（+13.72% vs +12.78%）。这说明 TSCA 的任务适配确实有效，但不匹配模式下仍有显著增益（相对 ELIC），表明 CI-ICM 的基础通道重要性排序本身就具有跨任务泛化能力 #Zhang-et-al.-2026#。</p>
 
@@ -224,6 +308,11 @@ hero_tagline: "潜空间中并非所有通道对下游任务同等重要——CI
   </div>
 
   <p>在所有四种泛化设置下，CI-ICM 均保持对所有基线的领先。特别是 Pascal VOC 上的 +17.52% 甚至高于 COCO 原测试集上的 +16.25%，这可能反映了 VOC 数据集的物体类别更少、通道重要性的集中效应更明显。Cityscapes 上的 +9.07% 相对较低，可能与城市场景的复杂背景结构有关——CI-ICM 在 COCO 上学到的通道重要性排序未必完美迁移到语义分割主导的场景。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-ciicm/od_voc_map50_95.webp" alt="CI-ICM 跨数据集泛化" loading="lazy">
+    <div class="cap">图 10：跨数据集泛化：Pascal VOC 2012 目标检测率-精度曲线。CI-ICM 在未重新训练的情况下取得 BD-mAP@50:95 +17.52%，超过 COCO 原测试集表现（来源：论文 Fig. 14b）。</div>
+  </div>
 
   <h3>3.4 计算复杂度</h3>
 
