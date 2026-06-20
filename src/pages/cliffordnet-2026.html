@@ -1,0 +1,421 @@
+---
+title: "CliffordNet 深度解读：用几何代数干掉 FFN 的视觉骨干网络"
+description: "CliffordNet 用 Clifford 几何积统一特征交互，以 1.4M 参数追平 11.2M 的 ResNet-18，并发现 FFN 在代数完备的几何交互下完全冗余"
+created_at: 2026-06-20T00:52:28
+updated_at: 2026-06-20T00:55:00
+tags: [CliffordNet, Geometric Algebra, Visual Backbone, No-FFN, 架构]
+categories: ["AI"]
+subcategory: "架构"
+mathjax: true
+notify: true
+hero_title: "CliffordNet"
+hero_sub: "arXiv 2026 · Zhongping Ji"
+hero_tagline: "用 Clifford 几何积替代 Attention+FFN，1.4M 参数追平 ResNet-18"
+---
+<div class="stats">
+  <div class="stat"><span class="num">1.4M</span><span class="label">Nano 参数量</span></div>
+  <div class="stat"><span class="num b">77.82%</span><span class="label g">CIFAR-100 Top-1</span></div>
+  <div class="stat"><span class="num">0</span><span class="label">FFN Ratio</span></div>
+  <div class="stat"><span class="num b">O(N)</span><span class="label l">线性复杂度</span></div>
+</div>
+
+<!-- ====== Part 1 · 引言 ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">当 FFN 变得多余：从 MetaFormer 到 CliffordNet</div>
+
+  如果你拆开任何一个现代视觉骨干网络——不管是 ViT、ConvNeXt 还是 MobileNetV2——你会看到同一个模式不断重复：<strong>空间混合器（Attention 或 Conv）后面跟一个通道混合器（FFN/MLP）</strong>。Yu et al. 在 MetaFormer #Yu et al., 2022# 中把这个模式抽象为通用架构模板，并证明：只要保持这个模板，具体 mixer 长什么样不太重要。
+
+  这套范式已经统治了视觉骨干网络设计五年。但有没有人想过——<strong>为什么需要两个分开的模块？</strong>
+
+  Zhongping Ji 在 CliffordNet #Ji, 2026# 中给出了一个激进的回答：如果特征交互足够“代数完备”，那么标准 FFN 完全可以删除。他提出用 Clifford 几何积 $uv = u \cdot v + u \wedge v$ 统一替代 Attention 和 FFN 的功能，在 CIFAR-100 上以 1.4M 参数追平了 11.2M 的 ResNet-18——而整个网络 <strong>没有一个 FFN 层</strong>。
+
+  <div class="callout"><strong>核心发现</strong>：几何积的“代数完备性”（同时建模标量相干性和双向量结构性）使交互层的信息密度高到 FFN 变得冗余。这不仅仅是参数效率的提升，更是对“视觉骨干网络必须有什么”这一根本问题的重新定义。</div>
+
+  这篇论文最引人注目的实验数据是：如果把 ViT-Tiny 的 MLP ratio 压缩到 1.0（和 CliffordNet-Lite 同参数量），精度会直接崩溃到 65.87%——而 CliffordNet-Lite 在同一参数预算下达到 79.05%。这不是微小差异，而是 13 个百分点的鸿沟。
+
+  CliffordNet 揭示了一个被忽视的可能性：<strong>全局理解可以从严密的局部处理中涌现</strong>。你不需要 $O(N^2)$ 的全局 attention 来捕获长距离依赖，只需要用正确的数学工具把局部邻域的信息榨干。
+
+  <div class="photo">
+    <img src="media/images/cliffordnet-2026/wedge_viz.webp" alt="几何积的 Wedge 分量可视化" loading="lazy">
+    <div class="cap">图 1：Wedge 分量的几何含义。左：State 和 Context 向量经循环位移后的交叉乘积与差分构造局部结构 $W^{(s)}$。右：几何上，$\mathbf{h} \wedge \mathbf{c}$ 对应两个向量张成的有向平面的面积，度量的是正交性和结构性而非相似度。（来源：CliffordNet, Fig. 1）</div>
+  </div>
+</div>
+
+<!-- ====== Part 2 · 问题剖析 ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">标量化的代价：标准 Attention 丢了什么</div>
+
+  <h3 class="section-title">Attention 的信息压缩</h3>
+
+  标准 Self-Attention 的核心运算是 $\mathbf{q}_i^\top \mathbf{k}_j$——两个 $D$ 维向量被压缩成一个标量。这个标量告诉你它们有多“相似”，但完全丢弃了它们在 $\mathbb{R}^D$ 中张成的<strong>有向平面</strong>（即两个向量如何正交、如何旋转）。
+
+  从 Clifford 代数的视角看，两个向量的完整交互应该是：
+
+$$
+uv = \underbrace{u \cdot v}_{\text{Inner: 标量, 对称}} + \underbrace{u \wedge v}_{\text{Wedge: 双向量, 反对称}}
+$$
+
+  标准神经网络只用了第一项（内积），完全丢弃了第二项（外积）。论文把这种缺失称为<strong>“代数不完备”</strong>。
+
+  <div class="def-box">
+    <h3>代数完备性（Algebraic Completeness）</h3>
+    一个架构如果在特征交互中<strong>显式同时建模</strong>标量相干项（Inner，度量对齐/相似度）和双向量结构项（Wedge，度量正交性/变化方向），则称其在该几何积下“代数完备”。标准 Attention、CNN、SSM 都只使用标量交互——它们都是代数不完备的。
+  </div>
+
+  论文引用了 Clifford 本人在 1878 年的洞见：
+
+  <blockquote>
+    “Hamilton 的系统（四元数/内积）和 Grassmann 的系统（外积代数）不仅彼此兼容，它们实际上是一个更大整体的组成部分。”
+    <em>— William Kingdon Clifford, 1878</em>
+  </blockquote>
+
+  19 世纪的代数学家已经看到内积和外积是同一枚硬币的两面。但 150 年后的深度学习——至少在视觉骨干网络设计中——只翻了正面。
+
+  <h3 class="section-title">一个崩溃实验</h3>
+
+  论文设计了一个巧妙的对照实验来验证这个假说。如果把 ViT-Tiny 的 FFN 压缩到和 CliffordNet-Lite 相同的参数预算（mlp\_ratio=1.0），ViT-Tiny 的精度从正常水平暴跌到 65.87% #Touvron et al., 2021#。而 CliffordNet-Lite 在同样 2.6M 参数下保持 79.05%。
+
+  <div class="callout"><strong>这意味着什么</strong>：标准 Attention 的标量交互太“稀疏”了——它把高维关系压缩成一个数字，然后用 FFN 把丢失的维度重建回来。一旦 FFN 不够大，整个系统就崩溃了。而 CliffordNet 的几何积交互天生就是“密集”的，不需要 FFN 来补救。</div>
+</div>
+
+<!-- ====== Part 3 · 模型结构 ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">CliffordNet Block：一个没有 FFN 的视觉骨干</div>
+
+  CliffordNet Block 的完整前向流保持 2D 特征图结构——<strong>不展平为 1D 序列</strong>。这是它与 ViT（flatten）和 Mamba（scan）的关键架构分歧。
+
+  {{< mermaid >}}
+flowchart TD
+    X["输入 X_{l-1}<br/>B × H × W × C"] --> LN["LayerNorm"]
+    LN --> DS
+    subgraph DS["Dual-Stream 生成"]
+        D1["Detail Stream<br/>Z_det = Linear(X)"]
+        D2["Context Stream<br/>Z_ctx = SiLU(BN(DWConv(X)))"]
+    end
+    DS --> CM{"Context Mode"}
+    CM -->|"Differential"| DIFF["C = Z_ctx - Z_det ≈ ΔH"]
+    CM -->|"Absolute"| ABS["C = Z_ctx"]
+    DIFF --> SR
+    ABS --> SR
+    subgraph SR["Sparse Rolling Interaction"]
+        S1["For s in S:"]
+        S2["W^(s) = Z_det·T_s(C) - C·T_s(Z_det)<br/>Wedge 分量 (反对称)"]
+        S3["D^(s) = SiLU(Z_det·T_s(C))<br/>Inner 分量 (对称)"]
+        S1 --> S2 --> S3
+    end
+    SR --> CAT["Concat + Linear_proj<br/>→ G_feat"]
+    CAT --> GGR
+    subgraph GGR["Gated Geometric Residual"]
+        G1["α = σ(Linear([X_ln, G_feat]))<br/>门控"]
+        G2["H_mix = SiLU(X_ln) + α ⊙ G_feat"]
+        G1 --> G2
+    end
+    GGR --> OUT["X_l = X_{l-1} + γ ⊙ H_mix<br/>无 FFN"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">Dual-Stream：状态与环境的对偶</h3>
+
+  CliffordNet 从同一个 LayerNorm 输出 $X_{ln}$ 生成两条互补流：
+
+  - <strong>Detail Stream</strong>：$Z_{det} = \text{Linear}(X_{ln})$——1×1 卷积保留高频特征本体
+  - <strong>Context Stream</strong>：$Z_{ctx} = \text{SiLU}(\text{BN}(\text{DWConv}_{3\times3}(\text{DWConv}_{3\times3}(X_{ln}))))$——两层 3×3 深度卷积聚合局部邻域
+
+  这个设计的灵感来自物理中的“粒子-场”对偶：$H$ 是粒子状态，$C(H)$ 是它周围的场。两层堆叠的 DWConv 等效感受野为 5×5，模拟了 Laplacian 算子的连续扩散性质。
+
+  <h3 class="section-title">Sparse Rolling：如何用 O(|S|D) 近似 O(D²)</h3>
+
+  现在到了论文最核心的工程创新。如果朴素地计算所有 $\binom{D}{2}$ 个 wedge 系数和 $D$ 个 inner 系数，复杂度是 $O(D^2)$——对高维特征图不可接受。
+
+  CliffordNet 的解法：<strong>循环位移采样</strong>。对通道维度做位移 $s$（`torch.roll`），然后计算两个分量：
+
+$$
+W^{(s)} = Z_{det} \odot \mathcal{T}_s(Z_{ctx}) - Z_{ctx} \odot \mathcal{T}_s(Z_{det})
+$$
+
+$$
+D^{(s)} = \text{SiLU}\bigl(Z_{det} \odot \mathcal{T}_s(Z_{ctx})\bigr)
+$$
+
+  其中 $\mathcal{T}_s(\cdot)$ 是通道维度的循环位移 $s$，$\odot$ 是 Hadamard 积。
+
+  <div class="callout"><strong>为什么 $W^{(s)}$ 是 Wedge 而不是 Inner？</strong>关键在反对称性：$W^{(s)}(H, H) = H \odot \mathcal{T}_s(H) - \mathcal{T}_s(H) \odot H = 0$——这正是外积的核心性质 $u \wedge u = 0$。而 $D^{(s)}$ 是对称的，保留了对角能量项。</div>
+
+  位移集 $\mathcal{S}$ 采用<strong>对数间距</strong>：$\{1, 2, 4, 8, 16, \ldots\}$。Nano 变体只用 2 个 shift，Lite 用 5 个。从矩阵视角看，这相当于从 $D \times D$ 稠密相关矩阵中只采样特定对角线——论文称为 <strong>Structured Circulant Sparsity</strong>。
+
+  每个 shift 上做 $|\mathcal{S}| \cdot D$ 量级乘法，总复杂度从 $O(D^2)$ 降到 $O(|\mathcal{S}|D)$。
+
+  <h3 class="section-title">Gated Geometric Residual：稳定的数值求解器</h3>
+
+  论文把网络深度视为连续 ODE 的离散时间步。朴素 Euler 离散化等价于标准残差连接：$H_l = H_{l-1} + \Delta t \cdot \mathcal{F}$。但作者发现直接加几何更新会引入高频噪声，于是设计了增强版：
+
+$$
+H_l = H_{l-1} + \gamma \odot \Bigl(\text{SiLU}(X_{ln}) + \alpha \odot G_{feat}\Bigr)
+$$
+
+  其中 $\alpha = \sigma(\text{Linear}([X_{ln}, G_{feat}]))$ 是门控，$\gamma$ 是 LayerScale 可学习步长。这里 $\text{SiLU}(X_{ln})$ 不是激活函数，而是<strong>状态预条件子</strong>——抑制负值/背景噪声后再注入几何更新，相当于一个带预条件子的稳定积分器。
+
+  <div class="admonition tip">
+    <div class="admonition-title">设计直觉</div>
+    <div class="admonition-content"><p>Clifford 几何积本身包含乘法二次项（如 $u_i v_j - v_i u_j$），结合 GGR 的门控与 SiLU 激活，单层已具备足够函数逼近能力。论文称这种性质为 <strong>“Internalized Non-linearity”</strong>——非线性被内化到交互中，外置 FFN 自然冗余。</p></div>
+  </div>
+</div>
+
+<!-- ====== Part 4 · Training Pipeline ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练配置：CIFAR-100 上的 Proof-of-Concept</div>
+
+  论文选择 CIFAR-100 作为唯一评测平台。作者在文中明确承认这是 <em>“proof-of-concept”</em>——CIFAR-100 的类内多样性和数据稀疏性（每类仅 500 张训练图）对轻量模型的架构效率敏感，适合做架构验证。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>值</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>CIFAR-100 (50K train / 10K test)</td><td>✅ 论文披露</td></tr>
+        <tr><td>输入分辨率</td><td>32 × 32</td><td>✅ 论文披露</td></tr>
+        <tr><td>Patch size</td><td>2（→ 16×16 特征图）</td><td>✅ 论文披露</td></tr>
+        <tr><td>Epochs</td><td>200</td><td>✅ 论文披露</td></tr>
+        <tr><td>优化器</td><td>AdamW（所有模型统一）</td><td>✅ 论文披露</td></tr>
+        <tr><td>学习率调度</td><td>Cosine Annealing，无 warm-up</td><td>✅ 论文披露</td></tr>
+        <tr><td>数据增强</td><td>AutoAugment + Random Erasing</td><td>✅ 论文披露</td></tr>
+        <tr><td>DropPath</td><td>仅 CliffordNet 使用；CNN 基线不使用</td><td>✅ 论文披露</td></tr>
+        <tr><td>预训练</td><td>无（全部从零训练）</td><td>✅ 论文披露</td></tr>
+        <tr><td>GPU 型号与数量</td><td>—</td><td>❌ 未披露</td></tr>
+        <tr><td>Batch size</td><td>—</td><td>❌ 未披露</td></tr>
+        <tr><td>具体学习率</td><td>—</td><td>❌ 未披露</td></tr>
+        <tr><td>Weight decay</td><td>—</td><td>❌ 未披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  一个值得注意的公平性处理：CNN 基线（ResNet-18、MobileNetV2、ShuffleNetV2）不使用 DropPath，因为它们的 canonical 训练协议依赖 weight decay + 数据增强。CliffordNet 则使用 DropPath 来正则化更深的同构堆叠。这种区分确保了比较的公平性。
+
+  <h3 class="section-title">模型变体配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>参数量</th><th>Shifts (S)</th><th>cli_mode</th><th>MLP Ratio</th></tr></thead>
+      <tbody>
+        <tr><td><strong>CAN-Nano</strong></td><td>1.4M</td><td>2 ([1,2])</td><td>full</td><td>0.0</td></tr>
+        <tr><td><strong>CAN-Lite</strong></td><td>2.6M</td><td>5 ([1,2,4,8,16])</td><td>full</td><td>0.0</td></tr>
+        <tr><td><strong>CAN-32</strong></td><td>4.8M</td><td>3</td><td>full</td><td>0.0</td></tr>
+        <tr><td><strong>CAN-64</strong></td><td>8.6M</td><td>5</td><td>inner</td><td>0.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>隐藏彩蛋</strong>：CAN-64 使用 <code>cli_mode='inner'</code> 而非 <code>full</code>。这意味着最大的变体只需要标量相干性（Inner Product），不再需要 Wedge 的额外结构信息——大容量模型自身的参数足以隐式编码结构关系。</div>
+</div>
+
+<!-- ====== Part 5 · Inference Pipeline ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">推理流程：一个 Block 的完整前向传播</div>
+
+  论文给出了 Algorithm 1 完整伪代码。以下是与 PyTorch 实现的逐行对应：
+
+  <div class="code-tabs">
+    <div class="code-tabs-header">
+      <button class="code-tab-btn active" data-tab="algo-flow">算法流程</button>
+      <button class="code-tab-btn" data-tab="algo-code">PyTorch 实现</button>
+    </div>
+    <div class="code-tab-content active" data-panel="algo-flow">
+      <pre><code class="language-text">Input: X_{l-1} (B, H, W, C)
+
+1. X_ln = LayerNorm(X_{l-1})
+
+2. Dual-Stream:
+   Z_det = Linear_det(X_ln)
+   Z_ctx = SiLU(BN(DWConv(X_ln)))
+   Differential Mode: Z_ctx = Z_ctx - Z_det
+
+3. Sparse Rolling (for s in S):
+   Z_d = Roll(Z_det, s)
+   Z_c = Roll(Z_ctx, s)
+   W = Z_det * Z_c - Z_ctx * Z_d   (Wedge)
+   D = SiLU(Z_det * Z_c)            (Inner)
+
+4. Concat + Project:
+   G_feat = Linear_proj(Cat(F_list))
+
+5. Gated Geometric Residual:
+   α = Sigmoid(Linear_gate(Cat[X_ln, G_feat]))
+   H_mix = SiLU(X_ln) + α * G_feat
+
+6. Output (No FFN!):
+   X_l = X_{l-1} + DropPath(γ * H_mix)</code></pre>
+    </div>
+    <div class="code-tab-content" data-panel="algo-code">
+      <pre><code class="language-python"># 核心交互层 (来自 model.py)
+class CliffordInteraction(nn.Module):
+    def forward(self, z1, z2):
+        C = z2 - z1  # Differential mode
+        feats = []
+        for s in self.shifts:
+            C_shifted = torch.roll(C, shifts=s, dims=1)
+            if self.cli_mode in ['wedge', 'full']:
+                z1_shifted = torch.roll(z1, shifts=s, dims=1)
+                wedge = z1 * C_shifted - C * z1_shifted
+                feats.append(wedge)
+            if self.cli_mode in ['inner', 'full']:
+                inner = self.act(z1 * C_shifted)
+                feats.append(inner)
+        return self.proj_(torch.cat(feats, dim=1))</code></pre>
+    </div>
+  </div>
+
+  整个 Block 没有任何 FFN/MLP 层。特征从输入到输出只经过：LayerNorm → Dual-Stream → Rolling Interaction → GGR → 残差连接。这就是论文所说的 <strong>“No-FFN”</strong> 架构。
+
+  从 GitHub 源码可以看到，作者还提供了可选的 CUDA 加速核 <code>clifford_thrust</code>，在导入成功时自动替换 PyTorch 原生的 <code>torch.roll</code> 实现。
+</div>
+
+<!-- ====== Part 6 · 实验验证 ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验结果：参数效率的新 Pareto 前沿</div>
+
+  <h3 class="section-title">主实验：CIFAR-100 全档位对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>参数量</th><th>FFN?</th><th>Top-1 Acc</th><th>训练时间(min)</th></tr></thead>
+      <tbody>
+        <tr><td colspan="5"><em>Nano Scale (~1.5M)</em></td></tr>
+        <tr><td>ShuffleNetV2 1.0×</td><td>1.4M</td><td>Yes</td><td>74.60%</td><td>66.2</td></tr>
+        <tr><td><strong>CliffordNet-Nano</strong></td><td><strong>1.4M</strong></td><td><strong>No</strong></td><td><strong>77.82%</strong></td><td>79.9</td></tr>
+        <tr><td colspan="5"><em>Tiny Scale (~2.5M)</em></td></tr>
+        <tr><td>MobileNetV2</td><td>2.3M</td><td>Yes</td><td>70.90%</td><td>64.5</td></tr>
+        <tr><td>ShuffleNetV2 1.5×</td><td>2.6M</td><td>Yes</td><td>75.95%</td><td>—</td></tr>
+        <tr><td>ViT-Tiny (ratio=1.0)</td><td>2.7M</td><td>Yes</td><td>65.87%</td><td>149.9</td></tr>
+        <tr><td><strong>CliffordNet-Lite</strong></td><td><strong>2.6M</strong></td><td><strong>No</strong></td><td><strong>79.05%</strong></td><td>125.0</td></tr>
+        <tr><td colspan="5"><em>Small Scale (>3M)</em></td></tr>
+        <tr><td>ResNet-18</td><td>11.2M</td><td>—</td><td>76.75%</td><td>—</td></tr>
+        <tr><td>ResNet-50</td><td>23.7M</td><td>—</td><td>79.14%</td><td>—</td></tr>
+        <tr><td>DenseNet-121</td><td>7.0M</td><td>—</td><td>80.20%</td><td>—</td></tr>
+        <tr><td><strong>CliffordNet-32</strong></td><td><strong>4.8M</strong></td><td><strong>No</strong></td><td><strong>81.42%</strong></td><td>—</td></tr>
+        <tr><td><strong>CliffordNet-64</strong></td><td><strong>8.6M</strong></td><td><strong>No</strong></td><td><strong>82.46%</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/cliffordnet-2026/page_5.webp" alt="CliffordNet 主结果表和消融实验" loading="lazy">
+    <div class="cap">图 2：论文主结果表与消融实验。CAN-Nano 以 1.4M 参数超越 ShuffleNetV2 3.22%，CAN-Lite 以 2.6M 超越 ResNet-18 (11.2M) 2.3%。（来源：CliffordNet, Table 1-3）</div>
+  </div>
+
+  <div class="callout"><strong>三个关键对比</strong>：CAN-Nano 以同样 1.4M 参数超过 ShuffleNetV2 <strong>+3.22%</strong>；CAN-Lite 以 2.6M 超过 ResNet-18 (11.2M) <strong>+2.3%</strong>，参数量仅为其 1/4；CAN-64 以 8.6M 超过 DenseNet-121 (7.0M) <strong>+2.26%</strong>。</div>
+
+  <h3 class="section-title">消融实验：每个组件贡献多少</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>Shifts</th><th>参数量</th><th>Top-1 Acc</th><th>变化</th></tr></thead>
+      <tbody>
+        <tr><td>CAN-Nano (abs)</td><td>2</td><td>1.43M</td><td>76.41%</td><td>基准</td></tr>
+        <tr><td><strong>CAN-Nano (diff)</strong></td><td>2</td><td>1.43M</td><td><strong>77.82%</strong></td><td>+1.41%（Differential Mode）</td></tr>
+        <tr><td>CAN-Lite (abs)</td><td>5</td><td>2.61M</td><td>77.63%</td><td>+1.21%（更多 shifts）</td></tr>
+        <tr><td><strong>CAN-Lite (diff)</strong></td><td>5</td><td>2.61M</td><td><strong>79.05%</strong></td><td><strong>+1.42%（Differential）</strong></td></tr>
+        <tr><td>CAN-Nano + gFFN-G</td><td>2</td><td>2.22M</td><td>78.22%</td><td>+0.40%（加全局上下文）</td></tr>
+        <tr><td>CAN-Lite + gFFN-G</td><td>5</td><td>3.40M</td><td>79.57%</td><td>+0.52%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  Differential Mode（离散 Laplacian / 高通滤波）一致优于 Absolute Mode 约 1.4%。添加全局上下文 gFFN-G 只带来 0.4-0.5% 的边际收益——No-FFN 变体已经足够强。
+
+  <h3 class="section-title">组件分析：Inner vs Wedge</h3>
+
+  这是最有理论趣味的消融。在相同设置下（$\mathcal{S}=\{1,2,4,8,16\}$，Differential Mode）分别测试只用 Inner、只用 Wedge、以及完整 Clifford 积：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>交互变体</th><th>代数类型</th><th>对角能量</th><th>Top-1 Acc</th></tr></thead>
+      <tbody>
+        <tr><td>Inner-Only</td><td>对称</td><td>✓ 有能量</td><td>78.17%</td></tr>
+        <tr><td>Wedge-Only</td><td>反对称</td><td>✗ 无能量</td><td>77.76%</td></tr>
+        <tr><td><strong>CliffordNet (Full)</strong></td><td><strong>几何完备</strong></td><td><strong>✓</strong></td><td><strong>79.05%</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/cliffordnet-2026/page_7.webp" alt="组件分析：Inner vs Wedge vs Full" loading="lazy">
+    <div class="cap">图 3：组件分析。Wedge-Only（无对角能量）77.76% ≈ Inner-Only（有能量）78.17%，合并后达 79.05%。纯结构信息几乎和能量信息同样有判别性。（来源：CliffordNet, Table 4）</div>
+  </div>
+
+  <div class="callout"><strong>最反直觉的发现</strong>：Wedge-Only 在丢弃所有对角能量（即 $x_i^2$ 形式的自相关信息）的情况下，仍然达到 77.76%——仅比 Inner-Only 低 0.41%。这意味着<strong>纯结构信息（通道间的正交/旋转关系）本身就几乎和能量信息一样有判别性</strong>。合并后 79.05% 是代数完备性的实证胜利。</div>
+
+  <h3 class="section-title">训练效率：torch.roll 的代价</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>PyTorch 原生 (min)</th><th>CUDA 加速后 (min)</th></tr></thead>
+      <tbody>
+        <tr><td>CAN-Nano (2 shifts)</td><td>79.9</td><td><strong>57.64</strong></td></tr>
+        <tr><td>CAN-Lite (5 shifts)</td><td>125.0</td><td><strong>58.27</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  CUDA 加速后 Nano 和 Lite 训练时间几乎相同（57.64 vs 58.27 min），证明 bottleneck 完全在 geometric sampling density（shift 数量）而非网络深度。当前 PyTorch 原生 <code>torch.roll</code> 是 memory-bound 操作，论文预期 Triton kernel 可再提速 2-3×。
+</div>
+
+<!-- ====== Part 7 · 讨论与启发 ====== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：几何模式形成的涌现</div>
+
+  <h3 class="section-title">Reaction-Diffusion：Turing Pattern 的高维推广</h3>
+
+  论文最浪漫的理论类比来自数学生物学中的 <strong>Turing Pattern</strong>。Alan Turing 在 1952 年提出，生物体表面的复杂图案（斑马纹、豹斑）源于两种物质的相互作用：<strong>扩散</strong>（平滑化）和<strong>反应</strong>（局部非线性增强）。
+
+  CliffordNet 可以被解读为这一过程的高维推广：
+
+  - <strong>各向异性扩散</strong>（$H \cdot \mathcal{C}$，Inner 项）：在特征与上下文对齐的区域平滑噪声，类似 coherence-based gating
+  - <strong>几何反应</strong>（$H \wedge \mathcal{C}$，Wedge 项）：在特征正交于上下文的边界处产生“几何涡旋”，增强结构边界
+
+  这种视角解释了为什么 No-FFN 能 work：网络不是在做简单的线性变换，而是在通过级联的<strong>几何模式形成</strong>步骤把原始像素演化为结构化语义表示——就像自然界中复杂结构从简单规则中涌现一样。
+
+  <h3 class="section-title">局限性：坦诚的 Proof-of-Concept</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">必须正视的局限</div>
+    <div class="admonition-content">
+      <p><strong>数据集单一</strong>：仅 CIFAR-100，未在 ImageNet-1K 上验证。No-FFN 范式在大规模数据上是否成立仍存疑——作者自己提出了这个问题。</p>
+      <p><strong>任务单一</strong>：仅图像分类，未涉及检测/分割/生成。O(N) 线性复杂度在高分辨率密集预测上的潜力只是理论推测。</p>
+      <p><strong>工程瓶颈</strong>：PyTorch 原生 <code>torch.roll</code> 是 memory-bound，实际训练速度比 MobileNetV2 慢 24%（未加速时）。Triton kernel 尚未公开。</p>
+      <p><strong>单作者预印本</strong>：尚未被正式会议接收，缺乏大型实验室的交叉验证。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">对视觉骨干网络设计的启发</h3>
+
+  即使不考虑直接采用 CliffordNet，这篇论文也提供了几个可操作的启发：
+
+  - <strong>FFN 的必要性值得质疑</strong>：如果你的空间交互层信息密度足够高（比如包含二阶非线性项），FFN 的 channel mixing 功能可能是冗余的。可以尝试在你的架构中逐步减少 FFN ratio，观察精度变化。
+  - <strong>外积（Wedge）是被忽视的信息源</strong>：标准 Hadamard 积 $u \odot v$ 只捕获对称交互。添加一个反对称分支 $u \odot v_{shift} - v \odot u_{shift}$ 几乎不增加参数，但可以捕获通道间的结构关系。
+  - <strong>循环位移是对角采样的高效替代</strong>：如果你需要建模通道间的关系矩阵但付不起 $O(D^2)$，对数间距的循环位移是一种 principled 的稀疏化策略。
+
+  论文列出了 11 条未来方向，其中最值得关注的是：(1) ImageNet 扩展验证 No-FFN 范式的可扩展性；(2) 解耦 Inner 和 Wedge 的采样拓扑 $\mathcal{S}_{dot} \neq \mathcal{S}_{wedge}$；(3) 高阶几何积（向量 × 双向量）；(4) Triton kernel 工程化。
+
+  <div class="callout"><strong>最后的话</strong>：CliffordNet 的核心贡献不是“又一个更高效的骨干网络”，而是提出了一个根本性的问题——<strong>如果我们回到数学第一性原理，视觉骨干网络到底需要什么？</strong>答案可能比我们以为的更简洁：代数完备的局部几何交互，仅此而已。</div>
+</div>
+
+<!-- ====== 参考来源 ====== -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Ji-2026">Ji, Z. (2026). CliffordNet: All You Need is Geometric Algebra. <a href="https://arxiv.org/abs/2601.06793" target="_blank">arXiv:2601.06793</a> · <a href="https://github.com/ParaMind2025/CAN" target="_blank">GitHub 代码</a></li>
+    <li data-cite-key="Yu-et-al.-2022">Yu, W. et al. (2022). MetaFormer Is Actually What You Need for Vision. CVPR 2022. <a href="https://arxiv.org/abs/2111.11418" target="_blank">arXiv:2111.11418</a></li>
+    <li data-cite-key="Touvron-et-al.-2021">Touvron, H. et al. (2021). Training Data-Efficient Image Transformers & Distillation through Attention. ICML 2021. <a href="https://arxiv.org/abs/2012.12877" target="_blank">arXiv:2012.12877</a></li>
+    <li data-cite-key="Brandstetter-et-al.-2023a">Brandstetter, J. et al. (2023). Clifford Neural Layers for PDE Modeling. ICLR 2023. <a href="https://arxiv.org/abs/2209.04934" target="_blank">arXiv:2209.04934</a></li>
+    <li data-cite-key="Brandstetter-et-al.-2023b">Brandstetter, J. et al. (2023). Geometric Algebra Transformer. NeurIPS 2023. <a href="https://arxiv.org/abs/2305.18415" target="_blank">arXiv:2305.18415</a></li>
+    <li data-cite-key="Ji-2025">Ji, Z. (2025). RiemannFormer: A Framework for Attention in Curved Spaces. <a href="https://arxiv.org/abs/2506.07405" target="_blank">arXiv:2506.07405</a></li>
+    <li data-cite-key="Gu-Dao-2023">Gu, A. & Dao, T. (2023). Mamba: Linear-Time Sequence Modeling with Selective State Spaces. <a href="https://arxiv.org/abs/2312.00752" target="_blank">arXiv:2312.00752</a></li>
+    <li data-cite-key="Hestenes-1966">Hestenes, D. (1966). Space-Time Algebra. Gordon and Breach.</li>
+    <li data-cite-key="Dorst-et-al.-2007">Dorst, L., Fontijne, D. & Mann, S. (2007). Geometric Algebra for Computer Science. Morgan Kaufmann.</li>
+  </ul>
+</div>
