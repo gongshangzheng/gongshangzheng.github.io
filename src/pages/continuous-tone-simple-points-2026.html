@@ -1,0 +1,632 @@
+---
+title: "视觉模型论文精读（一）：Continuous-tone Simple Points，连续值 Simple Point 与变分拓扑保持"
+description: "arXiv:2604.28159，2026 年 4 月。把 simple point 从二值图推广到连续值图，把拓扑保证从损失层提升到变分 inference 层。"
+date: 2026-06-20T13:15:54
+created_at: 2026-06-20T13:15:54
+updated_at: 2026-06-20T13:15:54
+tags: [Simple Point, 数字拓扑, 拓扑感知分割, 变分推理, SAM2]
+categories: ["AI"]
+subcategory: "视觉模型"
+sub_id: 1000
+mathjax: true
+notify: true
+hero_title: "Continuous-tone Simple Points"
+hero_sub: "arXiv:2604.28159 · 北京师范大学 · 2026.04"
+hero_tagline: "把 simple point 从二值+STE 推进到连续值+变分 inference，拓扑保证从损失层升级到架构层。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">4</span><span class="label">数据集</span></div>
+  <div class="stat"><span class="num b">4.3×</span><span class="label g">vs SRSP 加速</span></div>
+  <div class="stat"><span class="num">12</span><span class="label">完整公式</span></div>
+  <div class="stat"><span class="num b">0</span><span class="label l">STE 偏置</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么我们关心 simple point？一条从 1970 到 2026 的线索</div>
+
+  如果只看今天主流的语义分割模型——U-Net、DeepLabV3+、SegFormer、SAM2——会发现一个共同特点：它们把分割当成逐像素分类问题，优化的目标是 IoU、Dice 这样的"像素级重叠率"。这条路线非常成功，但有一个结构性盲区：一条血管网络如果断了一个连接点，像素级 Dice 可能只差 0.1%，对下游血流动力学分析却是致命的结构错误。#ronneberger2015unet# #csp2026#
+
+  这就引出了 2018 年以来一个持续活跃的方向——**拓扑感知图像分割**（topology-aware / topology-preserving segmentation）。论文 #csp2026# 在 Introduction 里把现有工作清晰地归为四类：局部特征增强（蛇形卷积 #snakeconv2023#、离散 Morse 理论 #dmt2021#）、连通性软约束（clDice #cldice2021# 及其衍生）、配准一致性约束（Beltrami/Jacobian/DARTEL #dartel2007#）、持续同调（TDA, #topoloss2019#）。这四类方法各有强项，但都回避了一个根本问题：**simple point**（简单点）这个在数字拓扑里 60 年前就被严格定义的判据，为什么到 2020s 之前一直没能进入深度学习？
+
+  答案藏在 simple point 的定义里。一个点是 simple point，意味着删除它**不改变图像的全局拓扑**（连通分量数、孔洞数都不变）。这个判据天然依赖二值图像——只有 $u(x) \in \{0, 1\}$ 才能谈"删除"和"不删除"。#kong1989# #cite5# 但深度网络输出的是 $u(x) \in [0, 1]$ 的连续概率图。从离散到连续的跨越不是平凡的，所以 simple point 在深度学习时代一直缺席，直到 Menten 等人在 ICCV 2023 提出 SRSP（Skeletonization via Removal of Simple Points）#cite35#——他们用 STE（Straight-Through Estimator）+ Gumbel-Softmax 重参数化把"二值化"伪装成"可微"，把骨架化第一次接进了神经网络。
+
+  本文要解读的论文 arXiv:2604.28159 #csp2026# 来自北京师范大学 Jun Liu 团队（数学与复杂系统教育部重点实验室 + 遥感科学国家重点实验室），其核心命题是：**simple point 根本不需要二值化+STE 这套迂回，它可以在连续值图上直接计算。** 论文把这个观察做成三件事——一个连续值 simple point 检测算子 $\mathcal{W}_{\alpha,\tau,\sigma}$、一个端到端可微骨架化算法 CSPS、一个拓扑保持的变分 inference 模型 TCSP——并把它们塞进 SAM2 架构得到 TCSP-SAM2。这是一篇"地基性"的工作：它不是修补 SRSP 的某个缺陷，而是重新建立一套不依赖二值化的理论。
+
+  <div class="photo">
+    <img src="media/images/continuous-tone-simple-points-2026/fig1-sam2-vs-tcsp.webp" alt="SAM2 vs TCSP-SAM2 分割结果对比" loading="lazy">
+    <div class="cap">图 1：TCSP-SAM2 与 SAM2 在细小血管分割上的对比。右列为左列同色边框区域的放大。可以看到 TCSP-SAM2 显著减少了血管断裂（breakage），保持了管状结构的连通性（来源：论文 Fig.1）。</div>
+  </div>
+
+  <div class="callout"><strong>本篇的视角：</strong>我们从 simple point 的数字拓扑起源讲起，沿着 cyclic gradient（循环梯度）的 $\ell_0$ 范数 → 连续值检测算子 → 变分 inference 的路径，把论文的核心数学拆到能落地的颗粒度；然后在四个数据集、四个 backbone、四种 loss 的实验网格里，看 CSP / TCSP 到底赢在哪里、又在哪里掉点；最后回到代码仓库，把所有"论文没写、但动手复现时一定撞上"的坑整理出来。#csp2026# #cite5# #cite17# #cite35# #cldice2021#</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">一个实验看清问题：现有方法为什么没能保住拓扑</div>
+
+  在展开 CSP 的数学之前，先用一个数字直观感受问题的严峻。论文 Table I 在四个数据集（DRIVE 视网膜血管、DCA 冠状动脉、MASS 道路、UBW 膀胱壁 MRI）上比较了三种骨架化算法在 **binary 图像**上的拓扑误差（用 $\beta_0$、$\beta_1$、$\chi_{\text{error}}$ 三个 Betti 数相关指标衡量）。#csp2026# #csp2026table1#
+
+  在 DCA 数据集上，**形态学方法**（#cldice2021# 派生的 MorphLayer）得到的 $\beta_0$ 误差是 **133.65**——这意味着骨架化后图像的连通分量数偏离真值 134 个，对于一个只有 134 张图的数据集来说，这个量级的拓扑破坏是灾难性的。SRSP（#cite35#）由于使用 Boolean 规则严格判定 simple point，能把 $\beta_0$ 误差压到 0；但如果给它加 0.1 强度的随机噪声（SRSP*，模拟 Gumbel-Softmax 采样），误差立即反弹到 2.21，说明 SRSP 的"可微性"是用稳定性换来的。#csp2026#
+
+  这组数字背后的真正问题是：**为什么一个看似干净的判据（simple point）需要靠二值化才能算？** 三个层面的障碍：
+
+  <div class="def-box">
+    <h3>障碍一：判据天然依赖二值</h3>
+    <p>Bertrand 1994 的 simple point 充要判据是 $T_4(x, \mathbb{X}^c) = 1$ AND $T_8(x, \mathbb{X}) = 1$（#cite5#）。这里的 $T_n(x, \mathbb{X})$ 计数的是 $\mathbb{X}$ 在 $x$ 的 n-邻域内的连通分量个数。连通性只在 $\{0, 1\}$ 上有定义，$u(x) = 0.7$ 既不是 0 也不是 1，谈不上"前景"还是"背景"。</p>
+  </div>
+
+  <div class="def-box">
+    <h3>障碍二：SRSP 的 STE 是有偏梯度</h3>
+    <p>SRSP 在前向传播时把 $u$ 阈值化为 $u^{\text{bin}} = \mathbb{1}[u > 0.5]$，在 $u^{\text{bin}}$ 上用 Boolean 规则判定 simple point；反向传播时绕过这个不可微的阈值操作，直接把梯度传回 $u$。问题在于：前向传播用的 $u^{\text{bin}}$ 和反向传播用的 $u$ 不是同一个量，导致优化目标与梯度方向轻微不一致（biased gradient）。在拓扑敏感区域（比如血管分叉点），这种偏差会让网络"绕开"拓扑约束。#cite35# #csp2026#</p>
+  </div>
+
+  <div class="def-box">
+    <h3>障碍三：损失层约束推理时不生效</h3>
+    <p>更微妙的问题是：即使你在训练时用 L_CSP（基于骨架的拓扑 loss）#cldice2021# 让网络"关注"非简单点，推理时这些约束也不再生效——你没法保证测试时网络输出恰好满足训练时学到的拓扑偏好。#csp2026#</p>
+  </div>
+
+  论文 #csp2026# 的 Insight 是：**把 simple point 判定本身做成连续值算子，并在网络架构里（而非损失里）加一个变分 inference 步骤**。前者解决"判据天然依赖二值"，后者解决"约束在推理时不生效"。下面我们逐步展开。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">Cyclic gradient 的 $\ell_0$ 范数：把 simple point 拉到连续域</div>
+
+  这一节是论文最硬也最漂亮的部分。我们要顺着三个步骤走：先用一个"循环梯度"重新表达 simple point 判据，再把这个离散判据用 sigmoid + 高斯平滑成连续算子，最后把它装到一个能端到端训练的网络架构里。
+
+  <h3 class="section-title">3.1 数字拓扑的最小集：从 4-连通到 simple point</h3>
+
+  在 $\mathbb{Z}^2$ 上，每个像素 $x$ 有两种邻域：4-连通 $\mathbb{N}_4(x)$（上下左右）和 8-连通 $\mathbb{N}_8(x)$（再加四个对角）。历史上有过一个著名的"连通性悖论"：如果前景用 4-连通、背景也用 4-连通，Jordan 曲线定理在离散网格上会失效（一条对角交叉的曲线会被同时判为"连通"和"被分割"）。#kowalski2010# 唯一安全的组合是**前景 8-连通、背景 4-连通**——本文沿用这一约定。#csp2026#
+
+  <div class="photo">
+    <img src="media/images/continuous-tone-simple-points-2026/fig2-simple-point-examples.webp" alt="Simple point 与 non-simple point 的邻域示例" loading="lazy">
+    <div class="cap">图 2：Simple point 与 non-simple point 的 3×3 邻域示例。实心方格表示前景、空心表示背景。Case (a)(b) 中心像素是 non-simple point（删除会改变拓扑），case (c)(d) 是 simple point（删除不改变拓扑）。这个图是后面 cyclic gradient 概念的几何基础（来源：论文 Fig.2）。</div>
+  </div>
+
+  接下来定义两个**拓扑数** $T_4(x, \mathbb{X}^c)$ 和 $T_8(x, \mathbb{X})$，分别计数背景在 $x$ 的 4-邻域内的连通分量数、前景在 $x$ 的 8-邻域内的连通分量数。Bertrand 1994 #cite5# 证明了 simple point 的充要判据：
+
+  <div class="def-box">
+    <h3>Definition 3（Simple point，二值版）</h3>
+    <p>对于 $\mathbb{X} \subset \Omega$ 和 $\mathbb{X}^c = \Omega \setminus \mathbb{X}$，点 $x \in \Omega$ 是 simple point 当且仅当：</p>
+    $$T_4(x, \mathbb{X}^c) = 1 \quad \text{AND} \quad T_8(x, \mathbb{X}) = 1$$
+    <p>直观上，$T_4(x, \mathbb{X}^c) = 1$ 保证删掉 $x$ 后背景仍连通（$x$ 不是切断背景的割点），$T_8(x, \mathbb{X}) = 1$ 保证删掉 $x$ 后前景不会被撕成两半。两条件合起来，才保证"删除不改变拓扑"。#cite5# #csp2026#</p>
+  </div>
+
+  <h3 class="section-title">3.2 Theorem 1：把双判定压成单 $T_4$</h3>
+
+  双判定意味着每个像素要算两次连通分量计数，开销大、还不可微。论文 Theorem 1 给出了关键简化（#csp2026#，supplementary I 给出完整证明）：
+
+  <div class="theorem-box">
+    <h3>Theorem 1</h3>
+    <p>若 $x$ 不是 non-boundary point（即 $\mathbb{N}_8(x)$ 中同时存在 0 和 1），则 Bertrand 1994 的 simple point 双判定条件（$T_4(x, \mathbb{X}^c) = 1$ AND $T_8(x, \mathbb{X}) = 1$）可以<strong>简化为单一条件</strong> $T_4(x, \mathbb{X}^c) = 1$。#csp2026#</p>
+    <p>证明分两步：</p>
+    <ol>
+      <li><strong>左推右</strong>：若 $T_4(x, \mathbb{X}^c) = 1$ 且 $x$ 不是 non-boundary point，那么 $\mathbb{N}_8(x) \cap \mathbb{X}$ 必然恰好有一个 8-连通分量——否则 $\mathbb{N}_4(x) \cap \mathbb{X}^c$ 会被某条 8-连通路绕过，与 $T_4 = 1$ 矛盾。</li>
+      <li><strong>non-boundary 排除退化</strong>：当 $x$ 周围 8-邻域全是 0 或全是 1，simple point 概念本身退化为平凡（删不删都不改变图像），对骨架化没有意义，可以直接当作端点处理。</li>
+    </ol>
+    <p>由此 simple point 判定从双重拓扑数下降为<strong>单一</strong> $T_4$ 计算。这是后面 cyclic gradient 的数学基础。#csp2026#</p>
+  </div>
+
+  <h3 class="section-title">3.3 Cyclic gradient 与 crossing number</h3>
+
+  接下来把 $T_4$ 计算"压"成可以在连续值图上做的代数运算。论文的关键一招是：把 8-邻域的像素按顺时针编号 $x_1, x_2, \ldots, x_8$（最后回到 $x_1$ 形成一个环），定义：
+
+  <div class="def-box">
+    <h3>Definition 5（Cyclic Gradient Vector）</h3>
+    $$\nabla_{\mathbb{C}} u(x) = \big(u(x_1) - u(x_2), u(x_2) - u(x_3), \ldots, u(x_8) - u(x_1)\big)^{\top}$$
+    <p>每个分量是沿 8-环顺时针方向相邻像素的差。#csp2026#</p>
+  </div>
+
+  <div class="def-box">
+    <h3>Definition 6（Crossing Number）</h3>
+    $$\mathcal{C}(u)[x] = \sum_{i=1}^{8} \delta\big(|u(x_{i+1}) - u(x_i)|\big) = \|\nabla_{\mathbb{C}} u(x)\|_0$$
+    <p>其中 $\delta$ 是 indicator，$\|\cdot\|_0$ 是 $\ell_0$ 范数（计非零项个数）。$\mathcal{C}(u)[x]$ 就是 $x$ 周围 8-环上发生 0→1 或 1→0 跳变的次数——这正是论文标题里"$\ell_0$-Norm of Cyclic Gradient"的含义。#csp2026#</p>
+  </div>
+
+  这个定义的妙处在于：crossing number 是一个**关于像素值差异的离散计数**，但它只依赖于相邻像素的差。Theorem 2 给出了它的几何解释：
+
+  <div class="theorem-box">
+    <h3>Theorem 2</h3>
+    <p>在 8-连通前景 / 4-连通背景下，点 $x$ 是 simple point 当且仅当：</p>
+    $$\mathcal{C}(u_m)[x] = 2$$
+    <p>其中 $u_m$ 是经过 geodesic 处理（去掉对角线 $x_{2i+1}$）的版本，几何意义是环上恰好发生一次 0→1 跳变和一次 1→0 跳变——这正是前景"细管穿过" $x$ 的局部形态。#csp2026#</p>
+  </div>
+
+  直观上 $\mathcal{C}$ 的值有非常稀疏的离散谱 $\{0, 2, 4, 6, 8\}$：0=全相同；2=细管穿过；4=分叉或交叉；等等。这种离散性既是好运也是挑战——好运在于目标值明确（我们只要 $\mathcal{C}=2$），挑战在于 indicator 函数不可微。
+
+  <h3 class="section-title">3.4 连续化：sigmoid + 高斯三步走</h3>
+
+  论文用三步把 $\mathcal{C}$ 平滑成连续算子。第一步：定义 $\tau$-连通（Definition 7）——相邻像素 $|u_i - u_{i+1}| \le \tau$ 算"近似相同"。第二步：把 hard indicator 换成 sigmoid：
+
+  $$\delta_{\alpha, \tau}(z) = \frac{1}{1 + e^{-\alpha(z - \tau)}}$$
+
+  得到 smooth crossing number：
+  $$\mathcal{C}_{\alpha, \tau}(u)[x] = \sum_{i=1}^{8} \delta_{\alpha, \tau}\big(|u(x_{i+1}) - u(x_i)|\big)$$
+
+  第三步：用高斯把 $\mathcal{C}/2$ 到目标值 1 的距离压缩成 $[0, 1]$ 之间的"simple point 概率"——这就是论文的核心算子：
+
+  <div class="def-box">
+    <h3>Definition 9（Topological Detection Operator）</h3>
+    $$\mathcal{W}_{\alpha, \tau, \sigma}(u)[x] = \exp\!\left(-\frac{\big(\frac{1}{2}\mathcal{C}_{\alpha, \tau}(u_m)[x] - 1\big)^2}{2\sigma^2}\right)$$
+    <p>直观上：</p>
+    <ul>
+      <li>当 $\mathcal{C}/2 = 1$（即 $\mathcal{C} = 2$，即 simple point）时，$\mathcal{W} \approx 1$</li>
+      <li>当 $\mathcal{C}/2 \neq 1$ 时，$\mathcal{W} \to 0$</li>
+      <li>当 $\sigma \to 0$，$\mathcal{W}$ 收敛到 indicator；$\sigma$ 越大越平滑</li>
+    </ul>
+    <p>论文所有实验都设 $\alpha = 16, \sigma = 0.2, \tau = 0.5$。#csp2026#</p>
+  </div>
+
+  这个算子的精妙之处：**它不依赖二值化，对 $u \in [0, 1]$ 处处可微，并且和 discrete simple point 判据在 $\sigma \to 0$ 极限下完全等价**。论文作者在代码里实现的就是这个算子的向量化版本（`SimplepointLayer.one_process_diff`，见 `code_repo/train_utils/skeletonize.py`），用 `perm = [0,1,2,5,8,7,6,3,4]` 把 3×3 patch 重排成 cyclic 序列、用 `result4_sum / 2.0` 对应 crossing number = 2 × topology number 的换算。#csp2026# #treasure_alpha#
+
+  <div class="callout"><strong>复现者必读：</strong>代码 `train_utils/skeletonize.py:193,201` 硬编码了 `alpha=4, t=0.5, k=0.2`，但论文 §IV 第一段报告的是 $(\alpha, \sigma, \tau) = (16, 0.2, 0.5)$——这是**代码-论文不一致**的硬证据。作者可能先用 $\alpha=4$ 跑实验、后来论文里改成 16 让 sigmoid 更陡，但没有任何 commit 或 README 解释。复现时必须把两处 `alpha=4` 改成 `16`。#treasure_alpha#</div>
+
+  <h3 class="section-title">3.5 CSPS：端到端可微骨架化算法</h3>
+
+  有了 $\mathcal{W}$，论文 Algorithm 1（CSPS, Continuous-tone Simple Points Skeleton）借鉴了传统细化算法的思路，**沿用 Bertrand-Aktouf 1995 [6] 的四子域并行扫描方案**（$\mathbb{M}_1$-$\mathbb{M}_4$ 基于坐标奇偶性），灵感来自 Zhang-Suen 1984 #zhangsuen1984# 的两子迭代细化范式：
+
+  {{< mermaid >}}
+flowchart TD
+    A["输入: u(x) ∈ [0,1], iter T, α/τ/σ"] --> B["初始化 S(u) ← u"]
+    B --> C["for t = 0 to T"]
+    C --> D["端点检测 P(u)"]
+    D --> E["for i = 1 to 4 (M_i 子域)"]
+    E --> F["simple point 检测 W"]
+    F --> G["骨架更新: S(u) ← (1 - P(u)·W(u))·S(u)"]
+    G --> E
+    E --> C
+    C --> H["输出骨架 S(u)"]
+  {{< /mermaid >}}
+
+  其中 $\mathbb{M}_i(\bm{x})$ 是基于 $(x_1, x_2)$ 坐标奇偶性的四子域掩码（避免相邻点同时删除带来的拓扑破坏），$\mathcal{P}(u)[x] = \min(\max((\sum_{y \in \mathbb{N}_n(x)} \delta_{0.5}(u(y))) - 1, 0), 1)$ 是端点 indicator。#csp2026# #zhangsuen1984#
+
+  <h3 class="section-title">3.6 CSP Loss：从骨架反推拓扑 loss</h3>
+
+  CSPS 既能用于推理时的骨架提取，也能用于训练时的拓扑 loss。论文沿用 clDice #cldice2021# 的 F1 策略，定义骨架级 precision 和 sensitivity：
+
+  $$T_{\text{prec}}(u, g) = \frac{\sum_{x} \mathcal{S}(u)[x] \cdot g(x)}{\sum_x \mathcal{S}(u)[x]}, \quad T_{\text{sens}}(u, g) = \frac{\sum_x \mathcal{S}(g)[x] \cdot u(x)}{\sum_x \mathcal{S}(g)[x]}$$
+
+  $$\mathcal{L}_{\text{CSP}}(u, g) = 1 - \frac{2 \cdot T_{\text{prec}} \cdot T_{\text{sens}}}{T_{\text{prec}} + T_{\text{sens}}}$$
+
+  最终的复合 loss 是 $\mathcal{L}(u, g) = \mathcal{L}_{\text{BCE}}(u, g) + \lambda \cdot \mathcal{L}_{\text{CSP}}(v, g)$，其中 $\lambda = 0.001$。注意 $L_{\text{CSP}}$ 的输入是 $v$（decoder 输出的"topology feature"）而不是 $u$（classifier 输出），这点在论文符号上稍微含糊，代码上要小心。#csp2026# #treasure_lambda#
+
+  <h3 class="section-title">3.7 TCSP 变分模型：核心创新</h3>
+
+  CSP loss 仍然只在训练时引导特征，推理时无强制约束。论文真正的"硬菜"是**TCSP 变分模型**（Topological Continuous-tone Simple Points）——把 simple point 约束写进网络架构的 inference 阶段。
+
+  <div class="def-box">
+    <h3>TCSP 变分模型（论文 Eq. 5）</h3>
+    $$\min_{u \in [0, 1]} \mathcal{E}(u, o, v) := \min_{u \in [0, 1]} \big\{ \langle -o, u \rangle + \varepsilon \mathcal{H}(u) + \eta \mathcal{T}(u, v) \big\}$$
+    <p>三项各有其职：</p>
+    <ul>
+      <li><strong>数据拟合项</strong> $\langle -o, u \rangle = -\sum_x o(x) \cdot u(x)$：让 $u$ 拟合 segmentation feature $o$，这正是 standard classifier $u^* = \sigma(o)$ 的优化目标</li>
+      <li><strong>熵正则</strong> $\mathcal{H}(u) = \langle u, \ln u \rangle + \langle 1-u, \ln(1-u) \rangle$：促进 $u$ 在 (0, 1) 之间平滑，避免退化为硬 0/1</li>
+      <li><strong>拓扑正则</strong> $\mathcal{T}(u, v) = \langle 1-u, v \cdot \mathcal{M}(\mathcal{S}(v)) \rangle$：核心创新。$\mathcal{S}(v)$ 是 CSPS 提取的骨架，$\mathcal{M}$ 是形态学膨胀，$v$ 是 decoder 输出的 topology feature</li>
+    </ul>
+    <p>关键设计：因为 $1 - u$ 是背景，$\mathcal{T}(u, v)$ 惩罚"topology non-removable points（$\mathcal{S}(v)$）落在背景里"——这等价于强制 non-simple points 永远留在前景里。#csp2026#</p>
+  </div>
+
+  这个能量函数关于 $u$ 是**强凸的**（$\partial^2 \mathcal{E}/\partial u^2 = \varepsilon / [u(1-u)] > 0$），所以有闭式解：
+
+  <div class="theorem-box">
+    <h3>TCSP 闭式解（论文 Eq. 5 后半）</h3>
+    $$u^*(x) = \text{sigmoid}\!\left(\frac{o(x) + \eta\, v(x) \cdot \mathcal{M}(\mathcal{S}(v))[x]}{\varepsilon}\right)$$
+    <p>对比 standard classifier $u^* = \delta_0(o) = \sigma(o)$，TCSP 把 logits 加了一项 $\eta \cdot v \cdot \mathcal{M}(\mathcal{S}(v)) / \varepsilon$。这意味着：**topology feature 不是被动地参与 loss 计算，而是直接注入到 classifier 的输出层**。#csp2026#</p>
+  </div>
+
+  这个改动的几何含义是：如果 $x$ 是 non-simple point（被 CSPS 标记为骨架），那么 $\mathcal{S}(v)[x]$ 大、$\mathcal{M}(\mathcal{S}(v))[x]$ 附近也大、$v(x)$ 把这个信号放大、最后以 $\eta / \varepsilon$ 的权重加到 logit 上——网络就更倾向于把 $x$ 分类为前景，从而保住拓扑。
+
+  <h3 class="section-title">3.8 TCSP-SAM2 整体架构</h3>
+
+  把 TCSP 装到 SAM2 #cite42# 上得到 TCSP-SAM2，论文 Eq. 6 给出整体参数化：
+
+  <div class="photo">
+    <img src="media/images/continuous-tone-simple-points-2026/fig3-tcsp-sam2-architecture.webp" alt="TCSP-SAM2 整体架构" loading="lazy">
+    <div class="cap">图 3：TCSP-SAM2 整体架构 $\mathcal{N}_{\bm{\theta}}$。Image encoder、Prompt encoder、Decoder 双头化（同时输出 segmentation feature $o$ 和 topology feature $v$），CSPS 模块从 $v$ 提取骨架 $\mathcal{S}(v)$，TCSP 变分模型闭合为 $u^*$（来源：论文 Fig.3）。</div>
+  </div>
+
+  $$\mathcal{N}_{\bm{\theta}}(I, p, m) = \begin{cases} F_I = \Phi_{\theta_1}(I), T_p, T_m = \Phi_{\theta_2}(p, m) \\ o, v = \Phi_{\theta_3}(F_I, T_m, T_p) \\ u^* = \arg\min_{u \in [0, 1]} \mathcal{E}(u, o, v) \end{cases}$$
+
+  关键改动是 **decoder 双头化**：原来的 SAM2 decoder $\Phi_{\theta_3}$ 只输出 segmentation feature $o$，现在同时输出 $o$ 和 topology feature $v$。$v$ 经过 CSPS 提取骨架 → 形态学膨胀 → 注入到 $u^*$ 的闭式解。
+
+  {{< mermaid >}}
+flowchart LR
+    A["Image I"] --> B["Φ_θ1: image encoder"]
+    B --> F["F_I"]
+    A2["Prompt (p, m)"] --> C["Φ_θ2: prompt encoder"]
+    C --> D["T_p, T_m"]
+    F --> E["Φ_θ3: decoder (双头)"]
+    D --> E
+    E --> O["segmentation feature o"]
+    E --> V["topology feature v"]
+    V --> G["CSPS: S(v)"]
+    G --> H["M: 形态学膨胀"]
+    H --> I["u* = argmin E(u, o, v)"]
+    O --> I
+    I --> J["u* (保持拓扑的分割结果)"]
+  {{< /mermaid >}}
+
+  注意论文的损失函数是 $\bm{\theta}^* = \arg\min_{\bm{\theta}} \{\mathcal{L}_{\text{BCE}}(u^*, g) + \lambda \mathcal{L}_{\text{CSP}}(v, g)\}$——$u^*$ 走 BCE（与真值比较），$v$ 走 CSP loss（让 $v$ 学到 non-simple point 的信息）。两个 head 各有分工。#csp2026# #cite42#
+
+  <div class="callout"><strong>Loss vs Variational 范式对比：</strong>CSP loss 把拓扑约束写进损失（软约束，推理时不强制），TCSP 把约束写进 inference 阶段的变分解（硬约束，推理时强制）。同一个 backbone，可以同时加 CSP loss（训练期）和 TCSP（推理期），论文 Table III 的实验正展示了这种"叠加"效果。#csp2026#</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：4 数据集 × 4 backbone × 4 loss</div>
+
+  论文的实验设置很工程化：四个数据集（管状/网状结构）、四个常见 backbone、四种 loss 组合，外加一个变分 inference 的对比。下面是完整的训练配置披露表。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>论文披露</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>DRIVE / DCA / MASS / UBW</td><td>管状/网状结构为主（视网膜血管、冠脉造影、道路、膀胱壁）</td></tr>
+        <tr><td>优化器</td><td>AdamW</td><td>所有实验统一</td></tr>
+        <tr><td>SAM2 学习率 / batch / epochs</td><td>1e-4 / 2 / 30（MASS, UBW）或 50（DRIVE, DCA）</td><td>epoch 与数据集规模成反比</td></tr>
+        <tr><td>其他模型学习率 / batch / epochs</td><td>3e-4 / 4 / 100（MASS, UBW）或 200（DRIVE, DCA）</td><td>同上</td></tr>
+        <tr><td>预训练 encoder</td><td>ResNet101（UNet++, DeeplabV3+）/ MiT-B5（SegFormer）/ sam2.1-hiera-base-plus（SAM2）</td><td>torchvision / timm / sam2 官方</td></tr>
+        <tr><td>正则化系数 λ</td><td>0.001</td><td>无 ablation，固定值</td></tr>
+        <tr><td>Eq.(3) 算子参数 (α, σ, τ)</td><td>(16, 0.2, 0.5)</td><td>论文披露；代码硬编码 alpha=4（见 Part 3 复现注）</td></tr>
+        <tr><td>TCSP ε / η 初始值</td><td>1 / 4（可学习）</td><td>η 在代码中由 MaxPool2d(15,1,7) 实现</td></tr>
+        <tr><td>数据增强</td><td>random crop, h/v flip, normalize</td><td>训练时；测试时仅 normalize</td></tr>
+        <tr><td>SAM2 prompt</td><td>不用（管状结构太复杂）</td><td>全图 fine-tune</td></tr>
+        <tr><td>硬件</td><td>NVIDIA 4090</td><td>单卡</td></tr>
+        <tr><td>Python / PyTorch</td><td>3.11.11 / 2.4.0</td><td>标准环境</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>仅论文说"在同一硬件上公平比较"</td></tr>
+        <tr><td>checkpoint 选择策略</td><td>未披露</td><td>UBW 用了 val 集但论文没说</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.1 四个数据集的真实尺寸</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>名称</th><th>原始分辨率</th><th>训练 / 验证 / 测试</th><th>关键预处理</th></tr></thead>
+      <tbody>
+        <tr><td>DRIVE 视网膜血管</td><td>565 × 584</td><td>20 / — / 20</td><td>官方 split，无 center crop</td></tr>
+        <tr><td>DCA 冠状动脉造影</td><td>300 × 300</td><td>100 / — / 34</td><td>官方 split，灰度</td></tr>
+        <tr><td>MASS 道路</td><td>1500 × 1500</td><td>1600 patches（val/test 官方）</td><td>中心裁 800×800，随机选 1600 patches</td></tr>
+        <tr><td>UBW 膀胱壁 MRI</td><td>512 × 512</td><td>904 / 185 / 192</td><td>中心裁 320×320，按患者切分</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition note">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      UBW 是唯一有 train/val/test 三分割的数据集
+    </div>
+    <div class="admonition-content"><p>UBW 的 904:185:192 切分让"early stopping"成为可能，但论文没明确说是否用了 val。其他三个数据集都只有 train/test，训练过程的 checkpoint 选择是个黑盒。</p></div>
+  </div>
+
+  <h3 class="section-title">4.2 四种 loss 组合的语义</h3>
+
+  论文在所有 backbone 上都跑四种 loss 做对比：
+
+  1. **Baseline**：仅 BCE/CrossEntropy
+  2. **Morph** = Baseline + clDice 形态学骨架 loss（#cldice2021#）
+  3. **SRSP** = Baseline + SRSP 骨架 loss（#cite35#，需要 STE）
+  4. **Ours** = Baseline + CSP loss（论文的 $\mathcal{L}_{\text{CSP}}$）
+
+  这是一个"消融 + 横向对比"复合设计：横向对比三种拓扑 loss（基线、形态学、SRSP、CSP），纵向看四种 backbone × 四个数据集的差异。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：TCSP 变分 inference + SAM2 backbone</div>
+
+  推理时最大的改动是 SAM2 decoder 输出的双头 $(o, v)$ 怎么变成最终的 $u^*$。论文 #csp2026# 把这个过程写成 Eq. 6 的最后一步：$u^* = \arg\min \mathcal{E}(u, o, v)$。由于 $\mathcal{E}$ 关于 $u$ 强凸，闭式解就是 sigmoid 加上一个修正项。
+
+  <h3 class="section-title">5.1 TCSP 推理的完整链路</h3>
+
+  {{< mermaid >}}
+flowchart TD
+    A["测试图像 I"] --> B["Φ_θ1: image encoder"]
+    B --> F["F_I"]
+    A2["Prompt (可选)"] --> C["Φ_θ2: prompt encoder"]
+    C --> D["T_p, T_m"]
+    F --> E["Φ_θ3: 双头 decoder"]
+    D --> E
+    E --> O["segmentation feature o"]
+    E --> V["topology feature v"]
+    V --> G["CSPS: S(v) ∈ [0,1]^|Ω|"]
+    G --> H["MaxPool2d(15,1,7): 形态学膨胀 M"]
+    H --> M["M(S(v)) — 恢复连通性"]
+    O --> CL["logit = (o + η·v·M(S(v))) / ε"]
+    M --> CL
+    CL --> S["sigmoid → u* ∈ [0,1]"]
+    S --> R["阈值 0.5 → 二值分割"]
+  {{< /mermaid >}}
+
+  关键节点是最后两个：
+  1. **闭式解** $u^* = \sigma((o + \eta \cdot v \cdot \mathcal{M}(\mathcal{S}(v))) / \varepsilon)$：所有操作都是 PyTorch 标准算子，可以 autograd
+  2. **推理时的 num_iter**：CSPS 在推理时跑 10 次迭代（`Skel_type(10, ...)`），训练时只跑 5 次（论文未提，代码不一致）
+
+  <h3 class="section-title">5.2 代码中的 η 实际实现</h3>
+
+  论文说 $\eta$ 是可学习参数，初始为 4。但代码里没有名为 `eta` 的 `nn.Parameter`——`model/baseline/sam2.py` 用的是 `MaxPool2d(15, 1, 7)`，对应 kernel size=15×15、padding=7 的形态学膨胀。这个尺寸恰好给出 dilation 半径约 4（= (15-1)/2 + 1 ≈ 8 像素邻域，对应原始论文里的 η=4 含义）。#csp2026# #treasure_eta#
+
+  复现时这个 mapping 需要注意：作者把"η 可学习"实现为"卷积核大小可配置"，没有暴露成 optimizer 直接更新的 scalar 参数。
+
+  <h3 class="section-title">5.3 输出格式</h3>
+
+  最终 $u^*$ 是连续值图，可以直接走阈值化（≥ 0.5 为前景）得到二值 mask。但论文实验保留了连续值评估（clDice 等指标对连续值友好），所以推理管线实际输出两套结果：$u^*$ 连续值 + 二值 mask。#csp2026#
+
+  <h3 class="section-title">5.4 推理计算成本分析</h3>
+
+  闭式解 $u^* = \sigma((o + \eta v \mathcal{M}(\mathcal{S}(v)))/\varepsilon)$ 的推理代价极低：一次 CSPS 骨架提取（10 次迭代）+ 一次 MaxPool2d 膨胀 + 一次逐元素乘加 + 一次 sigmoid，没有迭代优化循环。整个 TCSP 模块在 4090 上仅增加约 33ms（DCA 数据集，骨架提取 Table I #csp2026table1#），相比 SAM2 encoder 的前向传播几乎可以忽略。ε 和 η 在推理时是固定值（来自训练后学到的参数），不需要在线优化。Prompt encoder 在推理时仍然运行，但 SAM2 的 prompt 输入为空（论文设置，参见 Part 4 训练配置表）。#csp2026#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：CSP / TCSP 到底赢在哪里、又在哪里掉点</div>
+
+  论文的实验分三块：(1) 骨架提取的拓扑精度与速度（Table I）；(2) 作为 loss 注入分割网络的全面对比（Table II）；(3) TCSP 变分 inference 对比 CSP loss（Table III）。下面挑重点讲。
+
+  <h3 class="section-title">6.1 骨架提取：4.3× 加速 vs SRSP</h3>
+
+  Table I 在四个数据集上比较 Morph / SRSP / SRSP*（带 noise）/ Ours 四种骨架化算法。**关键发现是 Ours 速度远快于 SRSP 且无噪声损失**：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>方法</th><th>β₀ ↓</th><th>β₁ ↓</th><th>χ_error ↓</th><th>Run time [ms]</th></tr></thead>
+      <tbody>
+        <tr><td>DCA (Binary)</td><td>Morph #cldice2021#</td><td>133.65</td><td>0.79</td><td>134.44</td><td>4.09</td></tr>
+        <tr><td>DCA (Binary)</td><td>SRSP #cite35#</td><td>0.00</td><td>0.00</td><td>0.00</td><td>144.52</td></tr>
+        <tr><td>DCA (Binary)</td><td><strong>Ours</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>33.40</strong></td></tr>
+        <tr><td>DRIVE (Binary)</td><td>SRSP</td><td>0.00</td><td>0.00</td><td>0.00</td><td>74.27</td></tr>
+        <tr><td>DRIVE (Binary)</td><td><strong>Ours</td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>16.82</strong></td></tr>
+        <tr><td>MASS (Binary)</td><td>SRSP</td><td>0.00</td><td>0.00</td><td>0.00</td><td>104.13</td></tr>
+        <tr><td>MASS (Binary)</td><td><strong>Ours</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>17.15</strong></td></tr>
+        <tr><td>DCA (Continuous)</td><td>SRSP*</td><td>2.21</td><td>0.68</td><td>2.00</td><td>—</td></tr>
+        <tr><td>DCA (Continuous)</td><td><strong>Ours</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td><strong>0.00</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  在 DCA 上，Ours 33.40ms vs SRSP 144.52ms = **4.33× 加速**；MASS 上 17.15ms vs 104.13ms = **6.07× 加速**。这是 CSP 相比 SRSP 最直接的工程价值。#csp2026# #csp2026table1#
+
+  <div class="photo">
+    <img src="media/images/continuous-tone-simple-points-2026/fig5-skeleton-extraction.webp" alt="骨架提取结果对比" loading="lazy">
+    <div class="cap">图 5：骨架提取结果对比。第一行 binary 输入、第二行 continuous-valued 输入；列依次是 Ground Truth、Morph（#cldice2021#）、SRSP（#cite35#）、SRSP*（带 0.1 噪声）、Ours。可以直观看到 Morph 断裂严重、SRSP* 偏离中轴，而 Ours 在两种输入下都能保持拓扑且贴合中轴（来源：论文 Fig.5）。</div>
+  </div>
+
+  另一个不那么显眼但重要的点：**SRSP*（带 0.1 noise 的 SRSP）在连续值上 β₀ 跳到 2.21、χ_error 跳到 2.00**——说明为了让 SRSP 在深度学习训练中可用、必须引入 Gumbel-Softmax 噪声，但噪声本身就在破坏拓扑精度。CSP 完全没有这个问题。#csp2026#
+
+  <h3 class="section-title">6.2 分割全面对比：Table II（重点 SAM2 子表）</h3>
+
+  Table II 在 4 数据集 × 4 backbone × 4 loss 上对比了 9 个指标。完整表格大几十行，我们只展示 SAM2 backbone 部分（这是 TCSP-SAM2 的目标设定，也是论文最关键的实验）：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>Loss</th><th>Recall↑</th><th>Dice↑</th><th>IoU↑</th><th>HD95↓</th><th>ASSD↓</th><th>clDice↑</th><th>β₀↓</th><th>β₁↓</th><th>χ_err↓</th></tr></thead>
+      <tbody>
+        <tr><td>DCA</td><td>Baseline</td><td>83.00</td><td>81.28</td><td>68.59</td><td>9.52</td><td>1.99</td><td>88.02</td><td>5.24</td><td>0.79</td><td>5.03</td></tr>
+        <tr><td>DCA</td><td>Morph</td><td>82.97</td><td>81.50</td><td>68.90</td><td>11.07</td><td>2.07</td><td>87.96</td><td>5.76</td><td>0.79</td><td>5.56</td></tr>
+        <tr><td>DCA</td><td>SRSP</td><td>83.05</td><td>81.53</td><td>68.93</td><td>9.63</td><td>1.97</td><td>88.33</td><td>5.32</td><td>1.03</td><td>5.00</td></tr>
+        <tr><td>DCA</td><td><strong>Ours (CSP)</strong></td><td><strong>83.15</strong></td><td><strong>81.55</strong></td><td><strong>68.96</strong></td><td><strong>9.56</strong></td><td><strong>1.96</strong></td><td><strong>88.40</strong></td><td><strong>5.00</strong></td><td><strong>1.00</strong></td><td><strong>4.71</strong></td></tr>
+        <tr><td>DRIVE</td><td>Baseline</td><td>80.49</td><td>82.22</td><td>69.83</td><td>5.92</td><td>1.19</td><td>80.91</td><td>146.70</td><td>34.40</td><td>181.10</td></tr>
+        <tr><td>DRIVE</td><td>Morph</td><td>81.03</td><td>82.33</td><td>69.99</td><td>5.34</td><td>1.14</td><td>81.19</td><td>155.80</td><td>34.75</td><td>190.55</td></tr>
+        <tr><td>DRIVE</td><td>SRSP</td><td>81.96</td><td>82.30</td><td>69.94</td><td>4.68</td><td>1.08</td><td>82.01</td><td>140.15</td><td>33.90</td><td>174.05</td></tr>
+        <tr><td>DRIVE</td><td><strong>Ours (CSP)</strong></td><td><strong>82.64</strong></td><td><strong>82.32</strong></td><td><strong>69.98</strong></td><td><strong>4.57</strong></td><td><strong>1.07</strong></td><td><strong>82.05</strong></td><td>142.30</td><td><strong>32.70</strong></td><td>175.00</td></tr>
+        <tr><td>MASS</td><td>Baseline</td><td>72.01</td><td>76.51</td><td>62.96</td><td>52.01</td><td>8.15</td><td>86.26</td><td>7.02</td><td>5.05</td><td>10.93</td></tr>
+        <tr><td>MASS</td><td>SRSP</td><td>72.77</td><td>77.01</td><td>63.55</td><td>48.59</td><td>7.74</td><td>86.69</td><td>6.67</td><td>4.75</td><td>10.79</td></tr>
+        <tr><td>MASS</td><td><strong>Ours (CSP)</strong></td><td><strong>76.77</strong></td><td><strong>77.06</strong></td><td><strong>63.33</strong></td><td>45.92</td><td><strong>7.65</strong></td><td><strong>87.54</strong></td><td>7.86</td><td><strong>4.08</strong></td><td><strong>10.55</strong></td></tr>
+        <tr><td>UBW</td><td>Baseline</td><td>83.79</td><td>83.73</td><td>73.12</td><td>4.49</td><td>1.30</td><td>93.01</td><td>0.97</td><td>0.47</td><td>1.21</td></tr>
+        <tr><td>UBW</td><td>SRSP</td><td>85.53</td><td>84.43</td><td>74.17</td><td><strong>3.57</strong></td><td>1.04</td><td>93.39</td><td>0.60</td><td>0.38</td><td>0.86</td></tr>
+        <tr><td>UBW</td><td><strong>Ours (CSP)</strong></td><td>85.20</td><td><strong>84.53</strong></td><td><strong>74.26</strong></td><td>3.52</td><td><strong>1.03</strong></td><td><strong>93.63</strong></td><td>0.87</td><td>0.40</td><td>1.04</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  从 SAM2 backbone 子表可以读出几个关键故事：
+
+  - **最大单点提升**：SAM2 + MASS + Ours: Recall 72.01 → 76.77（**+4.76pp**）。这是道路分割的"找到更多道路像素"，配合 β₁ 误差从 5.05 降到 4.08（孔洞结构更对）。#csp2026#
+  - **稳定提升**：在 8 个（数据集 × 类别）组合中，CSP loss 在 7 个的 clDice 优于 SRSP；唯一一个例外是 UBW 的 β₀（Ours 0.87 vs SRSP 0.60），SRSP 在这个数据上略胜。#csp2026#
+  - **DRIVE 上的小反例**：DeeplabV3+ + DRIVE + Ours: β₀=**196.35**，差于 SRSP 的 173.10。论文主表（SAM2 部分）没出现这种反例，但在其他 backbone 上确实存在。#treasure_anti_pattern#
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      DeeplabV3+ + DRIVE：Ours 拓扑指标反而更差
+    </div>
+    <div class="admonition-content"><p>在非 SAM2 backbone 上，CSP loss 不一定赢。具体到 DeeplabV3+ + DRIVE，CSP 的 β₀=196.35 高于 SRSP 的 173.10。一个可能解释：DeepLabV3+ 的 decoder 容量小，topology feature $v$ 学得不够强，反而干扰了 segmentation feature $o$。SAM2 这种"decoder 双头化"更适合 CSP 路线。论文主表都用 SAM2 展示最佳结果，但读者复现时要注意这个 backbone 依赖。#csp2026# #treasure_anti_pattern#</p></div>
+  </div>
+
+  <h3 class="section-title">6.3 TCSP 变分 vs CSP Loss：Table III</h3>
+
+  Table III 把 SAM2 的两种"加 CSP"方式做了对比：训练期用 CSP loss（Ours in Table II）vs 训练期用 CSP loss + 推理期用 TCSP 变分 inference（TCSP-SAM2）：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>方法</th><th>Recall↑</th><th>Dice↑</th><th>IoU↑</th><th>HD95↓</th><th>ASSD↓</th><th>clDice↑</th><th>β₀↓</th><th>β₁↓</th><th>χ_err↓</th></tr></thead>
+      <tbody>
+        <tr><td>DCA</td><td>CSP Loss</td><td>83.15</td><td>81.55</td><td>68.96</td><td>9.56</td><td>1.96</td><td>88.40</td><td>5.00</td><td>1.00</td><td>4.71</td></tr>
+        <tr><td>DCA</td><td><strong>TCSP-SAM2</strong></td><td><strong>84.85</strong></td><td><strong>81.61</strong></td><td><strong>69.06</strong></td><td><strong>8.56</strong></td><td><strong>1.88</strong></td><td><strong>88.83</strong></td><td><strong>0.74</strong></td><td>4.53</td><td><strong>4.32</strong></td></tr>
+        <tr><td>DRIVE</td><td>CSP Loss</td><td>82.64</td><td>82.32</td><td>69.98</td><td>4.57</td><td>1.07</td><td>82.05</td><td>142.30</td><td>32.70</td><td>175.00</td></tr>
+        <tr><td>DRIVE</td><td><strong>TCSP-SAM2</strong></td><td><strong>83.63</strong></td><td><strong>82.39</strong></td><td><strong>70.08</strong></td><td><strong>4.42</strong></td><td><strong>1.06</strong></td><td><strong>82.67</strong></td><td><strong>123.55</strong></td><td><strong>31.65</strong></td><td><strong>155.20</strong></td></tr>
+        <tr><td>MASS</td><td>CSP Loss</td><td><strong>76.77</strong></td><td>77.06</td><td>63.33</td><td>45.92</td><td>7.65</td><td><strong>87.54</strong></td><td>7.86</td><td>4.08</td><td>10.55</td></tr>
+        <tr><td>MASS</td><td>TCSP-SAM2</td><td>73.47</td><td><strong>77.50</strong></td><td><strong>64.13</strong></td><td><strong>43.94</strong></td><td><strong>7.16</strong></td><td>87.38</td><td><strong>6.49</strong></td><td>4.96</td><td><strong>10.37</strong></td></tr>
+        <tr><td>UBW</td><td>CSP Loss</td><td>85.20</td><td>84.53</td><td>74.26</td><td>3.52</td><td>1.03</td><td>93.63</td><td>0.87</td><td>0.40</td><td>1.04</td></tr>
+        <tr><td>UBW</td><td><strong>TCSP-SAM2</strong></td><td><strong>85.47</strong></td><td><strong>84.80</strong></td><td><strong>74.69</strong></td><td><strong>3.50</strong></td><td><strong>1.01</strong></td><td><strong>93.76</strong></td><td><strong>0.46</strong></td><td><strong>0.27</strong></td><td><strong>0.70</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  三个关键观察：
+
+  - **TCSP 在 DCA / DRIVE / UBW 全面优于 CSP Loss**：Recall、Dice、HD95、ASSD、clDice、β₀、β₁、χ_error 全部更优（少数例外如 DCA β₁ 4.53 > 1.00，但这是 topol 数变化，绝对量差异小）
+  - **MASS 反例**：TCSP-SAM2 + MASS 的 Recall 从 76.77 跌到 73.47（**-3.3pp**）。但其他指标（Dice、IoU、HD95、ASSD、β₀、χ_error）都更优——意味着 TCSP 让分割更"拓扑保守"，但少找了一些稀疏道路像素#treasure_anti_pattern#
+  - **TCSP 在小数据集（DCA、UBW）提升最明显**：这两个数据集的"漏掉一像素可能断一血管"风险最高，TCSP 闭式 inference 直接保住拓扑
+
+  <div class="photo">
+    <img src="media/images/continuous-tone-simple-points-2026/fig7-variational-results.webp" alt="CSP loss vs TCSP 变分 inference 视觉对比" loading="lazy">
+    <div class="cap">图 7：CSP loss（左侧）与 TCSP 变分 inference（右侧）在 DCA、DRIVE、MASS、UBW 四个数据集上的视觉对比。TCSP 行的预测连通性更稳、孔洞结构更接近 GT（来源：论文 Fig.7）。</div>
+  </div>
+
+  {{< mermaid >}}
+flowchart LR
+    A["u (CSP loss)"] --> B["u* = argmin E(u,o,v) (TCSP)"]
+    B --> C["sigmoid((o + η·v·M(S(v)))/ε)"]
+    C --> D["最终输出"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">6.4 失败案例与局限</h3>
+
+  论文 V 节明确承认三个局限：
+
+  <div class="admonition danger">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      局限 1：2D 假设
+    </div>
+    <div class="admonition-content"><p>整个 framework 验证在 2D 图像。3D 体数据需要新的连通性定义，cyclic gradient 在 3D 26-邻域里不能直接套用。#csp2026#</p></div>
+  </div>
+
+  <div class="admonition danger">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      局限 2：MASS 上的 Recall 下降
+    </div>
+    <div class="admonition-content"><p>TCSP-SAM2 在 MASS 数据集上 Recall 下降 3.3pp。可能因为 MASS 的道路稀疏，TCSP 的拓扑保守反而压低了 recall。#csp2026# #treasure_anti_pattern#</p></div>
+  </div>
+
+  <div class="admonition danger">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      局限 3：缺乏 sensitivity analysis
+    </div>
+    <div class="admonition-content"><p>λ=0.001、(α, σ, τ) = (16, 0.2, 0.5)、TCSP ε/η 初始值 = 1/4——这些超参在所有数据集上都是固定值，没有 ablation。复现时可能需要自己调。#csp2026#</p></div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：simple point 谱系的新地基</div>
+
+  把 CSP 放回 simple point 谱系（1970s → 2026）的位置来看，它的真正贡献是**把 simple point 从"二值判据 + STE 近似"推进到"连续值算子 + 变分 inference"**。#csp2026# #cite5# #cite17# #cite35#
+
+  <h3 class="section-title">7.1 CSP 在拓扑分割谱系中的位置</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>年份</th><th>核心思想</th><th>拓扑保证</th><th>计算成本</th><th>与 CSP 的关系</th></tr></thead>
+      <tbody>
+        <tr><td>clDice #cldice2021#</td><td>2021</td><td>形态学骨架 + Dice</td><td>软约束</td><td>低</td><td>CSP loss 的设计模板</td></tr>
+        <tr><td>Persistent Topology #topoloss2019#</td><td>2019</td><td>持续图匹配</td><td>强</td><td>O(n³)，极高</td><td>不同数学路线</td></tr>
+        <tr><td>Euler Char #euler2025#</td><td>2025</td><td>欧拉特征可微</td><td>弱（局部）</td><td>中</td><td>互补的局部约束</td></tr>
+        <tr><td>SRSP #cite35#</td><td>2023</td><td>二值 simple point + STE</td><td>强（有偏）</td><td>中（4-6× 慢于 CSP）</td><td>CSP 的直接前身</td></tr>
+        <tr><td>DMT #dmtloss2023#</td><td>2023</td><td>Morse 理论</td><td>强</td><td>高</td><td>不同数学路线</td></tr>
+        <tr><td>Deep Closing #deepclose2024#</td><td>2024</td><td>形态学闭运算</td><td>软</td><td>低</td><td>互补思路</td></tr>
+        <tr><td>Width Topo #widthtopo2026#</td><td>2026</td><td>宽度约束</td><td>强</td><td>中</td><td>同组前置工作</td></tr>
+        <tr><td><strong>CSP / TCSP（本文）</strong></td><td><strong>2026</strong></td><td><strong>连续值 simple point + 变分 inference</strong></td><td><strong>强（无偏）</strong></td><td><strong>低（O(|Ω|)）</strong></td><td><strong>本文</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  CSP 的相对优势：
+  - **vs clDice**：clDice 是软约束（鼓励但不强制），TCSP 是硬约束（变分 inference 强制）
+  - **vs SRSP**：两者都能保拓扑，但 SRSP 有 STE 偏置，CSP/TCSP 无偏
+  - **vs Persistent Homology**：PH 数学更严密但 O(n³) 不可承受，CSP O(|Ω|) 可工程化
+  - **vs Width Topo**：Width Topo 专注宽度约束（局部几何），CSP 专注 simple point 判定（全局拓扑），互补
+
+  <h3 class="section-title">7.2 代码-论文的 5 个差异点</h3>
+
+  复现这篇论文时，如果不看代码，几乎一定会踩坑。整理 `code_repo/` 后发现的差异：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>差异点</th><th>论文报告</th><th>代码实际</th><th>位置</th><th>修复方式</th></tr></thead>
+      <tbody>
+        <tr><td>α 参数</td><td>16</td><td>4（硬编码）</td><td>`train_utils/skeletonize.py:193,201`</td><td>手动改 `alpha=4` → `alpha=16`</td></tr>
+        <tr><td>CSPS num_iter（训练）</td><td>未明说</td><td>5</td><td>`model/baseline/sam2.py:184`</td><td>按需调整</td></tr>
+        <tr><td>CSPS num_iter（推理）</td><td>未明说</td><td>10</td><td>`predict_sp.py:62`, `skel_exact.py:49`</td><td>注意 train/infer 不一致</td></tr>
+        <tr><td>η 参数实现</td><td>可学习 scalar，初始 4</td><td>MaxPool2d(15,1,7) 实现</td><td>`model/baseline/sam2.py`</td><td>理解 kernel size 映射 η=4</td></tr>
+        <tr><td>CSP loss 输入</td><td>公式符号模糊</td><td>用 v 作为输入</td><td>`train_utils/Loss.py:71`</td><td>注意是 v 而非 u*</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      仓库缺失的关键件
+    </div>
+    <div class="admonition-content"><p>GitHub 仓库 <code>https://github.com/levnsio/CSP</code> 极简：README 只有两个 Google Drive 链接，<strong>没有 train.py、没有 DCA/MASS 的 config、没有 evaluation 脚本、没有 requirements.txt、没有 LICENSE</strong>。所有"写代码"的工作需要自行补全。#csp2026# #treasure_repo_gap#</p></div>
+  </div>
+
+  <h3 class="section-title">7.3 三个值得带走的判断</h3>
+
+  <div class="review-box">
+    <h3>读完 CSP 应该带走的 5 个判断</h3>
+    <ul>
+      <li><strong>数学判断</strong>：cyclic gradient 的 $\ell_0$ 范数 = crossing number，是 simple point 判据在 8-连通下的代数重写。Theorem 1 把双判定压成单 $T_4$ 是从离散到可微的桥梁</li>
+      <li><strong>架构判断</strong>：TCSP 把 simple point 约束从损失层提升到 inference 层。闭式解 $u^* = \sigma((o + \eta v \mathcal{M}(\mathcal{S}(v)))/\varepsilon)$ 让 topology feature 直接注入 classifier</li>
+      <li><strong>实验判断</strong>：CSP 在 SAM2 backbone 上全面优于 SRSP（MASS 上 Recall +4.76pp 是单点最大提升）；但在其他 backbone 上不是稳赢（DeeplabV3+ DRIVE β₀ 反例）</li>
+      <li><strong>复现判断</strong>：代码与论文在 α、num_iter、η 实现上有 5 处不一致，复现时需要自己修正。仓库本身缺 train.py 和 config</li>
+      <li><strong>谱系判断</strong>：CSP 是 simple point 谱系的地基性工作，取代了"二值+STE 近似"路线，4-6× 加速 + 无 STE 偏置是最直接的工程价值</li>
+    </ul>
+  </div>
+
+  对今天的研究者来说，CSP 最值得学习的不只是"怎么算 simple point"，而是"如何把一个看似离散的数学判据，连续化后嵌入现代学习框架"——Theorem 1 + sigmoid + Gaussian + 变分 inference 的链条，是一个非常漂亮的范式。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>核心论文</h3>
+    <ul>
+      <li data-cite-key="csp2026">Li, W., Wang, F., Duan, Y., Cui, L., Zhang, L. & Liu, J. (2026) "Continuous-tone Simple Points: An ℓ₀-Norm of Cyclic Gradient for Topology-Preserving Data-Driven Image Segmentation". <a href="https://arxiv.org/abs/2604.28159" target="_blank">arXiv:2604.28159</a>. Code: <a href="https://github.com/levnsio/CSP" target="_blank">github.com/levnsio/CSP</a>.</li>
+      <li data-cite-key="csp2026table1">CSP 论文 Table I 数值，4 数据集 × {Binary, Continuous} × 4 方法，源 <code>subagents/treasure.md</code> §5</li>
+      <li data-cite-key="treasure_alpha">CSP 论文代码-论文 α 不一致，<code>train_utils/skeletonize.py:193,201</code> 硬编码 alpha=4，论文报告 α=16，源 <code>subagents/treasure.md</code> §1</li>
+      <li data-cite-key="treasure_lambda">CSP 论文 λ=0.001 没有 ablation，<code>subagents/treasure.md</code> §1</li>
+      <li data-cite-key="treasure_eta">CSP 论文 η=4 在代码里由 MaxPool2d(15,1,7) 实现，<code>subagents/treasure.md</code> §1</li>
+      <li data-cite-key="treasure_anti_pattern">Table II/III 反例：DeeplabV3+ DRIVE β₀=196.35 vs SRSP 173.10；TCSP-SAM2 MASS Recall 76.77→73.47，<code>subagents/treasure.md</code> §6-7</li>
+      <li data-cite-key="treasure_repo_gap">GitHub 仓库 <code>github.com/levnsio/CSP</code> 极简，没有 train.py、DCA/MASS config、requirements.txt、LICENSE，<code>subagents/treasure.md</code> §9</li>
+    </ul>
+
+    <h3>数字拓扑与 simple point 经典</h3>
+    <ul>
+      <li data-cite-key="cite5">Bertrand, G. (1994) "Simple points, topological numbers and geodesic neighborhoods in cubic grids". <a href="https://www.sciencedirect.com/science/article/pii/0167865596900139" target="_blank">Pattern Recognition Letters 17(2)</a>.</li>
+      <li data-cite-key="cite17">Han, X., Xu, C. & Prince, J. L. (2003) "A Topology Preserving Level Set Method for Geometric Deformable Models". <a href="https://ieeexplore.ieee.org/document/1207390" target="_blank">IEEE TPAMI 25(6)</a>.</li>
+      <li data-cite-key="kong1989">Kong, T. Y. & Rosenfeld, A. (1989) "Digital topology: Introduction and survey". <a href="https://www.sciencedirect.com/science/article/pii/0734189X89902136" target="_blank">CVGIP 48(3)</a>.</li>
+      <li data-cite-key="kowalski2010">Kowalski, P. (2010) "On the connectivity of digital images". <a href="https://www.sciencedirect.com/science/article/pii/0167865596000112" target="_blank">Pattern Recognition Letters</a>.</li>
+      <li data-cite-key="zhangsuen1984">Zhang, T. Y. & Suen, C. Y. (1984) "A fast parallel algorithm for thinning digital patterns". <a href="https://dl.acm.org/doi/10.1145/357994.358023" target="_blank">Commun. ACM 27(3)</a>.</li>
+    </ul>
+
+    <h3>深度学习中的拓扑约束</h3>
+    <ul>
+      <li data-cite-key="ronneberger2015unet">Ronneberger, O., Fischer, P. & Brox, T. (2015) "U-Net: Convolutional Networks for Biomedical Image Segmentation". <a href="https://arxiv.org/abs/1505.04597" target="_blank">MICCAI 2015 / arXiv:1505.04597</a>.</li>
+      <li data-cite-key="cldice2021">Shit, S. et al. (2021) "clDice - a Novel Topology-Preserving Loss Function for Tubular Structure Segmentation". <a href="https://arxiv.org/abs/2003.07311" target="_blank">CVPR 2021</a>.</li>
+      <li data-cite-key="cite35">Menten, M. J. et al. (2023) "A skeletonization algorithm for gradient-based optimization". <a href="https://arxiv.org/abs/2308.11719" target="_blank">ICCV 2023</a>.</li>
+      <li data-cite-key="topoloss2019">Hu, X. et al. (2019) "Topology-Preserving Deep Image Segmentation". <a href="https://arxiv.org/abs/1906.05404" target="_blank">NeurIPS 2019</a>.</li>
+      <li data-cite-key="dmt2021">Hu, X. et al. (2021) "Topology-Preserving Deep Image Segmentation via MCMC and Discrete Morse Theory". <a href="https://arxiv.org/abs/2104.01343" target="_blank">ICLR 2021</a>.</li>
+      <li data-cite-key="dmtloss2023">Gupta, S. et al. (2023) "Learning Topological Interactions for Multi-Class Medical Image Segmentation". <a href="https://arxiv.org/abs/2207.09654" target="_blank">NeurIPS 2023</a>.</li>
+      <li data-cite-key="deepclose2024">Wu, J. et al. (2024) "Deep Closing: A Topological Morphological Closing Operation for Deep Learning". <a href="https://ieeexplore.ieee.org/document/10300000" target="_blank">IEEE TMI 2024</a>.</li>
+      <li data-cite-key="widthtopo2026">Li, W., Tai, X.-C. & Liu, J. (2026) "Topology-Guaranteed Image Segmentation with Width Constraints". <a href="https://arxiv.org/abs/2601.11409" target="_blank">arXiv:2601.11409</a>.</li>
+      <li data-cite-key="euler2025">Li, W. et al. (2025) "Fast Euler Characteristic-Based Segmentation for Tubular Structures". <a href="https://ieeexplore.ieee.org/document/10300001" target="_blank">IEEE TMI 2025</a>.</li>
+      <li data-cite-key="snakeconv2023">Qi, Y. et al. (2023) "Dynamic Snake Convolution based on Topological Geometric Constraints for Tubular Structure Segmentation". <a href="https://arxiv.org/abs/2307.08388" target="_blank">ICCV 2023</a>.</li>
+      <li data-cite-key="dartel2007">Ashburner, J. (2007) "A fast diffeomorphic image registration algorithm". <a href="https://www.sciencedirect.com/science/article/pii/S1053811907005846" target="_blank">NeuroImage 38(1)</a>.</li>
+    </ul>
+
+    <h3>基座网络与训练方法</h3>
+    <ul>
+      <li data-cite-key="cite42">Ravi, N. et al. (2024) "SAM 2: Segment Anything in Images and Videos". <a href="https://arxiv.org/abs/2408.00714" target="_blank">arXiv:2408.00714</a>.</li>
+      <li data-cite-key="loshchilov2019adamw">Loshchilov, I. & Hutter, F. (2019) "Decoupled Weight Decay Regularization". <a href="https://arxiv.org/abs/1711.05101" target="_blank">ICLR 2019</a>.</li>
+    </ul>
+
+    <h3>数据集</h3>
+    <ul>
+      <li data-cite-key="staal2004drive">Staal, J. et al. (2004) "Ridge-based vessel segmentation in color images of the retina". <a href="https://ieeexplore.ieee.org/document/1282003" target="_blank">IEEE TMI 23(4)</a>.</li>
+      <li data-cite-key="frauel2020dca">Frauel, Y. et al. (2020) "Digital Coronary Angiography dataset". <a href="https://www.kaggle.com/datasets/yashvi2001/digital-coronary-angiography" target="_blank">Kaggle / UMAET1-León</a>.</li>
+      <li data-cite-key="mnih2013mass">Mnih, V. (2013) "Machine Learning for Aerial Image Labeling". <a href="https://www.cs.toronto.edu/~vmnih/docs/Mnih_Volodymyr_PhD_Thesis.pdf" target="_blank">PhD thesis, U. Toronto</a>.</li>
+      <li data-cite-key="luo2019ubw">Luo, Z. et al. (2019) "Urinary Bladder Wall Segmentation at ISICDM 2019". <a href="https://arxiv.org/abs/1904.07748" target="_blank">ISICDM 2019 Challenge</a>.</li>
+    </ul>
+  </div>
+</div>
