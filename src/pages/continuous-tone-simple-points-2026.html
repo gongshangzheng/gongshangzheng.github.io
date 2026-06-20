@@ -190,7 +190,9 @@ flowchart TD
 
   $$\mathcal{L}_{\text{CSP}}(u, g) = 1 - \frac{2 \cdot T_{\text{prec}} \cdot T_{\text{sens}}}{T_{\text{prec}} + T_{\text{sens}}}$$
 
-  最终的复合 loss 是 $\mathcal{L}(u, g) = \mathcal{L}_{\text{BCE}}(u, g) + \lambda \cdot \mathcal{L}_{\text{CSP}}(v, g)$，其中 $\lambda = 0.001$。注意 $L_{\text{CSP}}$ 的输入是 $v$（decoder 输出的"topology feature"）而不是 $u$（classifier 输出），这点在论文符号上稍微含糊，代码上要小心。#csp2026# #treasure_lambda#
+  在通用 CSP loss 形式下（论文 §III-C），复合 loss 写作 $\mathcal{L}(u, g) = \mathcal{L}_{\text{BCE}}(u, g) + \lambda \cdot \mathcal{L}_{\text{CSP}}(u, g)$，其中 $\lambda = 0.001$。$\mathcal{L}_{\text{CSP}}$ 的输入是 $u$（网络预测的 segmentation map）。
+
+  在论文 §III-D 引入 TCSP 变分模型后，训练目标改写为 $\theta^* = \arg\min_\theta \{\mathcal{L}_{\text{BCE}}(u^*, g) + \lambda \cdot \mathcal{L}_{\text{CSP}}(v, g)\}$——此时 $\mathcal{L}_{\text{CSP}}$ 的输入切换到 $v$（decoder 输出的 topology feature），让 $v$ 学到 non-simple point 的信息。论文符号上这点稍微含糊，代码实现上要小心区分。#csp2026# #treasure_lambda#
 
   <h3 class="section-title">3.7 TCSP 变分模型：核心创新</h3>
 
@@ -213,7 +215,7 @@ flowchart TD
   <div class="theorem-box">
     <h3>TCSP 闭式解（论文 Eq. 5 后半）</h3>
     $$u^*(x) = \text{sigmoid}\!\left(\frac{o(x) + \eta\, v(x) \cdot \mathcal{M}(\mathcal{S}(v))[x]}{\varepsilon}\right)$$
-    <p>对比 standard classifier $u^* = \delta_0(o) = \sigma(o)$，TCSP 把 logits 加了一项 $\eta \cdot v \cdot \mathcal{M}(\mathcal{S}(v)) / \varepsilon$。这意味着：**topology feature 不是被动地参与 loss 计算，而是直接注入到 classifier 的输出层**。#csp2026#</p>
+    <p>对比 standard classifier 的硬阈值 $u^* = \delta_0(o)$（$o(x) > 0$ 时取 1，否则取 0），TCSP 通过熵正则把这个硬阈值"软化"为 sigmoid，并把 $\eta \cdot v \cdot \mathcal{M}(\mathcal{S}(v)) / \varepsilon$ 加到 logit 上。这意味着：**topology feature 不是被动地参与 loss 计算，而是直接注入到 classifier 的输出层**。#csp2026#</p>
   </div>
 
   这个改动的几何含义是：如果 $x$ 是 non-simple point（被 CSPS 标记为骨架），那么 $\mathcal{S}(v)[x]$ 大、$\mathcal{M}(\mathcal{S}(v))[x]$ 附近也大、$v(x)$ 把这个信号放大、最后以 $\eta / \varepsilon$ 的权重加到 logit 上——网络就更倾向于把 $x$ 分类为前景，从而保住拓扑。
@@ -426,7 +428,8 @@ flowchart TD
   从 SAM2 backbone 子表可以读出几个关键故事：
 
   - **最大单点提升**：SAM2 + MASS + Ours: Recall 72.01 → 76.77（**+4.76pp**）。这是道路分割的"找到更多道路像素"，配合 β₁ 误差从 5.05 降到 4.08（孔洞结构更对）。#csp2026#
-  - **稳定提升**：在 8 个（数据集 × 类别）组合中，CSP loss 在 7 个的 clDice 优于 SRSP；唯一一个例外是 UBW 的 β₀（Ours 0.87 vs SRSP 0.60），SRSP 在这个数据上略胜。#csp2026#
+  - **clDice 稳定提升**：SAM2 子表 4 个数据集上 CSP loss 全部优于 SRSP（MASS 87.54 vs 86.69, UBW 93.63 vs 93.39, DCA 88.40 vs 88.33, DRIVE 82.05 vs 82.01）。在所有 backbone 4 数据集的所有 16 个组合中，CSP 的 clDice 多数情况下也赢。
+  - **拓扑指标的反例**：β₀ 上 SRSP 略胜的情况确实存在（UBW β₀ 0.60 vs Ours 0.87）。这个组合下 Ours 在 overlap/boundary/clDice 上更优，但 β₀ 拓扑保护反而不及 SRSP——说明 simple point 判据并不天然等于连通分量数保护。#csp2026#
   - **DRIVE 上的小反例**：DeeplabV3+ + DRIVE + Ours: β₀=**196.35**，差于 SRSP 的 173.10。论文主表（SAM2 部分）没出现这种反例，但在其他 backbone 上确实存在。#treasure_anti_pattern#
 
   <div class="admonition warning">
@@ -459,7 +462,7 @@ flowchart TD
 
   三个关键观察：
 
-  - **TCSP 在 DCA / DRIVE / UBW 全面优于 CSP Loss**：Recall、Dice、HD95、ASSD、clDice、β₀、β₁、χ_error 全部更优（少数例外如 DCA β₁ 4.53 > 1.00，但这是 topol 数变化，绝对量差异小）
+  - **TCSP 在 DCA / DRIVE / UBW 全面优于 CSP Loss**：Recall、Dice、HD95、ASSD、clDice、β₀、χ_error 全部更优。β₁ 的结果更混合：DRIVE 32.70→31.65（更优）、UBW 0.40→0.27（更优）、但 DCA 1.00→4.53（恶化）——说明 TCSP 的拓扑保守在 DCA 这种短血管密集场景上可能产生过度修正
   - **MASS 反例**：TCSP-SAM2 + MASS 的 Recall 从 76.77 跌到 73.47（**-3.3pp**）。但其他指标（Dice、IoU、HD95、ASSD、β₀、χ_error）都更优——意味着 TCSP 让分割更"拓扑保守"，但少找了一些稀疏道路像素#treasure_anti_pattern#
   - **TCSP 在小数据集（DCA、UBW）提升最明显**：这两个数据集的"漏掉一像素可能断一血管"风险最高，TCSP 闭式 inference 直接保住拓扑
 
