@@ -1,0 +1,485 @@
+---
+title: "数字人论文精读（三十）：Avatar Forcing，扩散强制驱动的实时交互数字人"
+description: "深度解读 Avatar Forcing 如何在 motion latent space 中实现 500ms 延迟的实时交互，免标注 DPO 提升表达性，>80% 人类偏好"
+date: 2026-06-22T11:47:44
+created_at: 2026-06-22T11:47:44
+updated_at: 2026-06-22T11:47:44
+tags: [数字人, 交互式头像, Diffusion Forcing, DPO, 实时生成]
+categories: ["论文精读"]
+subcategory: "数字人"
+sub_id: 1290
+hub: "digital-human-hub"
+mathjax: true
+arxiv_id: "2601.00664"
+hero_title: "Avatar Forcing"
+hero_sub: "arXiv 2026 · KAIST"
+hero_tagline: "Diffusion Forcing 驱动的 500ms 实时交互数字人，免标注 DPO 获得 >80% 人类偏好"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num b">500ms</span><span class="label g">推理延迟</span></div>
+  <div class="stat"><span class="num">6.8×</span><span class="label">加速比</span></div>
+  <div class="stat"><span class="num b">>80%</span><span class="label g">人类偏好率</span></div>
+  <div class="stat"><span class="num">0.003</span><span class="label">rPCC-Exp</span></div>
+</div>
+
+<div class="callout">
+  <strong>作者与机构</strong>：Taekyung Ki*、Sangwon Jang*（共同一作）、Jaehyeong Jo、Jaehong Yoon、Sung Ju Hwang（通讯作者）。KAIST（韩国科学技术院）/ NTU Singapore / DeepAuto.ai。代码：<a href="https://github.com/taekyungki/Avatar-Forcing" target="_blank">GitHub</a>（承诺发表后开源）。论文状态：CVPR 2026 模板，推测已投稿。
+</div>
+
+<!-- ============================================================
+  Part 1: 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么需要交互式数字人</div>
+
+  Talking Head 生成经历了从"唇形同步"到"全脸动画"再到"实时交互"三个明确阶段。Wav2Lip 开创了音频驱动唇形同步，SadTalker 引入 3DMM 实现全脸表情，VASA-1 和 FLOAT 在 motion latent space 中实现实时生成。然而，这些工作本质上都是**单向**的——给定音频驱动生成视频，avatar 无法对用户的行为做出反应。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/figure1-5.webp" alt="Avatar Forcing 概念图" loading="lazy">
+    <div class="cap">图 1：Avatar Forcing 概念图。展示实时交互式头像生成的场景——avatar 能对用户的语音和非语言信号做出自然反应（来源：Avatar Forcing, Fig.1）</div>
+  </div>
+
+  <strong>INFP 的 3.4s 延迟瓶颈</strong>。#infp# INFP（CVPR 2025）是首个真正的 dyadic interactive head generation 方法，引入 audio-conditioned verbal/non-verbal memory banks 和统一运动生成器。但 INFP 使用双向 Diffusion Transformer，需要完整 75 帧上下文窗口才能生成，导致延迟高达 3.4s——在实时对话中完全不可接受。人类自然对话的停顿容忍范围约为 200-500ms，超过 1s 的延迟就会让对话感觉"不自然"。
+
+  <strong>Avatar Forcing 的核心主张</strong>。本文认为，真正的交互式虚拟头像应该同时满足两个条件：(1) 因果约束下的低延迟生成（< 1s）；(2) 富有表达性的交互反应（不仅是唇形同步）。为此，Avatar Forcing 在 motion latent space 中引入 Diffusion Forcing 实现因果生成，延迟降至 ~500ms；同时提出免标注 DPO 偏好优化方法，通过合成 losing sample 提升表达性，在人类评估中获得 >80% 的整体偏好率。
+
+</div>
+
+<!-- ============================================================
+  Part 2: 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">实时交互的两大挑战</div>
+
+  Avatar Forcing 识别出实现真正交互式数字人面临的两个根本性挑战。
+
+  <h3 class="section-title">挑战一：因果约束下的实时生成</h3>
+
+  交互式 avatar 系统必须持续接收并响应用户的多模态信号（语音、头部运动、面部表情），这要求同时具备低推理时间和低延迟。INFP 虽然能在 motion latent space 中实现快速推理，但因为需要完整对话上下文（包括未来帧），延迟高达 3.4s。模型必须等待足够长的音频片段后才能生成运动，导致用户交互中的显著延迟。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/cache4.webp" alt="双向 vs 因果结构对比" loading="lazy">
+    <div class="cap">图 2：双向 DiT（左）vs 因果 DFoT（右）的架构对比。INFP 需要完整时间窗口，Avatar Forcing 支持 KV caching 和逐步生成（来源：Avatar Forcing, Fig.4）</div>
+  </div>
+
+  <strong>关键矛盾</strong>：motion latent space 与像素空间不同——FLOAT 的 motion latent 与像素帧一一对应（无时序压缩），这意味着严格的因果 mask 会在 block 边界处产生严重的运动抖动。CausVid 和 Self-Forcing 在像素空间 latent（有 4-8x 时序压缩）上操作，不存在这个问题。Avatar Forcing 需要在保持因果性的同时解决帧间不连续问题。
+
+  <h3 class="section-title">挑战二：无标注数据下的表达性反应学习</h3>
+
+  人类交互中的表达性（expressiveness）本质上难以定义和标注。与唇形同步不同——唇形与音频有近乎确定性的对应关系——对用户行为的"正确"反应是高度模糊的一对多映射：同一个点头可以对应 avatar 的多种合理反应。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/exp_l2_var_exp-pasted.webp" alt="Speaker vs Listener 表达度方差" loading="lazy">
+    <div class="cap">图 3：ViCo 数据集中 speaker（左）vs listener（右）的 3DMM 表情 L2-norm 方差可视化。Listener 数据的表达度显著低于 speaker（来源：Avatar Forcing, Fig.3）</div>
+  </div>
+
+  论文用量化数据证实了这一观察：在 ViCo 数据集中，listener 的 3DMM 表情方差远低于 speaker。这意味着训练数据本身就缺乏表达性，模型容易学到被动、僵硬的倾听行为。传统 DPO 需要人工标注的偏好对来解决这一问题，但标注成本高昂。Avatar Forcing 的关键洞察是：<strong>drop 用户条件 = 低表达性</strong>——仅以 avatar audio 为条件生成的运动天然缺乏交互性，可以作为 losing sample，无需额外标注。
+
+</div>
+
+<!-- ============================================================
+  Part 3: 模型架构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">Avatar Forcing 架构详解</div>
+
+  Avatar Forcing 的整体架构围绕三个核心模块构建：Motion Latent Encoding（运动编码）、Dual Motion Encoder（条件编码）、Causal DFoT Motion Generator（因果生成）。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/architecture1-4.webp" alt="Avatar Forcing 整体架构" loading="lazy">
+    <div class="cap">图 4：Avatar Forcing 整体架构。用户多模态信号与 avatar 音频通过 Dual Motion Encoder 编码为统一条件，Causal DFoT 在 motion latent space 中自回归生成，最终解码为视频帧（来源：Avatar Forcing, Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">3.1 Motion Latent Encoding</h3>
+
+  <strong>Motivation</strong>：直接在像素空间建模不仅计算量巨大（每帧 512×512×3），而且身份信息与运动信息高度耦合。我们需要一个低维、解耦的运动表示。
+
+  <strong>Intuition</strong>：人脸视频可以自然地分解为两个独立因素——身份（这个人长什么样）和运动（在做什么表情）。类比来说，就像一张照片可以拆成"底片"和"滤镜"两张透明片叠在一起——换表情只需替换滤镜，底片保持不变。
+
+  <strong>Mechanism</strong>：#float# FLOAT motion latent autoencoder 将输入图像 $S$ 编码为 latent $z$，具有显式的 identity-motion 分解：
+
+  $$z = z_S + \mathbf{m}_S \in \mathbb{R}^d$$
+
+  其中 $z_S \in \mathbb{R}^d$ 是 identity latent（外观/身份），$\mathbf{m}_S \in \mathbb{R}^d$ 是 motion latent（面部表情 + 头部姿态），$d = 512$。生成时 identity latent $z_S$ 在整个对话中保持固定，模型只需逐帧预测 $\mathbf{m}^i$，再与 $z_S$ 相加后送入 decoder。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/motion-latent-ae.webp" alt="Motion Latent AE 架构" loading="lazy">
+    <div class="cap">图 5：FLOAT Motion Latent Autoencoder。通过 source/driving 帧重建实现 identity-motion 加法分解（来源：Avatar Forcing, Fig.3）</div>
+  </div>
+
+  <div class="callout"><strong>关键特性</strong>：与 CausVid 等方法使用 4x/8x 时序压缩不同，FLOAT 的 motion latent 与像素帧一一对应（no temporal compression）。这使得每帧都能被独立精确控制，但也意味着严格的因果 mask 会导致更严重的帧间不连续——这正是后续 look-ahead mask 设计的根本动因。</div>
+
+  <h3 class="section-title">3.2 Dual Motion Encoder</h3>
+
+  <strong>Motivation</strong>：avatar 的运动取决于三路信号的协同——用户在说什么（$\mathbf{a}_u$）、用户在做什么表情（$\mathbf{m}_u$）、以及 avatar 自己要说什么（$\mathbf{a}$）。直接拼接无法捕获语义关联。
+
+  <strong>Intuition</strong>：类似同声传译员——先听懂说话人的语气和内容（第一层对齐），再结合自己要说的话组织回应（第二层融合）。
+
+  <strong>Mechanism</strong>：两层 cross-attention 逐步融合三路信号：
+  <ul>
+    <li><strong>第一层</strong>：$Q = \mathbf{m}_u^i$, $K/V = \mathbf{a}_u^i$ → 对齐用户运动与用户音频，产出"对齐用户表示"</li>
+    <li><strong>第二层</strong>：$Q = \mathbf{a}^i$, $K/V = \text{aligned\_user}$ → 融合 avatar 音频，产出统一条件 $\mathbf{c}_{\text{unified}}^i$</li>
+  </ul>
+
+  $$\text{CrossAttn}(Q, K, V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d}}\right)V$$
+
+  <h3 class="section-title">3.3 Causal DFoT Motion Generator</h3>
+
+  这是整个方法的<strong>核心创新</strong>。#infp# INFP 使用双向 DiT 需要完整上下文，延迟 3.4s。Avatar Forcing 改用 blockwise causal #diffusion-forcing# Diffusion Forcing Transformer（DFoT），但面临新挑战：由于 motion latent 无时序压缩，严格因果 mask 在 block 边界处产生严重运动抖动。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/architecture2-2.webp" alt="v_θ 架构" loading="lazy">
+    <div class="cap">图 6：Causal DFoT 运动生成器架构。Blockwise causal attention 配合 look-ahead mask 和 offset 机制，实现低延迟因果生成（来源：Avatar Forcing, Fig.2）</div>
+  </div>
+
+  <strong>自回归建模</strong>：将交互式 motion 生成建模为条件自回归模型：
+
+  $$p_\theta(\mathbf{m}^{1:N}) = \prod_{i=1}^{N} p_\theta(\mathbf{m}^i | \mathbf{m}^{<i}, \mathbf{c}^{\leq i})$$
+
+  实际实现中以 block 为粒度：$N=50$ 帧分为 $L = N/B = 5$ 个 block，每个 block $B=10$ 帧。
+
+  <strong>Look-ahead Causal Mask</strong>：允许每个 block 额外关注未来 $l=2$ 帧，缓解跨 block 边界的运动抖动。数学定义为：
+
+  $$M_{i,j} = 1 \quad \text{if} \quad \lfloor j / B \rfloor \leq \lfloor i / B \rfloor + l \quad \text{else} \quad 0$$
+
+  其中 $i, j$ 为帧索引，$B=10$ 为 block 大小，$l=2$ 为前瞻帧数。
+
+  <div class="info-box">
+    <h3>推理时的 Offset 机制</h3>
+    Look-ahead 需要 $l$ 个未来帧，但推理时未来不可用。解决方案是引入 offset $\mathbf{O}^{i+1} = (\mathbf{m}_1^{i}[-l:], \mathbf{c}^{i}[-l:])$，由上一个 block 最后 $l=2$ 个 clean motion latent 和对应 condition 组成。将这些 offset 与当前 noisy block 拼接，对 offset 帧设 $t=1$（clean），对当前 noisy block 设 $t=t_j$。这样既满足 look-ahead mask 的需求，又不增加实际延迟。
+  </div>
+
+  <strong>Diffusion Forcing 训练目标</strong>：
+
+  $$\mathcal{L}_{DF}(\theta) = \mathbb{E}_{n, t_n, \mathbf{m}^n_{t_n}}\! \left[\| v_{\theta}(\mathbf{m}^n_{t_n}, t_n, \mathbf{c}^n) - (\mathbf{m}_1^n - \mathbf{m}_0^n)\| \right]$$
+
+  其中 $n$ 为帧索引，$t_n \in [0,1]$ 为 per-frame noise timestep，$\mathbf{c}^n = (\mathbf{a}_u^{n}, \mathbf{m}_u^n, \mathbf{a}^n)$ 为条件三元组。同一 block 内的帧共享噪声时间步。
+
+  <h3 class="section-title">3.4 DPO 偏好优化</h3>
+
+  <strong>Motivation</strong>：现有 listening 数据集的表情丰富度远低于 speaking 数据集（图 3 已证实），模型容易学到被动、缺乏表达力的倾听行为。人工标注偏好对成本高昂。
+
+  <strong>Insight</strong>：<em>drop 用户条件 = 低表达性</em>。仅以 avatar audio 为条件生成的运动天然缺乏交互性，可以作为"less-preferred sample"，无需额外标注。
+
+  <strong>偏好对构造</strong>：
+  <ul>
+    <li><strong>Preferred sample $\mathbf{m}^w$</strong>：来自 ground-truth 视频的 motion latent</li>
+    <li><strong>Less-preferred sample $\mathbf{m}^l$</strong>：由一个单独训练的 talking avatar model（FLOAT）仅以 avatar audio 为条件生成——即 drop 掉所有 user conditions</li>
+  </ul>
+
+  <strong>总训练目标</strong>：
+
+  $$\mathcal{L}_{ft}(\theta) = \mathcal{L}_{DF}(\theta) + \lambda \mathcal{L}_{DPO}(\theta)$$
+
+  其中 $\lambda = 0.1$，$\mathcal{L}_{DPO}$ 为 #diffusiondpo# DiffusionDPO 的损失函数。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>INFP</th><th>FLOAT</th><th>Self-Forcing</th><th>CausVid</th><th><strong>Avatar Forcing</strong></th></tr></thead>
+      <tbody>
+        <tr><td>核心表示</td><td>双向 DiT</td><td>Flow Matching</td><td>Causal Diffusion</td><td>Blockwise Causal DF</td><td><strong>Causal DFoT + Look-ahead</strong></td></tr>
+        <tr><td>操作空间</td><td>Motion Latent</td><td>Motion Latent</td><td>Pixel Latent</td><td>Pixel Latent</td><td><strong>Motion Latent</strong></td></tr>
+        <tr><td>因果性</td><td>双向</td><td>非自回归</td><td>因果</td><td>Blockwise 因果</td><td><strong>Blockwise 因果 + l=2</strong></td></tr>
+        <tr><td>时序压缩</td><td>无</td><td>无</td><td>4-8×</td><td>4×</td><td><strong>无（1:1 帧对应）</strong></td></tr>
+        <tr><td>交互性</td><td>双向</td><td>单向</td><td>单向</td><td>单向</td><td><strong>双向</strong></td></tr>
+        <tr><td>延迟</td><td>3.4s</td><td>~100ms</td><td>实时</td><td>实时</td><td><strong>~500ms</strong></td></tr>
+        <tr><td>偏好优化</td><td>无</td><td>无</td><td>无</td><td>无</td><td><strong>免标注 DPO</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 1：Avatar Forcing 与核心竞争方法的技术对比。</em></p>
+
+</div>
+
+<!-- ============================================================
+  Part 4: 训练管线
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">两阶段训练</div>
+
+  <h3 class="section-title">数据预处理</h3>
+
+  论文使用 #realtalk# RealTalk 和 #vico# ViCo 两个 dyadic conversation 数据集。预处理流程为：PySceneDetect 场景切割 → Face-Alignment 人脸追踪与裁剪（512×512）→ IIANet 视觉引导语音分离（区分 speaker/listener 音频）→ 视频转 25fps，音频重采样 16kHz。此外，从 HDTF 中随机选取 50 个 talking-head 视频用于评估说话能力。Motion latent autoencoder 在此数据集上重新训练（非直接使用 FLOAT 原权重）。
+
+  <h3 class="section-title">Stage 1：Diffusion Forcing 训练</h3>
+
+  在 motion latent space 中学习条件自回归生成。训练序列 $N=50$ 帧，划分为 5 个 block（10 帧/block）。同一 block 内帧共享噪声时间步，不同 block 独立采样——这是 diffusion forcing per-token independent noising 的核心体现。Motion latent autoencoder 全程冻结，仅训练向量场预测器 $v_\theta$。总训练步数 2000k steps。
+
+  <h3 class="section-title">Stage 2：DPO 微调</h3>
+
+  以 Stage 1 收敛的 $v_\theta$ 权重同时初始化当前模型和冻结的 reference model $v_{\text{ref}}$，以总目标 $\mathcal{L}_{ft} = \mathcal{L}_{DF} + \lambda \mathcal{L}_{DPO}$ 微调。$\lambda = 0.1$，$\beta = 1000$。Less-preferred sample 由单独训练的 FLOAT 模型仅以 avatar audio 为条件生成。微调仅需 5k steps——作者明确指出"additional tuning does not yield further performance gains"。
+
+  <h3 class="section-title">训练配置披露表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>值</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>RealTalk + ViCo（dyadic conversation）</td><td>论文披露</td></tr>
+        <tr><td>GPU</td><td>单张 NVIDIA H100</td><td>论文披露</td></tr>
+        <tr><td>优化器</td><td>Adam</td><td>论文披露</td></tr>
+        <tr><td>学习率</td><td>$10^{-4}$</td><td>论文披露</td></tr>
+        <tr><td>Batch size</td><td>8</td><td>论文披露</td></tr>
+        <tr><td>Latent dimension $d$</td><td>512</td><td>论文披露</td></tr>
+        <tr><td>Attention heads</td><td>8（DFoT）/ 4（Dual Encoder）</td><td>论文披露</td></tr>
+        <tr><td>Hidden dimension $h$</td><td>1024（DFoT）/ 512（Dual Encoder）</td><td>论文披露</td></tr>
+        <tr><td>位置编码</td><td>1D RoPE</td><td>论文披露</td></tr>
+        <tr><td>音频特征</td><td>Wav2Vec2.0 的 12 multi-scale features</td><td>论文披露</td></tr>
+        <tr><td>DFoT blocks</td><td>8</td><td>论文披露</td></tr>
+        <tr><td>训练帧数</td><td>$N=50$, 5 blocks, 10 frames/block</td><td>论文披露</td></tr>
+        <tr><td>Look-ahead $l$</td><td>2 帧</td><td>论文披露</td></tr>
+        <tr><td>Stage 1 训练步数</td><td>2000k steps</td><td>论文披露</td></tr>
+        <tr><td>DPO 微调步数</td><td>5k steps</td><td>论文披露</td></tr>
+        <tr><td>DPO $\lambda$ / $\beta$</td><td>0.1 / 1000</td><td>论文披露</td></tr>
+        <tr><td>训练时长（wall clock）</td><td><strong>未披露</strong></td><td>—</td></tr>
+        <tr><td>Checkpoint 选择</td><td><strong>未披露</strong></td><td>—</td></tr>
+        <tr><td>模型总参数量</td><td><strong>未披露</strong></td><td>—</td></tr>
+        <tr><td>FLOPs</td><td><strong>未披露</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 2：训练配置披露状态。绝大多数超参数已完整披露，但训练实际时长、checkpoint 选择策略、总参数量和 FLOPs 未给出。</em></p>
+
+</div>
+
+<!-- ============================================================
+  Part 5: 推理流程
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实时 Streaming Pipeline</div>
+
+  <h3 class="section-title">Blockwise Rollout</h3>
+
+  Avatar Forcing 的推理以 block 为单位进行自回归生成：
+
+  <ol>
+    <li><strong>初始化</strong>：帧缓存 $\mathbf{KV}$ 和条件缓存 $\mathbf{cKV}$ 均为空。Offset $\mathbf{O}^1$ 为空。</li>
+    <li><strong>逐 block 生成</strong>（对每个 block $i = 1, \dots, L$）：
+      <ul>
+        <li>采样噪声 block $\mathbf{m}_{t_0}^i \sim \mathcal{N}(0, I)$，shape $10 \times 512$</li>
+        <li>获取实时用户输入 $(\mathbf{a}_u^i, \mathbf{m}_u^i)$ 和 avatar audio $\mathbf{a}^i$</li>
+        <li>合并 offset：$\mathbf{O}^i$ 与当前 noisy block 拼接，形成 $l + B = 12$ 帧</li>
+        <li>ODE 求解：Euler solver 执行 10 步 NFE，利用已缓存的 KV 避免重复计算</li>
+        <li>解码输出：$\mathbf{x}_1^i \leftarrow \texttt{Dec}(z_S, \mathbf{m}_1^i)$</li>
+        <li>更新缓存：生成的 clean block 计算 KV 并 append；若 $|\mathbf{KV}| > M$ 则 pop 最旧的</li>
+        <li>更新 offset：$\mathbf{O}^{i+1} \leftarrow (\mathbf{m}_1^i[-l:], \mathbf{c}^i[-l:])$</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h3 class="section-title">独立 CFG 的三路缓存</h3>
+
+  由于使用 independent classifier-free guidance，需要分别缓存三路向量场的 KV：
+  <ul>
+    <li>$v_\theta(\cdot; \mathbf{c}_{\{\emptyset, \emptyset\}})$：无条件</li>
+    <li>$v_\theta(\cdot; \mathbf{c}_{\{\mathbf{a}, \emptyset\}})$：仅 avatar audio</li>
+    <li>$v_\theta(\cdot; \mathbf{c}_{\{\emptyset, \mathbf{u}\}})$：仅 user conditions</li>
+  </ul>
+
+  这三路 KV 通过复用已生成的 motion block 和已有 KV 缓存来计算，避免重复前向传播。最大缓存大小 $M = 38$ blocks。
+
+  <h3 class="section-title">延迟拆解</h3>
+
+  <ul>
+    <li><strong>总延迟</strong>：~500ms（vs INFP* 3.4s，6.8× 加速）</li>
+    <li><strong>推理配置</strong>：10 NFEs + Euler solver + independent CFG</li>
+    <li><strong>延迟来源</strong>：block 内 10 帧的 ODE 求解（主要开销）+ Dual Motion Encoder 的条件编码 + FLOAT decoder 的解码</li>
+    <li><strong>实时性</strong>：500ms 延迟已进入人类自然对话的停顿容忍范围</li>
+  </ul>
+
+</div>
+
+<!-- ============================================================
+  Part 6: 实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <h3 class="section-title">主实验：RealTalk 交互式头像</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">方法</th>
+          <th colspan="2">交互</th>
+          <th colspan="2">反应性 ↓</th>
+          <th colspan="2">运动丰富度 ↑</th>
+          <th colspan="3">视觉质量</th>
+          <th colspan="2">唇同步</th>
+        </tr>
+        <tr>
+          <th>User Input</th><th>Latency ↓</th>
+          <th>rPCC-Exp</th><th>rPCC-Pose</th>
+          <th>SID</th><th>Var</th>
+          <th>FID ↓</th><th>FVD ↓</th><th>CSIM ↑</th>
+          <th>LSE-D ↓</th><th>LSE-C ↑</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td style="color:gray">FLOAT</td><td style="color:gray">✗</td><td style="color:gray">2.4s</td><td style="color:gray">0.054</td><td style="color:gray">0.182</td><td style="color:gray">2.785</td><td style="color:gray">2.778</td><td style="color:gray">81.297</td><td style="color:gray">438.817</td><td style="color:gray">0.845</td><td style="color:gray">8.135</td><td style="color:gray">6.361</td></tr>
+        <tr><td>INFP*</td><td>✓</td><td>3.4s</td><td>0.035</td><td>0.064</td><td>2.343</td><td>1.638</td><td>24.551</td><td><strong>159.000</strong></td><td><strong>0.867</strong></td><td><strong>8.027</strong></td><td>6.536</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>Ours</strong></td><td>✓</td><td><strong>0.5s</strong></td><td><strong>0.003</strong></td><td><strong>0.036</strong></td><td><strong>2.442</strong></td><td><strong>1.734</strong></td><td><strong>24.328</strong></td><td>170.874</td><td>0.833</td><td>8.060</td><td><strong>6.723</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 3：RealTalk 数据集上的定量对比。灰色行为非交互式 talking head 模型（FLOAT），仅作参考。* 表示复现版本。</em></p>
+
+  <strong>关键发现</strong>：
+  <ul>
+    <li><strong>延迟 6.8× 加速</strong>：0.5s vs 3.4s，首次实现实时交互式 avatar</li>
+    <li><strong>反应性提升 10×</strong>：rPCC-Exp 0.003 vs 0.035（越低越好），avatar 对用户表情的同步程度大幅改善</li>
+    <li><strong>运动丰富度更高</strong>：SID 2.442 vs 2.343，Var 1.734 vs 1.638</li>
+    <li><strong>Trade-off</strong>：FVD 170.874 vs 159.000（略差），CSIM 0.833 vs 0.867（略差）——DPO 提升表达性但牺牲了部分时序一致性和身份保持</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/human_eval_3col_final.webp" alt="Human Evaluation 结果" loading="lazy">
+    <div class="cap">图 7：人类偏好评估结果。42 位参与者在 5 个维度上对比 Avatar Forcing 与 INFP*，整体偏好率 >80%（来源：Avatar Forcing, Fig.6）</div>
+  </div>
+
+  <h3 class="section-title">Talking Head 对比（HDTF）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>FID ↓</th><th>FVD ↓</th><th>CSIM ↑</th><th>LSE-D ↓</th><th>LSE-C ↑</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>64.744</td><td>342.996</td><td>0.697</td><td>8.046</td><td>7.171</td></tr>
+        <tr><td>Hallo3</td><td>32.794</td><td>184.341</td><td>0.865</td><td>8.498</td><td>7.487</td></tr>
+        <tr><td>FLOAT</td><td>25.110</td><td>167.463</td><td><strong>0.881</strong></td><td><strong>7.553</strong></td><td><strong>8.006</strong></td></tr>
+        <tr><td>INFP*</td><td>27.155</td><td>187.977</td><td>0.840</td><td>7.810</td><td>7.325</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>Ours</strong></td><td><strong>20.332</strong></td><td><strong>149.798</strong></td><td>0.870</td><td>7.700</td><td>7.560</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 4：HDTF 数据集 Talking Head 对比。Avatar Forcing 在 FID/FVD 上最优，CSIM/LSE 略逊于 FLOAT（非交互式 baseline）。</em></p>
+
+  <h3 class="section-title">Listening Head 对比（ViCo）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th colspan="2">FD ↓</th><th colspan="2">rPCC ↓</th><th colspan="2">SID ↑</th><th colspan="2">Var ↑</th></tr>
+      <tr><th></th><th>Exp</th><th>Pose</th><th>Exp</th><th>Pose</th><th>Exp</th><th>Pose</th><th>Exp</th><th>Pose</th></tr></thead>
+      <tbody>
+        <tr><td>RLHG</td><td>39.02</td><td>0.07</td><td>0.08</td><td>0.02</td><td>3.62</td><td>3.17</td><td>1.52</td><td>0.02</td></tr>
+        <tr><td>L2L</td><td>33.93</td><td>0.06</td><td>0.06</td><td>0.08</td><td>2.77</td><td>2.66</td><td>0.83</td><td>0.02</td></tr>
+        <tr><td>DIM</td><td>23.88</td><td>0.06</td><td>0.06</td><td>0.03</td><td><strong>3.71</strong></td><td>2.35</td><td>1.53</td><td>0.02</td></tr>
+        <tr><td>INFP*</td><td>17.52</td><td>0.07</td><td>0.01</td><td>0.07</td><td>2.19</td><td><strong>3.20</strong></td><td>2.10</td><td>0.03</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>Ours</strong></td><td><strong>16.64</strong></td><td><strong>0.05</strong></td><td><strong>0.01</strong></td><td><strong>0.01</strong></td><td>3.12</td><td>3.00</td><td><strong>2.80</strong></td><td><strong>0.03</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 5：ViCo 数据集 Listening Head 对比。8 项指标中 Avatar Forcing 在 6 项取得最优或并列最优。</em></p>
+
+  <h3 class="section-title">消融实验</h3>
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/ablation-user-3.webp" alt="User Motion 消融" loading="lazy">
+    <div class="cap">图 8：User Motion 消融。去掉用户运动输入后（右），avatar 在用户微笑时保持僵硬；保留用户运动后（左），avatar 自然地在用户微笑后回以微笑（红色箭头）（来源：Avatar Forcing, Fig.7）</div>
+  </div>
+
+  <strong>User Motion 消融</strong>：去掉 $\mathbf{m}_u$ 导致 rPCC-Exp 从 0.003 恶化至 0.052（约 17× 退化），avatar 在用户沉默时完全静止——即使有强烈的非语言信号（如微笑）也无法感知。
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/ablation-dpo-3.webp" alt="DPO 消融" loading="lazy">
+    <div class="cap">图 9：DPO 消融。未经偏好优化的模型（右）产生较少面部表情变化和较弱的交互反应；DPO 微调后（左），avatar 展现更丰富的头部运动（红色方框）和更强的表情同步（红色箭头）（来源：Avatar Forcing, Fig.8）</div>
+  </div>
+
+  <strong>DPO 消融</strong>：去掉 DPO 导致 SID 从 2.442 降至 2.236，Var 从 1.734 降至 1.408。但值得注意的是，DPO 也使 CSIM 从 0.854 降至 0.833——表达性与身份保持之间存在 trade-off。
+
+  <h3 class="section-title">失败案例</h3>
+
+  <ol>
+    <li><strong>FVD 不如 INFP*</strong>：170.874 vs 159.000。DPO 推动更丰富的表情变化，但可能引入更多帧间时序波动。</li>
+    <li><strong>CSIM 下降</strong>：0.833 vs 0.867（vs INFP*），且 DPO 前为 0.854。DPO 推动模型"大胆"偏离安全均值，有时偏离源图像身份特征。</li>
+    <li><strong>仅限头部</strong>：缺乏手势和身体语言，FLOAT AE 仅编码人脸区域。</li>
+  </ol>
+
+  <div class="photo">
+    <img src="media/images/avatar-forcing-2026/compare-3.webp" alt="定性对比" loading="lazy">
+    <div class="cap">图 10：RealTalk 上的定性对比。Avatar Forcing 展现出更多反应性（红色箭头）和表达性（红色方框）的 avatar 运动（来源：Avatar Forcing, Fig.5）</div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+  Part 7: 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发</div>
+
+  <h3 class="section-title">核心贡献回顾</h3>
+
+  Avatar Forcing 在三个层面做出了贡献：
+
+  <ul>
+    <li><strong>架构层面</strong>：首次在 motion latent space 中使用 diffusion forcing 实现因果实时交互，延迟从 3.4s 降至 500ms（6.8× 加速），look-ahead mask 解决了无时序压缩下的帧间抖动问题</li>
+    <li><strong>目标函数层面</strong>：提出免标注 DPO，通过"drop 用户条件 = 低表达性"构造偏好对，rPCC-Exp 改善约 17 倍，>80% 人类偏好率</li>
+    <li><strong>系统层面</strong>：统一框架覆盖交互式头像、talking head、listening head 三种任务</li>
+  </ul>
+
+  <div class="callout"><strong>核心立场</strong>：真正的交互式虚拟头像不应追求离线指标的极致，而应在实时约束下实现自然、有反应性的对话体验。500ms 延迟已进入人类对话停顿容忍范围，>80% 人类偏好率说明低延迟加高反应性在实际感知中远比 FVD/CSIM 等自动指标更重要。</div>
+
+  <h3 class="section-title">局限性分析</h3>
+
+  <ol>
+    <li><strong>仅头部运动</strong>：FLOAT AE 仅编码人脸区域，缺乏手势和身体语言。需要扩展到上半身 motion latent space 和全身对话数据集。</li>
+    <li><strong>缺乏显式可控性</strong>：motion latent space 是端到端黑箱表示，无法编辑特定表情/动作。需要语义解耦或额外控制信号接入。</li>
+    <li><strong>Exposure Bias 未完全消除</strong>：Diffusion forcing 大幅缓解但未根本消除 train-test gap。极长序列（远超 50 帧训练长度）下的表现未被验证。可借鉴 Self-Forcing 的自校正训练策略。</li>
+    <li><strong>FVD/CSIM Trade-off</strong>：DPO 提升表达性但牺牲时序一致性和身份保持。需要 multi-objective 偏好优化。</li>
+    <li><strong>INFP* 复现偏差</strong>：baseline 非官方实现，对比存在不确定性。</li>
+    <li><strong>代码未开源</strong>：截至撰写时仅有 README。</li>
+  </ol>
+
+  <h3 class="section-title">具体可操作的启发</h3>
+
+  <strong>启发 1：Diffusion Forcing 在因果实时序列生成中的迁移</strong>
+  <div class="callout">Diffusion Forcing 的 per-token independent noising 统一了 teacher forcing 和 full-sequence diffusion，适用于任何需要因果实时生成的序列任务。迁移场景包括：实时语音合成（逐 chunk 生成音频）、在线视频编辑（逐段处理视频流）、交互式游戏 AI（根据玩家行为实时生成 NPC 反应）。</div>
+
+  <strong>启发 2：免标注 DPO 的"条件 dropout 构造偏好对"通用模式</strong>
+  <div class="callout">当偏好标注昂贵但"缺少某种信号 = 低质量"的先验成立时，可以 drop 该条件构造 losing sample。迁移示例：音乐生成中 drop 情感条件 = 平淡音乐；文本对话中 drop 上下文 = 通用回复；图像编辑中 drop 编辑指令 = 原始图像。这种模式无需任何人工标注即可获得偏好信号。</div>
+
+  <strong>启发 3：Look-ahead Mask 解决 Blockwise Causal 边界效应</strong>
+  <div class="callout">任何 blockwise causal 生成中块间过渡不平滑的问题，都可以通过允许有限前瞻（l 帧）缓解，推理时用前序 block 末尾的 clean frame 作为 offset 替代。迁移场景：视频生成中的镜头过渡、长文本生成中的段落衔接、音乐生成中的乐段过渡。</div>
+
+  <strong>启发 4：Motion Latent vs Pixel Latent 的选择权衡</strong>
+  <div class="callout">Motion latent（如 FLOAT）与像素帧一一对应，无时间压缩，保留精细运动但增加计算量；pixel latent（如 CausVid 的 VAE）有 4-8x 时间压缩，高效但丢失细节。在选择 latent space 时需要权衡：逐帧控制精度 vs 计算效率 vs 因果边界效应。</div>
+
+  <h3 class="section-title">延伸阅读</h3>
+
+  <ol>
+    <li><strong>Diffusion Forcing</strong>（Chen et al., NeurIPS 2024）— 理论基础。理解 per-token independent noising 如何统一 teacher forcing 和 full-sequence diffusion。</li>
+    <li><strong>FLOAT</strong>（Ki et al., ICCV 2025）— Motion latent autoencoder 来源。同一第一作者的前作，Avatar Forcing 直接复用其 identity-motion 分解。</li>
+    <li><strong>Self-Forcing</strong>（Huang et al., NeurIPS 2025）— Blockwise causal + KV cache 的先行工作。解决自回归视频扩散中 train-test gap 的关键参考。</li>
+    <li><strong>INFP</strong>（Zhu et al., CVPR 2025）— 最直接 baseline。首个 dyadic interactive head generation 方法，理解其 3.4s 延迟的来源才能体会 Avatar Forcing 的突破。</li>
+    <li><strong>CausVid</strong>（Yin et al., CVPR 2025）— Pixel-space blockwise causal diffusion forcing。与 Avatar Forcing 在 latent space 选择上形成有趣对比（pixel vs motion）。</li>
+  </ol>
+
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="diffusion-forcing"><a href="https://arxiv.org/abs/2407.01392" target="_blank">Diffusion Forcing: Next-token Prediction Meets Full-sequence Diffusion (Chen et al., NeurIPS 2024)</a></li>
+    <li data-cite-key="float"><a href="https://arxiv.org/abs/2411.16738" target="_blank">FLOAT: Generative Motion Latent Flow Matching for Audio-driven Talking Portrait (Ki et al., ICCV 2025)</a></li>
+    <li data-cite-key="infp"><a href="https://arxiv.org/abs/2503.01715" target="_blank">INFP: Interactive Non-verbal Facial expression generation for real-time conversational avatars (Zhu et al., CVPR 2025)</a></li>
+    <li data-cite-key="self-forcing"><a href="https://arxiv.org/abs/2502.15855" target="_blank">Self-Forcing: Bridging Train-Test Gap in Autoregressive Video Diffusion (Huang et al., NeurIPS 2025)</a></li>
+    <li data-cite-key="causvid"><a href="https://arxiv.org/abs/2504.06140" target="_blank">CausVid: From Full-sequence to Real-time Streaming Video Diffusion (Yin et al., CVPR 2025)</a></li>
+    <li data-cite-key="dpo"><a href="https://arxiv.org/abs/2305.18290" target="_blank">Direct Preference Optimization (Rafailov et al., NeurIPS 2023)</a></li>
+    <li data-cite-key="diffusiondpo"><a href="https://arxiv.org/abs/2311.12908" target="_blank">DiffusionDPO: Aligning Diffusion Models via Preference Optimization (Wallace et al., CVPR 2024)</a></li>
+    <li data-cite-key="realtalk"><a href="https://arxiv.org/abs/2404.10007" target="_blank">RealTalk: Real-time Interactive Talking Video Generation</a></li>
+    <li data-cite-key="vico"><a href="https://arxiv.org/abs/2203.12741" target="_blank">ViCo: A Large-scale Video Conversation Dataset (Zhou et al., ECCV 2022)</a></li>
+    <li data-cite-key="avatar-forcing"><a href="https://arxiv.org/abs/2601.00664" target="_blank">Avatar Forcing: Real-Time Interactive Head Avatar Generation for Natural Conversation (Ki et al., 2026)</a></li>
+  </ul>
+</div>
