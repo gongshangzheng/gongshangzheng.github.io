@@ -1,0 +1,402 @@
+---
+title: "图像压缩论文精读（十五）：RAWIC，位深自适应的 Raw 图像无损压缩"
+description: "首个直接压缩 Bayer pattern raw 图像的学习型无损框架：通过 bit-depth adaptive 熵模型，单一模型适配多相机多位深，平均码率比 JPEG-XL 低 7.7%。"
+date: 2026-06-23T15:50:39
+created_at: 2026-06-23T15:50:39
+updated_at: 2026-06-23T16:35:00
+tags: ["Raw 图像", "无损压缩", "位深自适应", "Bayer pattern", "熵编码"]
+categories: ["AI"]
+subcategory: "图像压缩"
+sub_id: 1950
+mathjax: true
+notify: true
+hero_title: "RAWIC 深度解读"
+hero_sub: "ICME 2026 · PKU & AIR Tsinghua & UCAS"
+hero_tagline: "位深自适应的 Raw 图像无损压缩：单一模型，多相机适配"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num b">7.7%</span><span class="label g">低于 JPEG-XL</span></div>
+  <div class="stat"><span class="num">6</span><span class="label">测试数据集</span></div>
+  <div class="stat"><span class="num b">1</span><span class="label g">统一模型</span></div>
+  <div class="stat"><span class="num">1088</span><span class="label">训练图像</span></div>
+</div>
+
+<!-- ============================================================
+  Part 1 · Raw 图像压缩的困境
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">Raw 图像压缩的困境</div>
+
+Raw 图像是相机传感器直接捕获的未经处理的线性测量值。与经过 ISP（Image Signal Processing）管线渲染的 sRGB 图像不同，raw 数据保留了与场景辐照度的线性关系、高位深信息（通常 10-14 bit）以及传感器特有的噪声特性。这些特性使其成为图像去噪 #Zhang et al., 2021#、超分辨率 #Xu et al., 2019#、低光增强 #Huang et al., 2022# 等底层视觉任务不可或缺的数据源。
+
+<div class="tags">
+  <span class="tag">Chunhang Zheng (PKU, 一作)</span>
+  <span class="tag">Tongda Xu (AIR Tsinghua)</span>
+  <span class="tag">Mingli Xie (UCAS)</span>
+  <span class="tag">Yan Wang (AIR Tsinghua, 通讯)</span>
+  <span class="tag">Dou Li (PKU, 通讯)</span>
+  <span class="tag">ICME 2026</span>
+  <span class="tag"><a href="https://github.com/chunbaobao/RAWIC" target="_blank">GitHub: chunbaobao/RAWIC</a></span>
+</div>
+
+然而，raw 图像的存储和传输面临严峻挑战。以一张 Canon 600D 拍摄的 raw 图像为例，其分辨率为 $3464 \times 5202$，位深 14 bit，单张文件大小约 36 MB。相比之下，同一场景的 JPEG 图像仅约 3-5 MB。更大的问题在于<strong>异构性</strong>：不同相机传感器的位深不同（12 bit 或 14 bit），甚至同一张 raw 图像内不同区域的像素值范围也差异巨大——暗区可能只用到 8 bit，而亮区占满 14 bit。
+
+现有的学习型无损压缩方法几乎全部针对 8-bit sRGB 图像设计。当它们试图处理 raw 数据时，要么需要 MSB/LSB 字节拆分这种工程 trick，要么根本不适用。另一条技术路线——raw 图像重建 #Punnappurath & Brown, 2021# #Nam et al., 2022# #Wang et al., 2023#——则从 sRGB 图像反向恢复 raw 数据，但这条路线本质上是<strong>有损的</strong>，会破坏 raw 数据赖以存在的线性辐射关系。
+
+<div class="callout"><strong>核心矛盾</strong>：Raw 图像要求无损保留，但现有学习型方法要么只支持 8-bit sRGB，要么是有损重建。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 2 · 可变位深的挑战
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">可变位深的挑战</div>
+
+理解 RAWIC 的创新之前，我们需要先看清它要解决的真正难题：<strong>可变位深</strong>。
+
+传统有损压缩（如 JPEG、JPEG2000）和传统无损压缩（如 PNG、FLIF）都假设输入图像的位深是固定的。对于 8-bit sRGB 图像，每个通道 256 个离散值，概率模型可以在这 256 个值上完整定义。但 raw 图像打破了这一假设。
+
+<h3 class="section-title">同一张图内的位深差异</h3>
+
+论文 Figure 2 给出了一个直观的可视化：对一张 raw 图像逐像素计算 $\lceil \log_2(\text{value}+1) \rceil$，得到一张"位深地图"。暗区（如阴影、天空）的有效位深可能只有 8-10 bit，而亮区（如直射光源）占满 14 bit。如果对整张图像统一使用 14 bit 建模，概率质量会大量浪费在暗区根本不会出现的值域上。
+
+<div class="photo">
+  <img src="media/images/rawic-2026/bit_depth_visualization.webp" alt="Raw 图像及其位深地图" loading="lazy">
+  <div class="cap">图 1：Raw 图像及其逐像素位深地图。不同区域的有效位深差异显著（来源：RAWIC, Fig.2）</div>
+</div>
+
+<h3 class="section-title">跨相机的位深差异</h3>
+
+不同相机传感器的 ADC（模数转换器）精度不同。在论文使用的 NUS 数据集中，Canon 1Ds MkIII 和 Canon 600D 的 raw 数据为 14 bit，而 Olympus EPL6、Panasonic GX1 和 Samsung NX2000 则为 12 bit。如果为每种位深训练一个独立模型，不仅增加维护成本，还丧失了跨相机数据共享的潜力。
+
+<div class="callout"><strong>Insight</strong>：位深不是固定的全局参数，而是每个局部 patch 的属性。将位深作为条件输入而非预设常数，可以消除大量冗余比特。</div>
+
+论文 Figure 1 直观对比了传统方法与 RAWIC 的区别：传统方法为每个位深训练独立模型，而 RAWIC 用单一模型适配所有位深。
+
+<div class="photo">
+  <img src="media/images/rawic-2026/comp.webp" alt="传统位深特定方法 vs RAWIC" loading="lazy">
+  <div class="cap">图 2：(a) 传统方法为每个位深训练独立模型 (b) RAWIC 用单一模型压缩不同位深的 raw 图像（来源：RAWIC, Fig.1）</div>
+</div>
+
+</div>
+
+<!-- ============================================================
+  Part 3 · RAWIC 架构详解
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">RAWIC 架构详解</div>
+
+RAWIC 的核心思想可以用一句话概括：<strong>将位深作为条件信号注入熵模型，使单一网络能够适配任意位深的 raw 数据</strong>。下面我们从输入到输出逐模块展开。
+
+<h3 class="section-title">Bayer 转 RGGB 四通道</h3>
+
+Raw 图像以 Bayer pattern 排列——单通道传感器数据中，像素按 R-G-G-B 的马赛克排列。传统做法是先做 demosaicing 插值为三通道 RGB，但这会引入非线性失真，破坏 raw 数据的无损性。
+
+RAWIC 采用了一种更优雅的转换：将单通道 Bayer 数据直接重排为 RGGB 四通道格式。具体来说，将相邻 $2 \times 2$ 像素块中的 R、G1、G2、B 分别提取为独立通道，空间分辨率减半，通道数变为 4。这样做的好处是既保留了原始传感器测量值（没有任何插值），又使标准卷积网络能够直接处理。
+
+这是<em>首个</em>直接压缩单通道 Bayer pattern raw 图像的学习型无损框架 #Zheng et al., 2026#。
+
+<h3 class="section-title">Patch 分割与位深计算</h3>
+
+RGGB 四通道图像被分割为 $N$ 个不重叠的 patch $\{\boldsymbol{x}_i\}_{i=1}^N$。对每个 patch，计算其位深 $\boldsymbol{b}_i = \lceil \log_2(\max(\boldsymbol{x}_i)+1) \rceil$，即该 patch 内最大像素值所需的比特数。位深通过 embedding layers 映射为稠密向量 $\boldsymbol{e}_i$，作为条件信号注入后续的压缩网络。
+
+<h3 class="section-title">ELIC Backbone + Hyper-prior</h3>
+
+RAWIC 的主干架构基于 ELIC #He et al., 2022#（Efficient Learned Image Compression），结合 Ballé 等人的变分超先验框架 #Ballé et al., 2018#。编码流程如下：
+
+1. <strong>Analysis transform</strong>（编码器）：$\boldsymbol{y}_i = g_a(\boldsymbol{x}_i, \boldsymbol{e}_i)$，以位深 embedding 为条件将输入 patch 变换为 latent representation
+2. <strong>量化</strong>：推理时使用 round 操作；训练时用均匀噪声 $\mathcal{U}(-\frac{1}{2}, \frac{1}{2})$ 模拟，使梯度可反向传播
+3. <strong>Hyper analysis</strong>：$\boldsymbol{z}_i = h_a(\boldsymbol{\hat{y}}_i)$，提取 side information
+4. <strong>Hyper synthesis</strong>：$\boldsymbol{\mu}_i, \boldsymbol{\sigma}_i = h_s(\boldsymbol{\hat{z}}_i)$，预测 latent 的高斯分布参数
+5. <strong>Synthesis transform</strong>：$\boldsymbol{f}_i = g_s(\boldsymbol{\hat{y}}_i)$，生成 prior features
+
+<div class="photo">
+  <img src="media/images/rawic-2026/pipeline.webp" alt="RAWIC 整体架构" loading="lazy">
+  <div class="cap">图 3：RAWIC 整体架构。Raw 图像经 Bayer→RGGB 转换后分 patch，每个 patch 的位深通过 embedding 条件化熵模型，最终由算术编码器输出比特流（来源：RAWIC, Fig.3）</div>
+</div>
+
+<h3 class="section-title">位深自适应熵模型（核心创新）</h3>
+
+这是 RAWIC 最关键的创新。传统熵模型对像素值定义一个固定的概率质量函数（PMF），比如在 $[0, 2^{14}-1]$ 上建模。但如果一个 patch 实际只用到 10 bit，那么 $[1024, 16383]$ 区间内的概率质量完全是浪费。
+
+RAWIC 的解决方案是<strong>位深自适应 PMF</strong>：给定基础 PMF $p(\boldsymbol{x}_{ij}^c)$ 和 patch 的位深 $\boldsymbol{b}_{ij}^c$，通过 indicator masking 和 renormalization 将概率截断到有效范围：
+
+$$
+\tilde{p}(\boldsymbol{x}_{ij}^c \mid \boldsymbol{b}_{ij}^c) = \frac{p(\boldsymbol{x}_{ij}^c) \cdot \mathbb{I}(0 \leq \boldsymbol{x}_{ij}^c \lt 2^{\boldsymbol{b}_{ij}^c})}{\sum_{k=0}^{2^{\boldsymbol{b}_{ij}^c}-1} p(k)}
+$$
+
+其中 $\mathbb{I}(\cdot)$ 是 indicator function，将无效区间的概率置零；分母重新归一化确保概率和为 1。这个公式看似简单，但它是实现"单一模型适配多位深"的数学核心。
+
+<h3 class="section-title">RGGB 离散 Logistic 混合似然</h3>
+
+为了精确建模 raw 像素的离散分布，RAWIC 将 PixelCNN++ #Salimans et al., 2017# 的离散 logistic 混合（Discrete Logistic Mixture, DLM）从 RGB 3 通道扩展到 RGGB 4 通道。每个通道的像素值 PMF 为 $K$ 个 logistic 分量的混合：
+
+$$
+p_\theta(\boldsymbol{x}_{ij}^c \mid \cdot) = \sum_{k=1}^{K} \boldsymbol{\pi}_{ij}^{ck} \cdot \Bigl[ \sigma\Bigl(\frac{\boldsymbol{x}_{ij}^c + \boldsymbol{\Delta}_{ij}^c/2 - \boldsymbol{\mu}_{ij}^{ck}}{\boldsymbol{s}_{ij}^{ck}}\Bigr) - \sigma\Bigl(\frac{\boldsymbol{x}_{ij}^c - \boldsymbol{\Delta}_{ij}^c/2 - \boldsymbol{\mu}_{ij}^{ck}}{\boldsymbol{s}_{ij}^{ck}}\Bigr) \Bigr]
+$$
+
+其中 $\sigma(\cdot)$ 是 sigmoid 函数，$\boldsymbol{\mu}_{ij}^{ck}$、$\boldsymbol{s}_{ij}^{ck}$、$\boldsymbol{\pi}_{ij}^{ck}$ 分别是第 $k$ 个分量的均值、尺度和权重。关键设计是量化 bin 宽度 $\boldsymbol{\Delta}_{ij}^c = 1/(2^{\boldsymbol{b}_{ij}^c} - 1)$ 随位深自适应变化——位深越高，bin 越窄，概率估计越精细。
+
+<h3 class="section-title">通道自回归建模</h3>
+
+在同一空间位置内，四个通道按 R → G1 → G2 → B 的顺序进行自回归分解：
+
+$$
+p_\theta(\boldsymbol{x}_{ij}^r, \boldsymbol{x}_{ij}^{g_1}, \boldsymbol{x}_{ij}^{g_2}, \boldsymbol{x}_{ij}^b \mid \boldsymbol{\mathcal{P}}_i) = p_\theta(\boldsymbol{x}_{ij}^r \mid \boldsymbol{\mathcal{P}}_i) \cdot p_\theta(\boldsymbol{x}_{ij}^{g_1} \mid \boldsymbol{x}_{ij}^r, \boldsymbol{\mathcal{P}}_i) \cdot p_\theta(\boldsymbol{x}_{ij}^{g_2} \mid \boldsymbol{x}_{ij}^r, \boldsymbol{x}_{ij}^{g_1}, \boldsymbol{\mathcal{P}}_i) \cdot p_\theta(\boldsymbol{x}_{ij}^b \mid \boldsymbol{x}_{ij}^r, \boldsymbol{x}_{ij}^{g_1}, \boldsymbol{x}_{ij}^{g_2}, \boldsymbol{\mathcal{P}}_i)
+$$
+
+通道间的依赖通过均值的线性调整实现——后续通道的均值会注入已解码通道的像素值，由可学习系数 $\boldsymbol{\beta}$ 控制权重。注意 B 通道同时依赖 R 和 G1+G2 的平均值，这反映了 Bayer pattern 中蓝色像素被绿色像素对角环绕的空间结构。
+
+<div class="callout"><strong>架构小结</strong>：RAWIC = ELIC backbone + hyper-prior + bit-depth embedding conditioning + RGGB DLM + channel AR。创新不在于设计新网络，而在于将位深作为一等公民融入整个压缩管线。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 4 · Training Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline</div>
+
+<h3 class="section-title">训练目标</h3>
+
+无损压缩的损失函数极其简洁——没有失真项，只最小化总码率：
+
+$$
+\mathcal{L} = \mathcal{R} = \mathcal{R}_{\text{latent}} + \mathcal{R}_{\text{pixel}}
+$$
+
+其中 $\mathcal{R}_{\text{latent}}$ 是 latent representation 和 hyper latent 的码率开销，$\mathcal{R}_{\text{pixel}}$ 是像素数据的码率。两者都由熵模型估计的负对数似然给出。
+
+<h3 class="section-title">训练数据与配置</h3>
+
+<div class="table-wrap param-table">
+  <table>
+    <thead><tr><th>配置项</th><th>值</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td>训练数据集</td><td>NUS 5 相机 + RAISE 5% 采样</td><td>论文披露</td></tr>
+      <tr><td>训练图像数</td><td>1088 张</td><td>论文披露</td></tr>
+      <tr><td>划分比例</td><td>80% train / 10% val / 10% test（per camera）</td><td>论文披露</td></tr>
+      <tr><td>初始 patch size</td><td>128 × 128</td><td>论文披露</td></tr>
+      <tr><td>最终 patch size</td><td>64 × 64（随机裁剪）</td><td>论文披露</td></tr>
+      <tr><td>数据增强</td><td>水平/垂直翻转 p=0.5</td><td>论文披露</td></tr>
+      <tr><td>训练轮数</td><td>200 epochs</td><td>论文披露</td></tr>
+      <tr><td>优化器</td><td>Adam（β₁=0.9, β₂=0.999 推测默认值）</td><td>论文部分披露</td></tr>
+      <tr><td>Batch size</td><td>128</td><td>论文披露</td></tr>
+      <tr><td>初始学习率</td><td>1 × 10⁻⁴</td><td>论文披露</td></tr>
+      <tr><td>学习率调度</td><td>ReduceLROnPlateau, patience=10, factor=0.1</td><td>论文披露</td></tr>
+      <tr><td>训练硬件</td><td>NVIDIA A100（数量未明确）</td><td>论文部分披露</td></tr>
+      <tr><td>实现框架</td><td>CompressAI (PyTorch)</td><td>论文披露</td></tr>
+      <tr><td>DLM 分量数 K</td><td>未披露</td><td>未披露</td></tr>
+      <tr><td>模型参数量</td><td>未披露</td><td>未披露</td></tr>
+    </tbody>
+  </table>
+</div>
+<p><em>表 1：训练配置披露表。逐项标注论文披露状态。</em></p>
+
+<div class="admonition tip">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    训练技巧
+  </div>
+  <div class="admonition-content">训练时量化使用均匀噪声 $\mathcal{U}(-\frac{1}{2}, \frac{1}{2})$ 模拟而非 STE（Straight-Through Estimator），这是 CompressAI 框架的标准做法，源自 Ballé 2018 的变分图像压缩范式。推理时切换为真正的 round 操作。</div>
+</div>
+
+</div>
+
+<!-- ============================================================
+  Part 5 · 编码与解码流程
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">编码与解码流程</div>
+
+<h3 class="section-title">编码端</h3>
+
+{{< mermaid >}}
+flowchart TD
+    A["Raw Bayer 图像"] --> B["Bayer → RGGB\n四通道转换"]
+    B --> C["分割为 N 个\n不重叠 patch"]
+    C --> D["计算每个 patch\n的位深 bᵢ"]
+    D --> E["位深 Embedding\neᵢ = embed(bᵢ)"]
+    E --> F["Analysis Transform\nyᵢ = gₐ(xᵢ, eᵢ)"]
+    F --> G["量化\nŷᵢ = round(yᵢ)"]
+    G --> H["Hyper Analysis\nzᵢ = hₐ(ŷᵢ)"]
+    H --> I["算术编码\n输出比特流"]
+    I --> J["压缩文件"]
+{{< /mermaid >}}
+
+<h3 class="section-title">解码端</h3>
+
+解码是编码的精确逆过程。首先从比特流中解码 hyper latent $\boldsymbol{\hat{z}}_i$，通过 hyper synthesis 恢复 latent 分布参数；然后逐 patch 解码 $\boldsymbol{\hat{y}}_i$ 和像素数据。像素解码按 RGGB 四通道自回归顺序进行：R → G1 → G2 → B。最后将所有 patch 拼回 RGGB 四通道图像，再重排为单通道 Bayer pattern。
+
+<h3 class="section-title">位深信息的存储</h3>
+
+每个 patch 的位深 $\boldsymbol{b}_i$ 本身也需要编码到比特流中。论文在 Table I 的注释中明确指出："our method includes the bitrates for storing bit depths"。由于位深只有有限的几种取值（10-14 bit），其编码开销极小。
+
+<div class="admonition warning">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    计算代价
+  </div>
+  <div class="admonition-content">RAWIC 的解码远慢于传统 codec。Canon 600D（3464×5202, 14 bit）上，RAWIC 编码 45.7s、解码 119.3s，而 JPEG-XL 仅需 6.08s / 1.38s。解码慢 86 倍是 autoregressive pixel-by-pixel entropy model 的典型瓶颈。</div>
+</div>
+
+</div>
+
+<!-- ============================================================
+  Part 6 · 实验配置与验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与验证</div>
+
+<h3 class="section-title">实验设置</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>维度</th><th>详情</th><th>披露状态</th></tr></thead>
+    <tbody>
+      <tr><td>测试数据集</td><td>NUS 5 相机测试集 + RAISE</td><td>论文披露</td></tr>
+      <tr><td>评估指标</td><td>bits per pixel (bpp)</td><td>论文披露</td></tr>
+      <tr><td>传统 baseline</td><td>QOI, PNG, WebP, FLIF, JPEG2000, JPEG-LS, JPEG-XL（共 7 个）</td><td>论文披露</td></tr>
+      <tr><td>学习型 baseline</td><td>L3C, RC, SReC, iVPF, iFlow, Near-Lossless, ArIB-BPS, DLPR（共 8 个，sRGB 实验）</td><td>论文披露</td></tr>
+      <tr><td>推理硬件</td><td>NVIDIA A100</td><td>论文披露</td></tr>
+    </tbody>
+  </table>
+</div>
+<p><em>表 2：实验配置总表。</em></p>
+
+<h3 class="section-title">主实验：Raw 图像无损压缩</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>Codec</th><th>Canon 1Ds MkIII<br>(14-bit)</th><th>Canon 600D<br>(14-bit)</th><th>Olympus EPL6<br>(12-bit)</th><th>Panasonic GX1<br>(12-bit)</th><th>Samsung NX2000<br>(12-bit)</th><th>RAISE<br>(14-bit)</th></tr></thead>
+    <tbody>
+      <tr><td>QOI</td><td>11.36</td><td>12.09</td><td>10.22</td><td>10.97</td><td>10.73</td><td>12.86</td></tr>
+      <tr><td>PNG</td><td>10.28</td><td>10.96</td><td>8.13</td><td>9.45</td><td>9.16</td><td>11.37</td></tr>
+      <tr><td>WebP</td><td>7.80</td><td>8.44</td><td>5.88</td><td>7.07</td><td>6.66</td><td>8.82</td></tr>
+      <tr><td>FLIF</td><td>7.82</td><td>8.34</td><td>6.12</td><td>7.02</td><td>6.86</td><td>8.86</td></tr>
+      <tr><td>JPEG2000</td><td>7.34</td><td>8.04</td><td>5.70</td><td>6.67</td><td>6.58</td><td>8.58</td></tr>
+      <tr><td>JPEG-LS</td><td>7.25</td><td>7.87</td><td>5.67</td><td>6.54</td><td>6.49</td><td>8.38</td></tr>
+      <tr><td>JPEG-XL</td><td>7.29</td><td>7.95</td><td>5.60</td><td>6.57</td><td>6.46</td><td>8.29</td></tr>
+      <tr><td><strong>RAWIC</strong></td><td><strong>6.79</strong></td><td><strong>7.47</strong></td><td><strong>5.11</strong></td><td><strong>5.99</strong></td><td><strong>5.83</strong></td><td><strong>7.80</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+<p><em>表 3：Raw 图像无损压缩性能对比（bpp，越低越好）。RAWIC 在全部 6 个数据集上一致最优。</em></p>
+
+<div class="callout"><strong>关键发现</strong>：RAWIC 平均比最强传统 codec JPEG-XL 降低 7.7% 码率。在 12-bit 相机上优势更大——Olympus EPL6 上比 JPEG-XL 低 9.6%（5.60→5.11 bpp），这直接体现了位深自适应的价值。</div>
+
+<h3 class="section-title">sRGB 扩展实验</h3>
+
+RAWIC 的框架不仅限于 raw 图像。将模型在 DIV2K 数据集上重新训练后，也可以用于 8-bit sRGB 图像压缩。在 DIV2K、CLIC、Kodak 三个测试集上，RAWIC 分别达到 7.54、6.42、8.47 bpp，均优于 L3C #Mentzer et al., 2019#、SReC #Cao et al., 2020#、iFlow #Zhang et al., 2021#、DLPR #Bai et al., 2024# 等方法，但优势幅度较小（与 DLPR 差距仅 0.9-1.5%）。
+
+<h3 class="section-title">消融实验</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>数据集</th><th>Bit-Depth Adaptive</th><th>Fixed Bit Depth</th><th>差距</th></tr></thead>
+    <tbody>
+      <tr><td>Canon 1Ds MkIII (14-bit)</td><td><strong>6.79</strong></td><td>8.78</td><td>+29.3%</td></tr>
+      <tr><td>Canon 600D (14-bit)</td><td><strong>7.47</strong></td><td>8.77</td><td>+17.4%</td></tr>
+      <tr><td>Olympus EPL6 (12-bit)</td><td><strong>5.11</strong></td><td>8.98</td><td>+75.7%</td></tr>
+      <tr><td>Panasonic GX1 (12-bit)</td><td><strong>5.99</strong></td><td>9.20</td><td>+53.6%</td></tr>
+      <tr><td>Samsung NX2000 (12-bit)</td><td><strong>5.83</strong></td><td>9.37</td><td>+60.7%</td></tr>
+      <tr><td>RAISE (14-bit)</td><td><strong>7.80</strong></td><td>9.29</td><td>+19.1%</td></tr>
+    </tbody>
+  </table>
+</div>
+<p><em>表 4：位深自适应消融。Fixed bit depth 对所有 patch 使用同一个位深（推测为 14 bit）。百分比表示 fixed 相对于 adaptive 的码率增加。</em></p>
+
+<div class="callout"><strong>消融发现</strong>：12-bit 相机获益最大（53-76%），因为 fixed model 将大量概率质量浪费在 12-bit 数据永远不会出现的 [4096, 16383] 区间。14-bit 相机虽然差距较小（17-29%），但仍显著——即使位深相同，图像内部不同区域的位深差异也能被 adaptive 模型捕获。</div>
+
+<h3 class="section-title">All-in-One vs Camera-Specific</h3>
+
+另一个反直觉的发现：跨相机联合训练的 all-in-one 模型在大多数数据集上优于为每个相机单独训练的 camera-specific 模型。Canon 1Ds MkIII 上降低 16.5%（7.91→6.79），Olympus EPL6 上降低 32.9%（6.79→5.11）。仅在 Samsung NX2000 上两者持平（5.83 vs 5.82），RAISE 上两者几乎持平（all-in-one 7.79 vs camera-specific 7.80，差距仅 0.1%）。这说明跨相机的知识共享确实提升了压缩性能。
+
+</div>
+
+<!-- ============================================================
+  Part 7 · 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发</div>
+
+<h3 class="section-title">RUNTIME 对比：压缩率的代价</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Codec</th><th>Canon 600D 编码</th><th>Canon 600D 解码</th><th>Olympus EPL6 编码</th><th>Olympus EPL6 解码</th></tr></thead>
+    <tbody>
+      <tr><td>PNG</td><td>4.55s</td><td>0.59s</td><td>4.56s</td><td>0.46s</td></tr>
+      <tr><td>JPEG-XL</td><td>6.08s</td><td>1.38s</td><td>6.62s</td><td>1.46s</td></tr>
+      <tr><td>FLIF</td><td>25.97s</td><td>9.36s</td><td>20.41s</td><td>9.36s</td></tr>
+      <tr><td><strong>RAWIC</strong></td><td><strong>45.7s</strong></td><td><strong>119.3s</strong></td><td><strong>37.1s</strong></td><td><strong>98.4s</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+<p><em>表 5：Raw 图像编解码时间对比（秒）。RAWIC 编码慢 7-8x、解码慢 67-86x（vs JPEG-XL）。</em></p>
+
+<div class="admonition warning">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    核心局限
+  </div>
+  <div class="admonition-content">
+    1. <strong>速度瓶颈</strong>：解码 119s/image（Canon 600D）使其完全不适合实时场景。作者明确承认这一局限，并将加速列为未来工作方向。
+    2. <strong>仅测试 RGGB pattern</strong>：其他 Bayer 排列（BGGR、GRBG、GBRG）未验证。
+    3. <strong>位深范围有限</strong>：训练和测试数据仅覆盖 12-14 bit，10-bit 和 16-bit 未涉及。
+    4. <strong>泛化性待验证</strong>：仅 5 台 NUS 相机 + RAISE 数据集，工业级应用（如自动驾驶、卫星遥感）的 raw 数据分布可能显著不同。
+  </div>
+</div>
+
+<h3 class="section-title">可操作的启发</h3>
+
+RAWIC 的核心贡献不只是压缩率数字，更在于一个方法论层面的洞察：<strong>当数据的统计特性具有已知的结构化变化（如可变位深）时，将这个变化作为显式条件注入熵模型，比让网络自己去"发现"这个变化更有效</strong>。
+
+这个思路可以迁移到其他场景：
+<ul>
+  <li><strong>医学图像</strong>：不同设备（CT、MRI）的动态范围不同，可用类似方式条件化</li>
+  <li><strong>科学成像</strong>：天文望远镜、电子显微镜的数据位深和噪声模型各异</li>
+  <li><strong>视频压缩</strong>：帧间 bit depth 或动态范围变化（如 HDR 内容）</li>
+</ul>
+
+<div class="callout"><strong>一句话总结</strong>：RAWIC 证明了"位深不是参数而是条件"——用 embedding 将位深信息注入熵模型，单一网络即可适配多相机多位深 raw 数据，且压缩率全面超越传统 codec。</div>
+
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Zheng-et-al.-2026">Zheng, C. et al. (2026). RAWIC: Bit-Depth Adaptive Lossless Raw Image Compression. <em>ICME 2026</em>. <a href="https://arxiv.org/abs/2603.28105" target="_blank">arXiv:2603.28105</a></li>
+      <li data-cite-key="He-et-al.-2022">He, D. et al. (2022). ELIC: Efficient Learned Image Compression with Unevenly Grouped Space-Channel Contextual Adaptive Coding. <em>CVPR 2022</em>. <a href="https://openaccess.thecvf.com/content/CVPR2022/html/He_ELIC_Efficient_Learned_Image_Compression_With_Unevenly_Grouped_Space-Channel_Contextual_CVPR_2022_paper.html" target="_blank">CVPR</a></li>
+      <li data-cite-key="Balle-et-al.-2018">Ballé, J. et al. (2018). Variational Image Compression with a Scale Hyperprior. <em>ICLR 2018</em>. <a href="https://arxiv.org/abs/1802.01436" target="_blank">arXiv:1802.01436</a></li>
+      <li data-cite-key="Salimans-et-al.-2017">Salimans, T. et al. (2017). PixelCNN++: Improving the PixelCNN with Discretized Logistic Mixture Likelihood and Other Modifications. <em>ICLR 2017</em>. <a href="https://arxiv.org/abs/1701.05517" target="_blank">arXiv:1701.05517</a></li>
+      <li data-cite-key="Alakuijala-et-al.-2019">Alakuijala, J. et al. (2019). JPEG XL Next-Generation Image Compression Architecture and Coding Tools. <em>SPIE 2019</em>. <a href="https://jpeg.org/jpegxl/" target="_blank">JPEG XL</a></li>
+      <li data-cite-key="Bai-et-al.-2024">Bai, Y. et al. (2024). Deep Lossy Plus Residual Coding for Lossless and Near-Lossless Image Compression. <em>IEEE TPAMI</em>. <a href="https://doi.org/10.1109/TPAMI.2023.3340656" target="_blank">DOI</a></li>
+      <li data-cite-key="Mentzer-et-al.-2019">Mentzer, F. et al. (2019). Practical Full Resolution Learned Lossless Image Compression. <em>CVPR 2019</em>. <a href="https://arxiv.org/abs/1811.06387" target="_blank">arXiv:1811.06387</a></li>
+      <li data-cite-key="Cao-et-al.-2020">Cao, S. et al. (2020). Lossless Image Compression through Super-Resolution. <em>arXiv</em>. <a href="https://arxiv.org/abs/2004.02872" target="_blank">arXiv:2004.02872</a></li>
+      <li data-cite-key="Zhang-et-al.-2021">Zhang, S. et al. (2021). iFlow: Numerically Invertible Flows for Efficient Lossless Compression via a Uniform Coder. <em>NeurIPS 2021</em>. <a href="https://arxiv.org/abs/2103.01451" target="_blank">arXiv:2103.01451</a></li>
+      <li data-cite-key="Zhang-et-al.-2021b">Zhang, Y. et al. (2021). Rethinking Noise Synthesis and Modeling in Raw Denoising. <em>ICCV 2021</em>. <a href="https://arxiv.org/abs/2107.13686" target="_blank">arXiv:2107.13686</a></li>
+      <li data-cite-key="Xu-et-al.-2019">Xu, X. et al. (2019). Towards Real Scene Super-Resolution with Raw Images. <em>CVPR 2019</em>. <a href="https://arxiv.org/abs/1905.12156" target="_blank">arXiv:1905.12156</a></li>
+      <li data-cite-key="Huang-et-al.-2022">Huang, H. et al. (2022). Towards Low Light Enhancement with Raw Images. <em>IEEE TIP</em>. <a href="https://doi.org/10.1109/TIP.2022.3142937" target="_blank">DOI</a></li>
+      <li data-cite-key="Punnappurath-and-Brown-2021">Punnappurath, A. & Brown, M.S. (2021). Spatially Aware Metadata for Raw Reconstruction. <em>WACV 2021</em>. <a href="https://arxiv.org/abs/2011.06994" target="_blank">arXiv:2011.06994</a></li>
+      <li data-cite-key="Nam-et-al.-2022">Nam, S. et al. (2022). Learning sRGB-to-Raw-RGB De-rendering with Content-Aware Metadata. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2203.08617" target="_blank">arXiv:2203.08617</a></li>
+      <li data-cite-key="Wang-et-al.-2023">Wang, Y. et al. (2023). Raw Image Reconstruction with Learned Compact Metadata. <em>CVPR 2023</em>. <a href="https://arxiv.org/abs/2303.01923" target="_blank">arXiv:2303.01923</a></li>
+    </ul>
+  </div>
+</div>
