@@ -1,0 +1,461 @@
+---
+title: "数字人论文精读（三十一）：Wan-Streamer，单 Transformer 端到端全双工交互"
+description: "深度解读阿里巴巴 Wan Team 如何在一个因果 Transformer 中统一建模文本/音频/视频的输入与输出，实现 ~200ms 模型侧延迟的实时全双工音视频交互"
+date: 2026-06-25T11:30:00
+created_at: 2026-06-25T11:30:00
+updated_at: 2026-06-25T11:30:00
+tags: [数字人, 全双工交互, 流式生成, 多模态基础模型, 实时系统]
+categories: [AI]
+subcategory: "数字人"
+sub_id: 1300
+hub: "digital-human-hub"
+mathjax: true
+arxiv_id: "2606.25041"
+hero_title: "Wan-Streamer"
+hero_sub: "arXiv 2026 · Alibaba Wan Team"
+hero_tagline: "单 Transformer 统一六路（文本/音频/视频 × 输入/输出），~200ms 模型延迟，25 FPS 全双工交互"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num b">~200ms</span><span class="label g">模型侧延迟</span></div>
+  <div class="stat"><span class="num">~550ms</span><span class="label">总交互延迟</span></div>
+  <div class="stat"><span class="num b">25 FPS</span><span class="label g">视频输出</span></div>
+  <div class="stat"><span class="num">160ms</span><span class="label">流式单元</span></div>
+</div>
+
+<div class="callout">
+  <strong>作者与机构</strong>：Wan Team, Alibaba Group。核心贡献者：Lianghua Huang（Self-Forcing 作者）、Zhifan Wu、Wei Wang、Yupeng Shi、Mengyang Feng、Junjie He、Chenwei Xie、Yu Liu、Jingren Zhou（资深负责人）。共 24 位贡献者。官网：<a href="https://wan-streamer.com/" target="_blank">wan-streamer.com</a>。
+</div>
+
+<!-- ============================================================
+  Part 1: 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">从级联管线到原生全双工</div>
+
+  人类与物理世界的交互本质上是流式和全双工的：我们不会先完成感知、再隔离推理、最后产出响应。相反，我们持续地观看、倾听、说话、手势、反应、暂停和打断——感知与表达在音视频时间尺度上重叠。构建具有相同交互模式的人工系统，对于具身助手、实时数字人、直播、交互式娱乐和可在线探索的世界模型越来越重要。#wan-streamer#
+
+  <div class="photo">
+    <img src="media/images/wan-streamer-2026/framework.webp" alt="Wan-Streamer 架构总览" loading="lazy">
+    <div class="cap">图 1：Wan-Streamer 架构总览。语言、音频和视频作为输入和输出在<strong>单个 Transformer</strong> 中建模，使用 block-causal attention 实现增量流式生成（来源：Wan-Streamer, Fig.1）</div>
+  </div>
+
+  <strong>核心矛盾：语音全双工系统不生成视觉，视觉生成系统不具备对话能力</strong>。截至 2026 年中，实时交互领域经历了从"级联优化"到"原生全双工"的范式转变。#moshi# Moshi（Kyutai Labs, 2024）开创了原生全双工语音对话，理论延迟 160ms；#gpt4o# GPT-4o Realtime API 将音频响应延迟降至 232-320ms；#seeduplex# Seeduplex（ByteDance）声称比前代降低 250ms endpointing 延迟。然而，这些系统本质上都是<strong>纯语音</strong>的——它们可以看和听，但回应只有语音和文本，不生成同步的视觉 agent。与此同时，#avatar-forcing# Avatar Forcing 实现了 ~500ms 的交互式头像反应，#self-forcing# Self-Forcing 实现了 17 FPS 的流式视频生成，但它们都不具备对话推理能力。
+
+  <strong>Wan-Streamer 的核心主张</strong>。本文认为，实时音视频交互不应被简化为"理解 + 生成"的拼接，而应设计为一个<strong>原生的全双工过程</strong>——感知、推理、说话、可见的倾听行为、打断处理和同步音视频生成在同一个因果流中联合学习。为此，Wan-Streamer 在单个 Transformer 中统一建模文本、音频、视频的输入与输出（六路闭环），模型侧响应延迟约 200ms，含 350ms 网络延迟的总交互延迟约 550ms，支持 25 FPS 视频输出。
+
+</div>
+
+<!-- ============================================================
+  Part 2: 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">为什么级联系统无法实现全双工</div>
+
+  传统实时对话系统采用级联架构：VAD（语音活动检测）→ ASR（语音识别）→ LLM（语言模型）→ TTS（语音合成）→ Avatar（数字人渲染）。这种管线存在三个根本性问题：(1) 模块边界引入累积延迟，通常总延迟在 1-3 秒；(2) 文本作为中间表示丢失了非语言信息（情绪、语调、表情）；(3) 基于轮次分割的 turn-taking 无法处理打断、重叠和插话等自然对话行为。#wan-streamer#
+
+  <h3 class="section-title">核心困难：全双工 ≠ 理解 + 生成</h3>
+
+  Wan-Streamer 指出，实时音视频交互不仅仅是多模态理解和多模态生成的并集。它具有三个内在约束，使得围绕离线编码器、双向视频解码器、轮次对话或事后音视频同步设计的系统无法通过工程修补恢复真正的低延迟全双工行为。
+
+  <strong>约束一：因果性（Causality）</strong>。任何时刻的生成只能依赖过去和当前的信息，不能窥探未来。这不仅是对 Transformer attention mask 的要求，更是对整个技术栈的约束——VAE 编码器、VAE 解码器、音频/视频编码器都必须是严格因果的，否则流式推理在物理上不可实现。
+
+  <strong>约束二：流式性（Streamability）</strong>。模型不能等待完整输入后再产生输出，每收到一个 160ms 的用户流式单元，就必须立即更新状态并产出对应的响应单元。这意味着所有组件的计算图必须在固定时间窗口内完成，且生成的 latent 必须能增量地追加到历史上下文中。
+
+  <strong>约束三：全双工性（Full-duplex）</strong>。输入和输出在同一时间轴上共存——agent 在生成自身响应的同时仍在消费用户的新观测。这要求模型内部不存在"轮流"机制，而是维护一个持续的、双向流动的交互状态。当用户在说话时，agent 应产生可见的倾听行为（注视转移、点头、微表情）；当 agent 在响应时，仍应感知用户的音视频反馈以支持打断和适应。
+
+  <div class="callout"><strong>关键洞察</strong>：将"何时响应""如何响应""是否打断""是否主动发言"等行为决策全部纳入可学习的概率模型，而非外部的 VAD、turn-taking 规则或状态机。这使得响应时序、主动倾听、打断处理等能力成为模型的内在属性，而非工程补丁。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 3: 模型架构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">一个 Transformer 统一六路</div>
+
+  Wan-Streamer 的架构设计遵循一条核心原则：<strong>整个技术栈从头到尾都是因果的</strong>。这不是在现有非因果模型上叠加流式推理的工程适配，而是从 VAE 到 Transformer 到解码器的每一层都重新设计为因果版本。
+
+  <h3 class="section-title">3.1 形式化：流式自回归过程</h3>
+
+  在第 $k$ 个流式单元中，用户观测被定义为三元组 $u_k = (u_k^{\mathrm{t}}, u_k^{\mathrm{a}}, u_k^{\mathrm{v}})$（语言、音频、视频），agent 响应同样为三元组 $y_k = (y_k^{\mathrm{t}}, y_k^{\mathrm{a}}, y_k^{\mathrm{v}})$。整个交互过程建模为：
+
+  <div class="mermaid">
+graph TD
+    subgraph Input["输入流 (用户)"]
+        Ut["文本 u_k^t"]
+        Ua["音频 u_k^a"]
+        Uv["视频 u_k^v"]
+    end
+    subgraph CausalVAE["因果 VAE"]
+        AEnc["因果编码器"]
+        ALat["连续 Latent"]
+    end
+    subgraph Transformer["Block-Causal Transformer"]
+        Emb["交错嵌入序列"]
+        BCA["Block-Causal Attention"]
+        NTP["Next-Token Prediction"]
+        CFM["Conditional Flow Matching"]
+    end
+    subgraph Output["输出流 (Agent)"]
+        Yt["文本 y_k^t"]
+        Ya["音频 y_k^a"]
+        Yv["视频 y_k^v"]
+    end
+    Ut --> Emb
+    Ua --> AEnc
+    Uv --> AEnc
+    AEnc --> ALat --> Emb
+    Emb --> BCA
+    BCA --> NTP --> Yt
+    BCA --> CFM --> Ya
+    BCA --> CFM --> Yv
+    style Input fill:#e3f2fd
+    style CausalVAE fill:#fff3e0
+    style Transformer fill:#f3e5f5
+    style Output fill:#e8f5e9
+  </div>
+
+  $$p_\theta(y_{1:K}\mid u_{1:K})=\prod_{k=1}^{K} p_\theta\!\left( y_k^{\mathrm{t}},y_k^{\mathrm{a}},y_k^{\mathrm{v}} \mid u_{\le k}^{\mathrm{t}},u_{\le k}^{\mathrm{a}},u_{\le k}^{\mathrm{v}}, y_{\lt k}^{\mathrm{t}},y_{\lt k}^{\mathrm{a}},y_{\lt k}^{\mathrm{v}} \right)$$
+
+  这个分解的关键在于：每个时间步 $k$ 内，$y_k^{\mathrm{t}}$、$y_k^{\mathrm{a}}$、$y_k^{\mathrm{v}}$ 是<strong>联合</strong>生成的，不进一步分解为串行依赖。三种模态的输出同时 conditioned on 相同上下文，它们之间的耦合通过共享的 Transformer 注意力实现。这对于全双工交互至关重要：如果语音和视觉是串行生成的，那么视觉总是滞后于语音，无法实现自然的唇形同步和表情-语调协同。
+
+  <h3 class="section-title">3.2 因果音频/视频 VAE</h3>
+
+  <strong>Motivation</strong>：VAE 是整个系统的基石，负责将原始音频波形和视频帧压缩为低维连续 latent 表示。如果使用非因果 VAE，即使 Transformer 本身是因果的，整个系统仍然会在编解码环节引入未来信息泄露或额外延迟。
+
+  <strong>Mechanism</strong>：#wan-streamer# Wan-Streamer 的音频 VAE 和视频 VAE 都是<strong>严格因果的</strong>：编码器的卷积和注意力操作只使用当前及之前的时间步信息，解码器同样只依赖已接收的 latent 来重建当前帧。这确保了在流式推理时，每收到一个新的音频片段或视频帧，编码器可以立即产出对应的 latent token，而不需要等待未来的数据。这些 VAE 是为流式场景专门训练的，而非复用现有的非因果 VAE。
+
+  <h3 class="section-title">3.3 Block-Causal Transformer</h3>
+
+  这是 Wan-Streamer 最核心的架构创新。序列的表示方式是<strong>交错的</strong>（interleaved）：视觉输入 token、音频输入 token、文本输入 token、视觉输出 token、音频输出 token、文本输出 token 按照时间顺序排列在同一条序列上。
+
+  <strong>Block-causal attention</strong>。与标准 causal attention（每个 token 只能 attend 到之前的 token）不同，block-causal attention 以流式单元为粒度进行因果掩码：同一个流式单元内的所有 token（包括用户输入和 agent 输出的各模态 token）可以互相 attend，但不同流式单元之间保持严格的因果顺序。设计动机是：在同一个 160ms 的时间窗口内，用户的语音、表情和文字以及 agent 的响应在语义上是同步的，允许它们互相注意有助于学习跨模态的同步关系；而跨时间窗口的因果约束则保证了流式推理的可行性。
+
+  <div class="callout"><strong>为什么联合建模能 Work</strong>：(1) 统一的因果上下文 $c_k$ 为所有模态提供共享语义锚点——语音生成时参考视觉上下文已在同一注意力空间中可用；(2) 联合训练使梯度同时流过所有模态损失，跨模态优化信号不被模块边界阻断；(3) Block-causal attention 允许同单元内跨模态 token 互注意，动态对齐语音和视觉节奏。</div>
+
+  <h3 class="section-title">3.4 条件流匹配（Conditional Flow Matching）</h3>
+
+  文本响应通过 next-token prediction 的交叉熵损失训练。音频和视频响应通过条件流匹配联合训练。对于模态 $m \in \{\mathrm{a}, \mathrm{v}\}$，线性插值路径定义为：
+
+  $$z_\tau^m = (1-\tau)z_0^m + \tau\epsilon^m, \qquad \frac{\partial z_\tau^m}{\partial\tau} = \epsilon^m - z_0^m$$
+
+  其中 $z_0^m$ 是从 VAE 编码器得到的 clean target latent，$\epsilon^m \sim \mathcal{N}(0, I)$ 是高斯噪声，$\tau \in [0, 1]$ 是流时间。这是一个<strong>线性插值路径</strong>（Rectified Flow 风格），速度场为常数向量场，使得 ODE solver 可以用更少步数精确积分。
+
+  联合流匹配损失为：
+
+  $$\mathcal{L}_{\mathrm{FM}}^m = \mathbb{E}_{\epsilon^m} \left\| f_\theta\!\left(z_\tau^{\mathrm{a}}, z_\tau^{\mathrm{v}}, c_k, \tau\right) - \frac{\partial z_\tau^m}{\partial\tau} \right\|_2^2$$
+
+  其中 $f_\theta$ 是统一的 block-causal Transformer，$c_k = \{u_{\le k}^{\mathrm{t}}, u_{\le k}^{\mathrm{a}}, u_{\le k}^{\mathrm{v}}, y_{\lt k}^{\mathrm{t}}, y_{\lt k}^{\mathrm{a}}, y_{\lt k}^{\mathrm{v}}\}$ 是 clean streaming context。三个关键设计要点：
+
+  <ul>
+    <li><strong>Cross-modal conditioning</strong>：$f_\theta$ 的输入同时包含两种模态的 noisy latent（$z_\tau^{\mathrm{a}}$ 和 $z_\tau^{\mathrm{v}}$），音频去噪可以看到视频 noisy 状态，反之亦然。这使得模型学到嘴型运动与语音韵律的同步、表情变化与语调变化的协同。</li>
+    <li><strong>Clean context</strong>：$c_k$ 是 clean 的，只有当前正在生成的 $z_\tau^m$ 是 noisy 的。这避免了噪声在历史上下文中的累积，保证长程交互的稳定性。</li>
+    <li><strong>耦合优化</strong>：同一个 $f_\theta$ 同时预测两种模态的速度场，音频生成和视频生成不是两个独立任务，而是在同一模型内联合优化的耦合过程。</li>
+  </ul>
+
+</div>
+
+<!-- ============================================================
+  Part 4: Training Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">三阶段渐进训练</div>
+
+  Wan-Streamer 的训练分为三个阶段，逐步从独立能力构建到端到端交互再到实时部署优化。
+
+  <h3 class="section-title">Stage 1：独立任务预训练</h3>
+
+  从预训练语言模型（#qwen# Qwen2.5 / Qwen3）初始化统一 Transformer，在其周围构建多模态接口（因果音频/视频编码器、因果 VAE），在混合数据上联合训练。
+
+  <strong>理解侧</strong>：图像理解、音频理解、视频理解、文本对话、ASR、TTS、音频对话等任务。目标是让因果编码器和 Transformer 学会将流式多模态观测转化为共享的因果上下文，同时保持与同规模 turn-based 对话模型相当的对话能力。
+
+  <strong>生成侧</strong>：图像生成、音频生成、视频生成、联合音视频生成等任务。目标是让同一个 Transformer 学会在因果 audio/video latent 空间中进行生成。
+
+  两类任务在预训练阶段就是<strong>混合训练</strong>的——感知、语言推理和 latent 生成需要在同一个序列模型中对齐，如果分开训练，后续的对齐成本会很高。
+
+  <h3 class="section-title">Stage 2：端到端交互训练</h3>
+
+  使用专门的<strong>双工交互数据</strong>（duplex interaction data），其中用户的文本/音频/视频输入和 agent 的文本/音频/视频输出被交错排列在同一条因果流中。这一阶段将 Stage 1 中学到的独立能力适配到目标实时交互场景。
+
+  模型必须学会七项关键能力：(1) 从当前用户观测即时更新状态；(2) 生成同步的语言、音频和视频响应；(3) 将生成的 clean latent 提交回历史以供后续使用；(4) 学习响应时序；(5) 学习主动倾听行为（非言语反馈）；(6) 学习打断处理；(7) 学习长上下文一致性（身份、场景状态、对话连贯性）。这些能力在与推理时完全相同的因果格式下学习，大大减少了 train-test mismatch。
+
+  <h3 class="section-title">Stage 3：低延迟蒸馏</h3>
+
+  将更强的教师模型（使用 classifier-free guidance + 更多 flow-matching solver steps）蒸馏为高效的部署学生模型。两个关键技术：
+
+  <strong>Rolling distillation</strong>：学生模型在连续流式单元上 rollout，并在自己生成的历史上训练。这模拟了推理时的真实条件——学生推理时也是在自身生成结果上逐步前进，而非总在 ground-truth 历史上进化。
+
+  <strong>Self-forcing with distribution matching</strong>：引用 #self-forcing# Self-Forcing（Huang et al., 2025）和 #dmd# Distribution Matching Distillation（Yin et al., 2024）的核心思想。在训练时将学生的生成结果作为后续步骤的条件输入，迫使学生学会在自己可能不完美的输出上继续生成。Distribution matching 确保学生轨迹分布在统计上与教师轨迹对齐。
+
+  <div class="callout"><strong>长程退化问题</strong>：如果没有 rolling distillation，学生在短时间片段上可能表现良好，但随着交互时间延长，误差逐渐累积导致质量崩溃。通过在训练时暴露于这种累积误差，学生学会了自我纠正和鲁棒的长程生成。</div>
+
+  <h3 class="section-title">训练配置披露</h3>
+
+  <table class="config-table">
+    <thead><tr><th>配置项</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td>基础语言模型</td><td>论文披露：Qwen2.5 / Qwen3</td></tr>
+      <tr><td>数据集名称与规模</td><td><strong>未披露</strong>：仅描述数据类型（理解/生成/交互），未给出 token 数或样本数</td></tr>
+      <tr><td>训练硬件（GPU 型号与数量）</td><td><strong>未披露</strong>：仅提及推理用两 GPU</td></tr>
+      <tr><td>优化器 + 学习率 + schedule</td><td><strong>未披露</strong></td></tr>
+      <tr><td>batch size + epoch + 训练时长</td><td><strong>未披露</strong></td></tr>
+      <tr><td>Transformer 参数量/层数/隐藏维度</td><td><strong>未披露</strong></td></tr>
+      <tr><td>VAE 架构细节（通道数/下采样倍率/latent 维度）</td><td><strong>未披露</strong></td></tr>
+      <tr><td>Flow-matching solver steps（教师/学生）</td><td><strong>未披露</strong>：仅提到教师用"更多步"，学生通过蒸馏减少</td></tr>
+      <tr><td>checkpoint 选择策略</td><td><strong>未披露</strong></td></tr>
+    </tbody>
+  </table>
+
+</div>
+
+<!-- ============================================================
+  Part 5: Inference Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Thinker-Performer 流式推理</div>
+
+  虽然 Wan-Streamer 在训练时是一个端到端的统一模型，但在推理部署时拆分为 <strong>thinker</strong> 和 <strong>performer</strong> 两个进程，分别运行在不同 GPU 上，以最大化硬件利用率和流水线重叠。
+
+  <div class="photo">
+    <img src="media/images/wan-streamer-2026/thinker-performer-overlap.webp" alt="Thinker-Performer 流式推理时序图" loading="lazy">
+    <div class="cap">图 2：Thinker-Performer 流式推理时序图。在 unit $k$，thinker 编码当前用户观测 $u_k$、更新 KV cache、解码前一步响应 latents $y_{k-1}$ 立即发射；performer 接收当前 KV slice 并仅运行 flow-matching solver 生成下一个 clean latent $y_k$，下一步返回给 thinker（来源：Wan-Streamer, Fig.2）</div>
+  </div>
+
+  <h3 class="section-title">5.1 Thinker 与 Performer 的职责分离</h3>
+
+  <strong>Thinker</strong> 负责：(1) 因果音频/视频编码——将当前用户观测转为嵌入；(2) 短路径 token-causal Transformer pass——进行语言预测和状态更新，产出当前 KV-cache slice；(3) 因果音频/视频解码——将 performer 返回的上一步 clean latent 渲染为可输出的音视频。
+
+  <strong>Performer</strong> 负责：(1) 接收 thinker 发来的 KV-cache slice，追加到全历史 KV cache；(2) 仅运行 flow-matching solver——生成下一步的音频/视频 clean latent（最耗时的计算）；(3) 将 clean latent 保留在本地，下一步发回给 thinker。
+
+  <h3 class="section-title">5.2 四路重叠调度</h3>
+
+  这一分离的关键洞察是：flow-matching solver 最耗时但不需要运行解码器；解码器需要算力但不需要运行 solver。将两者分配到不同 GPU 上，可以在时间上重叠。
+
+  在流式步骤 $k$ 的通信边界处，四路工作并行执行：
+  <ul>
+    <li><strong>当前帧感知/状态更新</strong>（Thinker）：编码 $u_k$，token-causal 解码产出 KV slice</li>
+    <li><strong>上一帧音视频解码</strong>（Thinker）：解码 performer 返回的 $y_{k-1}$ latents 为输出</li>
+    <li><strong>KV/latent 通信</strong>（双向）：Thinker → Performer 发送 KV slice；Performer → Thinker 发送上一步 latents</li>
+    <li><strong>下一帧 latent 去噪</strong>（Performer）：用收到的 KV cache 运行 flow-matching solver 生成 $y_k$</li>
+  </ul>
+
+  <h3 class="section-title">5.3 延迟分解与实时条件</h3>
+
+  <strong>实时吞吐条件</strong>：performer wall time + KV-cache/latent 通信开销 &lt; 160ms streaming unit。只要满足这一条件，系统就能实时运行。
+
+  <strong>模型侧信号到信号延迟 ~200ms</strong>，包含四个组件之和：
+  <ul>
+    <li>Encoding：因果音视频编码器处理 160ms 用户单元</li>
+    <li>Thinker state update：token-causal Transformer pass</li>
+    <li>Performer latent generation：flow-matching solver</li>
+    <li>Decoding：因果音视频解码器渲染输出</li>
+  </ul>
+
+  <strong>总交互延迟 ~550ms</strong> = 200ms model-side + 350ms bidirectional network。
+
+  <div class="callout"><strong>工程加速</strong>：#wan-streamer# 论文还使用了 CUDA graph capture、compilation、optimized kernels 和 KV-cache exchange 来进一步提升吞吐。Prefill 阶段 thinker 广播初始 KV cache 给 performer 以同步状态，之后每步仅传输增量 KV slice（非全量），减少通信带宽需求。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 6: 实验配置与验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">延迟对比与自然性分析</div>
+
+  Wan-Streamer 的实验部分主要聚焦于延迟对比和定性行为分析，而非传统的定量质量评估（如 FID/FVD/PESQ/WER）。
+
+  <h3 class="section-title">6.1 响应延迟对比（Tab.1）</h3>
+
+  <table class="config-table">
+    <thead><tr><th>系统</th><th>交互类型</th><th>用户可见延迟</th><th>其他指标</th><th>与 Wan-Streamer 差异</th></tr></thead>
+    <tbody>
+      <tr><td>Doubao Realtime Voice</td><td>speech ↔ speech</td><td>~1s 整体</td><td>~700ms 裸模型延迟</td><td>纯语音产品</td></tr>
+      <tr><td>Moshi</td><td>speech ↔ speech</td><td>N/R</td><td>160ms 理论 / 200ms 实际</td><td>纯语音，无视觉</td></tr>
+      <tr><td>GPT-4o Realtime</td><td>speech ↔ speech + 视听输入</td><td>protocol-dependent</td><td>232-320ms 音频 / ~800ms V2V</td><td>无视觉生成</td></tr>
+      <tr><td>Seeduplex</td><td>speech ↔ speech</td><td>N/R</td><td>-250ms endpoint vs Doubao</td><td>纯语音</td></tr>
+      <tr><td>Hume EVI 3</td><td>speech ↔ speech</td><td>0.9-1.4s web 实测</td><td>&lt;300ms 模型</td><td>纯语音</td></tr>
+      <tr><td>Gemini Live</td><td>speech ↔ speech</td><td>1.2-3.6s API</td><td>N/R</td><td>纯语音</td></tr>
+      <tr><td>Sesame web app</td><td>speech ↔ speech</td><td>0.8-1.2s web 实测</td><td>N/R</td><td>纯语音</td></tr>
+      <tr><td>Qwen3-Omni</td><td>音视频文输入 ↔ 语音文输出</td><td>N/R</td><td>首包 234-547ms</td><td>无同步 avatar</td></tr>
+      <tr><td>MiniCPM-o 4.5</td><td>音视频输入 ↔ 语音文输出</td><td>N/R</td><td>0.58s 首 token / RTF 0.20-0.27</td><td>无视觉 avatar</td></tr>
+      <tr style="background:#f0f7ff"><td><strong>Wan-Streamer</strong></td><td><strong>文/音/视 ↔ 文/音/视</strong></td><td><strong>~550ms 含网络</strong></td><td><strong>~200ms 模型 / 25FPS</strong></td><td><strong>单模型六路闭环</strong></td></tr>
+    </tbody>
+  </table>
+
+  论文强调：表格应按<strong>测量边界</strong>而非最小原始数字来阅读。部分公开系统报告的是模型内部、首包、endpointing 或 API TTFB 延迟，不一定对应远程用户感知的延迟。几个 omni-modal 系统接受音频或视频输入但不闭环同步视觉输出。
+
+  <h3 class="section-title">6.2 视觉 Agent 运行时对比（Tab.2）</h3>
+
+  论文将视觉系统分为两组：全循环/交互式数字人系统（更接近交互范围，但通常仅报告 FPS 或定性延迟声明）和 avatar 渲染/联合音视频生成组件（有更清晰的渲染侧指标，但假设外部对话/语音模块）。
+
+  <table class="config-table">
+    <thead><tr><th>系统</th><th>视觉交互范围</th><th>运行时指标</th><th>与 Wan-Streamer 差异</th></tr></thead>
+    <tbody>
+      <tr><td colspan="4"><em>全循环/交互式系统</em></td></tr>
+      <tr><td>Body of Her</td><td>端到端 humanoid agent</td><td>42ms/帧 @24FPS</td><td>初步研究，无部署级延迟</td></tr>
+      <tr><td>MIDAS</td><td>多模态数字人视频</td><td>实时逐帧</td><td>未披露绝对延迟</td></tr>
+      <tr><td>U-Mind</td><td>文本/语音/动作/视频交互</td><td>实时视频渲染（声称）</td><td>文本优先管线，延迟分解未公开</td></tr>
+      <tr><td>X-Streamer</td><td>开放式视频聊天</td><td>25FPS / 两 A100</td><td>未公开绝对延迟</td></tr>
+      <tr><td>LPM 1.0</td><td>角色表演引擎</td><td>低延迟因果流式</td><td>视觉引擎耦合外部 A2A</td></tr>
+      <tr><td>MAViD</td><td>音视频对话框架</td><td>无绝对延迟报告</td><td>模块化框架</td></tr>
+      <tr><td>M.I.O</td><td>交互式全模态 avatar</td><td>有界延迟设计讨论</td><td>多模块具身系统，无公开指标</td></tr>
+      <tr><td colspan="4"><em>Avatar 渲染/生成组件</em></td></tr>
+      <tr><td>VASA-1</td><td>音频驱动说话脸</td><td>40FPS / 170ms 前置</td><td>渲染器，无对话推理</td></tr>
+      <tr><td>TalkingMachines</td><td>FaceTime 式音频驱动视频</td><td>TTBC 实时 chunk 生成</td><td>依赖外部音频 LLM</td></tr>
+      <tr><td>StreamAvatar</td><td>流式说话/倾听 avatar</td><td>FFD 0.33-0.39s / 视频延迟 ~1.20s</td><td>渲染器，无统一对话模型</td></tr>
+      <tr><td>Avatar Forcing (Ki)</td><td>交互式头部反应</td><td>~500ms 反应 / 6.8× 加速</td><td>不生成对话语音</td></tr>
+      <tr><td>AvatarForcing (Cui)</td><td>一步流式说话 avatar</td><td>34ms/帧 / 0.51s A2V</td><td>强视觉指标，非对话</td></tr>
+      <tr><td>LiveTalk</td><td>多模态 avatar 视频</td><td>24.82FPS / 0.33s 首帧</td><td>用 Qwen3-Omni 做语音推理</td></tr>
+      <tr><td>Hallo-Live</td><td>文本驱动联合音视频 avatar</td><td>20.38FPS / 0.94s 延迟</td><td>文本驱动，不持续感知用户</td></tr>
+      <tr><td>OmniForcing</td><td>文本到音视频流式生成</td><td>TTFC ~0.7s / ~25FPS</td><td>首 chunk 延迟，非用户响应延迟</td></tr>
+      <tr style="background:#f0f7ff"><td><strong>Wan-Streamer</strong></td><td><strong>文/音/视感知对话 + 同步语音视频输出</strong></td><td><strong>25FPS / ~550ms / ~200ms</strong></td><td><strong>单因果 Transformer 闭环</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="section-title">6.3 自然性与全双工行为</h3>
+
+  <strong>自然性（Naturalness）</strong>：#wan-streamer# Wan-Streamer 在非说话区间持续生成可见行为——空闲状态下 agent 不会崩溃为冻结画像，而是保持身份、注视、姿态、呼吸和微妙面部运动。由于语音和视频 latents 在解码前从同一因果上下文预测，唇形运动、面部动态和韵律是原生同步的，而非事后修复。
+
+  <strong>打断与主动发言</strong>：全双工行为是从交错交互数据中<strong>学习</strong>得到的，而非仅靠手工 turn-taking 规则。在训练时，用户输入和 agent 输出被放在同一因果时间轴上，模型观察到人类何时继续、暂停、重叠、打断、让出或恢复。推理时，模型在生成自身响应的同时持续消费用户音视频，可在用户自然打断时停止、缩短或重定向响应。同一统一上下文还支持<strong>主动发言</strong>：当输入流中出现显著视觉事件、对象、表情或用户动作时，模型可以基于所见发起相关评论。
+
+  <h3 class="section-title">6.4 实验配置披露</h3>
+
+  <table class="config-table">
+    <thead><tr><th>配置项</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td>推理 GPU 数量</td><td>论文披露：2 GPU（Thinker + Performer）</td></tr>
+      <tr><td>推理 GPU 型号</td><td><strong>未披露</strong>（Tab.2 对比系统 X-Streamer 用 two A100 作为间接参考）</td></tr>
+      <tr><td>输出分辨率</td><td>论文披露：192p（v0.1 PoC）</td></tr>
+      <tr><td>流式单元时长</td><td>论文披露：160ms</td></tr>
+      <tr><td>视频帧率</td><td>论文披露：25 FPS</td></tr>
+      <tr><td>定量质量评估（FID/FVD/PESQ/WER）</td><td><strong>未提供</strong></td></tr>
+      <tr><td>消融实验</td><td><strong>未提供</strong></td></tr>
+      <tr><td>用户研究</td><td><strong>未提供</strong></td></tr>
+      <tr><td>长会话测试结果</td><td><strong>未提供</strong></td></tr>
+    </tbody>
+  </table>
+
+</div>
+
+<!-- ============================================================
+  Part 7: 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">实时交互基础模型的位置</div>
+
+  <h3 class="section-title">7.1 竞品全景对比</h3>
+
+  <table class="config-table">
+    <thead>
+      <tr>
+        <th>维度</th>
+        <th>Wan-Streamer</th>
+        <th>Moshi</th>
+        <th>GPT-4o Realtime</th>
+        <th>Qwen3-Omni</th>
+        <th>Avatar Forcing</th>
+        <th>级联系统</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>端到端程度</td>
+        <td>单 Transformer 六路</td>
+        <td>单模型语音双流</td>
+        <td>未公开</td>
+        <td>全模态理解+生成</td>
+        <td>单模型头部反应</td>
+        <td>VAD→ASR→LLM→TTS→Avatar</td>
+      </tr>
+      <tr>
+        <td>模型延迟</td>
+        <td>~200ms</td>
+        <td>~200ms</td>
+        <td>232-320ms</td>
+        <td>首包 234-547ms</td>
+        <td>~500ms</td>
+        <td>1-3s 累积</td>
+      </tr>
+      <tr>
+        <td>视觉输出</td>
+        <td>✅ 25FPS</td>
+        <td>❌</td>
+        <td>❌</td>
+        <td>❌</td>
+        <td>✅ 头部</td>
+        <td>✅ 依赖外部模块</td>
+      </tr>
+      <tr>
+        <td>对话推理</td>
+        <td>✅</td>
+        <td>✅</td>
+        <td>✅</td>
+        <td>✅</td>
+        <td>❌</td>
+        <td>✅（LLM 模块）</td>
+      </tr>
+      <tr>
+        <td>全双工</td>
+        <td>✅</td>
+        <td>✅ 语音</td>
+        <td>未明确</td>
+        <td>未明确</td>
+        <td>✅ 反应级</td>
+        <td>❌ 轮次</td>
+      </tr>
+    </tbody>
+  </table>
+
+  Wan-Streamer 的独特定位是：唯一在单一因果 Transformer 中闭环六路（文本/音频/视频 × 输入/输出）的系统，在同等延迟下额外提供同步视觉输出。
+
+  <h3 class="section-title">7.2 局限性与未来方向</h3>
+
+  <ul>
+    <li><strong>192p 输出分辨率</strong>：当前 v0.1 仅在初步 192p 分辨率上验证，定位为 proof of concept。论文声称"扩展到更高分辨率是直接的"，但未提供任何高分辨率实验数据。</li>
+    <li><strong>缺乏定量质量评估</strong>：全文仅有延迟对比表格，没有 FID、FVD、PESQ、WER 等生成质量指标。</li>
+    <li><strong>缺乏消融实验</strong>：未报告因果 VAE、block-causal attention、蒸馏、rolling distillation 各组件的独立贡献。</li>
+    <li><strong>关键实现细节缺失</strong>：VAE 架构、Transformer 规模、训练超参数、数据规模均未公开，独立复现极为困难。</li>
+    <li><strong>延迟度量不统一</strong>：Tab.1 和 Tab.2 大量标注"N/R"，说明跨系统的公平比较本身就很困难。</li>
+  </ul>
+
+  <h3 class="section-title">7.3 可操作启发</h3>
+
+  <ul>
+    <li><strong>流式性是建模约束而非服务优化</strong>：围绕离线编码器/双向解码器/轮次对话设计的系统无法通过工程修补恢复全双工行为——必须从一开始就设计因果性。</li>
+    <li><strong>统一模型 > 模块级联</strong>：将语言理解、语音生成、视觉生成放在同一个 Transformer 中联合训练，使跨模态同步成为训练的内在结果而非事后修复。</li>
+    <li><strong>Thinker-Performer 分离</strong>是一个值得借鉴的部署范式——在不改变模型语义的前提下，通过 KV-cache 交换将耗时计算分配到不同硬件上重叠执行。</li>
+    <li><strong>Rolling distillation + Self-forcing</strong> 是解决长程生成退化的有效策略：在训练时就暴露于自身生成的累积误差。</li>
+    <li><strong>Wan 系列的战略延伸</strong>：从离线视频生成（Wan2.1/2.2）到实时交互（Wan-Streamer），展示了视频生成基础模型向交互方向演进的清晰路径。</li>
+  </ul>
+
+</div>
+
+<!-- ============================================================
+  Sources
+  ============================================================ -->
+<div class="sources">
+  <h2>参考文献</h2>
+  <ul>
+    <li data-cite-key="wan-streamer"><a href="https://arxiv.org/abs/2606.25041" target="_blank">Wan-Streamer v0.1: End-to-end Real-time Interactive Foundation Models (Wan Team, Alibaba, arXiv 2606.25041, 2026)</a></li>
+    <li data-cite-key="moshi"><a href="https://arxiv.org/abs/2410.00037" target="_blank">Moshi: A Speech-Text Foundation Model for Real-time Dialogue (Défossez et al., Kyutai, EMNLP 2025)</a></li>
+    <li data-cite-key="gpt4o"><a href="https://openai.com/index/hello-gpt-4o/" target="_blank">GPT-4o / Realtime API (OpenAI, 2024)</a></li>
+    <li data-cite-key="seeduplex"><a href="https://arxiv.org/abs/2606.25041" target="_blank">Seeduplex: Native End-to-end Full-duplex Speech Interaction (ByteDance, 2025-2026)</a></li>
+    <li data-cite-key="qwen"><a href="https://qwenlm.github.io/" target="_blank">Qwen2.5 / Qwen3 Technical Reports (Qwen Team, Alibaba, 2025)</a></li>
+    <li data-cite-key="self-forcing"><a href="https://self-forcing.github.io/" target="_blank">Self Forcing: Bridging the Train-Test Gap in Autoregressive Video Diffusion (Huang et al., NeurIPS 2025 Spotlight)</a></li>
+    <li data-cite-key="avatar-forcing"><a href="https://arxiv.org/abs/2601.00664" target="_blank">Avatar Forcing: Real-Time Interactive Head Avatar Generation (Ki et al., CVPR 2026)</a></li>
+    <li data-cite-key="dmd"><a href="https://arxiv.org/abs/2311.18828" target="_blank">One-step Diffusion with Distribution Matching Distillation (Yin et al., 2024)</a></li>
+    <li data-cite-key="wan"><a href="https://arxiv.org/abs/2503.20314" target="_blank">Wan: Open and Advanced Large-Scale Video Generative Models (Wan Team, Alibaba, 2025)</a></li>
+    <li data-cite-key="diffusion-forcing"><a href="https://arxiv.org/abs/2407.01392" target="_blank">Diffusion Forcing: Next-token Prediction Meets Full-sequence Diffusion (Chen et al., 2024)</a></li>
+    <li data-cite-key="body-of-her"><a href="https://arxiv.org/abs/2412.00000" target="_blank">Body of Her: End-to-end Humanoid Agent (Ao et al., 2024)</a></li>
+    <li data-cite-key="x-streamer"><a href="https://arxiv.org/abs/2606.25041" target="_blank">X-Streamer: Open-ended Video Chat from a Portrait (2025)</a></li>
+  </ul>
+</div>
