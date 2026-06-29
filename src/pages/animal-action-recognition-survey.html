@@ -1,0 +1,290 @@
+---
+title: "动作识别系列（二）：动物动作识别——从数据稀缺到基础模型的破局之路"
+description: "动物动作识别/宠物行为理解全景导览：与人体动作识别的核心差异、15+ 数据集、跨物种姿态估计、ARTEMIS/MSQNet/V-JEPA 等 SOTA 方法、SuperAnimal/DeepLabCut 工具链、研究切入建议。"
+created_at: 2026-06-29T22:52:01
+updated_at: 2026-06-29T22:52:01
+tags: [动物动作识别, Animal Action Recognition, Animal Kingdom, SuperAnimal, DeepLabCut, 行为分析, 宠物AI]
+categories: [AI]
+subcategory: "动作识别"
+sub_id: 20
+hub: action-recognition-hub
+hero_title: "动物动作识别"
+hero_sub: "从数据稀缺到基础模型的破局之路"
+hero_tagline: "数据集 · 跨物种泛化 · 姿态估计 · 行为理解 · 工具链"
+---
+
+<div class="wrap">
+
+<div class="ch fade-in">
+  <div class="ch-label">系列导览 · 动物方向</div>
+  <div class="ch-title">为什么动物动作识别是一门完全不同的学问</div>
+  <p>上一篇我们梳理了人体动作识别的技术全景——从 Two-Stream CNN 到 VideoMAE 到 InternVideo。但当我们把镜头转向动物时，会发现一个尴尬的现实：<strong>人体动作识别的整套 pipeline 不能直接迁移</strong>。原因不仅是动物长得不一样，而是从数据底层到方法范式都存在结构性差异。</p>
+  <p>人体动作识别有 Kinetics-400（240k 视频）、有统一的 COCO 17 关键点骨架、有成熟的 MMPose + MMAction2 工具链。而动物动作识别呢？最大的数据集 MammalNet 只有 18K 视频（539 小时），物种间骨架拓扑差异巨大（猫 17 点 vs 鸟 22 点 vs 蛇完全没有四肢），标注还需要动物行为学家参与且需通过伦理审批（IACUC）。</p>
+  <p>这意味着动物动作识别必须走一条<strong>完全不同的路</strong>：更依赖迁移学习、更依赖合成数据、更依赖基础模型的零样本能力。本文系统梳理这个方向的方法、数据集和工具。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Problem Gap</div>
+  <div class="ch-title">动物 vs 人体动作识别：差异在哪</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>人体动作识别</th><th>动物动作识别</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>骨架拓扑</strong></td><td>17–25 关键点，COCO/H36M 统一</td><td>无统一拓扑；SMAL 提供四足参数化模型，但鸟类/爬行类/鱼类差异巨大</td></tr>
+        <tr><td><strong>数据规模</strong></td><td>Kinetics-700 百万级视频</td><td>最大 MammalNet 仅 539h（18K 视频），差一个数量级</td></tr>
+        <tr><td><strong>标注成本</strong></td><td>众包标注即可</td><td>需动物行为学家 + 伦理审批（IACUC），慢且贵</td></tr>
+        <tr><td><strong>物种多样性</strong></td><td>单一物种</td><td>长尾分布（Animal Kingdom 覆盖 850 物种 / 6 大类）</td></tr>
+        <tr><td><strong>遮挡模式</strong></td><td>主要是人-人/物-人遮挡</td><td>严重的多动物互遮挡、植被遮挡、外观相似导致 ID 混淆</td></tr>
+        <tr><td><strong>形态变化</strong></td><td>近似刚体比例</td><td>高度非刚体；蛇/鱼/鸟翅膀/鳍的运动模式完全不同</td></tr>
+        <tr><td><strong>视角</strong></td><td>室内相对固定</td><td>野外远距离、低分辨率、多角度</td></tr>
+        <tr><td><strong>行为定义</strong></td><td>动作类别相对明确</td><td>微动作（咀嚼 vs 吞咽）vs 宏观行为（觅食 vs 求偶），时间尺度跨 3 个数量级</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>核心挑战一句话</strong>：人体动作识别的核心矛盾是"如何高效建模时序"，而动物动作识别的核心矛盾是"<strong>数据太稀缺 + 物种太分散 + 骨架不统一</strong>"，方法设计的重心从"更好的时序建模"转向"更好的跨物种泛化和数据效率"。
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Taxonomy</div>
+  <div class="ch-title">子方向分类与代表工作</div>
+  <p>根据 2025 年综述 <em>A Review on Coarse to Fine-Grained Animal Action Recognition</em> #zia2025survey# 的框架，动物动作识别可以按行为粒度分为<strong>粗粒度（Coarse-Grained, CG）</strong>和<strong>细粒度（Fine-Grained, FG）</strong>两个层次。粗粒度指一般运动模式（行走、站立、奔跑），细粒度指行为的微妙细节（反刍、梳理、抓挠）。两者在算法设计上有显著差异——FG 需要更强的时序建模和更精细的姿态信息。</p>
+
+  <p>从技术路线上，动物动作识别已经形成 7 个清晰的子方向：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>子方向</th><th>核心任务</th><th>代表方法/数据集</th><th>应用场景</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>A. 行为分类</strong></td><td>短片段多标签/单标签动作识别</td><td>Animal Kingdom, MammalNet, ARTEMIS, MSQNet</td><td>通用动物学</td></tr>
+        <tr><td><strong>B. 时序行为定位</strong></td><td>长视频中定位行为起止时刻</td><td>Animal Kingdom Grounding, RaSeformer</td><td>医疗/神经科学</td></tr>
+        <tr><td><strong>C. 姿态驱动行为识别</strong></td><td>先估姿态/骨架，再做行为分类</td><td>APT-36K, SuperAnimal + 动作分类头</td><td>畜牧业、神经科学</td></tr>
+        <tr><td><strong>D. 3D 行为恢复</strong></td><td>估计动物 SMAL mesh + 3D 关键点</td><td>Animal3D, PRIMA, BigMaQ, SAM 3D Animal</td><td>神经科学、动画</td></tr>
+        <tr><td><strong>E. VLM/基础模型</strong></td><td>零样本/少样本视频问答与行为发现</td><td>BehaviorVLM, AnimalMotionCLIP, PlayClass</td><td>生态监测</td></tr>
+        <tr><td><strong>F. 畜牧传感</strong></td><td>IMU/可穿戴传感器 + 分类器</td><td>IBA-Net, AnimalFormer, RayPet</td><td>精准畜牧</td></tr>
+        <tr><td><strong>G. 多动物跟踪</strong></td><td>ReID + 跟踪 + 群体行为</td><td>CHIRP, BaboonLand, MammAlps</td><td>野生动物保护</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Datasets</div>
+  <div class="ch-title">关键数据集</div>
+  <p>数据集是动物动作识别的瓶颈。以下按重要性排序：</p>
+
+  <h3 class="section-title">行为识别数据集</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>年份</th><th>规模</th><th>物种覆盖</th><th>任务</th><th>关键特点</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Animal Kingdom</strong></td><td>CVPR 2022</td><td>50h 视频 + 30K clip + 33K 帧</td><td>850 物种 / 6 大类</td><td>grounding + 动作识别 + 姿态</td><td>领域标杆；多标签 140 动作类；物种最多样</td></tr>
+        <tr><td><strong>MammalNet</strong></td><td>CVPR 2023</td><td>18K 视频 / 539h</td><td>173 哺乳种 / 17 目 / 69 科</td><td>行为分类 + 组合零样本</td><td>最大规模；按生物分类学标注；12 类高层行为</td></tr>
+        <tr><td><strong>EgoPet</strong></td><td>2024</td><td>多场景</td><td>狗（宠物）</td><td>第一视角动作 + 交互</td><td>宠物视角；Yann LeCun 参与；机器人预训练</td></tr>
+        <tr><td><strong>BaboonLand</strong></td><td>2024</td><td>长期野外</td><td>狒狒</td><td>跟踪 + 行为识别</td><td>群体行为自动化</td></tr>
+        <tr><td><strong>MammAlps</strong></td><td>2025</td><td>多视角</td><td>阿尔卑斯野生哺乳</td><td>行为监测</td><td>多视角集成姿态+行为+跟踪</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">姿态估计数据集</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>年份</th><th>规模</th><th>物种</th><th>标注类型</th><th>关键特点</th></tr></thead>
+      <tbody>
+        <tr><td><strong>AP-10K</strong></td><td>NeurIPS 2021</td><td>10,015 图像</td><td>23 科 / 54 哺乳种</td><td>2D 17 关键点</td><td>首个大规模动物姿态基准；已集成 MMPose</td></tr>
+        <tr><td><strong>APT-36K / APTv2</strong></td><td>2022/2023</td><td>36K+ 帧</td><td>多科</td><td>2D 关键点 + 追踪</td><td>加入时间维度跟踪</td></tr>
+        <tr><td><strong>Animal3D</strong></td><td>ICCV 2023</td><td>3,379 图像</td><td>40 哺乳种</td><td>SMAL + 2D + 分割</td><td>首个 3D 网格基准</td></tr>
+        <tr><td><strong>BigMaQ</strong></td><td>ICLR 2026</td><td>750 段</td><td>恒河猴</td><td>3D mesh + 行为</td><td>3D 姿态显著提升行为识别 mAP</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      数据稀缺的严重程度
+    </div>
+    <div class="admonition-content">
+      <p>Animal Kingdom 覆盖 850 物种，但平均每个物种只有约 35 个动作片段——对于深度学习来说这几乎是零样本场景。80% 的物种缺乏 3D 标注或精细行为标注。这是动物动作识别方法必须依赖迁移学习和基础模型的根本原因。</p>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Methods</div>
+  <div class="ch-title">方法演进：从专用架构到基础模型</div>
+
+  <h3 class="section-title">阶段一：专用架构（2018–2022）</h3>
+  <p>早期工作直接将人体动作识别的方法（C3D, I3D, SlowFast）迁移到动物数据上。Animal Kingdom 的 CARe（Collaborative Action Recognition）模型是这一阶段的代表——它分离 general feature（跨物种共享）和 specific feature（物种特有），通过 collaborative learning 在 unseen species 上做泛化。</p>
+  <p>但核心问题是：<strong>人体模型的归纳偏置不适用于动物</strong>。SlowFast 在 Kinetics-400 上的双速通道设计基于人类运动的帧率特征，但动物的运动频率（蜂鸟翅膀 vs 大象行走）跨越的数量级远大于人类。</p>
+
+  <h3 class="section-title">阶段二：多模态融合与 CLIP 注入（2023–2024）</h3>
+  <p><strong>MSQNet</strong> #mondal2023msqnet#（ICCV 2023 Workshop）提出了 Actor-agnostic 多模态查询网络——不再为每种动物设计专用模型，而是用 CLIP 的文本编码器为每个动作类别生成可学习的多模态 query，通过 Transformer decoder 从视频编码器中提取相关信息。这种设计天然跨物种。</p>
+  <p><strong>ARTEMIS</strong> #artemis2025#（2025）更进一步：用 BLIP2 和 Llama 3 从视频帧中自动生成文本描述，将文本作为额外的模态注入分类器。在 Animal Kingdom 上达到 <strong>mAP 79.82</strong>（当前 SOTA），并通过遗传算法和强化学习动态调整集成权重。</p>
+
+  <h3 class="section-title">阶段三：视频基础模型 + 零样本（2024–至今）</h3>
+  <p>最新趋势不再专门设计模型，而是直接用<strong>冻结的视频基础模型</strong>做行为理解：</p>
+  <ul>
+    <li><strong>AnimalMotionCLIP</strong> #animalmotionclip2025# — 在 CLIP 空间中嵌入光流运动信息，提出 dense/semi/sparse 三种时间聚合策略。CV4Animals 2024 Best Paper。</li>
+    <li><strong>BehaviorVLM</strong> #behaviorvlm2026# — 无需下游微调，用多阶段 VLM 推理同时完成姿态估计和行为发现。这意味着<strong>不需要标注数据</strong>。</li>
+    <li><strong>PlayClass</strong> #playclass2026# — 用 Meta 的 V-JEPA 2.1 作为 backbone，加上 SAM 3 分割和手工运动特征，在鸡只玩耍行为分类上达到 F1=77.0。<strong>V-JEPA 2.1 是当前最强的视频编码器</strong>。</li>
+    <li><strong>Mamba-MSQNet</strong> — Selective State Space Model（Mamba）替代 Transformer，实现更高效的动物动作识别。</li>
+  </ul>
+
+  <div class="callout">
+    <strong>范式转移</strong>：从"设计动物专用模型"到"用通用视频基础模型 + prompt/微调适配"。这与人体动作识别的 InternVideo 趋势一致，但动物领域受益更大——因为基础模型的零样本能力直接缓解了数据稀缺问题。
+  </div>
+
+  <h3 class="section-title">姿态估计：从单物种到跨物种</h3>
+  <p>动物姿态估计是行为分析的关键前置步骤。过去每个物种需要单独标注和训练（用 DeepLabCut 标 50–200 帧再微调）。2024 年，Mathis Lab 发布了 <strong>SuperAnimal</strong> #superanimal2024#（Nature Communications 2024）——一个跨 45+ 物种的通用姿态估计基础模型，零样本即可使用，支持无监督视频自适应来消除抖动。如果效果不够，微调时比传统迁移学习高效 10–100 倍。</p>
+  <p>SuperAnimal 的意义在于：它让<strong>"姿态估计 → 行为识别"</strong>的 pipeline 在动物上变得可行。你可以先用 SuperAnimal 提取关节点序列，再用 ST-GCN 或 PoseConv3D 做行为分类。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Tools</div>
+  <div class="ch-title">工具链：从姿态估计到行为分析</div>
+  <p>动物动作识别没有像 MMAction2 这样的统一框架，但有成熟的工具组件：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工具</th><th>类型</th><th>功能</th><th>关键特性</th></tr></thead>
+      <tbody>
+        <tr><td><strong>DeepLabCut</strong></td><td>姿态估计工具箱</td><td>2D/3D markerless pose estimation</td><td>50–200 帧即可训练；支持多动物；最成熟的动物行为分析工具</td></tr>
+        <tr><td><strong>SuperAnimal</strong></td><td>基础模型</td><td>跨 45+ 物种零样本姿态估计</td><td>无需额外标注；支持视频自适应；微调比迁移学习高效 10–100×</td></tr>
+        <tr><td><strong>MMPose (AP-10K)</strong></td><td>姿态估计框架</td><td>OpenMMLab 体系动物姿态估计</td><td>已集成 AP-10K 数据集；可对接 MMAction2</td></tr>
+        <tr><td><strong>SMAL/SMAL+</strong></td><td>3D 形态模型</td><td>四足动物可变形 3D 网格</td><td>参数化模型；覆盖狮/虎/马/牛/河马/狗</td></tr>
+        <tr><td><strong>idtracker.ai</strong></td><td>多动物跟踪</td><td>大群体无标记动物追踪</td><td>鱼群/昆虫/鼠群；自动个体识别</td></tr>
+        <tr><td><strong>SAMannot</strong></td><td>标注工具</td><td>SAM2 视频实例分割</td><td>本地运行；专为动物行为追踪设计</td></tr>
+        <tr><td><strong>MMAction2</strong></td><td>动作识别框架</td><td>训练 + 评测 + 部署</td><td>可通过自定义数据适配动物行为</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      推荐 Pipeline
+    </div>
+    <div class="admonition-content">
+      <p>对于<strong>宠物/动物行为识别项目</strong>，推荐的完整 pipeline：</p>
+      <ol>
+        <li><strong>姿态提取</strong>：SuperAnimal（零样本）或 DeepLabCut（微调）提取关节点序列</li>
+        <li><strong>行为分类</strong>：用 ST-GCN/PoseConv3D（骨架路线）或 SlowFast/VideoMAE（RGB 路线）做分类</li>
+        <li><strong>零样本增强</strong>：用 AnimalMotionCLIP 或 BehaviorVLM 做开放词汇行为识别</li>
+        <li><strong>部署</strong>：通过 MMDeploy 导出 TensorRT / ONNX Runtime</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Community</div>
+  <div class="ch-title">学术社区与前沿阵地</div>
+  <p><strong>CV4Animals Workshop</strong>是动物行为视觉分析的核心学术阵地，自 2023 年起连续在 CVPR 举办，2026 年已是第 4 届。新工作优先关注此 Workshop + CVPR/ECCV/ICCV/NeurIPS 主会。</p>
+  <p>从趋势上看，2026 年的主题词是 <strong>3D + 大模型 + 生态落地</strong>：BigMaQ（猴 3D mesh + 行为，ICLR 2026）、SAM 3D Animal（Meta 标志性工作）、CHIRP（鸟类长期生态监测）、PRIMA（用 BioCLIP 解决长尾物种 3D mesh 恢复）。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Paper Pool</div>
+  <div class="ch-title">论文池速查</div>
+
+  <h4 class="ch-section">Must-Read（必读）</h4>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>论文</th><th>年份</th><th>Venue</th><th>核心贡献</th></tr></thead>
+      <tbody>
+        <tr><td>Animal Kingdom</td><td>2022</td><td>CVPR Oral</td><td>850 物种标杆数据集；CARe 基线模型</td></tr>
+        <tr><td>MammalNet</td><td>2023</td><td>CVPR</td><td>最大视频基准 539h；组合零样本评测</td></tr>
+        <tr><td>AP-10K</td><td>2021</td><td>NeurIPS D&B</td><td>首个大规模动物 2D 姿态基准</td></tr>
+        <tr><td>Animal3D</td><td>2023</td><td>ICCV</td><td>首个动物 3D mesh 数据集</td></tr>
+        <tr><td>AnimalMotionCLIP</td><td>2024</td><td>CV4Animals Best</td><td>CLIP + 光流运动嵌入</td></tr>
+        <tr><td>ARTEMIS</td><td>2025</td><td>IJMLC</td><td>多模态融合 SOTA mAP 79.82</td></tr>
+        <tr><td>SuperAnimal</td><td>2024</td><td>Nature Comm.</td><td>跨 45+ 物种零样本姿态估计</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 class="ch-section">Route-Representative（路线代表）</h4>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>论文</th><th>年份</th><th>方向</th><th>核心贡献</th></tr></thead>
+      <tbody>
+        <tr><td>MSQNet</td><td>2023</td><td>多模态</td><td>Actor-agnostic 多模态查询网络</td></tr>
+        <tr><td>BehaviorVLM</td><td>2026</td><td>基础模型</td><td>免微调 VLM 行为理解</td></tr>
+        <tr><td>PlayClass (V-JEPA)</td><td>2026</td><td>基础模型</td><td>V-JEPA 2.1 作为行为分类 backbone</td></tr>
+        <tr><td>BigMaQ</td><td>2026</td><td>3D</td><td>猴 3D mesh 数据集；3D 姿态提升 mAP</td></tr>
+        <tr><td>AniMer+</td><td>2025</td><td>3D</td><td>跨哺乳+鸟类的 Family-aware Transformer</td></tr>
+        <tr><td>AnimalFormer</td><td>2024</td><td>畜牧</td><td>精准畜牧多模态视觉框架</td></tr>
+        <tr><td>RayPet</td><td>2024</td><td>宠物传感</td><td>毫米波雷达宠物姿态/活动识别</td></tr>
+        <tr><td>Forecasting Motion in the Wild</td><td>2026</td><td>运动预测</td><td>类无关 motion trajectory token + 扩散预测</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Strategy</div>
+  <div class="ch-title">研究切入建议</div>
+  <p>考虑到你的背景（生成式 AI / 视频理解 / ComfyUI / 扩散模型 / LoRA），以下是三个最有差异化潜力的切入方向：</p>
+
+  <div class="info-box">
+    <h3>方向一：生成式数据增强（解决长尾物种数据稀缺）</h3>
+    <p>用扩散模型生成"长尾物种 + 细粒度行为"视频数据，解决 Animal Kingdom 中 80% 物种缺乏标注的核心瓶颈。基础工作是 AP-CAP、PRIMA、AniMer+ 的合成管道，你的 Stable Diffusion / LoRA 经验直接对口。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>方向二：视频基础模型 × 动物行为</h3>
+    <p>将 V-JEPA / CLIP / VideoMAE 等通用视频基础模型适配到宠物/特定物种行为识别。基于 AnimalMotionCLIP、BehaviorVLM 的路线，做 few-shot 个性化。这与你在钉钉的视频/AI Agent 方向可能直接相关。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>方向三：多模态宠物行为理解系统</h3>
+    <p>构建跨模态（视觉 + IMU/雷达 + 声音）的宠物日常行为理解系统。基础工作是 AnimalFormer、RayPet（雷达）、Beyond Discrete Categories（声音情感）。落地路径明确：智能家居/IoT 场景。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Summary</div>
+  <div class="ch-title">小结</div>
+  <p>动物动作识别是一个与人体动作识别看似相似但底层逻辑完全不同的领域。它的核心矛盾不是"如何更好地建模时空"，而是"如何在数据极度稀缺、物种极度分散的情况下做泛化"。当前的方法趋势已经明确：<strong>放弃设计专用架构，转向用视频基础模型 + 跨物种迁移 + 生成式数据增强来破局</strong>。</p>
+  <p>这个方向目前正处于从"小众领域"向"主流方向"过渡的临界点——CV4Animals Workshop 连续 5 届持续增长，SuperAnimal 发表在 Nature Communications，V-JEPA 开始被用作动物行为 backbone。如果你现在进入，正好赶上这个窗口期。</p>
+</div>
+
+<div class="chapter-nav">
+  <a href="action-recognition-hub.html" class="prev">← 动作识别系列总览</a>
+  <span class="sep">|</span>
+  <a href="action-recognition-landscape.html" class="prev">← 系列一：领域导览</a>
+  <span class="sep">|</span>
+  <span class="placeholder">论文精读（待发布）→</span>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="ng2022animalkingdom">Ng et al., "Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding," CVPR 2022. arXiv:2204.08129</li>
+    <li data-cite-key="chen2023mammalnet">Chen et al., "MammalNet: A Large-scale Video Benchmark for Mammal Recognition and Behavior Understanding," CVPR 2023. arXiv:2306.00576</li>
+    <li data-cite-key="yu2021ap10k">Yu et al., "AP-10K: A Benchmark for Animal Pose Estimation in the Wild," NeurIPS 2021. arXiv:2108.12617</li>
+    <li data-cite-key="xu2023animal3d">Xu et al., "Animal3D: A Comprehensive Dataset of 3D Animal Pose and Shape," ICCV 2023. arXiv:2308.11737</li>
+    <li data-cite-key="zia2025survey">Zia et al., "A Review on Vision-Centric Coarse to Fine-Grained Animal Action Recognition," Artificial Intelligence Review, 2026. arXiv:2506.01214</li>
+    <li data-cite-key="artemis2025">ARTEMIS: "Animal Recognition Through Enhanced Multimodal Integration System," International Journal of Machine Learning and Cybernetics, 2025.</li>
+    <li data-cite-key="mondal2023msqnet">Mondal et al., "Actor-Agnostic Multi-label Action Recognition with Multi-modal Query (MSQNet)," ICCV 2023 Workshop. arXiv:2307.10763</li>
+    <li data-cite-key="animalmotionclip2025">"AnimalMotionCLIP: Embedding Motion in CLIP for Animal Behavior Analysis," CV4Animals 2024 Best Paper.</li>
+    <li data-cite-key="behaviorvlm2026">"BehaviorVLM: Unified Finetuning-Free Behavioral Understanding with Vision-Language Reasoning," arXiv:2603.12176, 2026.</li>
+    <li data-cite-key="playclass2026">"PlayClass: Automated Play Behaviour Classification in Poultry," CV4Animals 2026. arXiv:2605.27304</li>
+    <li data-cite-key="superanimal2024">Ye et al., "SuperAnimal Pretrained Pose Estimation Models for Behavioral Analysis," Nature Communications, 2024.</li>
+    <li data-cite-key="egopet2024">Bar et al., "EgoPet: Egomotion and Interaction Data from an Animal's Perspective," arXiv:2404.09991, 2024.</li>
+    <li data-cite-key="bigmaq2026">"BigMaQ: A Big Macaque Motion and Animation Dataset," ICLR 2026. arXiv:2602.19874</li>
+    <li data-cite-key="raypet2024">"RayPet: Activity and Posture Recognition in Pets Using FMCW Mm-Wave Radar," arXiv:2404.15340, 2024.</li>
+    <li data-cite-key="animalformer2024">"AnimalFormer: Multimodal Vision Framework for Behavior-based Precision Livestock," arXiv:2406.09711, 2024.</li>
+  </ul>
+</div>
+
+</div>

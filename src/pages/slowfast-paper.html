@@ -1,0 +1,756 @@
+---
+title: "动作识别论文精读（二）：SlowFast Networks，双速通道的时空建模"
+description: "Feichtenhofer et al. ICCV 2019 提出的双速通道架构。Slow pathway 低帧率捕获空间语义，Fast pathway 高帧率+低通道容量捕获运动。抛弃光流，端到端训练，Kinetics-400 79.8% / AVA 27.3 mAP，刷新 SOTA。"
+date: 2026-06-29T22:51:20
+created_at: 2026-06-29T22:51:20
+updated_at: 2026-06-29T22:51:20
+tags: [SlowFast, 3D CNN, 视频理解, 动作识别, ICCV 2019]
+categories: ["AI"]
+subcategory: "动作识别"
+sub_id: 1010
+hub: action-recognition-hub
+notify: true
+mathjax: true
+hero_title: "SlowFast Networks"
+hero_sub: "ICCV 2019 · Facebook AI Research"
+hero_tagline: "把视频识别拆成两条速度不同的通道：慢速看空间，快速看运动"
+---
+
+<!-- =========================================================
+  Part 1 · 引言：为什么需要"双速"
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：视频识别为什么不能"一条路走到黑"</div>
+
+  <p>如果你做过视频动作识别，大概率会熟悉这条技术主线：把视频当作一个时空体（spatiotemporal volume），用 3D 卷积统一处理空间和时间两个维度。#i3d2017# 的 I3D、#r2plus1d2018# 的 R(2+1)D、#s3d2018# 的 S3D——这条路线在 2015 到 2018 年几乎统治了 Kinetics-400 排行榜。这些方法的核心假设是：空间和时间是"对等"的两个维度，所以应当用 3D 卷积对称地处理它们。</p>
+
+  <p>但 2019 年 Facebook AI 的 Christoph Feichtenhofer、Haoqi Fan、Jitendra Malik 和 Kaiming He 发表了一篇看上去"反常识"的论文 #slowfast2019#：<strong>SlowFast Networks for Video Recognition</strong>。他们的核心观察是——视频里的空间语义和时间运动根本不是同一种信号，应当用两条完全异构的通道分别处理：</p>
+
+  <ul>
+    <li><strong>Slow 通道</strong>：低帧率采样（30 fps 视频里只取 2 fps），重点处理空间语义，通道容量大（ResNet-50/101 全量）</li>
+    <li><strong>Fast 通道</strong>：高帧率采样（ω=8 倍密集的帧），重点处理运动细节，通道容量只有 Slow 的 1/8，整体计算量只占总体的 ~20%</li>
+  </ul>
+
+  <p>这种"双速"的设计在 Kinetics-400 上 from-scratch 训练（不用 ImageNet 预训练）就达到了 <strong>79.8% top-1</strong> #slowfast2019#，把当时所有方法（包括 I3D 72.1% 和 R(2+1)D 73.9%）甩开几个百分点。论文还顺便在 AVA 时空动作检测上刷新 SOTA，并赢得了 ActivityNet Challenge 2019 的 AVA 赛道冠军。#slowfast2019#</p>
+
+  <p>更优雅的是，整套方案<strong>不需要光流</strong>，完全端到端可学习。这与同时期需要预计算 optical flow 的 Two-Stream 系列工作形成鲜明对比——slowfast 的 Fast 通道用更密集的原始 RGB 帧替代了光流的信息。</p>
+
+  <p>这篇论文之所以成为视频识别领域的经典，一方面是设计哲学层面的洞察，另一方面是它催生了 PySlowFast 开源框架，成为后续 X3D #x3d2020#、MViT #mvit2021#、Video Swin Transformer 等工作的重要灵感来源。下面我们就从底层 motivation 开始，一步步把 SlowFast 拆开看。</p>
+
+  <div class="callout"><strong>本篇在系列中的位置</strong>：这是"动作识别"系列的第 2 篇论文精读。上一篇是 [[action-recognition-landscape | 动作识别综述篇]]，介绍了 3D CNN 整体谱系。本篇聚焦于 SlowFast 本身。读完本篇后建议接着看后续的 X3D / TimeSformer / Video Swin 等精读。</div>
+</div>
+
+<!-- =========================================================
+  Part 2 · 问题剖析
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：空间-时间为什么不对称？</div>
+
+  <h3 class="section-title">2.1 一个被忽视的统计事实</h3>
+
+  <p>在图像分类里我们习惯了"空间各向同性"假设：自然图像在水平、竖直、对角等所有方向上统计等价（#ruderman1994# 和 #huang1999# 的早期工作证实了这一点）。所以 2D CNN 用方形 kernel 横扫一切很合理。但视频是三维信号 \(I(x, y, t)\)，空间两维和时间一维<strong>不对等</strong>。</p>
+
+  <p>为什么？论文 #slowfast2019# 引用了两个关键观察：</p>
+
+  <ul>
+    <li><strong>慢速运动更常见</strong>。人在某一瞬间看到的大多数物体其实是静止的，运动只发生在局部。Weiss 等人 #weiss2002# 在贝叶斯框架下证明了"慢速运动先验"（slow movement prior）能解释人眼在孔径问题（aperture problem）中的视觉偏好：当我们看到一个边缘在移动，会倾向于把它解读为垂直于边缘方向，而不是带切向分量。</li>
+    <li><strong>空间语义慢变，运动快变</strong>。挥手的人一直还是"人"，不会在挥手的瞬间从人变成猫。但"挥手"这个动作可能在 0.5 秒内完成，跟"走路"切换得非常快。</li>
+  </ul>
+
+  <p>所以一个自然的设计思路是：用<strong>低帧率</strong>的"慢"通道抓空间语义（不需要那么快更新），用<strong>高帧率</strong>的"快"通道抓运动细节（需要密集采样）。这就是 SlowFast 的直觉起点。</p>
+
+  <h3 class="section-title">2.2 与 Two-Stream 的关键区别</h3>
+
+  <p>一看到"两条通路"，很多人会立刻想到经典的 Two-Stream 网络 #twostream2014#。但 SlowFast 在多个根本层面与 Two-Stream 不同：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>维度</th><th>Two-Stream (2014)</th><th>SlowFast (2019)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>两路关系</td><td>同构（结构相同）</td><td><strong>异构</strong>（通道容量差 8 倍）</td></tr>
+      <tr><td>第二路输入</td><td>Optical flow（手工设计）</td><td><strong>原始 RGB</strong>（端到端学习）</td></tr>
+      <tr><td>时间采样率</td><td>两路相同</td><td><strong>Fast 通道是 Slow 的 8 倍密集</strong></td></tr>
+      <tr><td>是否需要光流</td><td>是（需预计算）</td><td><strong>否</strong></td></tr>
+      <tr><td>计算开销</td><td>双流 ≈ 翻倍</td><td>Fast 仅 ≈ 总计算 20%</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>关键差异点是<strong>时间采样率不同</strong>。Two-Stream 的两个流处理同样的帧数，区别只在模态（RGB vs optical flow）。SlowFast 强调的是"不同的时间速度"——Fast 通道比 Slow 通道密集采样 ω=8 倍的帧。这是对"双流"思想的一次根本性扩展：<em>不只是模态不同，时间速度也应当不同</em>。</p>
+
+  <h3 class="section-title">2.3 生物学启发：视网膜 P/M 双通路</h3>
+
+  <p>论文还把这一设计与灵长类视觉系统的双通路做类比。视网膜神经节细胞中约 <strong>80%</strong> 是 Parvocellular（P-cells），约 <strong>15-20%</strong> 是 Magnocellular（M-cells）#livingstone1988#：</p>
+
+  <ul>
+    <li><strong>P-cells（副细胞）</strong>：空间分辨率高、颜色敏感、时间响应慢——负责精细形状和颜色识别。</li>
+    <li><strong>M-cells（主细胞）</strong>：时间频率高、对快速运动敏感、空间细节和颜色不敏感——负责运动检测和低光视觉。</li>
+  </ul>
+
+  <p>SlowFast 的 Fast 通道在设计上几乎复刻了 M-cells 的三个特点：</p>
+
+  <ol>
+    <li>通道容量小（占总计算 ~20%，对应 M-cells 的少数比例）</li>
+    <li>时间分辨率高（每层都保留密集时间特征，对应 M-cells 的高时间频率）</li>
+    <li>空间细节弱（消融实验证明 grayscale 输入几乎不掉点，对应 M-cells 的色盲特性）</li>
+  </ol>
+
+  <div class="quote">
+  <p>These studies found that in these cells, ~80% are Parvocellular (P-cells) and ~15-20% are Magnocellular (M-cells). The M-cells operate at high temporal frequency and are responsive to fast temporal changes, but not sensitive to spatial detail or color.</p>
+  <em>— #slowfast2019# 引言</em>
+  </div>
+
+  <p>不过作者也明确说："admittedly the analogy is rough and premature"——这是 rough 的类比，不是严格的生物学建模。但这个类比给工程设计提供了清晰的指导原则。</p>
+</div>
+
+<!-- =========================================================
+  Part 3 · 模型架构详解
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型架构详解：双通道如何协作</div>
+
+  <p>在搞清动机之后，我们看 SlowFast 的具体实现。论文给出了一个清晰的实例化（论文 Table 1 #slowfast2019#），基于 ResNet-50/101。</p>
+
+  <h3 class="section-title">3.1 整体 Pipeline</h3>
+
+  <p>先看一张从论文里提取的整体架构图。绿色代表 Fast 通道的高时间分辨率，橙色代表它的低通道容量。</p>
+
+  <div class="photo">
+    <img src="media/images/slowfast-paper/teaser_novid.webp" alt="SlowFast 整体架构图" loading="lazy">
+    <div class="cap">图 1：SlowFast 整体架构。Slow 通道低帧率、高通道；Fast 通道高帧率、低通道。横向连接在 res2/res3/res4/res5 之后把 Fast 信息注入 Slow #slowfast2019#</div>
+  </div>
+
+  <p>为了更清楚地展示数据流和融合点，我用 mermaid 重新画一张：</p>
+
+  {{< mermaid >}}
+graph TD
+  R["原始 64 帧 clip<br/>(30 fps × 2.13s)"] -->|"τ=16 采样<br/>(4 帧)"| S1
+  R -->|"τ/ω=2 采样<br/>(32 帧)"| F1
+  S1["Slow 输入<br/>T=4, 224×224"] --> S2["conv1<br/>1×7², 64ch"]
+  S2 --> S3["pool1<br/>1×3² max"]
+  S3 --> S4["res2<br/>×3 blocks<br/>(256,64)"]
+  S4 --> S5["res3<br/>×4 blocks<br/>(512,128)"]
+  S5 --> S6["res4<br/>×6 blocks<br/>(1024,256)"]
+  S6 --> S7["res5<br/>×3 blocks<br/>(2048,512)"]
+  S7 --> S8["GAP → 2048-d"]
+  F1["Fast 输入<br/>ωT=32, 224×224"] --> F2["conv1<br/>5×7², 8ch"]
+  F2 --> F3["pool1<br/>1×3² max"]
+  F3 --> F4["res2<br/>×3 blocks<br/>(32,8)"]
+  F4 --> F5["res3<br/>×4 blocks<br/>(64,16)"]
+  F5 --> F6["res4<br/>×6 blocks<br/>(128,32)"]
+  F6 --> F7["res5<br/>×3 blocks<br/>(256,64)"]
+  F7 --> F8["GAP → 256-d"]
+  S4 -.->|"Lateral"| S5
+  S5 -.->|"Lateral"| S6
+  S6 -.->|"Lateral"| S7
+  F4 -.->|"Lateral"| S4
+  F5 -.->|"Lateral"| S5
+  F6 -.->|"Lateral"| S6
+  F7 -.->|"Lateral"| S7
+  S8 --> C["concat 2048+256"]
+  F8 --> C
+  C --> FC["FC → K 类"]
+  {{< /mermaid >}}
+
+  <p>整张图的核心要点：</p>
+  <ul>
+    <li>两路从同一段原始视频采样，<strong>采样步长不同</strong>（τ=16 vs τ/ω=2）</li>
+    <li>两路的 backbone 都是 3D ResNet 变体，但通道数差 8 倍</li>
+    <li>Fast 通道通过<strong>横向连接</strong>（lateral connections）单向融合到 Slow 通道的每个 stage</li>
+    <li>最后两路各自 GAP → concat → 全连接分类</li>
+  </ul>
+
+  <h3 class="section-title">3.2 Slow 通道：低帧率抓空间</h3>
+
+  <p>Slow 通道的设计哲学很直接：把它当作"高质量图像识别器"，只是在时间维度上稀疏采样。</p>
+
+  <p><strong>采样配置</strong>：从 64 帧原始 clip 中每隔 τ=16 帧采样 1 帧，得到 T=4 帧输入。在 30 fps 视频下，4 帧覆盖约 2.13 秒，但只占原始视频每秒 2 帧——这是一条<strong>慢速</strong>通道。</p>
+
+  <p><strong>网络结构</strong>：论文 #slowfast2019# Table 1 给出了具体配置（基于 ResNet-50）：</p>
+
+  <ul>
+    <li>conv1: 1×7² kernel，64 通道（<strong>2D kernel，时间维度为 1</strong>）</li>
+    <li>pool1: 1×3² max pool</li>
+    <li>res2: 3 个 bottleneck blocks（输出 256，中间 64）</li>
+    <li>res3: 4 个 bottleneck blocks（512, 128）</li>
+    <li>res4: 6 个<strong>时空可分离</strong> blocks（1024, 256，[3×1², 1×3², 1×1²]）</li>
+    <li>res5: 3 个时空可分离 blocks（2048, 512）</li>
+    <li>GAP → 2048-d</li>
+  </ul>
+
+  <p>注意一个反直觉的设计选择：<strong>conv1 到 res3 都用 2D kernel</strong>，只有 res4、res5 用 3D kernel（带时间维度）。论文 #slowfast2019# 解释：当 τ=16 这么大时，早层小空间感受野内的时间相关性很弱；只有到 res4 这种大空间感受野的层，时间维度才显示出足够的运动信息。这与 R(2+1)D #r2plus1d2018# 和 S3D #s3d2018# 的"top-heavy"设计哲学一致。</p>
+
+  <h3 class="section-title">3.3 Fast 通道：高帧率抓运动</h3>
+
+  <p>Fast 通道是 SlowFast 最具特色的设计。它的输入帧数是 Slow 的 ω=8 倍（ωT=32 帧），但通道数只有 Slow 的 φ=1/8（最少到 8 通道）。</p>
+
+  <p><strong>采样配置</strong>：从 64 帧原始 clip 中每隔 τ/ω=2 帧采样 1 帧，得到 32 帧输入。注意 ωT=32 帧也覆盖约 2.13 秒，但每秒采 16 帧——这是一条<strong>快速</strong>通道。</p>
+
+  <p><strong>网络结构</strong>：</p>
+
+  <ul>
+    <li>conv1: <strong>5×7²</strong> kernel，8 通道（带时间维度）</li>
+    <li>pool1: 1×3² max</li>
+    <li>res2: 3 个时空可分离 blocks（输出 32，中间 8）</li>
+    <li>res3: 4 个 blocks（64, 16）</li>
+    <li>res4: 6 个 blocks（128, 32）</li>
+    <li>res5: 3 个 blocks（256, 64）</li>
+    <li>GAP → 256-d</li>
+  </ul>
+
+  <p>与 Slow 通道的两个关键差异：</p>
+
+  <div class="def-box">
+  <h3>Fast 通道的两个"不"原则</h3>
+  <ol>
+    <li><strong>不做时间下采样</strong>。从 conv1 到 res5，所有时间维度始终保持 ωT=32 帧。Fast 通道不进行时间池化或时间步长卷积。这样可以保留最细粒度的时间信息。</li>
+    <li><strong>每层都用非退化时间卷积</strong>。Slow 通道只有 res4、res5 用 3D kernel；Fast 通道从 conv1 开始每一层都有时间维度。论文 #slowfast2019# 解释：因为 Fast 通道的"时间 stride"小（τ/ω=2），每个时间步之间都有强相关性，3D kernel 都有用武之地。</li>
+  </ol>
+  </div>
+
+  <h3 class="section-title">3.4 横向连接：Fast 怎么"帮"Slow</h3>
+
+  <p>两路独立运行到结束显然不行——Fast 通道的信息需要传递给 Slow 通道，让分类器同时知道"是什么物体"和"在做什么动作"。这个连接就是 <strong>lateral connection</strong>。</p>
+
+  <p>Slow 通道的特征形状是 \(\{T, S^2, C\}\)，Fast 通道的特征形状是 \(\{\omega T, S^2, \phi C\}\)，两者时间维度和通道维度都不匹配。论文尝试了三种变换方式 #slowfast2019#：</p>
+
+  <div class="def-box">
+  <h3>三种 Lateral Connection 实现</h3>
+
+  <p><strong>(i) Time-to-channel (TtoC)</strong></p>
+  <p>把 \(\omega\) 帧"打包"到一个帧的通道维度：</p>
+  <p style="text-align:center">\(\{\omega T, S^2, \phi C\} \;\longrightarrow\; \{T, S^2, \omega \phi C\}\)</p>
+  <p>通过 reshape + transpose 实现。优点是保留所有时间信息；缺点是通道数扩了 ω 倍。</p>
+
+  <p><strong>(ii) Time-strided sampling (T-sample)</strong></p>
+  <p>从 Fast 特征中每隔 ω 帧采样 1 帧：</p>
+  <p style="text-align:center">\(\{\omega T, S^2, \phi C\} \;\longrightarrow\; \{T, S^2, \phi C\}\)</p>
+  <p>最简单；缺点是丢掉中间帧信息。</p>
+
+  <p><strong>(iii) Time-strided convolution (T-conv) — 默认</strong></p>
+  <p>用一个 5×1² kernel 的 3D 卷积，输出 2φC 通道，stride=ω：</p>
+  <p style="text-align:center">\(\text{Conv}_{5 \times 1^2, \text{stride}=\omega} : \{\omega T, S^2, \phi C\} \;\longrightarrow\; \{T, S^2, 2\phi C\}\)</p>
+  <p>可学习，灵活；在 K400 上取得最好结果。</p>
+  </div>
+
+  <p>横向连接的位置在每个 stage 之后（pool1 之后、res2 之后、res3 之后、res4 之后），与 FPN #fpn2017# 的设计哲学一致。论文实验发现<strong>单向</strong>融合（Fast → Slow）和双向融合效果相似，所以默认采用单向。</p>
+
+  <p>最终分类：两路各自 GAP → concat（2048-d + 256-d）→ 全连接层 → K 类。</p>
+
+  <h3 class="section-title">3.5 网络实例化对照</h3>
+
+  <p>下表是论文 Table 1 的精简版（基于 ResNet-50 backbone，ω=8, φ=1/8, τ=16）：</p>
+
+  <div class="table-wrap param-table">
+  <table>
+    <thead>
+      <tr><th>Stage</th><th>Slow 通道</th><th>Fast 通道</th><th>输出 T×S²</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>原始 clip</td><td>—</td><td>—</td><td>64×224²</td></tr>
+      <tr><td>data layer</td><td>stride 16, 1²</td><td>stride <strong>2</strong>, 1²</td><td>Slow: 4×224²<br/>Fast: 32×224²</td></tr>
+      <tr><td>conv1</td><td>1×7², 64ch</td><td><u>5×7²</u>, <strong>8ch</strong></td><td>Slow: 4×112²<br/>Fast: 32×112²</td></tr>
+      <tr><td>pool1</td><td>1×3² max</td><td>1×3² max</td><td>Slow: 4×56²<br/>Fast: 32×56²</td></tr>
+      <tr><td>res2</td><td>blocks(256,64)×3</td><td>blockt(32,<strong>8</strong>)×3</td><td>Slow: 4×56²×256<br/>Fast: 32×56²×32</td></tr>
+      <tr><td>res3</td><td>blocks(512,128)×4</td><td>blockt(64,16)×4</td><td>Slow: 4×28²×512<br/>Fast: 32×28²×64</td></tr>
+      <tr><td>res4</td><td>blockt(1024,256)×6</td><td>blockt(128,32)×6</td><td>Slow: 4×14²×1024<br/>Fast: 32×14²×128</td></tr>
+      <tr><td>res5</td><td>blockt(2048,512)×3</td><td>blockt(256,64)×3</td><td>Slow: 4×7²×2048<br/>Fast: 32×7²×256</td></tr>
+      <tr><td>final</td><td colspan="2">global avg pool → concat → fc</td><td># classes</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>注：`blockt` 是 [3×1², 1×3², 1×1²] 三层时空可分离残差块，`blocks` 是 [1×1², 1×3², 1×1²] bottleneck。带下划线的 kernel 表示有非退化时间维度。</p>
+</div>
+
+<!-- =========================================================
+  Part 4 · 设计选择与消融
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">关键设计选择与消融实验</div>
+
+  <p>SlowFast 的成功不是偶然。论文 #slowfast2019# 做了大量消融实验，验证了每一个关键超参的选择。本节聚焦三个最关键的设计决策。</p>
+
+  <h3 class="section-title">4.1 通道容量比例 φ=1/8：为什么 Fast 通道这么瘦？</h3>
+
+  <p>这是 SlowFast 设计哲学的精华——Fast 通道的通道容量选择。下面是论文 Table 4b 的完整消融 #slowfast2019#：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>配置</th><th>top-1</th><th>top-5</th><th>GFLOPs</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Slow-only</td><td>72.6</td><td>90.3</td><td>27.3</td><td>单独 Slow 通道</td></tr>
+      <tr><td>φ=1/4</td><td>75.6</td><td>91.7</td><td>54.5</td><td>Fast 通道较重</td></tr>
+      <tr><td><strong>φ=1/6</strong></td><td><strong>75.8</strong></td><td>92.0</td><td>41.8</td><td>最优 top-1</td></tr>
+      <tr><td><strong>φ=1/8</strong></td><td>75.6</td><td><strong>92.1</strong></td><td><strong>36.1</strong></td><td>默认配置（最优 top-5）</td></tr>
+      <tr><td>φ=1/12</td><td>75.2</td><td>91.8</td><td>32.8</td><td>更轻量</td></tr>
+      <tr><td>φ=1/16</td><td>75.1</td><td>91.7</td><td>30.6</td><td>更轻量</td></tr>
+      <tr><td>φ=1/32</td><td>74.2</td><td>91.3</td><td>28.6</td><td>极轻量（仅 +1.3 GFLOPs）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>几个关键观察：</p>
+
+  <ol>
+    <li><strong>所有 φ 值都比 Slow-only 好</strong>。即使 φ=1/32（Fast 通道只占 5% 总 FLOPs），仍比单独 Slow 通道高 1.6%。这说明 Fast 通道是"普惠性"设计，而不是"越大越好"。</li>
+    <li><strong>φ=1/8 是最优平衡点</strong>。它在精度和 FLOPs 之间取到了最佳 trade-off。φ=1/6 top-1 高 0.2% 但 FLOPs 多 16%。</li>
+    <li><strong>计算量大致与通道数平方成正比</strong>。3D 卷积 FLOPs ∝ C_in × C_out，所以从 φ=1/4 减到 φ=1/8，FLOPs 减半。Fast 通道"瘦"不是工程妥协，而是<strong>设计目标</strong>。</li>
+  </ol>
+
+  <p>这与 M-cells 在视网膜中占 ~15-20% 的比例形成精妙呼应：Fast 通道占总计算约 20%（论文 §3.2 明确提到 #slowfast2019#），M-cells 占视网膜神经节约 15-20%。<em>不是巧合，而是 SlowFast 把生物学比例翻译成了工程比例。</em></p>
+
+  <h3 class="section-title">4.2 Fast 通道的空间能力：到底要多弱？</h3>
+
+  <p>既然 Fast 通道的通道容量小，那它的空间建模能力也应该弱——但到底能弱到什么程度？论文 Table 4c 测试了 4 种弱化空间输入的方式：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Fast 输入</th><th>空间</th><th>top-1</th><th>top-5</th><th>GFLOPs</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>RGB（默认）</td><td>full</td><td>75.6</td><td>92.1</td><td>36.1</td></tr>
+      <tr><td>RGB, φ=1/4, half res</td><td>112×112</td><td>74.7</td><td>91.8</td><td>34.4</td></tr>
+      <tr><td><strong>Grayscale</strong></td><td>full</td><td><strong>75.5</strong></td><td><strong>91.9</strong></td><td>34.1</td></tr>
+      <tr><td>Time difference</td><td>full</td><td>74.5</td><td>91.6</td><td>34.2</td></tr>
+      <tr><td>Optical flow</td><td>full</td><td>73.8</td><td>91.3</td><td>35.1</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout"><strong>反直觉发现：</strong>把 Fast 通道从 RGB 改成 grayscale，top-1 几乎不掉（75.5 vs 75.6，差 0.1%）。这说明 Fast 通道<strong>确实不需要颜色</strong>，与 M-cells 对颜色不敏感的特性完全一致！</div>
+
+  <p>另一个反直觉点：<strong>手工设计的 optical flow 反而最差</strong>（73.8%）。这意味着让网络自己学"运动表示"，比直接喂给它人为设计的光流更好。这是 SlowFast 抛弃光流的重要实验依据。</p>
+
+  <h3 class="section-title">4.3 不需要光流：Fast 通道是光流的"可学习替代品"</h3>
+
+  <p>Two-Stream 系列工作（#twostream2014#、Feichtenhofer 2016 等）一直依赖预计算的 optical flow（FlowNet 2.0、TV-L1 等算法），存在三个问题：</p>
+
+  <ol>
+    <li><strong>需要额外存储</strong>：光流 ≈ RGB 大小，视频数据集光流存储开销很大</li>
+    <li><strong>不能端到端学习</strong>：光流是固定算法的输出，不能与分类器联合优化</li>
+    <li><strong>计算成本翻倍</strong>：两路都跑 3D/2D 网络 ≈ 翻倍</li>
+  </ol>
+
+  <p>SlowFast 的设计优雅地用 Fast 通道替代了光流：</p>
+
+  <ul>
+    <li>用更密集的 RGB 帧（ω=8 倍）替代光流携带的运动信息</li>
+    <li>Fast 通道轻量级（仅 ~20% 总计算）— 比两流结构更便宜</li>
+    <li>完全端到端，不需要预计算</li>
+  </ul>
+
+  <p>实验上，SlowFast 79.8% > Two-Stream I3D 75.7%（K400 #slowfast2019# Table 2）。在 AVA 上，SlowFast 用 Fast 通道提升 5.2 mAP，而 Two-Stream I3D 加光流只提升 1.1 mAP（#ava2018#）#slowfast2019#。Fast 通道在改善精度的同时<strong>避免了光流的所有问题</strong>。</p>
+
+  <h3 class="section-title">4.4 三种 Lateral Connection 横向对比</h3>
+
+  <p>论文 #slowfast2019# Table 4a 给了 lateral connection 的消融：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>配置</th><th>top-1</th><th>top-5</th><th>GFLOPs</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Slow-only</td><td>72.6</td><td>90.3</td><td>27.3</td></tr>
+      <tr><td>Fast-only</td><td>51.7</td><td>78.5</td><td>6.4</td></tr>
+      <tr><td>SlowFast (no lateral)</td><td>73.5</td><td>90.3</td><td>34.2</td></tr>
+      <tr><td>SlowFast (TtoC, sum)</td><td>74.5</td><td>91.3</td><td>34.2</td></tr>
+      <tr><td>SlowFast (TtoC, concat)</td><td>74.3</td><td>91.0</td><td>39.8</td></tr>
+      <tr><td>SlowFast (T-sample)</td><td>75.4</td><td>91.8</td><td>34.9</td></tr>
+      <tr><td><strong>SlowFast (T-conv)</strong></td><td><strong>75.6</strong></td><td><strong>92.1</strong></td><td>36.1</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>几个发现：</p>
+
+  <ul>
+    <li><strong>Fast-only 单独精度只有 51.7%</strong>——Fast 通道需要 Slow 通道的空间语义才能工作</li>
+    <li><strong>没有 lateral connection 也有提升</strong>（73.5% vs 72.6%），说明通道容量提升本身就有帮助</li>
+    <li><strong>T-conv 效果最好</strong>（75.6%），比 T-sample 高 0.2%</li>
+  </ul>
+
+  <div class="callout"><strong>整体精度/复杂度对比</strong>：论文 Figure 2 给出了 Slow vs SlowFast 在不同配置下的精度-复杂度曲线。下图显示 SlowFast（绿色）始终在 Slow-only（蓝色）上方，且 Fast 通道带来的额外 FLOPs 很小。</div>
+
+  <div class="photo">
+    <img src="media/images/slowfast-paper/figure_slow_vs_slowfast_final.webp" alt="Slow vs SlowFast 精度/复杂度 tradeoff" loading="lazy">
+    <div class="cap">图 2：Slow-only vs SlowFast 在 K400 上的精度/FLOPs 对比。绿色箭头表示加入 Fast 通道带来的提升，红色箭头表示 SlowFast 同时提升精度并降低 FLOPs #slowfast2019#</div>
+  </div>
+</div>
+
+<!-- =========================================================
+  Part 5 · 实验结果
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验结果：四大数据集 SOTA</div>
+
+  <p>SlowFast 在四个主要视频数据集上全面刷新 SOTA。下面逐一分析。</p>
+
+  <h3 class="section-title">5.1 Kinetics-400（动作分类，~240k 训练视频）</h3>
+
+  <p>Kinetics-400 #kinetics4002017# 是动作分类的"ImageNet"，包含 ~240k 训练视频和 20k 验证视频，400 个类别。</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>模型</th><th>flow</th><th>pretrain</th><th>top-1</th><th>top-5</th><th>GFLOPs×views</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>I3D #i3d2017#</td><td>—</td><td>ImageNet</td><td>72.1</td><td>90.3</td><td>108×N/A</td></tr>
+      <tr><td>Two-Stream I3D</td><td>✓</td><td>ImageNet</td><td>75.7</td><td>92.0</td><td>216×N/A</td></tr>
+      <tr><td>S3D-G #s3d2018#</td><td>✓</td><td>ImageNet</td><td>77.2</td><td>93.0</td><td>143×N/A</td></tr>
+      <tr><td>Nonlocal R50 #nonlocal2018#</td><td>—</td><td>ImageNet</td><td>76.5</td><td>92.6</td><td>282×30</td></tr>
+      <tr><td>Nonlocal R101</td><td>—</td><td>ImageNet</td><td>77.7</td><td>93.3</td><td>359×30</td></tr>
+      <tr><td>R(2+1)D #r2plus1d2018#</td><td>—</td><td>—</td><td>72.0</td><td>90.0</td><td>152×115</td></tr>
+      <tr><td>R(2+1)D</td><td>✓</td><td>—</td><td>73.9</td><td>90.9</td><td>304×115</td></tr>
+      <tr><td><strong>SlowFast 4×16, R50</strong></td><td>—</td><td>—</td><td>75.6</td><td>92.1</td><td><strong>36.1×30</strong></td></tr>
+      <tr><td><strong>SlowFast 8×8, R50</strong></td><td>—</td><td>—</td><td>77.0</td><td>92.6</td><td>65.7×30</td></tr>
+      <tr><td><strong>SlowFast 8×8, R101</strong></td><td>—</td><td>—</td><td>77.9</td><td>93.2</td><td>106×30</td></tr>
+      <tr><td><strong>SlowFast 16×8, R101</strong></td><td>—</td><td>—</td><td>78.9</td><td>93.5</td><td>213×30</td></tr>
+      <tr><td><strong>SlowFast 16×8, R101+NL</strong></td><td>—</td><td>—</td><td><strong>79.8</strong></td><td><strong>93.9</strong></td><td>234×30</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>几个核心数字：</p>
+
+  <ul>
+    <li><strong>79.8% top-1 创下新 SOTA</strong>，比之前的 Nonlocal R101（77.7%）高 2.1%</li>
+    <li><strong>所有 SlowFast 都 from scratch 训练</strong>（不用 ImageNet 预训练），而 I3D/Nonlocal 等都依赖 ImageNet 预训练</li>
+    <li><strong>在不用预训练的 from-scratch 设置下，SlowFast 79.8% 比 R(2+1)D+flow 73.9% 高 5.9 个百分点</strong>——这是慢快设计的纯贡献</li>
+    <li>计算成本上，<strong>SlowFast 4×16 R50 用 36.1 GFLOPs 达到 75.6%</strong>，比 Nonlocal R50（282 GFLOPs, 76.5%）FLOPs 少 87%</li>
+  </ul>
+
+  <h3 class="section-title">5.2 Kinetics-600（更大规模，~392k 视频）</h3>
+
+  <p>Kinetics-600 #kinetics6002018# 是 K400 的扩展版，~392k 训练视频，600 类。注意 K600 验证集与 K400 训练集有重叠，所以 SlowFast 在 K600 上<strong>没有用 K400 预训练</strong>。</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>模型</th><th>pretrain</th><th>top-1</th><th>top-5</th><th>GFLOPs×views</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>I3D</td><td>—</td><td>71.9</td><td>90.1</td><td>108×N/A</td></tr>
+      <tr><td>StNet-IRv2 RGB #stnet2018#</td><td>ImgNet+Kin400</td><td>79.0</td><td>N/A</td><td>N/A</td></tr>
+      <tr><td><strong>SlowFast 4×16, R50</strong></td><td>—</td><td>78.8</td><td>94.0</td><td>36.1×30</td></tr>
+      <tr><td><strong>SlowFast 8×8, R50</strong></td><td>—</td><td>79.9</td><td>94.5</td><td>65.7×30</td></tr>
+      <tr><td><strong>SlowFast 8×8, R101</strong></td><td>—</td><td>80.4</td><td>94.8</td><td>106×30</td></tr>
+      <tr><td><strong>SlowFast 16×8, R101</strong></td><td>—</td><td>81.1</td><td>95.1</td><td>213×30</td></tr>
+      <tr><td><strong>SlowFast 16×8, R101+NL</strong></td><td>—</td><td><strong>81.8</strong></td><td><strong>95.1</strong></td><td>234×30</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>SlowFast 16×8 R101+NL 在 K600 上达到 <strong>81.8% top-1</strong>，超过 StNet-IRv2 79.0%（ActivityNet Challenge 2018 冠军）。这说明 SlowFast 架构在大规模数据上有很好的可扩展性。</p>
+
+  <h3 class="section-title">5.3 Charades（长时多标签动作）</h3>
+
+  <p>Charades #charades2016# 是长时多标签动作数据集（视频约 30 秒），用 mAP 评估：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>模型</th><th>pretrain</th><th>mAP</th><th>GFLOPs×views</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CoViAR, R-50</td><td>ImageNet</td><td>21.9</td><td>N/A</td></tr>
+      <tr><td>MultiScale TRN</td><td>ImageNet</td><td>25.2</td><td>N/A</td></tr>
+      <tr><td>Nonlocal, R101 #nonlocal2018#</td><td>ImageNet+K400</td><td>37.5</td><td>544×30</td></tr>
+      <tr><td>STRG, R101+NL</td><td>ImageNet+K400</td><td>39.7</td><td>630×30</td></tr>
+      <tr><td>Slow-only (baseline)</td><td>K400</td><td>39.0</td><td>187×30</td></tr>
+      <tr><td><strong>SlowFast</strong></td><td>K400</td><td>42.1</td><td>213×30</td></tr>
+      <tr><td><strong>SlowFast +NL</strong></td><td>K400</td><td>42.5</td><td>234×30</td></tr>
+      <tr><td><strong>SlowFast +NL</strong></td><td>K600</td><td><strong>45.2</strong></td><td>234×30</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>SlowFast 比 Slow-only baseline 高 <strong>3.1 mAP</strong>，比之前的 SOTA STRG（39.7 mAP）高 2.4 mAP，<strong>同时 FLOPs 更少</strong>（234 vs 630）。这是 Fast 通道在长时多标签场景下的额外价值——Fast 通道的高时间分辨率对长动作建模很有帮助。</p>
+
+  <h3 class="section-title">5.4 AVA Action Detection（时空动作检测）</h3>
+
+  <p>AVA #ava2018# 是时空动作检测数据集，437 部电影，60 个原子动作。SlowFast 在 AVA v2.1 取得 <strong>27.3 val mAP</strong>，test mAP 27.1，并赢得 ActivityNet Challenge 2019 的 AVA 赛道冠军（ensemble 34.3 mAP）。</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>模型</th><th>flow</th><th>video pretrain</th><th>val mAP</th><th>test mAP</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>I3D #ava2018#</td><td>—</td><td>K400</td><td>14.5</td><td>—</td></tr>
+      <tr><td>I3D</td><td>✓</td><td>K400</td><td>15.6</td><td>—</td></tr>
+      <tr><td>ACRN, S3D</td><td>✓</td><td>K400</td><td>17.4</td><td>—</td></tr>
+      <tr><td>ATR, R50+NL</td><td>—</td><td>K400</td><td>20.0</td><td>—</td></tr>
+      <tr><td>ATR, R50+NL</td><td>✓</td><td>K400</td><td>21.7</td><td>—</td></tr>
+      <tr><td>9-model ensemble</td><td>✓</td><td>K400</td><td>25.6</td><td>21.1</td></tr>
+      <tr><td>I3D</td><td>—</td><td>K600</td><td>21.9</td><td>21.0</td></tr>
+      <tr><td><strong>SlowFast</strong></td><td>—</td><td>K400</td><td>26.3</td><td>—</td></tr>
+      <tr><td><strong>SlowFast</strong></td><td>—</td><td>K600</td><td>26.8</td><td>—</td></tr>
+      <tr><td><strong>SlowFast +NL</strong></td><td>—</td><td>K600</td><td>27.3</td><td><strong>27.1</strong></td></tr>
+      <tr><td><strong>SlowFast* +NL</strong></td><td>—</td><td>K600</td><td><strong>28.2</strong></td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>SlowFast 在 AVA 上的核心消融值得单独看（论文 Table 7 #slowfast2019#）：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>模型</th><th>T×τ</th><th>ω</th><th>mAP</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Slow-only, R50</td><td>4×16</td><td>—</td><td>19.0</td></tr>
+      <tr><td>SlowFast, R50</td><td>4×16</td><td>8</td><td><strong>24.2</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：在 AVA 上，<strong>仅靠加入 Fast 通道，Slow-only 19.0 → SlowFast 24.2 mAP，提升 +5.2 mAP（相对 +28%）</strong>。作为对比，Two-Stream I3D 加 optical flow 只提升 +1.1 mAP（14.5→15.6）。Fast 通道对时空动作检测的价值远超传统光流方法。</div>
+
+  <p>类别分析也很有启发（论文 Figure 4 #slowfast2019#）：</p>
+
+  <div class="photo">
+    <img src="media/images/slowfast-paper/AVA_acc_vs_classes_v3.webp" alt="AVA 各类别 AP 提升" loading="lazy">
+    <div class="cap">图 3：AVA 60 个类别的 AP 提升。黑色标注绝对提升最大的 5 个类别（hand clap +27.7, swim +27.4, run/jog +18.8, dance +15.9, eat +12.5），橙色标注相对提升最大的类别 #slowfast2019#</div>
+  </div>
+
+  <p><strong>提升最大</strong>的类别都是周期性/重复性动作（hand clap, swim, run, dance, eat）——这些恰好是 Fast 通道最擅长的"快速运动模式"。<strong>少数反而下降</strong>的类别（answer phone, lie/sleep, shoot）下降幅度都很小（<0.5 AP），可能是因为这些是相对静止或定义模糊的动作。</p>
+</div>
+
+<!-- =========================================================
+  Part 6 · 训练配置与工程实践
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">训练配置与工程实践</div>
+
+  <p>SlowFast 的训练配置是它能稳定训练 from scratch 的关键。论文 Appendix 给了详细超参数 #slowfast2019#：</p>
+
+  <h3 class="section-title">6.1 训练超参数披露表</h3>
+
+  <div class="table-wrap param-table">
+  <table>
+    <thead>
+      <tr><th>配置项</th><th>具体设置</th><th>披露状态</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>优化器</td><td>同步 SGD，momentum=0.9, weight decay=1e-4</td><td>论文披露</td></tr>
+      <tr><td>学习率 schedule</td><td>Half-period cosine: $\eta_n = \eta \cdot 0.5 [\cos(\frac{n}{n_{\max}}\pi) + 1]$</td><td>论文披露</td></tr>
+      <tr><td>Base learning rate (K400)</td><td>η=1.6</td><td>论文披露</td></tr>
+      <tr><td>Warmup</td><td>Linear, 8k iterations (K400), 1k (AVA)</td><td>论文披露</td></tr>
+      <tr><td>Batch size</td><td>8 clips/GPU × 128 GPUs = <strong>1024</strong> (K400)</td><td>论文披露</td></tr>
+      <tr><td>训练 epochs</td><td>256 (T≤4) / 196 (T>4) / 2× for K600</td><td>论文披露</td></tr>
+      <tr><td>BN statistics</td><td>在每个 8 clips 内计算</td><td>论文披露</td></tr>
+      <tr><td>Dropout</td><td>0.5（在 final classifier 前）</td><td>论文披露</td></tr>
+      <tr><td>初始化</td><td>He initialization</td><td>论文披露</td></tr>
+      <tr><td>训练硬件</td><td><strong>128 GPUs</strong> 同步 SGD</td><td>论文披露</td></tr>
+      <tr><td>数据增强（空间）</td><td>224×224 随机 crop，更短边 [256, 320] random scale，horizontal flip</td><td>论文披露</td></tr>
+      <tr><td>数据增强（时间）</td><td>随机采样 αT×τ 帧 clip</td><td>论文披露</td></tr>
+      <tr><td>推理配置</td><td>256×256 spatial，10 temporal clips × 3 crops = <strong>30 views</strong></td><td>论文披露</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 class="section-title">6.2 训练成本估算</h3>
+
+  <p>从论文 Appendix 的信息可以估算训练成本：</p>
+
+  <ul>
+    <li>硬件：128 GPUs (推测为 V100 32GB)</li>
+    <li>训练时长：~256 epochs × 60k iter / 1024 batch ≈ 几个 GPU-day</li>
+    <li>每个 iter 处理 1024 clips，每 clip 处理 64 帧</li>
+    <li>总训练 token 数：~240k K400 videos × 256 epochs = 60M+ samples</li>
+  </ul>
+
+  <p>对于资源有限的研究者：论文提到单 8-GPU 机器也能达到相近精度，但需要相应调整学习率。</p>
+
+  <h3 class="section-title">6.3 PySlowFast 开源框架</h3>
+
+  <p>论文最重要的"工程遗产"是 <strong>PySlowFast</strong> 框架 #slowfast2019#：</p>
+
+  <ul>
+    <li>仓库：https://github.com/facebookresearch/SlowFast</li>
+    <li>许可证：Apache 2.0</li>
+    <li>状态：活跃维护（截至 2024 年）</li>
+    <li>提供：完整训练 pipeline、K400/K600/Charades/AVA 复现脚本、Model Zoo 预训练权重、可视化工具</li>
+  </ul>
+
+  <p>PySlowFast 已经成为视频理解领域事实标准框架，是后续 X3D #x3d2020#、MViT #mvit2021# 等工作的代码基础。</p>
+
+  <h3 class="section-title">6.4 复现建议</h3>
+
+  <div class="admonition tip">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    复现 SlowFast 的关键 tips
+  </div>
+  <div class="admonition-content">
+  <ul>
+    <li><strong>多 GPU 训练</strong>：至少 8 GPU（论文用 128）。</li>
+    <li><strong>BN statistics 范围</strong>：必须用 8 clips 内的 BN statistics，不能用 global BN（这与图像 ResNet 不同）。</li>
+    <li><strong>warmup 关键</strong>：8k iter warmup 对稳定训练很重要，否则前期 loss 会发散。</li>
+    <li><strong>AMP 加速</strong>：可以用 mixed precision (fp16) 加速训练，论文附录没明确说但社区已广泛使用。</li>
+    <li><strong>checkpoint 间隔</strong>：建议每 5 epoch 保存一次，用于恢复中断的训练。</li>
+  </ul>
+  </div>
+  </div>
+
+  <h3 class="section-title">6.5 失败案例与局限</h3>
+
+  <p>虽然 SlowFast 在大多数类别上都超过 Slow-only，但 AVA 上有 3 个类别反而略低：</p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>类别</th><th>AP 变化</th><th>可能原因</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>answer phone</td><td>-0.1</td><td>数据样本少，定义模糊</td></tr>
+      <tr><td>lie/sleep</td><td>-0.2</td><td>动作慢，Fast 通道优势小</td></tr>
+      <tr><td>shoot</td><td>-0.4</td><td>需要长程上下文</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>整体上这些下降幅度都 < 0.5 AP，远小于 5.2 mAP 的总体提升。这反映了一个普遍现象：<strong>Fast 通道对周期性/快速动作帮助大，对慢速/静态动作帮助小</strong>。</p>
+
+  <div class="admonition warning">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    未在论文中明确讨论的局限
+  </div>
+  <div class="admonition-content">
+  <ul>
+    <li><strong>训练资源需求高</strong>：128 GPU 训练 from scratch 是一道高墙，单机复现要小心调整 LR。</li>
+    <li><strong>超参依赖经验</strong>：φ=1/8, ω=8, τ=16 是经验值，没有强理论保证。</li>
+    <li><strong>对极细粒度时间定位不擅长</strong>：Fast 通道擅长"模式"，对"时刻点"不敏感。</li>
+    <li><strong>无端到端时空定位能力</strong>：AVA 任务需要外接 Faster R-CNN 做 person detection，SlowFast 只做 action classification。</li>
+  </ul>
+  </div>
+</div>
+
+<!-- =========================================================
+  Part 7 · 影响与启发
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">影响与启发：SlowFast 在视频识别谱系中的位置</div>
+
+  <h3 class="section-title">7.1 与 3D CNN 演进的对比</h3>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>方法</th><th>年份</th><th>核心思路</th><th>K400 top-1</th><th>特征</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>C3D</td><td>2015</td><td>3×3×3 3D kernel</td><td>N/A (UCF/HMDB)</td><td>统一时空</td></tr>
+      <tr><td>I3D</td><td>2017</td><td>Inception inflated to 3D</td><td>72.1 (ImageNet)</td><td>统一时空</td></tr>
+      <tr><td>Two-Stream</td><td>2014</td><td>RGB + optical flow</td><td>—</td><td>双模态同构</td></tr>
+      <tr><td>R(2+1)D</td><td>2018</td><td>2D + 1D 分解</td><td>72.0 (scratch)</td><td>分解卷积</td></tr>
+      <tr><td>S3D</td><td>2018</td><td>top-heavy 拓扑</td><td>69.4 (scratch)</td><td>拓扑分离</td></tr>
+      <tr><td>Nonlocal R101</td><td>2018</td><td>3D + non-local</td><td>77.7 (ImageNet)</td><td>长程依赖</td></tr>
+      <tr><td><strong>SlowFast</strong></td><td><strong>2019</strong></td><td><strong>异构双速通道</strong></td><td><strong>79.8 (scratch)</strong></td><td><strong>时间速度异构</strong></td></tr>
+      <tr><td>X3D</td><td>2020</td><td>渐进式扩展 2D</td><td>79.1 (scratch)</td><td>多轴扩展</td></tr>
+      <tr><td>MViT</td><td>2021</td><td>多尺度 Transformer</td><td>81.3 (scratch)</td><td>多尺度 attention</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>SlowFast 在这条谱系中扮演了"思想转折"的角色：它揭示了 3D CNN"对称处理空间-时间"的局限，提出<strong>异构双速</strong>作为替代范式。这影响了后续所有视频识别架构的设计哲学。</p>
+
+  <h3 class="section-title">7.2 后续工作的直接继承</h3>
+
+  <ul>
+    <li><strong>X3D #x3d2020#</strong>：Feichtenhofer 本人（SlowFast 一作）2020 年的延续工作，沿时间/空间/宽度/深度/帧率等多个轴逐步扩展一个 tiny 2D 网络到 video 域。在 K400 上达到 79.1% top-1，FLOPs 比 SlowFast 更少。</li>
+    <li><strong>MViT #mvit2021#</strong>：Haoqi Fan（SlowFast 二作）2021 年提出的多尺度视觉 Transformer，把 SlowFast 的"多尺度时间建模"思想引入 Transformer。在 K400 上达到 81.3%，无需大规模预训练。</li>
+    <li><strong>Video Swin Transformer #videoswin2022#</strong>：层级化视频 Transformer，借鉴 SlowFast 的 hierarchical 特征设计。</li>
+    <li><strong>Audiovisual SlowFast</strong>：把双速思想扩展到音视频融合。</li>
+  </ul>
+
+  <h3 class="section-title">7.3 可操作启发</h3>
+
+  <p>从 SlowFast 我们能学到哪些设计原则？</p>
+
+  <div class="callout"><strong>启发 1：异构设计 > 统一设计</strong>。当数据有不同性质的子模态时（运动 vs 外观、空间 vs 时间），用专门的网络处理不同的子模态，比一个统一网络更有效。</div>
+
+  <div class="callout"><strong>启发 2：轻量不等于弱</strong>。Fast 通道只有 1/8 通道、20% 计算，但它对总精度的贡献可达 3-5%。这说明"小而专"的网络比"大而泛"的网络更高效。</div>
+
+  <div class="callout"><strong>启发 3：可学习表示 > 手工设计</strong>。Fast 通道的 grayscale / time difference 都比 optical flow 好，说明让网络自己学运动表示比喂给它人为设计的光流更好。</div>
+
+  <div class="callout"><strong>启发 4：生物学类比有时能指导工程</strong>。P/M cells 的比例 (80/20) 给了 φ=1/8 一个优美的理论支撑。在其他领域，也可以从神经科学/认知科学找灵感。</div>
+
+  <h3 class="section-title">7.4 适合阅读的下一篇文章</h3>
+
+  <ul>
+    <li>想看 SlowFast 一作后续工作：[[x3d-paper | X3D 论文精读（待补）]]</li>
+    <li>想看 SlowFast 思想在 Transformer 上的延伸：[[mvit-paper | MViT 论文精读（待补）]]</li>
+    <li>想看更基础的 3D CNN 综述：[[action-recognition-landscape | 动作识别综述]] 和 [[tsn-paper | TSN 论文精读（待补）]]</li>
+    <li>想看其他动作识别经典：[[i3d-paper | I3D 论文精读（待补）]] / [[r2plus1d-paper | R(2+1)D 论文精读（待补）]]</li>
+  </ul>
+
+  <p>SlowFast 不仅是一篇工程 paper，它代表了一种设计哲学：<em>承认数据的内在非对称性，把非对称性作为设计输入而不是包袱</em>。这个思想在 3D CNN 时代是颠覆性的，在 Transformer 时代也仍在被借鉴。</p>
+</div>
+
+<!-- =========================================================
+  参考来源
+  ========================================================= -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="review-box">
+  <h3>核心论文</h3>
+  <ul>
+    <li><strong>SlowFast 论文</strong>：Feichtenhofer et al. 2019，ICCV 2019 Oral</li>
+    <li><strong>代码</strong>：https://github.com/facebookresearch/SlowFast</li>
+    <li><strong>后续</strong>：X3D (CVPR 2020), MViT (ICCV 2021), Video Swin (CVPR 2022)</li>
+  </ul>
+  </div>
+
+  <div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="slowfast2019">Feichtenhofer, C., Fan, H., Malik, J., & He, K. (2019). <em>SlowFast Networks for Video Recognition</em>. ICCV 2019. <a href="https://arxiv.org/abs/1812.03982" target="_blank">arXiv:1812.03982</a> · <a href="https://github.com/facebookresearch/SlowFast" target="_blank">PySlowFast Code</a></li>
+    <li data-cite-key="i3d2017">Carreira, J., & Zisserman, A. (2017). <em>Quo Vadis, Action Recognition? A New Model and the Kinetics Dataset</em>. CVPR 2017. <a href="https://arxiv.org/abs/1705.07750" target="_blank">arXiv:1705.07750</a></li>
+    <li data-cite-key="twostream2014">Simonyan, K., & Zisserman, A. (2014). <em>Two-Stream Convolutional Networks for Action Recognition in Videos</em>. NIPS 2014. <a href="https://arxiv.org/abs/1406.2199" target="_blank">arXiv:1406.2199</a></li>
+    <li data-cite-key="r2plus1d2018">Tran, D., Wang, H., Torresani, L., Ray, J., LeCun, Y., & Paluri, M. (2018). <em>A Closer Look at Spatiotemporal Convolutions for Action Recognition</em>. CVPR 2018. <a href="https://arxiv.org/abs/1711.11248" target="_blank">arXiv:1711.11248</a></li>
+    <li data-cite-key="s3d2018">Xie, S., Sun, C., Huang, J., Tu, Z., & Murphy, K. (2018). <em>Rethinking Spatiotemporal Feature Learning: Speed-Accuracy Trade-offs in Video Classification</em>. ECCV 2018. <a href="https://arxiv.org/abs/1712.04851" target="_blank">arXiv:1712.04851</a></li>
+    <li data-cite-key="nonlocal2018">Wang, X., Girshick, R., Gupta, A., & He, K. (2018). <em>Non-local Neural Networks</em>. CVPR 2018. <a href="https://arxiv.org/abs/1711.07971" target="_blank">arXiv:1711.07971</a></li>
+    <li data-cite-key="kinetics4002017">Kay, W., et al. (2017). <em>The Kinetics Human Action Video Dataset</em>. <a href="https://arxiv.org/abs/1705.06950" target="_blank">arXiv:1705.06950</a></li>
+    <li data-cite-key="kinetics6002018">Carreira, J., et al. (2018). <em>A Short Note about Kinetics-600</em>. <a href="https://arxiv.org/abs/1808.01340" target="_blank">arXiv:1808.01340</a></li>
+    <li data-cite-key="charades2016">Sigurdsson, G. A., Varol, G., Wang, X., Farhadi, A., Laptev, I., & Gupta, A. (2016). <em>Hollywood in Homes: Crowdsourcing Data Collection for Activity Understanding</em>. ECCV 2016. <a href="https://arxiv.org/abs/1604.01753" target="_blank">arXiv:1604.01753</a></li>
+    <li data-cite-key="ava2018">Gu, C., et al. (2018). <em>AVA: A Video Dataset of Spatio-temporally Localized Atomic Visual Actions</em>. CVPR 2018. <a href="https://arxiv.org/abs/1705.08421" target="_blank">arXiv:1705.08421</a></li>
+    <li data-cite-key="resnet2016">He, K., Zhang, X., Ren, S., & Sun, J. (2016). <em>Deep Residual Learning for Image Recognition</em>. CVPR 2016. <a href="https://arxiv.org/abs/1512.03385" target="_blank">arXiv:1512.03385</a></li>
+    <li data-cite-key="fasterrcnn2015">Ren, S., He, K., Girshick, R., & Sun, J. (2015). <em>Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks</em>. NIPS 2015. <a href="https://arxiv.org/abs/1506.01497" target="_blank">arXiv:1506.01497</a></li>
+    <li data-cite-key="fpn2017">Lin, T.-Y., Dollár, P., Girshick, R., He, K., Hariharan, B., & Belongie, S. (2017). <em>Feature Pyramid Networks for Object Detection</em>. CVPR 2017. <a href="https://arxiv.org/abs/1612.03144" target="_blank">arXiv:1612.03144</a></li>
+    <li data-cite-key="x3d2020">Feichtenhofer, C. (2020). <em>X3D: Expanding Architectures for Efficient Video Recognition</em>. CVPR 2020. <a href="https://arxiv.org/abs/2004.04730" target="_blank">arXiv:2004.04730</a></li>
+    <li data-cite-key="mvit2021">Fan, H., Xiong, B., Mangalam, K., Li, Y., Yan, Z., Malik, J., & Feichtenhofer, C. (2021). <em>Multiscale Vision Transformers</em>. ICCV 2021. <a href="https://arxiv.org/abs/2104.11227" target="_blank">arXiv:2104.11227</a></li>
+    <li data-cite-key="weiss2002">Weiss, Y., Simoncelli, E. P., & Adelson, E. H. (2002). <em>Motion illusions as optimal percepts</em>. Nature Neuroscience.</li>
+    <li data-cite-key="livingstone1988">Livingstone, M., & Hubel, D. (1988). <em>Segregation of form, color, movement, and depth: anatomy, physiology, and perception</em>. Science.</li>
+    <li data-cite-key="ruderman1994">Ruderman, D. L. (1994). <em>The statistics of natural images</em>. Network: Computation in Neural Systems.</li>
+    <li data-cite-key="huang1999">Huang, J., & Mumford, D. (1999). <em>Statistics of natural images and models</em>. CVPR 1999.</li>
+    <li data-cite-key="stnet2018">He, D., et al. (2018). <em>StNet: Local and Global Spatial-Temporal Modeling for Action Recognition</em>. AAAI 2019.</li>
+    <li data-cite-key="videoswin2022">Liu, Z., et al. (2022). <em>Video Swin Transformer</em>. CVPR 2022. <a href="https://arxiv.org/abs/2106.13230" target="_blank">arXiv:2106.13230</a></li>
+  </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="action-recognition-landscape.html"><span class="nav-label">上一篇</span><span class="nav-title">动作识别综述：3D CNN 演进谱系</span></a>
+    <a class="nav-card current" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别系列</span></a>
+    <a class="nav-card" href="action-recognition-hub.html#next"><span class="nav-label">下一篇</span><span class="nav-title">X3D / MViT（待补）</span></a>
+  </div>
+</div>
