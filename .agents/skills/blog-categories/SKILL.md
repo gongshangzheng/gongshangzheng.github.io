@@ -35,6 +35,7 @@ tags: [blog, taxonomy, categories, subcategory]
 | **AI** | `视觉分词器` | 视觉 Tokenizer、离散分词器、1D Tokenizer、TiTok/DiTok 等 |
 | | `扩散模型` | 扩散模型、Flow Matching、Controllable Generation |
 | | `视觉模型` | 目标检测、视频理解、姿态估计、YOLO/DETR 等 |
+| | `动作识别` | 动作识别、行为识别、视频分类、Skeleton-Based、时空动作检测 |
 | | `自回归` | 自回归视觉模型、AR 生成 |
 | | `图像压缩` | 学习式压缩、语义通信、JSCC、神经编解码 |
 | | `GAN` | 生成对抗网络、对抗式训练、WGAN、StyleGAN、条件 GAN、图像生成稳定训练 |
