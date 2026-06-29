@@ -1,0 +1,572 @@
+---
+title: "动作识别论文精读（一）：VideoMAE，数据高效的视频自监督预训练"
+description: "深度解读 NeurIPS 2022 Spotlight VideoMAE：从图像 MAE 到视频 MAE，tube masking + 90% 极高掩码率的设计直觉，以及 3.5k 视频即可训练的数据效率发现。"
+date: 2026-06-29T22:50:30
+created_at: 2026-06-29T22:50:30
+updated_at: 2026-06-29T22:50:30
+tags: [VideoMAE, 自监督, 视频理解, 动作识别, ViT, Masked Autoencoder]
+categories: [AI]
+subcategory: "动作识别"
+sub_id: 1000
+hub: action-recognition-hub
+mathjax: true
+hero_title: "VideoMAE 论文精读"
+hero_sub: "NeurIPS 2022 Spotlight · 数据高效的视频自监督预训练"
+hero_tagline: "tube masking + 90% 掩码率：第一个纯 ViT 自监督预训练视频 Transformer。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">90%</span><span class="label">掩码率</span></div>
+  <div class="stat"><span class="num b">3.2×</span><span class="label g">训练加速</span></div>
+  <div class="stat"><span class="num">87.4%</span><span class="label">K400 Top-1</span></div>
+  <div class="stat"><span class="num b">3.5k</span><span class="label l">极小数据集</span></div>
+</div>
+
+<div class="callout"><strong>一句话读懂</strong>：VideoMAE 把图像 MAE「mask 75% 再重建像素」的范式迁移到视频，提出 <strong>tube masking</strong>（沿时间轴共享 mask 图）+ <strong>90%</strong> 极高掩码率的两个关键设计，用纯 vanilla ViT 在 K400 / SSV2 / UCF101 / HMDB51 上以「不借助 ImageNet 预训练、不借助额外 tokenizer」的方式同时超越同期所有对比学习与监督预训练方法，并且在 HMDB51 这种只有 <strong>3.5k</strong> 训练视频的极小数据集上把自监督优势再放大到一个数量级。#Tong-et-al.-2022#</div>
+
+<div class="info-box">
+  <h3>系列定位</h3>
+  <p>本文是<a href="action-recognition-hub.html">动作识别系列</a>论文精读第一篇，是视频自监督路线下 VideoMAE 论文的完整深读。</p>
+  <p>推荐阅读路径：先读本篇建立对「mask + reconstruct in pixel space」这一 SSVP 范式的直觉，再去读同作者群的 <a href="https://arxiv.org/abs/2211.09910">VideoMAE V2</a>（NeurIPS 2023）看该范式如何被推到亿级参数。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 1: 引言 + 问题 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 1 · 引言与问题</div>
+<div class="ch-title">为什么视频 Transformer 需要一种新的自监督范式？</div>
+
+<h3 class="section-title">视频 Transformer 训练的现实困境</h3>
+
+<p>视觉 Transformer（ViT）自从 2020 年被提出以来，迅速在图像分类、目标检测、语义分割、目标跟踪、视频识别等任务上刷新精度，但视频 Transformer 的训练路线始终没有「自立」。一个公开的秘密是：</p>
+
+<p>早在 TimeSformer 和 ViViT 出现时（2021 年），作者们就发现 <strong>纯时空自注意力的视频 Transformer 无法从零训练</strong>，必须先借助 ImageNet-21K 等大规模图像数据集做监督预训练，再把 2D 权重膨胀到 3D。这是 ViT 论文 #Dosovitskiy et al., 2020# 留给视频社区的核心痛点 —— TimeSformer 在仅靠视频数据训练时精度落后 ImageNet 预训练版本 10 个百分点以上，ViViT 也得到类似结论。唯一一个例外是 MViT（Fan et al., 2021），但它依赖强 stage-by-stage 的池化归纳偏置，已经偏离了「纯 Transformer」的本意。</p>
+
+<p>换句话说，<strong>2022 年初的视频 Transformer 有一个尴尬的事实</strong>：所有 SOTA 模型要么是 CNN（SlowFast、X3D），要么是依赖 2D 图像预训练的 Transformer。视频数据本身的丰富性似乎被忽视了。</p>
+
+<h3 class="section-title">自监督学习能解决吗？已有的两条路径都有局限</h3>
+
+<p>自监督视频预训练（SSVP）已经有两条主流路线：</p>
+
+<ul>
+<li><strong>前置任务路线</strong>（OPN, VCOP, SpeedNet）：设计帧序、帧率、循环排序等「人为任务」，但任务难度低、迁移性差。</li>
+<li><strong>对比学习路线</strong>（MemDPC, CoCLR, VideoMoCo, CVRL, RSPNet）：用大 batch + 强 augment 拉近正样本远离负样本，已是 2020-2022 年的主流，但在视频上 <em>严重依赖 batch size</em>，训练动辄需要 1024 块 GPU。</li>
+</ul>
+
+<p>论文作者来自 MCG-NJU 实验室（南京大学王利民教授课题组）与腾讯 AI Lab，他们在 NeurIPS 2022 的这篇文章里#Tong-et-al.-2022#做了一个很「朴素」的实验：把图像 MAE（He et al., 2021，#he2021masked#）的直接做法搬到视频上，不要 2D 预训练、不要对比损失、不要强 augment。然后加了两个看似简单实则精准的设计改动：<strong>tube masking</strong> 和 <strong>90% 极高掩码率</strong>，就拿到了 SSV2 与 K400 的新 SOTA，并把对比学习的 wall-clock time 砍掉 3.2×。</p>
+
+<div class="photo">
+  <img src="media/images/videomae-paper/pipline_nips.webp" alt="VideoMAE Pipeline 概览" loading="lazy">
+  <div class="cap">VideoMAE 整体 Pipeline：1) temporal downsample 16 帧；2) cube embedding（2×16×16 一个 token）；3) tube masking 90%（mask 沿时间轴共享）；4) vanilla ViT-B encoder 仅接收 10% tokens；5) 4-block shallow decoder 重建像素；6) MSE on masked pixels only。来源：VideoMAE 论文 Fig. 1。</div>
+</div>
+
+<h3 class="section-title">本文核心贡献（论文摘要原文）</h3>
+
+<p>作者在 abstract 中给出三个关键论断，下文将逐一验证其数字与机制：</p>
+
+<ol>
+<li><strong>极高掩码率仍有效</strong>：90%—95% 的掩码率在视频上仍能给出良好性能，因为视频的时间冗余允许这种程度的遮挡。</li>
+<li><strong>数据高效</strong>：VideoMAE 在大约 3k—4k 个视频的小数据集上不借助任何额外数据就能训练，这主要归功于像素重建任务的挑战性迫使网络学到高层结构。</li>
+<li><strong>质量 > 数量</strong>：在 SSVP 中数据质量比数据数量更重要，源域与目标域之间的 domain shift 是重要因素。</li>
+</ol>
+
+<div class="callout"><strong>反直觉预告</strong>：在 Something-Something V2 上，把预训练数据从 169k 缩小到仅 <strong>42k</strong>（远小于 Kinetics 的 240k），竟然比用 240k Kinetics 预训练后再 fine-tune 的结果还好（68.7% vs 68.5%）。这违背「数据越多越好」的直觉，正是 domain shift 假说的有力证据。</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 2: 前置知识 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 2 · 前置知识</div>
+<div class="ch-title">图像 MAE：VideoMAE 的算法祖先</div>
+
+<p>VideoMAE 是图像 MAE（He et al., 2021，arXiv:2111.06377）在视频维度的直接继承。在理解 VideoMAE 之前必须先理解两件事：什么是「masked autoencoder」以及为什么图像 MAE 在 75% 掩码率下能学到好表示。</p>
+
+<h3 class="section-title">MAE 的两个核心机制</h3>
+
+<ol>
+<li><strong>非对称 encoder-decoder</strong>。Encoder 只接收「可见的」patch tokens（约 25%），计算量大幅减少；Decoder 是一个轻量 Transformer（或几层 MLP），把可见 tokens 与 learnable mask tokens 一起拼接，恢复被 mask 的 patch 的像素。</li>
+<li><strong>MSE on masked pixels</strong>。损失只在被 mask 的 patch 上计算像素级 MSE，公式为：
+\[
+\mathcal{L} = \frac{1}{\Omega} \sum_{p \in \Omega} \left\| I(p) - \hat{I}(p) \right\|_2^2
+\]
+其中 \(I(p)\) 是原始图像在 token \(p\) 处的像素，\(\hat{I}(p)\) 是 decoder 的重建，\(\Omega\) 是被 mask 的 token 集合。</li>
+</ol>
+
+<p>MAE 在 ImageNet 上达到 87.8% top-1（ViT-L），证明纯像素重建目标能够学到足以迁移的下游表征。VideoMAE 的核心赌注是：<strong>视频 = 「带时间轴的图像」，所以 MAE 在视频上也能 work</strong>。但视频有两个固有性质让这条路不能直搬，需要做改造。</p>
+
+<h3 class="section-title">视频的两个固有性质（论文 §3.2）</h3>
+
+<ul>
+<li><strong>时间冗余（Temporal Redundancy）</strong>。视频帧是密集采样的，相邻帧的语义变化缓慢（slowness prior，Goroshin et al., 2015）。这意味着在普通 75% 掩码率下，encoder 可能直接通过「从邻接帧拷贝对应位置像素」走捷径，而不必学到高层语义。</li>
+<li><strong>时间相关性（Temporal Correlation）</strong>。同一空间坐标在相邻帧常常几乎相同（背景、前景静止部分）。这造成「帧间信息泄露」：即使做了 random masking，被 mask 的 cube 在相邻未 mask 帧里几乎能找到完全相同的拷贝。</li>
+</ul>
+
+<div class="photo">
+  <img src="media/images/videomae-paper/masking_3.webp" alt="不同 masking 策略对比" loading="lazy">
+  <div class="cap">三种 masking 策略对比。从左到右：原始帧序列、frame masking（整帧丢弃）、random masking（逐 cube 独立抽样）、tube masking（沿 t 轴 mask map 共享）。frame masking 与 random masking 都给模型留下了「邻帧相同坐标拷贝」的捷径；只有 tube masking 强迫模型做跨时间的推理。来源：VideoMAE 论文 Fig. 2。</div>
+</div>
+
+<p>这两个性质意味着：<em>直接把 ImageMAE 套到视频上，必然导致 encoder 学到「短期低层次复制」的捷径</em>。VideoMAE 的两个核心设计正是为了打破这两条捷径。</p>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 3: 模型结构 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 3 · 模型结构</div>
+<div class="ch-title">VideoMAE 架构：从 cube embedding 到 masked reconstruction</div>
+
+<h3 class="section-title">3.1 整体 Pipeline</h3>
+
+<pre><code class="language-text">Video clip V (1×t×H×W×3)
+   │
+   ├─ temporal downsample ─→  X ∈ ℝ^{T×H×W×3}, T=16, stride τ
+   │     (τ=4 for K400, τ=2 for SSV2)
+   │
+   ├─ cube embedding (patch=2×16×16, linear proj to D=768)
+   │     ─→ tokens ∈ ℝ^{(T/2)×(H/16)×(W/16) × D}
+   │
+   ├─ tube masking: m_{x,y} ~ Bernoulli(ρ), ρ=0.90, shared across t
+   │     ─→ keep only (1−ρ)=10% of tokens
+   │
+   ├─ Encoder Φ_enc: 12-block vanilla ViT-B, joint space-time MHA
+   │     ─→ latent z ∈ ℝ^{N_keep×D}
+   │
+   ├─ concat with learnable mask tokens
+   │
+   ├─ Decoder Φ_dec: 4-block ViT, dim=384 (= D/2)
+   │     ─→ predicted cube pixels Ŷ ∈ ℝ^{T×H×W×3}
+   │
+   └─ MSE loss: (1/Ω) · Σ ‖X(p) − Ŷ(p)‖² ,  only over masked tokens</code></pre>
+
+<h3 class="section-title">3.2 Tube masking 的数学形式</h3>
+
+<p>Tube masking 的关键在于：把 mask 的随机性限制在 2D 空间 (x, y) 上，然后沿 t 复制。三维索引 \((t, x, y)\) 的 mask 决策可表示为：</p>
+
+\[
+\mathbb{I} \left[ p_{(x, y, \cdot)} \in \Omega \right] \sim \mathrm{Bernoulli}(\rho_{\mathrm{mask}}), \quad \forall\, t
+\]
+
+<p>换言之，<strong>mask 图（mask map）是一个仅在 (x, y) 平面上的二值图，对所有 t 共享</strong>。被 mask 的位置形成一个沿时间轴穿透的「管子（tube）」，空心管子里所有 t 帧的同一个 (x, y) 都被一起掩码。</p>
+
+<div class="def-box">
+<h3>为什么 tube masking 比 random masking 更难走捷径？</h3>
+<p>在 random masking 下，模型可能做这样的「填空」：frame 0 的 (x1, y1) 被 mask，但 frame 1 的 (x1, y1) 仍是 visible ⇒ 模型可以从 (x1, y1, frame 1) 拷贝像素直接填空，反正它俩在背景区域几乎完全一致。</p>
+<p>在 tube masking 下，frame 0、1、2、... 都同时 mask 同一 (x, y) 位置，模型 <em>必须在不同的 (x', y') 坐标或不同语义区域的 tokens 上寻找上下文</em>，这就强迫它学到跨时间的语义推理，而不是低层像素拷贝。</p>
+</div>
+
+<h3 class="section-title">3.3 90% 极高掩码率的合理性</h3>
+
+<p>视频的信息密度远低于单张图像（同样像素数下，图像承载的语义结构更多），这意味着即使遮掉 90% 的 cube，剩余 10% 的 tokens 仍可能携带足以恢复关键时空结构的线索。</p>
+
+<div class="callout"><strong>实验证据</strong>：在 SSV2 上把 tube masking ratio 从 75% 提到 90%，准确率从 <strong>68.0% → 69.6%（+1.6 个百分点）</strong>；在 K400 上同样最优（80.0%）。即使 95% 的掩码率都仍能给出合理性能（Fig. 4）。这与图像 MAE 的 75% 经验最优值形成鲜明对比 —— 视频的「语义密度低 + 时空结构可压缩」是高掩码率的物理基础。</div>
+
+<h3 class="section-title">3.4 Joint Space-Time Attention vs Divided Attention</h3>
+
+<p>VideoMAE 选择 joint space-time attention（所有 tokens 在同一个 multi-head self-attention 里互相 attend），与 ViViT 一致。理论上 divided attention（先 spatial 后 temporal）更省 FLOPs，但 VideoMAE 的 90% 掩码率使得 <em>encoder 实际处理的 token 数仅 10%</em> —— 这时 divided attention 的相对收益下降，而 joint attention 让剩余 tokens 之间充分交互，能更高效地利用宝贵的可见信息。</p>
+
+<h3 class="section-title">3.5 Decoder 设计：4 blocks 的反直觉选择</h3>
+
+<p>ImageMAE 用 1-block decoder 就足够，但 VideoMAE 在 Tab. 11 的 ablation 发现 4-block decoder 是精度-显存的最优平衡：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>Decoder blocks</th><th>SSV2</th><th>K400</th><th>GPU mem (1 GPU, bs=16)</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>68.5</td><td>79.0</td><td>7.9G</td></tr>
+<tr><td>2</td><td>69.2</td><td>79.2</td><td>10.2G</td></tr>
+<tr><td><strong>4</strong>（默认）</td><td><strong>69.6</strong></td><td><strong>80.0</strong></td><td>14.7G</td></tr>
+<tr><td>8</td><td>69.3</td><td>79.7</td><td>23.7G</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>视频任务需要比图像更深的 decoder 来恢复高维时空结构，但 8 blocks 已陷入边际效益递减。作者最终采用 4 blocks，宽度为 encoder 的一半（ViT-B：encoder 768-d，decoder 384-d）。</p>
+
+<div class="photo">
+  <img src="media/images/videomae-paper/pipline_nips.webp" alt="VideoMAE Pipeline 架构图" loading="lazy">
+  <div class="cap">Encoder-Decoder 非对称架构示意图。Encoder 仅接收 10% 的 visible tokens，decoder 把 latent 与 learnable mask tokens 拼接恢复全部 cube 像素。来源：VideoMAE 论文 Fig. 1。</div>
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 4: 训练流程 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 4 · 训练流程</div>
+<div class="ch-title">预训练与微调：超参、数据集、anti-leak 配置</div>
+
+<h3 class="section-title">4.1 预训练配置（论文 Tab. 13）</h3>
+
+<div class="table-wrap param-table">
+<table>
+<thead><tr><th>配置</th><th>SSV2</th><th>K400</th></tr></thead>
+<tbody>
+<tr><td>Optimizer</td><td colspan="2">AdamW</td></tr>
+<tr><td>Base learning rate</td><td colspan="2">1.5e-4（按 batch=256 的 linear scaling）</td></tr>
+<tr><td>Weight decay</td><td colspan="2">0.05</td></tr>
+<tr><td>β₁, β₂</td><td colspan="2">0.9, 0.95</td></tr>
+<tr><td>Batch size</td><td colspan="2">1024</td></tr>
+<tr><td>LR schedule</td><td colspan="2">cosine decay</td></tr>
+<tr><td>Warmup epochs</td><td colspan="2">40</td></tr>
+<tr><td>Flip augmentation</td><td><strong>no</strong></td><td>yes</td></tr>
+<tr><td>Aug</td><td colspan="2">MultiScaleCrop</td></tr>
+<tr><td>Masking ratio ρ</td><td colspan="2">90%（UCF/HMDB 用 75%）</td></tr>
+<tr><td>Pre-train epochs</td><td>800（主 ablation）/ 2400（主 SOTA）</td><td>800</td></tr>
+<tr><td>Hardware</td><td>64 V100 GPUs</td><td>64 V100 GPUs</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="info-box">
+<h3>为什么 SSV2 关闭 flip augmentation？</h3>
+<p>SSV2 是 motion-centric 数据集，类标签对方向敏感（如 <em>「Push something from left to right」</em> 与 <em>「right to left」</em> 是两个不同类）。如果使用 random horizontal flip，等价于数据增强把标签语义破坏掉，模型无法学到正确动作。论文作者对此专门在 SSV2 关闭 flip，K400 则保留。</p>
+</div>
+
+<h3 class="section-title">4.2 微调配置（Tab. 14）</h3>
+
+<div class="table-wrap param-table">
+<table>
+<thead><tr><th>配置</th><th>SSV2</th><th>K400</th></tr></thead>
+<tbody>
+<tr><td>Optimizer</td><td colspan="2">AdamW</td></tr>
+<tr><td>Base LR</td><td>1e-3 (ViT-S), 5e-4 (B, L)</td><td>1e-3</td></tr>
+<tr><td>Training epochs</td><td>40 (S, B), 30 (L)</td><td>150 (S), 75 (B), 50 (L, H)</td></tr>
+<tr><td>Warmup epochs</td><td colspan="2">5</td></tr>
+<tr><td>Repeated augmentation</td><td colspan="2">2</td></tr>
+<tr><td>Mixup / Cutmix</td><td colspan="2">0.8 / 1.0</td></tr>
+<tr><td>Label smoothing</td><td colspan="2">0.1</td></tr>
+<tr><td>Drop path</td><td colspan="2">0.1 (S, B), 0.2 (L, H)</td></tr>
+<tr><td>Layer-wise LR decay</td><td colspan="2">0.7 (S), 0.75 (B, L, H)</td></tr>
+<tr><td>Sampling</td><td>uniform (TSN 风格)</td><td>dense (SlowFast 风格)</td></tr>
+<tr><td>Inference views</td><td>2 clips × 3 crops</td><td>5 clips × 3 crops</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Layer-wise LR decay（LLRD，0.7-0.75）是 ViT fine-tune 的关键技巧 —— 让浅层学习率小、深层学习率大，稳定 fine-tune 收敛。这一设计在 BEiT 中首次系统化，VideoMAE 直接借鉴。</p>
+
+<h3 class="section-title">4.3 小数据集（UCF101 / HMDB51）的特殊配方</h3>
+
+<p>对极小的数据集，作者 <em>主动调高预训练 epoch、降低 masking ratio</em>，让小数据上的训练更稳定：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>数据集</th><th>训练样本数</th><th>预训练 masking ratio</th><th>预训练 epochs</th><th>batch</th><th>base LR</th><th>微调 epoch</th></tr></thead>
+<tbody>
+<tr><td>UCF101</td><td>9.5k</td><td><strong>75%</strong></td><td>3200</td><td>192</td><td>3e-4</td><td>100, bs=128</td></tr>
+<tr><td>HMDB51</td><td>3.5k</td><td><strong>75%</strong></td><td>4800</td><td>192</td><td>3e-4</td><td>50, bs=128</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>注：K400/SSV2 主表用 90%，但 UCF/HMDB 因为只有数千视频、训不下去那么激进的掩码率。这是工程上很务实的调整 —— 「<em>不要把大模型的设计在小数据上硬搬</em>」。</p>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 5: 推理与下游 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 5 · 推理与下游</div>
+<div class="ch-title">Linear probing 与跨数据集迁移</div>
+
+<h3 class="section-title">5.1 推理协议</h3>
+
+<p>VideoMAE 的 inference 流程与传统 video Transformer 完全一致 —— 部署时只保留 encoder，decoder 被丢弃，encoder 输出后接一个 linear classifier。具体而言：</p>
+
+<ul>
+<li><strong>SSV2</strong>：uniform sampling（按 TSN），2 clips × 3 crops = 6 views。</li>
+<li><strong>K400</strong>：dense sampling（按 SlowFast），5 clips × 3 crops = 15 views。</li>
+<li><strong>UCF101</strong>：5 clips × 3 crops。</li>
+<li><strong>HMDB51</strong>：10 clips × 3 crops（数据集较小需要更多视角平均）。</li>
+</ul>
+
+<h3 class="section-title">5.2 Linear Probing：自监督特征的独立验证</h3>
+
+<p>SSV2 上 linear probing 设置（Tab. 15）：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>Pre-train epochs</th><th>Fine-tune acc.</th><th>Linear probing acc.</th></tr></thead>
+<tbody>
+<tr><td>MoCo v3</td><td>300</td><td>54.2</td><td>33.7</td></tr>
+<tr><td><strong>VideoMAE</strong></td><td>800</td><td><strong>69.6</strong></td><td>38.9</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>linear probing（冻结 encoder，只训练最后一层 linear classifier）是衡量自监督表征质量的「硬指标」。VideoMAE 的 38.9 > MoCo v3 的 33.7 说明它学到的特征质量更高。但更值得注意的是 fine-tune 与 linear 的差距（30.7 vs 5.2 个百分点），意味着 VideoMAE 表征与下游任务需要更精细地调谐才能发挥。</p>
+
+<h3 class="section-title">5.3 跨数据集迁移（Tab. 5 transferability）</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>K400→SSV2</th><th>K400→UCF</th><th>K400→HMDB</th></tr></thead>
+<tbody>
+<tr><td>MoCo v3</td><td>62.4</td><td>93.2</td><td>67.9</td></tr>
+<tr><td><strong>VideoMAE</strong></td><td><strong>68.5</strong></td><td><strong>96.1</strong></td><td><strong>73.3</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>K400 预训练后迁移到 UCF/HMDB 时，VideoMAE 的精度甚至超过在 UCF/HMDB 自身预训练的版本（K400→UCF 96.1 vs UCF-self 91.3；K400→HMDB 73.3 vs HMDB-self 62.6）。但同样的迁移到 SSV2 时却反过来（68.5 &lt; 69.6）。这个看似矛盾的结果正是 domain shift 论断的来源 —— 当源域与目标域的语义结构高度不同时（如 SSV2 看手势 vs K400 看场景），<em>同域预训练更有效</em>；当语义相近时（K400 与 UCF/HMDB 都是场景级动作分类），<em>大规模跨域预训练是更好的特征起点</em>。</p>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 6: 实验结果 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 6 · 实验结果</div>
+<div class="ch-title">消融、效率、对比 SOTA：四个最关键发现</div>
+
+<h3 class="section-title">6.1 最高优先级发现：90% 掩码率真有效（Fig. 4）</h3>
+
+<div class="photo">
+  <img src="media/images/videomae-paper/masking_ratio_ssv2_nips.webp" alt="掩码率消融 SSV2" loading="lazy">
+  <div class="cap">SSV2 上 masking ratio 与 top-1 精度的关系。90% 是最优，95% 仍能给出合理性能。曲线来源：VideoMAE 论文 Fig. 4(a)。</div>
+</div>
+<div class="photo">
+  <img src="media/images/videomae-paper/masking_ratio_k400_nips.webp" alt="掩码率消融 K400" loading="lazy">
+  <div class="cap">K400 上同样的 90% 拐点。曲线来源：VideoMAE 论文 Fig. 4(b)。</div>
+</div>
+
+<p><strong>反直觉</strong>的是 90% 不是局部最优，而是「很尖锐」的最优点 —— 即使在 88% 之上进入 95%，精度也只是缓慢下降而非崩塌。这跟 MAE 在图像上 75% 是锐利拐点、低于 60% 就开始掉点的形态完全不同。</p>
+
+<h3 class="section-title">6.2 第二优先级发现：Tube > Random > Frame（Tab. 2 mask_types）</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>策略</th><th>掩码率</th><th>SSV2</th><th>K400</th></tr></thead>
+<tbody>
+<tr><td>tube</td><td>75%</td><td>68.0</td><td>79.8</td></tr>
+<tr><td><strong>tube（默认）</strong></td><td><strong>90%</strong></td><td><strong>69.6</strong></td><td><strong>80.0</strong></td></tr>
+<tr><td>random</td><td>90%</td><td>68.3</td><td>79.5</td></tr>
+<tr><td>frame</td><td>87.5%（mask 14/16 帧）</td><td>61.5</td><td>76.5</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>注意最后一行：<strong>frame masking</strong> 即使掩码率高达 87.5%（远高于 tube 的 90%），但在 SSV2 上仍然掉 8.1 个百分点（69.6 → 61.5）。这直接证明 frame masking 让模型走捷径完全成立 —— 它甚至不是「重建难」问题，而是「encoder 学到的特征没有用」。Tube masking 比 random masking 在 SSV2 上高 1.3 个百分点，差距虽小但稳定。</p>
+
+<h3 class="section-title">6.3 第三优先级发现：3.5k 视频即可训练（Tab. 4）</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>训练数据规模</th><th>数据集</th><th>from scratch</th><th>MoCo v3</th><th><strong>VideoMAE</strong></th></tr></thead>
+<tbody>
+<tr><td>240k</td><td>K400</td><td>68.8</td><td>74.2</td><td><strong>80.0</strong></td></tr>
+<tr><td>169k</td><td>SSV2</td><td>32.6</td><td>54.2</td><td><strong>69.6</strong></td></tr>
+<tr><td>9.5k</td><td>UCF101</td><td>51.4</td><td>81.7</td><td><strong>91.3</strong></td></tr>
+<tr><td><strong>3.5k</strong></td><td>HMDB51</td><td>18.0</td><td>39.2</td><td><strong>62.6</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout"><strong>数据效率的硬数字</strong>：在 HMDB51（仅 3.5k 训练视频）上，VideoMAE 比 from-scratch 高出 +44.6 个百分点，比 MoCo v3 高出 +23.4 个百分点。这个差距比在 K400 上（10 个百分点）放大了 4×，证实了论文标题的关键词 —— <em>Data-Efficient Learner</em>。</div>
+
+<h3 class="section-title">6.4 第四优先级发现：训练效率（Tab. 3）</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>epochs</th><th>ft acc</th><th>lin acc</th><th>hours (64 V100)</th><th>speedup</th></tr></thead>
+<tbody>
+<tr><td>MoCo v3</td><td>300</td><td>54.2</td><td>33.7</td><td>61.7</td><td>—</td></tr>
+<tr><td><strong>VideoMAE</strong></td><td>800</td><td><strong>69.6</strong></td><td>38.9</td><td><strong>19.5</strong></td><td><strong>3.2×</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>VideoMAE 需要更多 epoch（800 vs 300）但 <strong>总时长反而更短</strong> —— 因为 90% 掩码率让 encoder 只处理 10% tokens，decoder 又极轻量（4 blocks, 384-d）。这对工业界是大好消息：自监督预训练不需要 1024 块 GPU，64 块 V100 跑 19.5 小时即可。</p>
+
+<h3 class="section-title">6.5 主表 SOTA：与同期工作横评（Tab. 5-7）</h3>
+
+<p><strong>SSV2（不使用额外数据）</strong>，VideoMAE ViT-L 16×4 = <strong>74.3%</strong>，ViT-L 32 帧 = <strong>75.4%</strong>，均为同期无外部数据 SOTA。同期对照：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>Backbone</th><th>Extra data</th><th>Ex. labels</th><th>Top-1</th></tr></thead>
+<tbody>
+<tr><td>BEVT</td><td>Swin-B</td><td>IN-1K+K400+DALLE</td><td>✗</td><td>70.6</td></tr>
+<tr><td>MaskFeat↑312</td><td>MViT-L</td><td>K600</td><td>✓</td><td>75.0</td></tr>
+<tr><td>VIMPAC</td><td>ViT-L</td><td>HowTo100M+DALLE</td><td>✗</td><td>68.1</td></tr>
+<tr><td><strong>VideoMAE（无外部数据）</strong></td><td><strong>ViT-L</strong></td><td><strong>none</strong></td><td><strong>✗</strong></td><td><strong>74.3</strong></td></tr>
+<tr><td><strong>VideoMAE（32 帧）</strong></td><td><strong>ViT-L</strong></td><td><strong>none</strong></td><td><strong>✗</strong></td><td><strong>75.4</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>K400（不使用额外数据）</strong>，VideoMAE ViT-L 16×4 = <strong>85.2%</strong>，已经超过依赖 IN-21K 的 TimeSformer/ViViT/Motionformer/Video Swin：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>Backbone</th><th>Extra data</th><th>Top-1</th></tr></thead>
+<tbody>
+<tr><td>TimeSformer</td><td>ViT-L</td><td>IN-21K</td><td>80.7</td></tr>
+<tr><td>ViViT FE</td><td>ViT-L</td><td>IN-21K</td><td>81.7</td></tr>
+<tr><td>Video Swin</td><td>Swin-L</td><td>IN-21K</td><td>83.1</td></tr>
+<tr><td>ViViT FE</td><td>ViT-L</td><td>JFT-300M</td><td>83.5</td></tr>
+<tr><td>MaskFeat</td><td>MViT-L</td><td>none</td><td>84.3</td></tr>
+<tr><td><strong>VideoMAE</strong></td><td><strong>ViT-L</strong></td><td><strong>none</strong></td><td><strong>85.2</strong></td></tr>
+<tr><td><strong>VideoMAE（更长 schedule）</strong></td><td><strong>ViT-L</strong></td><td><strong>none</strong></td><td><strong>✗</strong></td><td><strong>86.1</strong></td></tr>
+<tr><td><strong>VideoMAE</strong></td><td><strong>ViT-H</strong></td><td><strong>none</strong></td><td><strong>✗</strong></td><td><strong>86.6</strong></td></tr>
+<tr><td><strong>VideoMAE↑320（高分辨）</strong></td><td><strong>ViT-H</strong></td><td><strong>none</strong></td><td><strong>✗</strong></td><td><strong>87.4</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>87.4% 是 abstract 中宣称的最高 K400 top-1，对应 ViT-H + 320×320 高分辨率 fine-tune + 32 帧 输入。即使如此，<strong>ViT-B/L 的主表数字 81.5 / 85.2 / 86.1 已经是同期不用任何额外数据的最强 baseline</strong>，而 ViT-H 的 87.4 进一步证明了「纯像素重建」的可扩展性。</p>
+
+<h3 class="section-title">6.6 重建可视化：90% 掩码率下仍可重建（Fig. 7）</h3>
+
+<div class="photo">
+  <img src="media/images/videomae-paper/vis_main.webp" alt="VideoMAE 重建结果示例" loading="lazy">
+  <div class="cap">在不同 masking ratio（50/75/90%）下的重建结果。即使 90% 掩码率 VideoMAE 仍能恢复清晰的运动结构与人物轮廓。来源：VideoMAE 论文 Fig. 7。</div>
+</div>
+
+<p>重建可视化是论文叙事中最具说服力的一组证据。即使在 90% cube 缺失的情况下，重建出的视频仍保留人物外形、运动方向与场景几何，说明 encoder 真正学到了「时空的语义骨架」而非低层次纹理。</p>
+
+<h3 class="section-title">6.7 AVA 动作检测（Tab. 4）：泛化到 detection</h3>
+
+<p>把 K400 预训练权重转到 AVA v2.2（动作检测而非分类），ViT-B + 无额外 fine-tune 即可达到 <strong>26.7 mAP</strong>，再 fine-tune K400 标签后 transfer 可达 <strong>31.8 mAP</strong>；ViT-H 冲到 <strong>39.5 mAP</strong>，逼近同期 MaskFeat MViT-L + K600 fine-tune 的 38.8。这一结果验证了 VideoMAE 学到的表征在 <em>分类以外的时空定位任务</em> 同样有效。</p>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Chapter 7: 讨论 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Chapter 7 · 讨论与启发</div>
+<div class="ch-title">为什么 VideoMAE 重要：理论意义、局限与后续</div>
+
+<h3 class="section-title">7.1 三个理论贡献</h3>
+
+<ol>
+<li><strong>像素重建的范式力量</strong>。在 NLP（BERT）和 image（MAE）上都被验证过的 masked autoencoding，在视频上同样奏效 ——「重建」是一个跨模态的通用预训练信号。</li>
+<li><strong>时间结构可以通过纯自监督学到</strong>。Tube masking 不借助光流、frame difference 等手工特征，就能让 vanilla ViT 学到跨时间的语义推理，意味着自监督对时间结构是可探索的。</li>
+<li><strong>数据质量权重 &gt; 数据数量</strong>。源-目标 domain shift 的发现提示我们：在 SSVP 中，相比盲目扩大数据集，<em>优先选择与下游任务同分布的数据</em>可能更划算。</li>
+</ol>
+
+<h3 class="section-title">7.2 与 BEVT / VIMPAC / MaskFeat 的关键区别</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>骨干</th><th>预训练目标</th><th>是否需要额外 tokenizer</th><th>是否需额外数据</th></tr></thead>
+<tbody>
+<tr><td><strong>VideoMAE</strong></td><td>pure ViT</td><td>pixel MSE</td><td>否</td><td>否</td></tr>
+<tr><td>BEVT</td><td>Swin Transformer</td><td>预测 DALL-E token + 重建像素</td><td>是（DALL-E）</td><td>是（IN-1K+K400）</td></tr>
+<tr><td>VIMPAC</td><td>ViT-L</td><td>预测 DALL-E token</td><td>是（DALL-E）</td><td>是（HowTo100M）</td></tr>
+<tr><td>MaskFeat</td><td>MViT-L</td><td>重建 HOG 特征</td><td>—</td><td>可选 K600</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>VideoMAE 的「最小依赖」属性 —— <em>纯 ViT 骨干 + pixel MSE + 无额外 tokenizer + 无额外数据</em> —— 使它在工程上最容易复现，也最容易扩展到下游任务。</p>
+
+<h3 class="section-title">7.3 局限与未解决问题</h3>
+
+<ul>
+<li><strong>极高掩码率并不普适</strong>。90% 的「最优」仅在 dense-temporally-redundant 数据集上有效；当动作变化快或场景切换剧烈时，更高掩码率可能反而拖累。</li>
+<li><strong>重建目标与识别目标的 gap</strong>。论文 §6 分析类别增益时发现，对「small motion object」（如小手指动作）VideoMAE 重建变差 —— 因为小目标的所有 cubes 都被 mask 后，encoder 缺乏线索。这指向 <em>重建 ≠ 识别</em> 的潜在偏差。</li>
+<li><strong>decoder depth 还需要更多研究</strong>。视频 MAE 与图像 MAE 在 decoder 深度上的差异（4 vs 1）目前没有理论解释，是经验观察。</li>
+</ul>
+
+<h3 class="section-title">7.4 后续工作的关键血缘</h3>
+
+<ul>
+<li><strong>VideoMAE V2</strong> (NeurIPS 2023, Li/Wang et al.)：同一作者群的直接扩展，加入 dual masking 与亿级参数，Kinetics 达到 92.6%。</li>
+<li><strong>UMT</strong> (CVPR 2023)：在 VideoMAE 框架上叠加多模态（image+video+text）联合训练。</li>
+<li><strong>InternVideo / InternVideo2/3</strong> (NeurIPS 2024)：视频基础模型系列，把 VideoMAE 作为视觉编码器预训练阶段之一。</li>
+<li><strong>VideoPrism / VideoPoet / VideoLLaMA</strong>：Google、Meta 等的 video LLM 多采用 masked video token 作为底层视觉预训练目标。</li>
+<li><strong>MVD, SVFormer, Video-CCAM 等</strong>：在 VideoMAE 之上的半监督、压缩域扩展。</li>
+</ul>
+
+<h3 class="section-title">7.5 复现路线图（针对读者画像）</h3>
+
+<p>把 VideoMAE 当作一个「材料 + 配方」组合来看，复现的难度梯度是：</p>
+
+<ol>
+<li><strong>新手友好</strong>：用 [[github MCG-NJU/VideoMAE | 官方 MCG-NJU 仓库]]，在 8×V100 上 3200 epoch 训 UCF101 即可拿到 91%+；这本身就是检验框架正确性的最小实验。</li>
+<li><strong>进阶</strong>：复现 SSV2 上的主表（70.8%）。需要 64×V100、800 epoch、90% 掩码率、tube masking、ViT-B；如果验证后精度低 1-2 个点，多半是 LR schedule 或 layer-wise lr decay 漏配。</li>
+<li><strong>研究级</strong>：换 tube masking 为 stochastic depth 可变宽度版本 / 探索 masked visual token 重建（BEiT 风格）/ 替换重建目标为 HOG（MaskFeat 风格）等。这些改动的 ablation 精度一般落在 0.3–0.8 个百分点之间，是稳定的实验场。</li>
+</ol>
+
+<div class="admonition tip">
+<div class="admonition-title">
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+工程复现 tips
+</div>
+<div class="admonition-content">
+<p>几个容易踩的坑：(1) β₂=0.95 而不是通常的 0.999 —— MAE 配方；(2) SSV2 必须关 flip；(3) cube embedding 初始化最好从 ImageMAE 的 patch embedding 沿 t 轴 average-pool；(4) DeepSpeed ZeRO-1 对 64 GPU 是必要的，否则 activation memory 把单卡打爆。</p>
+</div>
+</div>
+
+<div class="callout"><strong>对今天读者的启发</strong>：如果你手头有「有限视频数据」+「自监督算力预算」，VideoMAE 给出的工程配方已经足够明确 —— 调高掩码率到 75-90%、用 tube masking、deeper decoder、AdamW + cosine schedule。如果数据极小（&lt;10k），把预训练 epoch 调到 3000-5000 并相应降低 masking ratio；如果「不差钱」想再榨 1-2 个点，加 layer-wise lr decay + mixup + 充分的 fine-tune。</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- 复习速查 + 参考来源 + 章节导航 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">复习速查</div>
+<div class="ch-title">一页纸回顾</div>
+
+<div class="review-box">
+<h3>VideoMAE 一页纸总结</h3>
+<ul>
+<li><strong>核心机制</strong>：tube masking（沿时间共享 mask map）+ 90% 极高掩码率 + vanilla ViT + pixel MSE。</li>
+<li><strong>几何直觉</strong>：masked cube 在所有 t 帧同一 (x, y) 位置上同时消失，强迫跨时间语义推理而非邻帧拷贝。</li>
+<li><strong>数据效率</strong>：在 3.5k 视频的 HMDB51 上比 from-scratch 高 +44.6，比 MoCo v3 高 +23.4。</li>
+<li><strong>训练效率</strong>：比 MoCo v3 快 3.2×（19.5h vs 61.7h on 64 V100）。</li>
+<li><strong>最强结果</strong>：K400 ViT-L 85.2%（no external data）、SSV2 ViT-L 75.4%、AVA ViT-H 39.5 mAP。</li>
+<li><strong>Decoder 配方</strong>：4 blocks, dim=384（= encoder dim / 2），显存 14.7G / batch 16 / GPU。</li>
+<li><strong>反直觉</strong>：数据质量 &gt; 数据数量（domain shift 决定一切）；90% 掩码率在视频上竟是锐利最优。</li>
+</ul>
+</div>
+
+<div class="chapter-nav">
+<a class="nav-card" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别系列总览</span></a>
+<a class="nav-card current" href="paper-videomae.html"><span class="nav-label">当前篇</span><span class="nav-title">VideoMAE 精读</span></a>
+<a class="nav-card" href="action-recognition-landscape.html"><span class="nav-label">下一篇</span><span class="nav-title">动作识别领域导览</span></a>
+</div>
+
+<div class="sources">
+<h3>参考来源</h3>
+<ul>
+  <li data-cite-key="Tong-et-al.-2022">Tong, Z., Song, Y., Wang, J., & Wang, L. (2022). <strong>VideoMAE: Masked Autoencoders are Data-Efficient Learners for Self-Supervised Video Pre-Training</strong>. <em>NeurIPS 2022</em>. <a href="https://arxiv.org/abs/2203.12602" target="_blank">arXiv:2203.12602</a>.</li>
+  <li data-cite-key="he2021masked">He, K., Chen, X., Xie, S., Li, Y., Dollár, P., & Girshick, R. (2021). <strong>Masked Autoencoders Are Scalable Vision Learners</strong>. <em>arXiv preprint</em>. <a href="https://arxiv.org/abs/2111.06377" target="_blank">arXiv:2111.06377</a>.</li>
+  <li data-cite-key="Dosovitskiy-et-al.-2020">Dosovitskiy, A. et al. (2020). <strong>An Image is Worth 16×16 Words: Transformers for Image Recognition at Scale</strong>. <em>ICLR 2021</em>. <a href="https://arxiv.org/abs/2010.11929" target="_blank">arXiv:2010.11929</a>.</li>
+  <li data-cite-key="Arnab-et-al.-2021">Arnab, A. et al. (2021). <strong>ViViT: A Video Vision Transformer</strong>. <em>ICCV 2021</em>. <a href="https://arxiv.org/abs/2103.15691" target="_blank">arXiv:2103.15691</a>.</li>
+  <li data-cite-key="Bertasius-et-al.-2021">Bertasius, G., Wang, H., & Torresani, L. (2021). <strong>Is Space-Time Attention All You Need for Video Understanding?</strong> <em>ICML 2021</em>. <a href="https://arxiv.org/abs/2102.05095" target="_blank">arXiv:2102.05095</a>.</li>
+  <li data-cite-key="Fan-et-al.-2021">Fan, H. et al. (2021). <strong>Multiscale Vision Transformers</strong>. <em>ICCV 2021</em>. <a href="https://arxiv.org/abs/2104.11227" target="_blank">arXiv:2104.11227</a>.</li>
+  <li data-cite-key="Wei-et-al.-2021">Wei, C., Fan, H., Xie, S., Wu, C.-Y., Yuille, A., & Feichtenhofer, C. (2021). <strong>Masked Feature Prediction for Self-Supervised Visual Pre-Training</strong>. <em>arXiv preprint</em>. <a href="https://arxiv.org/abs/2112.09175" target="_blank">arXiv:2112.09175</a>.</li>
+  <li data-cite-key="Wang-et-al.-2022-BEVT">Wang, R. et al. (2022). <strong>BEVT: Bootstrapping Vision-Language Pre-training with Masked Image and Video Modeling</strong>. <em>NeurIPS 2022</em>. <a href="https://arxiv.org/abs/2201.09907" target="_blank">arXiv:2201.09907</a>.</li>
+  <li data-cite-key="Tan-et-al.-2022-VIMPAC">Tan, H. et al. (2021). <strong>VIMPAC: Video Pre-Training via Masked Token Prediction and Contrastive Learning</strong>. <em>NeurIPS 2022</em>. <a href="https://arxiv.org/abs/2106.08264" target="_blank">arXiv:2106.08264</a>.</li>
+  <li data-cite-key="Bao-et-al.-2021-BEiT">Bao, H., Dong, L., Piao, S., & Wei, F. (2021). <strong>BEiT: BERT Pre-Training of Image Transformers</strong>. <em>ICLR 2022</em>. <a href="https://arxiv.org/abs/2106.08254" target="_blank">arXiv:2106.08254</a>.</li>
+  <li data-cite-key="Devlin-et-al.-2019-BERT">Devlin, J., Chang, M.-W., Lee, K., & Toutanova, K. (2019). <strong>BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding</strong>. <em>NAACL 2019</em>. <a href="https://arxiv.org/abs/1810.04805" target="_blank">arXiv:1810.04805</a>.</li>
+  <li data-cite-key="Goroshin-et-al.-2015">Goroshin, R., Bruna, J., Tomioka, R., & LeCun, Y. (2015). <strong>Unsupervised Learning of Spatiotemporally Coherent Metrics</strong>. <em>ICCV 2015</em>. <a href="https://arxiv.org/abs/1504.01151" target="_blank">arXiv:1504.01151</a>.</li>
+  <li data-cite-key="Carreira-Zisserman-2017">Carreira, J. & Zisserman, A. (2017). <strong>Quo Vadis, Action Recognition? A New Model and the Kinetics Dataset</strong>. <em>CVPR 2017</em>. <a href="https://arxiv.org/abs/1705.07750" target="_blank">arXiv:1705.07750</a>.</li>
+  <li data-cite-key="Goyal-et-al.-2017-SSV2">Goyal, R. et al. (2017). <strong>The "Something Something" Video Database for Learning and Evaluating Compositional Actions</strong>. <em>IEEE TPAMI</em>.</li>
+  <li data-cite-key="Soomro-Zamir-Shah-2012-UCF101">Soomro, K., Zamir, A. R., & Shah, M. (2012). <strong>UCF101: A Dataset of 101 Human Actions Classes From Videos in The Wild</strong>. <em>arXiv preprint</em>. <a href="https://arxiv.org/abs/1212.0402" target="_blank">arXiv:1212.0402</a>.</li>
+  <li data-cite-key="Kuehne-et-al.-2011-HMDB51">Kuehne, H. et al. (2011). <strong>HMDB: A Large Video Database for Human Motion Recognition</strong>. <em>ICCV 2011</em>.</li>
+  <li data-cite-key="Gu-et-al.-2018-AVA">Gu, C. et al. (2018). <strong>AVA: A Video Dataset of Spatio-temporally Localized Atomic Visual Actions</strong>. <em>CVPR 2018</em>.</li>
+  <li data-cite-key="mcg-nju-videomae-code">MCG-NJU. (2022). <strong>VideoMAE official PyTorch implementation</strong>. <a href="https://github.com/MCG-NJU/VideoMAE" target="_blank">github.com/MCG-NJU/VideoMAE</a>.</li>
+  <li data-cite-key="videomae-v2-2023">Li, K., Wang, Y., He, Y., Li, Y., Wang, Y., Wang, L., & Qiao, Y. (2023). <strong>VideoMAE V2: Gaining a Better Video Vision Transformer with Dense Tokenized Masked Autoencoders</strong>. <em>NeurIPS 2023</em>. <a href="https://arxiv.org/abs/2211.09910" target="_blank">arXiv:2211.09910</a>.</li>
+</ul>
+</div>
+</div>
