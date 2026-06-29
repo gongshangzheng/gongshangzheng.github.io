@@ -1,0 +1,334 @@
+---
+title: "动作识别系列（一）：端侧宠物行为识别——第一阶段任务规划"
+description: "面向室内猫咪居家场景的端侧宠物行为识别项目，第一阶段聚焦现有模型验证、动物动作数据集搜集与 Benchmark 搭建。"
+created_at: 2026-06-29T22:36:16
+updated_at: 2026-06-29T22:36:16
+tags: [动作识别, 宠物行为, mmaction2, benchmark, 边缘部署]
+categories: ["AI"]
+subcategory: "动作识别"
+sub_id: 10
+mathjax: false
+hero_title: "端侧宠物行为识别"
+hero_sub: "第一阶段 · 模型验证与 Benchmark 搭建"
+hero_tagline: "从 mmaction2 出发，在 500 元硬件约束下构建猫咪行为识别的 baseline"
+---
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">9</span><span class="label">常见行为</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">异常分类</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">任务线</span></div>
+  <div class="stat"><span class="num b">500</span><span class="label l">元 BOM 上限</span></div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">项目背景</div>
+  <div class="ch-title">产品定位与核心能力</div>
+
+  本项目目标是开发一款面向室内猫咪居家场景的==端侧宠物行为识别摄像头==产品。核心能力包括实时行为识别、异常场景告警、亮点抓取与结构化事件输出，最终在 **500 元以内的硬件 BOM 成本约束**下完成落地。
+
+  动作检测模块是整个产品的算法核心——它需要从持续视频流中准确识别猫咪的各种行为，区分常见活动与需要立即关注的异常场景，并在边缘设备上完成实时推理。
+
+  <div class="callout"><strong>核心矛盾</strong>：人类动作检测模型已经相当成熟，但猫的运动模式、骨架结构、行为语义与人类差异巨大。第一阶段的核心任务就是搞清楚这个 gap 有多大，以及现有方法迁移过来的效果下界在哪里。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">行为分类体系</div>
+  <div class="ch-title">模型需要覆盖的行为空间</div>
+
+  端侧模型需要识别的行为分为两大类：==常见场景==（日常行为，占视频流绝大多数）和==异常场景==（需要告警的特殊行为，出现频率低但重要性高）。
+
+  <h3 class="section-title">常见场景</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>行为</th><th>说明</th><th>识别难度</th></tr></thead>
+      <tbody>
+        <tr><td><strong>活动</strong></td><td>走、跑、跳跃</td><td>中等 — 运动模式多样</td></tr>
+        <tr><td><strong>进食</strong></td><td>猫粮盆区域，低头咀嚼</td><td>低 — 场景固定</td></tr>
+        <tr><td><strong>饮水</strong></td><td>水盆区域，低头舔舐</td><td>低 — 场景固定</td></tr>
+        <tr><td><strong>如厕</strong></td><td>猫砂盆区域</td><td>低 — 区域触发</td></tr>
+        <tr><td><strong>长时间静止</strong></td><td>睡眠/休息，>5min 不移动</td><td>低 — 但需与异常区分</td></tr>
+        <tr><td><strong>多宠追逐</strong></td><td>两只或多只猫快速移动跟随</td><td>高 — 多目标 + 高速</td></tr>
+        <tr><td><strong>多宠打闹</strong></td><td>两只猫肢体接触、翻滚</td><td>高 — 动作复杂</td></tr>
+        <tr><td><strong>舔毛</strong></td><td>自我清洁行为</td><td>中等 — 动作细微</td></tr>
+        <tr><td><strong>猫咪叫</strong></td><td>发出叫声，可能伴随张嘴动作</td><td>中等 — 视觉线索弱</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">异常场景</h3>
+
+  异常场景按严重程度和响应优先级分为四类：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分类</th><th>行为</th><th>告警优先级</th></tr></thead>
+      <tbody>
+        <tr><td><strong>分类 1（紧急）</strong></td><td>呕吐、抽搐</td><td>{{< bg red >}}立即推送{{< /bg >}}</td></tr>
+        <tr><td><strong>分类 2（破坏）</strong></td><td>用手拨东西/抓挠物品、啃咬东西</td><td>{{< bg yellow >}}事件记录{{< /bg >}}</td></tr>
+        <tr><td><strong>分类 3（扰民）</strong></td><td>猫咪持续叫</td><td>{{< bg yellow >}}事件记录{{< /bg >}}</td></tr>
+        <tr><td><strong>分类 4（安全）</strong></td><td>跳跃、跌落</td><td>{{< bg purple >}}条件推送{{< /bg >}}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      端云协同分级策略
+    </div>
+    <div class="admonition-content"><p>当相近异常行为无法在端侧准确区分时（例如「抽搐」vs「剧烈翻身」），端侧只需标记「异常」+ 区分大类，将关键帧和短片段上报云端做进一步识别。这种分级策略可以在保证召回率的同时降低端侧模型复杂度。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">端侧约束</div>
+  <div class="ch-title">硬件功能要求与部署约束</div>
+
+  <p>端侧不只是跑模型，还需要完成完整的视频采集→分析→输出链路。以下功能要求直接约束了算法选型和系统设计：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>功能</th><th>说明</th><th>算法约束</th></tr></thead>
+      <tbody>
+        <tr><td><strong>视频采集</strong></td><td>持续采集室内猫居家场景</td><td>需要处理连续视频流，非图像级</td></tr>
+        <tr><td><strong>夜视/低光拍摄</strong></td><td>红外夜视，弱光环境可见</td><td>模型需适配红外/低光域</td></tr>
+        <tr><td><strong>云台控制</strong></td><td>水平旋转 + 上下俯仰</td><td>运动背景 → 背景减除法受限</td></tr>
+        <tr><td><strong>异常场景提醒</strong></td><td>实时告警推送</td><td>低延迟推理 + 异常检测分支</td></tr>
+        <tr><td><strong>亮点抓取</strong></td><td>基于 CV 特征规则</td><td>需要轻量级特征提取器</td></tr>
+        <tr><td><strong>本地短时缓存</strong></td><td>弱网/断网时缓存</td><td>事件队列 + 存储管理</td></tr>
+        <tr><td><strong>结构化事件输出</strong></td><td>向云端输出</td><td>标准化数据格式</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>结构化事件输出的数据格式规范：</p>
+
+  <pre><code class="language-json">{
+  "timestamp": "2026-06-29T14:30:00+08:00",
+  "cat_id": "cat_01",
+  "action": "vomiting",
+  "category": "abnormal_class1",
+  "confidence": 0.87,
+  "keyframe": "events/20260629_143000_keyframe.jpg",
+  "clip": "events/20260629_143000_clip.mp4",
+  "ptz_state": {"pan": 45.0, "tilt": -15.0}
+}</code></pre>
+
+  <div class="callout"><strong>关键约束</strong>：500 元 BOM 意味着端侧芯片大概率是 RV11xx/H28xx 级别的 NPU SoC，算力在 0.5-1.0 TOPS 量级。模型必须经过极端量化（INT8 甚至更低）和剪枝才能在这个算力下实现实时推理（>15fps）。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Phase 1</div>
+  <div class="ch-title">第一阶段：模型验证与 Benchmark 搭建</div>
+
+  <p>第一阶段的核心目标是：<strong>搞清楚现有动作检测模型在动物（尤其是猫）行为识别上能做到什么程度</strong>，为后续的模型改进和数据策略提供 baseline。</p>
+
+  <p>分为三条并行推进的任务线：</p>
+
+  {{< mermaid >}}
+flowchart LR
+  T1["任务 1<br/>模型调研"] --> T3["任务 3<br/>Benchmark"]
+  T2["任务 2<br/>数据集搜集"] --> T3
+  T3 --> OUT["Baseline<br/>+ 瓶颈分析"]
+  {{< /mermaid >}}
+
+  <!-- ===== 任务 1 ===== -->
+
+  <h3 class="section-title">任务 1：现有模型调研与方法总结</h3>
+
+  <div class="def-box">
+    <h3>目标</h3>
+    <p>梳理当前动作检测领域的主要技术路线，理解每种方法的原理、适用场景和局限性，作为后续改进的基础。</p>
+  </div>
+
+  <h4 class="ch-section">调研范围</h4>
+
+  <ol>
+    <li><strong>mmaction2 工具链</strong>：[[github open-mmlab/mmaction2 | OpenMMLab/mmaction2]] 是动作识别/检测的标准框架，内置了大量主流模型（TSN, TSM, SlowFast, TimeSformer, UniFormer 等），是验证的第一站。</li>
+    <li><strong>其他人类动作检测模型</strong>：关注基于 RGB 的方法（3D-CNN 系列、Video Transformer 系列）和基于骨架的方法（ST-GCN 及变体）。</li>
+    <li><strong>已有的动物动作检测模型</strong>：调研是否已有专门针对动物行为识别的开源模型或工作（如 Animal Kingdom 数据集附带的方法、AnimalPose 相关工作等）。</li>
+  </ol>
+
+  <h4 class="ch-section">两条主要技术路线</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>RGB-based</th><th>Skeleton-based</th></tr></thead>
+      <tbody>
+        <tr><td><strong>代表方法</strong></td><td>SlowFast, TimeSformer, VideoMAE, UniFormer</td><td>ST-GCN, AGCN, SkateFormer</td></tr>
+        <tr><td><strong>输入</strong></td><td>原始 RGB 视频帧</td><td>骨架关键点序列</td></tr>
+        <tr><td><strong>优势</strong></td><td>信息完整，不依赖姿态估计</td><td>计算量小，对背景鲁棒</td></tr>
+        <tr><td><strong>劣势</strong></td><td>计算量大，光照敏感</td><td>依赖姿态估计质量，猫的关节点标注稀少</td></tr>
+        <tr><td><strong>猫场景适配性</strong></td><td>==首选== — 猫姿态模型不成熟</td><td>需要先解决猫姿态估计问题</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 class="ch-section">交付物</h4>
+
+  <ul>
+    <li>各模型的技术路线总结（架构、输入模态、时空建模方式）</li>
+    <li>优缺点对比表（精度、速度、显存占用、是否适合边缘部署）</li>
+    <li>初步选型建议：哪些模型最适合作为改进的基础</li>
+  </ul>
+
+  <!-- ===== 任务 2 ===== -->
+
+  <h3 class="section-title">任务 2：动物动作数据集搜集</h3>
+
+  <div class="def-box">
+    <h3>目标</h3>
+    <p>为模型训练和 benchmark 测试准备充足的数据。人类动作检测模型迁移到动物场景需要领域适配，数据是关键。</p>
+  </div>
+
+  <h4 class="ch-section">三类数据来源</h4>
+
+  <p><strong>1. 真实动物动作视频数据集</strong></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>物种</th><th>行为类别</th><th>模态</th><th>许可</th></tr></thead>
+      <tbody>
+        <tr><td>[[github dgcnz/AnimalKingdom | Animal Kingdom]]</td><td>多物种（850+ 物种）</td><td>140+ 行为</td><td>视频</td><td>CC BY-NC</td></tr>
+        <tr><td>[[github luyiqang/AP-10K | AP-10K]]</td><td>23 种动物</td><td>姿态估计</td><td>图片 + 关键点</td><td>CC BY 4.0</td></tr>
+        <tr><td>AnimalPose</td><td>5 种动物</td><td>姿态估计</td><td>图片 + 关键点</td><td>学术使用</td></tr>
+        <tr><td>Pet-3K（待调研）</td><td>猫/狗</td><td>行为分类</td><td>视频</td><td>待确认</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>2. 合成动物动作数据集</strong></p>
+
+  <ul>
+    <li>游戏引擎 / 3D 渲染生成的动物动作数据（如使用 Blender + 猫科 3D 模型 + 动画 capture）</li>
+    <li>优势：==标注完美==、可控、可覆盖长尾异常场景（呕吐、抽搐等真实采集极难覆盖的行为）</li>
+  </ul>
+
+  <p><strong>3. 动物动作合成世界模型</strong></p>
+
+  <ul>
+    <li>探索使用视频生成世界模型（Sora 类、条件视频生成模型）合成特定猫科行为片段</li>
+    <li>特别适用于覆盖==呕吐、抽搐、跌落==等难以在真实场景采集且标注的异常行为</li>
+    <li>可控性（行为类型、视角、光照）是关键评估指标</li>
+  </ul>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      合成数据的域差异风险
+    </div>
+    <div class="admonition-content"><p>合成数据与真实视频之间存在显著的域差异（domain gap）。使用合成数据训练的模型在真实场景上的表现可能大幅下降。Benchmark 中必须包含真实视频测试集来量化这一 gap。</p></div>
+  </div>
+
+  <h4 class="ch-section">交付物</h4>
+
+  <ul>
+    <li>数据集汇总表（名称、规模、物种覆盖、行为类别、模态、许可证）</li>
+    <li>数据缺口分析：哪些行为类别缺乏可用数据</li>
+    <li>数据合成可行性评估</li>
+  </ul>
+
+  <!-- ===== 任务 3 ===== -->
+
+  <h3 class="section-title">任务 3：Benchmark 搭建与模型测试</h3>
+
+  <div class="def-box">
+    <h3>目标</h3>
+    <p>搭建一套针对猫咪行为识别的评测基准，量化现有模型在该任务上的表现，建立 baseline。</p>
+  </div>
+
+  <h4 class="ch-section">Benchmark 设计</h4>
+
+  <p><strong>标签空间</strong>——对齐项目行为分类体系：</p>
+  <ul>
+    <li>常见场景 9 类（活动 / 进食 / 饮水 / 如厕 / 静止 / 追逐 / 打闹 / 舔毛 / 叫）</li>
+    <li>异常场景 4 大类（紧急 / 破坏 / 扰民 / 安全）</li>
+  </ul>
+
+  <p><strong>测试集构成</strong>：</p>
+  <ul>
+    <li>真实猫咪行为视频（如有标注数据）</li>
+    <li>合成数据补充异常场景</li>
+    <li>不同光照条件（正常 / 低光 / 夜视红外）</li>
+  </ul>
+
+  <p><strong>评测指标</strong>：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标</th><th>说明</th><th>关注点</th></tr></thead>
+      <tbody>
+        <tr><td>逐帧 mAP</td><td>时空动作检测</td><td>定位精度</td></tr>
+        <tr><td>视频级准确率</td><td>行为分类</td><td>整体识别效果</td></tr>
+        <tr><td>混淆矩阵</td><td>类别间混淆</td><td>常见 ↔ 异常 的误分</td></tr>
+        <tr><td>推理延迟</td><td>端侧部署</td><td>需 &lt; 67ms/frame（15fps）</td></tr>
+        <tr><td>显存占用</td><td>端侧部署</td><td>需适配 &lt; 512MB</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 class="ch-section">实验计划</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>实验</th><th>模型</th><th>数据</th><th>目的</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Exp-1</strong></td><td>mmaction2 模型库（zero-shot）</td><td>人类动作数据集预训练</td><td>测迁移效果下界</td></tr>
+        <tr><td><strong>Exp-2</strong></td><td>mmaction2 模型库（fine-tune）</td><td>动物动作数据集微调</td><td>测 fine-tune 能拉多少</td></tr>
+        <tr><td><strong>Exp-3</strong></td><td>骨架-based 模型</td><td>动物姿态估计数据</td><td>测骨架路线在猫上的可行性</td></tr>
+        <tr><td><strong>Exp-4</strong></td><td>Video Transformer</td><td>混合数据（真实 + 合成）</td><td>测 Transformer + 数据增强上限</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 class="ch-section">交付物</h4>
+
+  <ul>
+    <li>Benchmark 评测代码库（基于 mmaction2 或独立实现）</li>
+    <li>各模型在猫咪行为识别上的定量结果</li>
+    <li>分析报告：瓶颈在哪里（数据量？域差异？模型容量？时空建模能力？）</li>
+    <li>第二阶段改进方向建议</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Roadmap</div>
+  <div class="ch-title">任务依赖与后续规划</div>
+
+  {{< mermaid >}}
+flowchart TD
+  P1["第一阶段：模型验证<br/>+ Benchmark 搭建"] --> P2["第二阶段：模型改进<br/>+ 数据增强"]
+  P2 --> P3["第三阶段：端侧部署<br/>+ 系统集成"]
+  P3 --> P4["第四阶段：产品化<br/>+ 硬件 BOM 定型"]
+  {{< /mermaid >}}
+
+  <div class="info-box">
+    <h3>时间线与依赖</h3>
+    <ul>
+      <li><strong>任务 1（模型调研）</strong>与<strong>任务 2（数据集搜集）</strong>可以完全并行</li>
+      <li><strong>任务 3（Benchmark）</strong>依赖任务 1 和 2 的部分产出（选定模型 + 准备好数据）</li>
+      <li>任务 3 的 Benchmark 设计本身可以先行启动，但跑实验需要前两者就绪</li>
+    </ul>
+  </div>
+
+  <div class="review-box">
+    <h3>第一阶段关键里程碑</h3>
+    <ul>
+      <li><strong>模型清单</strong>：完成 mmaction2 + 其他主要模型的调研，输出技术路线对比表</li>
+      <li><strong>数据集清单</strong>：完成真实 + 合成数据源调研，输出数据缺口分析</li>
+      <li><strong>Benchmark v0.1</strong>：可运行的评测 pipeline，至少跑通 Exp-1（zero-shot baseline）</li>
+      <li><strong>Baseline 报告</strong>：各模型定量结果 + 瓶颈分析 + Phase 2 方向建议</li>
+    </ul>
+  </div>
+</div>
