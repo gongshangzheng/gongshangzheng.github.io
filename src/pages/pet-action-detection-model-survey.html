@@ -1,0 +1,476 @@
+---
+title: "动作识别系列（二）：从 mmaction2 到 VideoMamba——动作检测模型全景与猫咪行为识别选型"
+description: "系统梳理 mmaction2 模型库、2023-2026 新架构（VideoMamba/VideoMAE V2/InternVideo2）、动物动作检测数据集与方法，给出 500 元硬件约束下的猫咪行为识别选型建议。"
+created_at: 2026-06-30T14:18:27
+updated_at: 2026-06-30T14:18:27
+tags: [动作识别, mmaction2, VideoMamba, 动物行为, 边缘部署, benchmark]
+categories: ["AI"]
+subcategory: "动作识别"
+sub_id: 20
+mathjax: false
+hero_title: "动作检测模型全景"
+hero_sub: "mmaction2 · VideoMamba · 动物行为 · 边缘部署"
+hero_tagline: "25+ 模型 × 9 个数据集 × 3 条技术路线，在 500 元 BOM 约束下寻找猫咪行为识别的最优解"
+---
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">25+</span><span class="label">调研模型</span></div>
+  <div class="stat"><span class="num b">9</span><span class="label g">动物数据集</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">技术路线</span></div>
+  <div class="stat"><span class="num b">90%</span><span class="label l">K400 SOTA</span></div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">概述</div>
+  <div class="ch-title">为什么要做这次调研</div>
+
+  [[@pet-action-detection-phase1 | 第一阶段任务规划]] 中我们定义了三条任务线，本文是==任务 1（现有模型调研与方法总结）==的交付物。
+
+  核心问题只有一个：**现有动作检测模型在动物（尤其是猫）行为识别上能做到什么程度？** 要回答这个问题，需要同时摸清三个层面：
+
+  <ol>
+    <li><strong>mmaction2 工具链里有什么</strong>——这是验证的第一站，OpenMMLab 生态覆盖了 2014-2023 年的主流模型</li>
+    <li><strong>2023-2026 年冒出了什么新东西</strong>——VideoMamba、VideoMAE V2、视频基础模型，mmaction2 还没来得及收录</li>
+    <li><strong>动物行为识别领域已经做了什么</strong>——数据集、方法、跨物种迁移的可行性</li>
+  </ol>
+
+  <div class="callout"><strong>本文定位</strong>：技术路线全景图 + 选型决策依据。不是论文精读，而是为项目选定 1-2 个主力模型 + 备选方案的快速参考。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">技术路线全景</div>
+  <div class="ch-title">从 CNN 到 Mamba：三条技术路线的演进</div>
+
+  动作识别的架构演进可以归纳为三波浪潮，每一波都在解决前一波的核心瓶颈：
+
+  {{< mermaid >}}
+flowchart LR
+  subgraph CNN["第一波：CNN 时代"]
+    direction TB
+    C1["2D CNN<br/>TSN/TSM<br/>轻量但无显式运动建模"]
+    C2["3D CNN<br/>I3D/SlowFast/X3D<br/>显式时空建模但计算量大"]
+  end
+  subgraph TR["第二波：Transformer 时代"]
+    direction TB
+    T1["Video Transformer<br/>TimeSformer/MViT/UniFormer<br/>长程依赖建模但 O(N²)"]
+    T2["掩码预训练<br/>VideoMAE/V2<br/>自监督+规模化的胜利"]
+  end
+  subgraph SM["第三波：SSM 时代"]
+    direction TB
+    S1["Video Mamba<br/>线性复杂度<br/>长序列优势"]
+    S2["混合架构<br/>SSM + Attention<br/>互补补偿"]
+  end
+  CNN --> TR --> SM
+  {{< /mermaid >}}
+
+  <h3 class="section-title">两条输入路线：RGB vs 骨架</h3>
+
+  与架构演进正交的是输入模态的选择：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>RGB-based</th><th>Skeleton-based</th></tr></thead>
+      <tbody>
+        <tr><td><strong>代表方法</strong></td><td>SlowFast, X3D, VideoMamba, VideoMAE</td><td>ST-GCN, PoseC3D, SkateFormer</td></tr>
+        <tr><td><strong>输入</strong></td><td>原始 RGB 视频帧</td><td>骨架关键点序列</td></tr>
+        <tr><td><strong>计算量</strong></td><td>大（GB 级 FLOPs）</td><td>极小（&lt; 4G FLOPs）</td></tr>
+        <tr><td><strong>参数量</strong></td><td>2M - 1B</td><td>{{< bg green >}}1.4M - 3.5M{{< /bg >}}</td></tr>
+        <tr><td><strong>前置依赖</strong></td><td>无</td><td>需要姿态估计模型</td></tr>
+        <tr><td><strong>猫场景适配</strong></td><td>{{< bg green >}}首选{{< /bg >}} — 信息完整</td><td>{{< bg yellow >}}需先解决猫姿态估计{{< /bg >}}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      猫科骨架路线的隐藏成本
+    </div>
+    <div class="admonition-content"><p>人体骨架模型（COCO-17 或 NTU-25）<strong>不能直接用于猫</strong>——猫是四足动物，关节拓扑完全不同（AP-10K 定义 22 个关键点，包含尾巴和耳朵）。选择骨架路线意味着需要先训练一个猫科姿态估计器，或使用 <strong>SuperAnimal</strong>（见下文）做零样本替代。这个前置成本不可忽视。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">mmaction2 模型库</div>
+  <div class="ch-title">OpenMMLab 生态覆盖了什么</div>
+
+  [[github open-mmlab/mmaction2 | mmaction2]] 是动作识别领域的 ==MMDetection==——一个框架覆盖了 25+ 识别模型、5+ 检测模型和 5+ 骨架模型，统一在模块化的 config 体系下。
+
+  <h3 class="section-title">精度效率全览（Kinetics-400 Top-1 排序）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>路线</th><th>K400 Top-1</th><th>参数量</th><th>FLOPs</th><th>边缘友好</th></tr></thead>
+      <tbody>
+        <tr><td><strong>VideoMAE V2 ViT-G</strong></td><td>掩码预训练</td><td>90.0%</td><td>~1B</td><td>~3T</td><td>{{< bg red >}}不可{{< /bg >}}</td></tr>
+        <tr><td><strong>UniFormer V2-L</strong></td><td>Transformer</td><td>89.6%</td><td>354M</td><td>1.3T</td><td>{{< bg red >}}不可{{< /bg >}}</td></tr>
+        <tr><td><strong>VideoMAE V1 ViT-B</strong></td><td>掩码预训练</td><td>81.3%</td><td>87M</td><td>180G</td><td>{{< bg red >}}不可{{< /bg >}}</td></tr>
+        <tr><td><strong>UniFormer V1-S</strong></td><td>Transformer</td><td>80.9%</td><td>21.4M</td><td>41.8G</td><td>{{< bg yellow >}}中等{{< /bg >}}</td></tr>
+        <tr><td><strong>CSN-R50</strong></td><td>3D CNN</td><td>79.4%</td><td>13.1M</td><td>55.9G</td><td>{{< bg yellow >}}中等{{< /bg >}}</td></tr>
+        <tr><td><strong>SlowFast-R50 8×8</strong></td><td>3D CNN</td><td>76.8%</td><td>34.5M</td><td>66.1G</td><td>{{< bg yellow >}}中等{{< /bg >}}</td></tr>
+        <tr><td><strong>TSM-R50 16帧</strong></td><td>2D CNN</td><td>75.1%</td><td>23.9M</td><td>65.8G</td><td>{{< bg yellow >}}中等{{< /bg >}}</td></tr>
+        <tr><td><strong>X3D-M</strong></td><td>3D CNN</td><td>76.4%</td><td>{{< bg green >}}2.6M{{< /bg >}}</td><td>{{< bg green >}}2.7G{{< /bg >}}</td><td>{{< bg green >}}优秀{{< /bg >}}</td></tr>
+        <tr><td><strong>X3D-S</strong></td><td>3D CNN</td><td>73.2%</td><td>{{< bg green >}}2.0M{{< /bg >}}</td><td>{{< bg green >}}0.6G{{< /bg >}}</td><td>{{< bg green >}}优秀{{< /bg >}}</td></tr>
+        <tr><td><strong>TSM-MobileNetV2</strong></td><td>2D CNN</td><td>68.7%</td><td>{{< bg green >}}2.7M{{< /bg >}}</td><td>{{< bg green >}}3.3G{{< /bg >}}</td><td>{{< bg green >}}优秀{{< /bg >}}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">骨架方法：参数量碾压级优势</h3>
+
+  骨架方法的参数量比 RGB 方法小一到两个数量级，精度却毫不逊色（在 NTU-RGB+D 上）：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>NTU60-XSub Top-1</th><th>参数量</th><th>FLOPs</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td><strong>STGCN++</strong></td><td>92.77%（4-stream）</td><td>{{< bg green >}}1.39M{{< /bg >}}</td><td>{{< bg green >}}1.95G{{< /bg >}}</td><td>骨架最轻量基线</td></tr>
+        <tr><td><strong>ST-GCN</strong></td><td>92.34%（4-stream）</td><td>3.1M</td><td>3.8G</td><td>经典图卷积</td></tr>
+        <tr><td><strong>PoseC3D</strong></td><td>94.0%（Fusion）</td><td>3.2M</td><td>20.6G</td><td>骨架热力图 + 3D CNN</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：如果猫科姿态估计问题能解决，骨架路线是边缘部署的==最优选择==——STGCN++ 仅 1.39M 参数就能达到 92.77% 精度。但正如前面警告所述，猫的骨架拓扑与人不同，需要额外的姿态估计前端。</div>
+
+  <h3 class="section-title">mmaction2 的部署工具链</h3>
+
+  <p>mmaction2 通过 [[github open-mmlab/mmdeploy | MMDeploy]] 支持主流推理后端：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>部署后端</th><th>适用平台</th><th>量化支持</th><th>3D Conv 支持</th></tr></thead>
+      <tbody>
+        <tr><td>TensorRT</td><td>NVIDIA Jetson / GPU</td><td>INT8 PTQ + QAT</td><td>良好</td></tr>
+        <tr><td>ONNX Runtime</td><td>跨平台</td><td>INT8 动态量化</td><td>良好</td></tr>
+        <tr><td>NCNN</td><td>ARM 移动端 / 嵌入式</td><td>INT8 量化</td><td>{{< bg yellow >}}有限{{< /bg >}}</td></tr>
+        <tr><td>RKNN</td><td>瑞芯微 NPU（RV11xx）</td><td>INT8 量化</td><td>{{< bg yellow >}}需验证{{< /bg >}}</td></tr>
+        <tr><td>OpenVINO</td><td>Intel VPU / CPU</td><td>INT8 量化</td><td>良好</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">2023-2026 新架构</div>
+  <div class="ch-title">mmaction2 之外发生了什么</div>
+
+  mmaction2 最新版本（v1.2.0, 2023.10）的覆盖边界大约到 VideoMAE V1 和 UniFormer V1。但此后两年有大量重要工作涌现。
+
+  <h3 class="section-title">SSM 路线：VideoMamba 系列</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>会议</th><th>K400 Top-1</th><th>核心创新</th><th>参数量</th></tr></thead>
+      <tbody>
+        <tr><td><strong>VideoMamba</strong></td><td>ECCV 2024</td><td>85.0%（M）</td><td>纯 SSM 视频 backbone，线性复杂度</td><td>Ti 7M / S 26M / M 66M</td></tr>
+        <tr><td><strong>VideoMambaPro</strong></td><td>ICCV 2025</td><td>91.9%（M）</td><td>修复 Mamba 稀疏 token 遗忘 + 全局注意力补偿</td><td>~66M</td></tr>
+        <tr><td><strong>ETMamba</strong></td><td>2025</td><td>88.3%</td><td>时空特征保持 + 双向共享 SSM</td><td>中等</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      SSM 部署瓶颈
+    </div>
+    <div class="admonition-content"><p>Mamba 的选择性扫描（selective scan）算子目前在 TensorRT / NCNN / RKNN 上均无原生支持。VideoMamba-Ti（7M 参数）满足参数量约束，但 <strong>算子兼容性是当前最大障碍</strong>。短期不建议作为边缘部署首选，但值得作为技术储备持续关注。</p></div>
+  </div>
+
+  <h3 class="section-title">掩码预训练的规模化：VideoMAE V2 → InternVideo2</h3>
+
+  <p>掩码视频建模（MVM）已成为视频预训练的标准范式。关键发现：极高掩码比例（90-95%）对视频有效，因为视频数据的时间冗余极高。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>会议</th><th>K400 Top-1</th><th>参数量</th><th>对项目的价值</th></tr></thead>
+      <tbody>
+        <tr><td><strong>VideoMAE V2 ViT-G</strong></td><td>CVPR 2023</td><td>90.0%</td><td>~1B</td><td>提供预训练权重供知识蒸馏</td></tr>
+        <tr><td><strong>VideoMAE V2 ViT-S</strong></td><td>CVPR 2023</td><td>83.6%</td><td>{{< bg green >}}22M{{< /bg >}}</td><td>蒸馏小模型，边缘部署候选</td></tr>
+        <tr><td><strong>InternVideo2</strong></td><td>ECCV 2024</td><td>SOTA（60+ 任务）</td><td>6B</td><td>视频基础模型，仅作教师模型</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">边缘部署专用方法</h3>
+
+  <p>2024-2025 年出现了专门为边缘设备设计的方法：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>会议</th><th>核心创新</th><th>边缘效果</th></tr></thead>
+      <tbody>
+        <tr><td><strong>EdgeOAR</strong></td><td>IEEE TMC 2025</td><td>Early Exit + 特征增强</td><td>延迟降低 97%+</td></tr>
+        <tr><td><strong>TinyAct</strong></td><td>PLOS ONE 2025</td><td>边缘-云协同 + 知识蒸馏</td><td>极轻量学生模型</td></tr>
+        <tr><td><strong>Hybrid KD</strong></td><td>MDPI 2025</td><td>三层蒸馏（响应+注意力+特征）</td><td>UCF101：92.07%（教师 94.74%）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>知识蒸馏是连接 SOTA 精度与边缘效率的桥梁</strong>。典型管线：大型教师模型（VideoMAE V2）→ 中型学生模型（X3D-M 大小）→ 边缘部署。多层级蒸馏可将精度差距控制在 2-4% 以内。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">动物行为识别</div>
+  <div class="ch-title">动物动作检测领域做了什么</div>
+
+  动物行为识别是计算机视觉中一个==快速成长但相对小众==的分支，面临三个结构性瓶颈：数据匮乏、长尾分布严重、骨架定义不统一。
+
+  <h3 class="section-title">核心数据集一览</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>年份</th><th>物种</th><th>行为类别</th><th>标注类型</th><th>规模</th></tr></thead>
+      <tbody>
+        <tr><td><strong>[[github sutdcv/Animal-Kingdom | Animal Kingdom]]</strong></td><td>2022 CVPR</td><td>850 种</td><td>140 种行为</td><td>多标签分类 + 姿态 + 定位</td><td>30K 视频 / 50h</td></tr>
+        <tr><td><strong>[[github Vision-CAIR/MammalNet | MammalNet]]</strong></td><td>2023 CVPR</td><td>175 种哺乳动物</td><td>124 种行为</td><td>分类 + 检测 + 小样本</td><td>18K 视频 / 539h</td></tr>
+        <tr><td><strong>AP-10K</strong></td><td>2021 NeurIPS</td><td>23 科（含猫科）</td><td>—</td><td>22 关键点姿态</td><td>10K 图</td></tr>
+        <tr><td><strong>APT-36K</strong></td><td>2022 NeurIPS</td><td>30 种</td><td>—</td><td>姿态 + 跟踪</td><td>36K 帧 / 2.4K 视频</td></tr>
+        <tr><td><strong>SuperAnimal</strong></td><td>2024 Nature Comm.</td><td>45+ 种</td><td>—</td><td>{{< bg green >}}零样本姿态估计{{< /bg >}}</td><td>基础模型</td></tr>
+        <tr><td><strong>PMTNet（猫专用）</strong></td><td>2026</td><td>{{< bg green >}}猫{{< /bg >}}</td><td>5 种行为</td><td>部件检测 + 行为分类</td><td>1.3K 视频</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">人类→动物迁移：能复用多少？</h3>
+
+  <p>从 Kinetics-400（人类动作）预训练迁移到动物行为，<strong>MammalNet</strong> 报告了 +10.1% 的 per-class 准确率提升（27.7% → 37.8%，MViT v2）。证明特征级迁移有效。</p>
+
+  <p>但骨架级别无法直接迁移：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>人类 (COCO-17)</th><th>猫科 (AP-10K)</th><th>影响</th></tr></thead>
+      <tbody>
+        <tr><td>关键点数</td><td>17</td><td>22</td><td>猫多出尾巴、耳朵</td></tr>
+        <tr><td>拓扑</td><td>双臂双腿 + 头</td><td>四足 + 尾 + 头 + 耳</td><td>骨架图完全不同</td></tr>
+        <tr><td>运动范围</td><td>直立约束</td><td>四足 + 脊柱灵活</td><td>同名关键点语义不同</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Animal Kingdom 行为与目标猫咪行为的重叠</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>目标猫咪行为</th><th>Animal Kingdom 中</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>走 / 跑 / 跳跃</td><td>{{< bg green >}}有{{< /bg >}}</td><td>高频类别</td></tr>
+        <tr><td>进食 / 饮水</td><td>{{< bg green >}}有{{< /bg >}}</td><td>中高频</td></tr>
+        <tr><td>舔毛</td><td>{{< bg green >}}有{{< /bg >}}</td><td>跨物种常见</td></tr>
+        <tr><td>如厕</td><td>{{< bg green >}}有{{< /bg >}}</td><td>长尾类别</td></tr>
+        <tr><td><strong>呕吐</strong></td><td>{{< bg red >}}无{{< /bg >}}</td><td>所有公开数据集中完全空白</td></tr>
+        <tr><td><strong>抽搐</strong></td><td>{{< bg red >}}无{{< /bg >}}</td><td>所有公开数据集中完全空白</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition danger">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      异常行为数据完全空白
+    </div>
+    <div class="admonition-content"><p>呕吐和抽搐是项目的高优先级异常场景（分类 1 紧急），但在<strong>所有公开动物行为数据集中都没有覆盖</strong>。这是整个项目最大的数据缺口，需要通过以下方式解决：(1) 自建小规模标注集；(2) 使用异常检测范式（如 VideoMAE 重建误差检测"不正常"的帧）；(3) 合成数据探索。</p></div>
+  </div>
+
+  <h3 class="section-title">SuperAnimal：零样本猫科姿态估计</h3>
+
+  <p>[[github AdaptiveMotorControlLab/DeepLabCut | SuperAnimal]]（Nature Communications 2024, EPFL）是动物姿态估计的基础模型：</p>
+  <ul>
+    <li>覆盖 45+ 物种，27-39 关键点，<strong>零样本可用</strong></li>
+    <li>已集成到 DeepLabCut Model Zoo，可直接调用</li>
+    <li>提供无监督视频适应，减少帧间抖动</li>
+  </ul>
+
+  <div class="callout"><strong>对项目的价值</strong>：SuperAnimal 可以直接用于猫咪视频获取骨架，==省去大量姿态标注成本==。如果选择骨架路线，这解决了前置姿态估计问题。但需要验证猫科关键点的质量是否足够支撑下游行为分类。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">综合选型</div>
+  <div class="ch-title">500 元 BOM 约束下的选型决策</div>
+
+  <h3 class="section-title">硬件约束分析</h3>
+
+  <p>500 元 BOM 意味着端侧 SoC 大概率是瑞芯微 RV11xx / H28xx 级别，NPU 算力 0.5-1.0 TOPS。推理预算：</p>
+  <ul>
+    <li>单次推理 FLOPs 应控制在 <strong>1-5G</strong> 以内（30fps 实时）</li>
+    <li>参数量 <strong>10M 以内</strong> 为佳</li>
+    <li>NPU 对标准 Conv2D / DepthwiseConv 支持最好，3D Conv 支持有限，Transformer 注意力 / SSM 扫描需特殊处理</li>
+  </ul>
+
+  <h3 class="section-title">推荐方案矩阵</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方案</th><th>模型</th><th>参数量</th><th>FLOPs</th><th>K400 精度</th><th>部署难度</th><th>推荐度</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>A：RGB 轻量 3D CNN</strong></td>
+          <td>X3D-M</td>
+          <td>{{< bg green >}}2.6M{{< /bg >}}</td>
+          <td>{{< bg green >}}2.7G{{< /bg >}}</td>
+          <td>76.4%</td>
+          <td>★★☆</td>
+          <td>{{< bg green >}}⭐⭐⭐⭐{{< /bg >}}</td>
+        </tr>
+        <tr>
+          <td><strong>B：RGB 轻量 2D CNN</strong></td>
+          <td>TSM + MobileNetV2</td>
+          <td>{{< bg green >}}2.7M{{< /bg >}}</td>
+          <td>{{< bg green >}}3.3G{{< /bg >}}</td>
+          <td>68.7%</td>
+          <td>{{< bg green >}}★☆☆{{< /bg >}}</td>
+          <td>⭐⭐⭐⭐</td>
+        </tr>
+        <tr>
+          <td><strong>C：检测 + 分类</strong></td>
+          <td>YOLOv8 + 动作分类头</td>
+          <td>~10M</td>
+          <td>中</td>
+          <td>—</td>
+          <td>★★☆</td>
+          <td>{{< bg green >}}⭐⭐⭐⭐⭐{{< /bg >}}</td>
+        </tr>
+        <tr>
+          <td><strong>D：骨架路线</strong></td>
+          <td>SuperAnimal + STGCN++</td>
+          <td>~5M（总计）</td>
+          <td>{{< bg green >}}&lt; 5G{{< /bg >}}</td>
+          <td>—（NTU60: 92.8%）</td>
+          <td>★★★★</td>
+          <td>⭐⭐⭐</td>
+        </tr>
+        <tr>
+          <td><strong>E：ViT 蒸馏</strong></td>
+          <td>VideoMAE V2 ViT-S 蒸馏</td>
+          <td>22M</td>
+          <td>57G</td>
+          <td>83.6%</td>
+          <td>★★★</td>
+          <td>⭐⭐⭐</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">推荐技术架构</h3>
+
+  <p>综合数据可用性、部署约束和精度需求，推荐的分层架构如下：</p>
+
+  {{< mermaid >}}
+flowchart TD
+  VIDEO["视频流"] --> DETECT["Layer 1: 检测+跟踪\nYOLOv8/v11 猫检测\n+ ByteTrack 跟踪"]
+  DETECT --> POSE["Layer 2: 姿态估计\nSuperAnimal 零样本\n（可选）"]
+  DETECT --> COMMON["Layer 3a: 常见行为分类\nX3D-M 或 TSM+MobileNetV2\n从 Animal Kingdom 迁移"]
+  POSE --> COMMON
+  DETECT --> ABNORMAL["Layer 3b: 异常行为检测\nVideoMAE 重建误差\n（anomaly detection）"]
+  COMMON --> AGG["Layer 4: 时序聚合\n滑动窗口 + 规则引擎"]
+  ABNORMAL --> AGG
+  AGG --> OUTPUT["结构化事件输出"]
+  {{< /mermaid >}}
+
+  <div class="info-box">
+    <h3>分层策略的理由</h3>
+    <ul>
+      <li><strong>常见行为</strong>（走/跑/跳/进食/舔毛）在 Animal Kingdom 和 MammalNet 中有数据，可以用 X3D-M 做 fine-tune，路线清晰</li>
+      <li><strong>异常行为</strong>（呕吐/抽搐）无公开数据，走 anomaly detection 范式更实际——不要求精确分类，而是检测"不正常"的帧，再上报云端</li>
+      <li><strong>姿态估计</strong>是可选层：如果骨架路线验证效果好，SuperAnimal + STGCN++ 可以作为轻量替代方案</li>
+    </ul>
+  </div>
+
+  <h3 class="section-title">分阶段实施路径</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>阶段</th><th>目标</th><th>模型</th><th>数据</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Phase 1（当前）</strong></td><td>建立 baseline</td><td>X3D-M zero-shot + fine-tune</td><td>Animal Kingdom 猫科子集 + 自标少量</td></tr>
+        <tr><td><strong>Phase 2</strong></td><td>精度提升</td><td>VideoMAE V2 预训练 → 蒸馏到 X3D-M</td><td>Animal Kingdom + MammalNet + 合成</td></tr>
+        <tr><td><strong>Phase 3</strong></td><td>端侧部署</td><td>INT8 量化 + RKNN 适配</td><td>真实监控场景视频</td></tr>
+        <tr><td><strong>Phase 4（探索）</strong></td><td>架构升级</td><td>VideoMamba-Ti（待 SSM 部署成熟）</td><td>混合数据</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">关键判断与下一步</div>
+
+  <div class="review-box">
+    <h3>五个核心判断</h3>
+    <ul>
+      <li><strong>RGB 路线优先于骨架路线</strong>：猫科姿态估计虽有 SuperAnimal 兜底，但整体 pipeline 复杂度更高。X3D-M（2.6M / 2.7G FLOPs）是 RGB 方案的首选起点</li>
+      <li><strong>常见行为技术路线已清晰</strong>：从 Animal Kingdom 猫科子集迁移 + X3D-M fine-tune，有数据有模型有 benchmark</li>
+      <li><strong>异常行为是真正的难题</strong>：呕吐/抽搐在所有公开数据中完全空白，anomaly detection 范式 + 合成数据是两条可行路径</li>
+      <li><strong>知识蒸馏是精度与效率的桥梁</strong>：VideoMAE V2 预训练权重 → X3D-M 学生模型，典型精度损失 2-4%</li>
+      <li><strong>SSM 部署还不成熟</strong>：VideoMamba 精度优秀但选择性扫描算子缺乏 NPU 支持，作为技术储备持续关注</li>
+    </ul>
+  </div>
+
+  <h3 class="section-title">下一步行动项</h3>
+
+  <ol>
+    <li><strong>搭建 X3D-M baseline</strong>：在 mmaction2 中加载 X3D-M 预训练权重，用 Animal Kingdom 猫科子集做 fine-tune，建立常见行为的 zero-shot 和 fine-tune 两个 baseline</li>
+    <li><strong>精读 PMTNet（2026）</strong>：目前唯一专门做猫咪行为识别的论文，其部件级建模思路（body/head/tail 检测 → 时序建模）值得深入分析</li>
+    <li><strong>验证 SuperAnimal</strong>：在真实猫咪视频上跑 SuperAnimal 零样本姿态估计，评估骨架质量和下游行为分类可行性</li>
+    <li><strong>启动任务 2 和任务 3</strong>：数据集搜集已在本文覆盖，Benchmark 搭建可以基于本文的选型建议直接启动</li>
+  </ol>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="pet-action-detection-phase1.html"><span class="nav-label">系列（一）</span><span class="nav-title">第一阶段任务规划</span></a>
+    <a class="nav-card current" href="#"><span class="nav-label">系列（二）</span><span class="nav-title">模型全景与选型</span></a>
+    <a class="nav-card" href="#"><span class="nav-label">下一篇</span><span class="nav-title">待更新</span></a>
+  </div>
+</div>
+
+<!-- 参考来源 -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考文献与开源仓库</div>
+
+  <div class="sources">
+    <h3>框架与工具</h3>
+    <ul>
+      <li data-cite-key="mmaction2">OpenMMLab/mmaction2 — 动作识别工具箱. <a href="https://github.com/open-mmlab/mmaction2" target="_blank">GitHub</a></li>
+      <li data-cite-key="mmdeploy">OpenMMLab/mmdeploy — 统一部署框架. <a href="https://github.com/open-mmlab/mmdeploy" target="_blank">GitHub</a></li>
+    </ul>
+    <h3>新架构论文</h3>
+    <ul>
+      <li data-cite-key="videomamba-2024">Li, K. et al. (2024). VideoMamba: State Space Model for Efficient Video Understanding. ECCV 2024. <a href="https://github.com/OpenGVLab/VideoMamba" target="_blank">GitHub</a></li>
+      <li data-cite-key="videomamba-pro-2025">VideoMambaPro: Snakes and Ladders. ICCV 2025. <a href="https://arxiv.org/abs/2406.19006" target="_blank">arXiv</a></li>
+      <li data-cite-key="videomae-v2-2023">Tong, Z. et al. (2023). VideoMAE V2: Scaling Video Masked Autoencoders with Dual Masking. CVPR 2023. <a href="https://github.com/OpenGVLab/VideoMAEv2" target="_blank">GitHub</a></li>
+      <li data-cite-key="internvideo2-2024">InternVideo2: Scaling Foundation Models for Multimodal Video Understanding. ECCV 2024. <a href="https://github.com/OpenGVLab/InternVideo" target="_blank">GitHub</a></li>
+      <li data-cite-key="skateformer-2024">SkateFormer: Skeletal-Temporal Transformer for Human Action Recognition. ECCV 2024. <a href="https://github.com/KAIST-VICLab/SkateFormer" target="_blank">GitHub</a></li>
+    </ul>
+    <h3>动物行为数据集与方法</h3>
+    <ul>
+      <li data-cite-key="animal-kingdom-2022">Xu, C. et al. (2022). Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding. CVPR 2022 Oral. <a href="https://github.com/sutdcv/Animal-Kingdom" target="_blank">GitHub</a></li>
+      <li data-cite-key="mammalnet-2023">MammalNet: A Large-Scale Video Benchmark for Mammal Behavior Understanding. CVPR 2023. <a href="https://github.com/Vision-CAIR/MammalNet" target="_blank">GitHub</a></li>
+      <li data-cite-key="superanimal-2024">SuperAnimal: Pretrained deep learning models for animal pose tracking. Nature Communications, 2024. <a href="https://github.com/AdaptiveMotorControlLab/DeepLabCut" target="_blank">DeepLabCut</a></li>
+      <li data-cite-key="pmtnet-2026">PMTNet: Cat Behavior Recognition via Part-level Temporal Modeling. Animals (MDPI), 2026.</li>
+      <li data-cite-key="ap10k-2021">Yu, T. et al. (2021). AP-10K: A Benchmark for Animal Pose Estimation. NeurIPS 2021. <a href="https://github.com/AlexTheBad/AP-10K" target="_blank">GitHub</a></li>
+    </ul>
+    <h3>边缘部署</h3>
+    <ul>
+      <li data-cite-key="edgeoar-2025">EdgeOAR: Real-time Online Action Recognition On Edge Devices. IEEE TMC, 2025.</li>
+      <li data-cite-key="tinyact-2025">TinyAct: Edge-Cloud Collaborative Action Recognition via Knowledge Distillation. PLOS ONE, 2025.</li>
+    </ul>
+  </div>
+</div>
