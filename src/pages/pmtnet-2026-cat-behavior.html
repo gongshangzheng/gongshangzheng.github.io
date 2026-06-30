@@ -1,0 +1,455 @@
+---
+title: "动作识别论文精读（一）：PMTNet，非受限视频中基于部件级时序建模的猫咪行为识别"
+description: "精读 2026 年 Animals 期刊 PMTNet 论文：针对猫身体/头部/尾巴部件不稳定可见性，提出缺失感知融合的时序行为识别框架，在 5 类猫行为上达到 93.1% 准确率。"
+created_at: 2026-06-30T15:16:14
+updated_at: 2026-06-30T15:16:14
+tags: [动作识别, 猫咪行为, 部件检测, 时序建模, DEIM, PMTNet]
+categories: ["AI"]
+subcategory: "动作识别"
+sub_id: 1000
+mathjax: true
+hero_title: "PMTNet"
+hero_sub: "Animals 2026 · 猫咪行为识别"
+hero_tagline: "身体-头部-尾巴部件级时序建模 + 缺失感知融合，解决非受限视频中猫行为识别难题"
+---
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">93.1%</span><span class="label">Top-1 Accuracy</span></div>
+  <div class="stat"><span class="num b">90.9%</span><span class="label g">Macro-F1</span></div>
+  <div class="stat"><span class="num">1,283</span><span class="label">视频片段</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label">行为类别</span></div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">论文定位</div>
+  <div class="ch-title">为什么要读 PMTNet</div>
+
+  在 [[@pet-action-detection-model-survey | 上一篇模型全景]] 中，我们提到 **PMTNet (2026)** 是目前公开文献中==唯一专门面向非受限视频中猫咪行为识别==的工作。对于我们的端侧宠物行为识别项目，它具有极高的参考价值：
+
+  <ol>
+    <li>它针对的物种正是<strong>家猫</strong>，而不是野生动物或哺乳动物泛化研究</li>
+    <li>它处理的是<strong>真实非受限视频</strong>，与家庭监控场景高度相关</li>
+    <li>它提出的<strong>部件级时序建模</strong>思路，对解决猫遮挡、姿态变化、尾巴/头部不稳定可见等问题非常对症</li>
+  </ol>
+
+  <div class="info-box">
+    <h3>论文信息</h3>
+    <ul>
+      <li><strong>标题</strong>：PMTNet: A Part-Centric Missing-Aware Temporal Network for Cat Behavior Recognition in Unconstrained Videos</li>
+      <li><strong>作者</strong>：Chunxi Tu, Jiatao Wu, Zeguang Huang, Jiaxing Xie</li>
+      <li><strong>单位</strong>：华南农业大学人工智能学院、广东省农业信息监测工程技术研究中心</li>
+      <li><strong>期刊</strong>：Animals (MDPI), 2026, Vol. 16, No. 11</li>
+      <li><strong>DOI</strong>：<a href="https://doi.org/10.3390/ani16111589" target="_blank">10.3390/ani16111589</a></li>
+      <li><strong>开源</strong>：论文提及代码待开源（截至 2026.06 未在 GitHub 上找到官方仓库）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">问题定义</div>
+  <div class="ch-title">猫咪行为识别的特殊挑战</div>
+
+  与人类动作识别相比，猫行为识别有几个独特难点：
+
+  <h3 class="section-title">难点 1：关键行为线索分散在可变形的局部部件</h3>
+
+  <p>猫的头部、尾巴、耳朵等部位高度灵活，且携带大量行为信息。例如：</p>
+  <ul>
+    <li>尾巴摆动 → Tail-Expressive 行为</li>
+    <li>头部低伏 + 耳朵后压 → 紧张/攻击</li>
+    <li>全身理毛 → Grooming</li>
+  </ul>
+  <p>这些局部部件在视频中经常部分遮挡或完全消失，传统全帧视频分类模型难以稳定捕捉。</p>
+
+  <h3 class="section-title">难点 2：非受限视频的质量问题</h3>
+
+  <p>真实家庭监控视频面临：</p>
+  <ul>
+    <li>光照变化、运动模糊</li>
+    <li>多猫重叠、背景杂乱</li>
+    <li>相机角度和距离变化</li>
+    <li>猫的姿态高度非刚性（蜷缩、跳跃、快速转身）</li>
+  </ul>
+
+  <h3 class="section-title">难点 3：部件检测的不稳定性</h3>
+
+  <p>即使能检测出身体、头部、尾巴，检测器在视频序列中也会时有时无。如何<strong>在部分部件缺失的情况下仍然稳定识别行为</strong>，是 PMTNet 要解决的核心问题。</p>
+
+  <div class="callout"><strong>核心洞察</strong>：猫的行为识别不能简单套用人体动作识别的"全帧分类"或"人体骨架"范式。必须显式建模==局部部件的空间关系==和==时序动态==，并对==部件缺失==具有鲁棒性。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">方法</div>
+  <div class="ch-title">PMTNet 的三阶段流水线</div>
+
+  PMTNet 将猫行为识别解耦为三个阶段：
+
+  {{< mermaid >}}
+flowchart LR
+  S1["Stage 1<br/>部件检测器训练与选择"] --> S2["Stage 2<br/>离线部件特征提取"]
+  S2 --> S3["Stage 3<br/>缺失感知时序行为建模"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">Stage 1：下游感知的部件检测器选择</h3>
+
+  <h4 class="ch-section">1.1 部件定义</h4>
+
+  <p>PMTNet 将猫分解为三个语义部件：</p>
+  <ul>
+    <li><strong>Cat Body</strong>：身体主体</li>
+    <li><strong>Head</strong>：头部</li>
+    <li><strong>Tail</strong>：尾巴</li>
+  </ul>
+
+  <p>为了训练检测器，作者构建了一个 COCO 格式的部件检测数据集：</p>
+  <ul>
+    <li>训练集：4,000 张图像</li>
+    <li>验证集：500 张图像</li>
+    <li>数据来自自拍视频帧和公开图像（未公开具体来源）</li>
+  </ul>
+
+  <h4 class="ch-section">1.2 检测器候选与选择协议</h4>
+
+  <p>论文没有使用单一检测器，而是训练了多个 DEIM 检测器变体，并从<strong>下游行为识别效果</strong>反推最佳检测器。候选变体包括不同的 IoU 损失函数组合：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>候选检测器</th><th>保留原因</th><th>特点</th></tr></thead>
+      <tbody>
+        <tr><td><strong>WIoU v3</strong></td><td>严格定位性能最强</td><td>边界框回归精确</td></tr>
+        <tr><td><strong>CIoU + SimAM</strong></td><td>对跟踪丢失鲁棒</td><td>注意力机制增强</td></tr>
+        <tr><td><strong>GIoU</strong></td><td>稳定性参考</td><td>抖动最小</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>选择标准不只是静态检测 mAP，而是引入了一套<strong>视频域时序鲁棒性指标</strong>：</p>
+
+  <div class="def-box">
+    <h3>时序鲁棒性指标</h3>
+    <p>分为三类：</p>
+    <ul>
+      <li><strong>检测可用性</strong>：有效帧比例、平均置信度</li>
+      <li><strong>绝对时序稳定性</strong>：IoU 抖动、中心点抖动、宽高抖动</li>
+      <li><strong>猫相对时序稳定性</strong>：头部/尾巴相对于身体中心点的稳定性</li>
+    </ul>
+    <p>这些指标的设计动机是：一个好的部件检测器不仅要单帧准，还要在视频序列中稳定，不能让下游行为分类器被噪声淹没。</p>
+  </div>
+
+  <h3 class="section-title">Stage 2：离线部件特征提取</h3>
+
+  <p>选定检测器后，对整个视频逐帧推理，缓存三个部件的：</p>
+  <ul>
+    <li>边界框（BBox）</li>
+    <li>置信度分数</li>
+    <li>ROI 对齐的外观特征（使用 ResNet50 提取）</li>
+  </ul>
+
+  <p>论文提到 Stage 2 是==离线缓存==的，主要是为了 Stage 3 训练时的高效和可控。实际部署时也可以改为在线推理。</p>
+
+  <h3 class="section-title">Stage 3：缺失感知时序行为建模</h3>
+
+  <h4 class="ch-section">3.1 显式几何运动描述符</h4>
+
+  <p>除了 ROI 外观特征，PMTNet 还构造了一个<strong>几何运动描述符</strong>，显式编码：</p>
+  <ul>
+    <li>身体中心点在归一化图像坐标中的轨迹</li>
+    <li>头部中心点相对于检测到的猫框的轨迹</li>
+    <li>尾巴中心点相对于猫框的轨迹</li>
+  </ul>
+
+  <p>这个设计非常巧妙——它把==全局运动==（身体位移）和==局部相对运动==（头/尾相对于身体的运动）解耦，让模型能分别学习。</p>
+
+  <h4 class="ch-section">3.2 缺失感知融合机制</h4>
+
+  <p>这是 PMTNet 的核心创新。每个时间步，模型收到三个部件对齐的特征：</p>
+  <ul>
+    <li>身体 ROI 外观特征 + 几何运动特征</li>
+    <li>头部 ROI 外观特征 + 几何运动特征（可能缺失）</li>
+    <li>尾巴 ROI 外观特征 + 几何运动特征（可能缺失）</li>
+  </ul>
+
+  <p>论文对比了两种融合策略：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>策略</th><th>机制</th><th>局限</th></tr></thead>
+      <tbody>
+        <tr><td><strong>ConcatFusion</strong></td><td>缺失部件用掩码填充后拼接</td><td>非自适应，所有可用部件权重相同</td></tr>
+        <tr><td><strong>GateFusion</strong></td><td>轻量 MLP 根据当前帧状态预测各部件门控权重</td><td>计算量稍大，但自适应</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="def-box">
+    <h3>GateFusion 的直觉</h3>
+    <p>当尾巴可见且摆动明显时，模型应该更依赖尾巴特征来判断 Tail-Expressive；当尾巴被遮挡时，模型应该自动降低尾巴权重，更多依赖身体和头部。GateFusion 就是学习这种==动态权重分配==。</p>
+  </div>
+
+  <h4 class="ch-section">3.3 时序编码与聚合</h4>
+
+  <p>融合后的特征序列送入时序编码器，论文比较了两种：</p>
+  <ul>
+    <li><strong>TCN</strong>：一维卷积，计算高效，擅长局部时序模式</li>
+    <li><strong>GRU</strong>：门控循环单元，保留更强序列顺序信息</li>
+  </ul>
+
+  <p>时序聚合策略也有三种：</p>
+  <ul>
+    <li><strong>Last-step</strong>：取最后时刻隐藏状态（最差）</li>
+    <li><strong>Mean pooling</strong>：掩码时序平均</li>
+    <li><strong>Attention</strong>：学习时序注意力权重（最佳）</li>
+  </ul>
+
+  <h4 class="ch-section">3.4 训练目标</h4>
+
+  <p>使用加权交叉熵损失处理类别不平衡：</p>
+  
+\[
+\mathcal{L} = -\sum_{c=1}^{C} w_c \cdot y_c \cdot \log(\hat{y}_c)
+\]
+
+  <p>其中类别权重 \(w_c\) 与训练集中各类样本数成反比，缓解少数类影响。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">数据集</div>
+  <div class="ch-title">PMTNet 的 5 类猫行为数据集</div>
+
+  <h3 class="section-title">行为类别定义</h3>
+
+  <p>PMTNet 采用的是==面向任务的 5 分类体系==，不是严格的行为学分类：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>类别</th><th>行为含义</th><th>与我们项目的映射</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Rest</strong></td><td>休息、睡眠、轻微头部动作</td><td>长时间静止</td></tr>
+        <tr><td><strong>Locomotion</strong></td><td>持续行走/奔跑</td><td>活动（走/跑）</td></tr>
+        <tr><td><strong>Grooming</strong></td><td>舔毛、自我清洁</td><td>舔毛</td></tr>
+        <tr><td><strong>Active</strong></td><td>活跃互动：玩耍、抓挠、探索</td><td>跳跃、多宠打闹、异常分类 2</td></tr>
+        <tr><td><strong>Tail-Expressive</strong></td><td>身体基本静止但尾巴有明显表达性动作</td><td>无直接对应，可视为特殊状态</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">标注消歧规则</h3>
+
+  <p>论文设计了一套清晰的优先级规则来处理多行为共存：</p>
+
+  <ol>
+    <li><strong>主要活动优先</strong>：如果 Grooming 或 Active 清晰可见，优先标为该类</li>
+    <li><strong>运动优先</strong>：如果存在持续行走/奔跑，标为 Locomotion</li>
+    <li><strong>尾巴主导表达</strong>：身体基本静止但尾巴明显运动时，标为 Tail-Expressive</li>
+    <li><strong>默认休息</strong>：只有轻微头部动作且无上述行为时，标为 Rest</li>
+  </ol>
+
+  <div class="callout"><strong>对我们项目的启示</strong>：PMTNet 的类别体系与我们项目有重叠但不完全一致。我们项目更细分为 9 类常见行为 + 4 类异常，但 PMTNet 的==主导行为标注规则==和==优先级设计==非常值得借鉴。</div>
+
+  <h3 class="section-title">数据规模</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>训练集</th><th>验证集</th><th>测试集</th><th>总计</th></tr></thead>
+      <tbody>
+        <tr><td>行为识别视频</td><td>969</td><td>154</td><td>160</td><td>1,283</td></tr>
+        <tr><td>部件检测图像</td><td>4,000</td><td>500</td><td>—</td><td>4,500</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    数据集规模的局限
+    </div>
+    <div class="admonition-content"><p>1,283 个视频片段对于 5 分类来说规模偏小，且 5 个类别之间的语义边界并不完全清晰（例如 Active 可能包含玩耍、抓挠、探索等多种行为）。论文结果需要在自己数据集上重新验证。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">实验结果</div>
+  <div class="ch-title">关键发现与 Ablation</div>
+
+  <h3 class="section-title">主要结果</h3>
+
+  <p>在最佳配置下，PMTNet 达到：</p>
+  <ul>
+    <li><strong>Top-1 Accuracy</strong>：93.1%</li>
+    <li><strong>Macro-F1</strong>：90.9%</li>
+  </ul>
+
+  <p>相比全帧视频基线（TimeSformer、SlowFast 等），PMTNet 在猫的 5 类行为上明显更优。这说明==部件级建模对猫行为识别确实有显著价值==。</p>
+
+  <h3 class="section-title">关键 Ablation 发现</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Ablation 维度</th><th>关键发现</th><th>对项目的启示</th></tr></thead>
+      <tbody>
+        <tr><td><strong>检测器选择</strong></td><td>视频域稳定性比单帧 mAP 更重要；CIoU+SimAM 在下游任务上表现最好</td><td>部件检测器要针对视频稳定性优化，不只是静态精度</td></tr>
+        <tr><td><strong>部件组合</strong></td><td>Cat + Head + Tail 优于只用 Cat；不同部件对不同类别贡献不同</td><td>身体、头、尾巴三路信息互补</td></tr>
+        <tr><td><strong>融合策略</strong></td><td>GateFusion 优于 ConcatFusion，特别是在尾巴缺失比例高时</td><td>缺失感知机制有效</td></tr>
+        <tr><td><strong>时序编码器</strong></td><td>TCN 和 GRU 各有偏好，TCN 整体更优</td><td>轻量 TCN 足够</td></tr>
+        <tr><td><strong>聚合策略</strong></td><td>Attention 聚合优于 Mean，Mean 优于 Last-step</td><td>不要只用最后时刻输出</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">失败案例分析</h3>
+
+  <p>论文展示了 PMTNet 的失败案例：一个 Tail-Expressive 视频被错分为 Active。原因是头部运动和局部自我接触线索过强，压倒了尾巴运动的证据。</p>
+
+  <div class="callout"><strong>启示</strong>：即使设计了缺失感知融合，当==可见部件的特征非常强势==时，模型仍可能忽略被遮挡部件的间接线索。这提示我们在项目中可以考虑加入==时序上下文==或==多帧一致性==来抑制单帧强噪声。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">讨论</div>
+  <div class="ch-title">对项目的借鉴与限制</div>
+
+  <h3 class="section-title">值得借鉴的地方</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计</th><th>借鉴价值</th></tr></thead>
+      <tbody>
+        <tr><td><strong>部件级建模</strong></td><td>身体/头部/尾巴三路检测 + 时序建模，对猫这类非刚性动物非常有效</td></tr>
+        <tr><td><strong>下游感知检测器选择</strong></td><td>不只看检测 mAP，而是用下游行为识别效果反推最佳检测器</td></tr>
+        <tr><td><strong>视频域稳定性指标</strong></td><td>IoU 抖动、中心点抖动等指标可直接复用</td></tr>
+        <tr><td><strong>缺失感知融合</strong></td><td>GateFusion 思路可迁移到我们的多模态/多部件融合中</td></tr>
+        <tr><td><strong>几何运动描述符</strong></td><td>全局轨迹 + 局部相对轨迹的解耦设计值得参考</td></tr>
+        <tr><td><strong>主导行为标注规则</strong></td><td>优先级规则可减少标注歧义，提升一致性</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">局限与需要注意的地方</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      未覆盖异常行为
+    </div>
+    <div class="admonition-content"><p>PMTNet 的 5 类行为中没有包含呕吐、抽搐等我们项目关注的关键异常场景。它的方法主要适用于<strong>常见行为分类</strong>，异常检测仍需额外设计。</p></div>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      三阶段 pipeline 的部署成本
+    </div>
+    <div class="admonition-content"><p>PMTNet 是离线三阶段 pipeline（检测 → 特征提取 → 时序分类），每个阶段都需要独立的模型和缓存。在 500 元 BOM 的端侧设备上，这种复杂度的实时部署有挑战。简化版（如单阶段 YOLO + 动作头）可能更实用。</p></div>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      数据集未开源
+    </div>
+    <div class="admonition-content"><p>截至 2026 年 6 月，PMTNet 的代码和数据集尚未在 GitHub 等平台上公开。我们只能借鉴方法，无法直接复用数据或代码。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">落地建议</div>
+  <div class="ch-title">如何将 PMTNet 思想迁移到项目</div>
+
+  <h3 class="section-title">短期可落地：简化版部件级 pipeline</h3>
+
+  <p>考虑到端侧 500 元 BOM 约束，不建议直接复刻 PMTNet 的三阶段 pipeline。更实际的方案是：</p>
+
+  {{< mermaid >}}
+flowchart LR
+  A["YOLOv8/v11 猫检测"] --> B["轻量部件检测<br/>身体/头/尾"]
+  B --> C["提取 ROI 特征<br/>MobileNet / EfficientNet"]
+  C --> D["时序 TCN 分类"]
+  {{< /mermaid >}}
+
+  <p>关键点：</p>
+  <ul>
+    <li>用 <strong>YOLOv8/v11</strong> 同时做猫检测和部件检测（多任务头）</li>
+    <li>部件特征提取用轻量 backbone（MobileNetV3 / EfficientNet-Lite）</li>
+    <li>时序模型用 <strong>TCN</strong> 而非 GRU，计算量更小</li>
+    <li>加入 <strong>GateFusion</strong> 处理部件缺失</li>
+  </ul>
+
+  <h3 class="section-title">中期可探索：与 X3D-M 的融合</h3>
+
+  <p>将 PMTNet 的部件级特征作为 X3D-M 全帧特征的补充：</p>
+  <ul>
+    <li>X3D-M 捕获全局场景和全猫外观</li>
+    <li>部件级分支捕获头部、尾巴的局部细节</li>
+    <li>两路特征 late fusion，提升对 Tail-Expressive / Active 等类别的区分</li>
+  </ul>
+
+  <h3 class="section-title">关键超参数建议</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>建议</th></tr></thead>
+      <tbody>
+        <tr><td>部件检测器</td><td>YOLOv8/v11 + WIoU/CIoU 损失，针对视频稳定性微调</td></tr>
+        <tr><td>部件定义</td><td>Body / Head / Tail，可考虑增加 ears/paws</td></tr>
+        <tr><td>特征 backbone</td><td>MobileNetV3-Small 或 EfficientNet-B0</td></tr>
+        <tr><td>时序编码器</td><td>TCN，kernel size 3，dilation 指数增长</td></tr>
+        <tr><td>聚合策略</td><td>Attention 或 Mean，避免 Last-step</td></tr>
+        <tr><td>损失函数</td><td>加权交叉熵 + 类别重采样</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="review-box">
+    <h3>PMTNet 给我们的 3 个核心 takeaway</h3>
+    <ol>
+      <li><strong>猫行为识别需要部件级视角</strong>：只看全帧不够，头、尾巴等部位携带关键行为信息</li>
+      <li><strong>检测器选择要下游感知</strong>：视频域稳定性比单帧 mAP 更重要</li>
+      <li><strong>缺失感知融合是刚需</strong>：真实视频中部件遮挡不可避免，GateFusion 类机制有效</li>
+    </ol>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">总结</div>
+  <div class="ch-title">PMTNet 的精读收获</div>
+
+  <p>PMTNet 是==目前唯一专门面向非受限视频中猫咪行为识别==的公开工作，虽然数据集规模不大且未开源，但其方法论对项目有重要参考价值。</p>
+
+  <p>核心贡献可以概括为：==把猫看成"身体+头部+尾巴"三个可变形部件，分别检测、分别建模时序、再通过门控机制自适应融合==。这套思路直接回应了猫行为识别中的遮挡、姿态变化、局部线索关键等难题。</p>
+
+  <div class="chapter-nav">
+    <a class="nav-card" href="pet-action-detection-model-survey.html"><span class="nav-label">系列（二）</span><span class="nav-title">模型全景与选型</span></a>
+    <a class="nav-card current" href="#"><span class="nav-label">论文精读（一）</span><span class="nav-title">PMTNet</span></a>
+    <a class="nav-card" href="#"><span class="nav-label">下一篇</span><span class="nav-title">待更新</span></a>
+  </div>
+</div>
+
+<!-- 参考来源 -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考文献</div>
+
+  <div class="sources">
+    <ul>
+      <li data-cite-key="pmtnet-2026">Tu, C., Wu, J., Huang, Z., & Xie, J. (2026). PMTNet: A Part-Centric Missing-Aware Temporal Network for Cat Behavior Recognition in Unconstrained Videos. <em>Animals</em>, 16(11), 1589. <a href="https://doi.org/10.3390/ani16111589" target="_blank">https://doi.org/10.3390/ani16111589</a></li>
+      <li data-cite-key="deim-2024">DEIM: DETR with Improved Matching for Fast Convergence. (2024). <a href="https://arxiv.org/abs/2412.04233" target="_blank">arXiv:2412.04233</a></li>
+      <li data-cite-key="timesformer-2021">Bertasius, G., Wang, H., & Torresani, L. (2021). Is Space-Time Attention All You Need for Video Understanding? ICML 2021. <a href="https://arxiv.org/abs/2102.05095" target="_blank">arXiv:2102.05095</a></li>
+    </ul>
+  </div>
+</div>
