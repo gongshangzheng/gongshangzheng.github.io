@@ -3,6 +3,27 @@
 > 本文档由 html-blog SKILL.md 拆分而来。写正文时按需读取。
 > 所有语法基于 build.js 管线的实际实现，与代码一一对应。
 
+## ⚠️ LaTeX 公式自检规则（每次写完公式必须检查）
+
+> **违反这些规则会导致 MathJax 渲染失败，用户看到的是原始 LaTeX 源码。**
+
+1. **所有公式必须用界定符包裹**：
+   - 行内公式：`$...$`
+   - 独立公式：`\[...\]`
+   - **禁止裸写 `\begin{align*}`**——必须包在 `\[...\]` 里：`\[\begin{aligned}...\end{aligned}\]`
+   - 用 `aligned` 而非 `align*`（MathJax 的 `aligned` 更安全）
+
+2. **禁止使用不存在的 LaTeX 命令**：
+   - ❌ `\circledplus` → ✅ `\oplus`
+   - ❌ `\circledcirc` → ✅ `\ocirc` 或直接不用
+   - ❌ `\wr` 用于标注乘法 → 用文字描述或表格代替
+   - 不确定某个命令是否存在时，用简单命令替代或用文字描述
+
+3. **公式写完后 mental check**：
+   - 这个命令在 MathJax/LaTeX 中真的存在吗？
+   - 所有 `\begin` 都有对应的 `\end` 吗？
+   - 所有公式都用了 `$...$` 或 `\[...\]` 包裹吗？
+
 ---
 
 ## 布局组件
@@ -53,6 +74,101 @@
 >   <p>后续段落也在 ch 内</p>
 > </div>                           <!-- ch 关闭 ✓ -->
 > ```
+
+### ⚠️ 标题层级规范（必须遵守）
+
+> **这是强制规则，违反会导致 TOC 目录层级跳跃、SEO 降权、无障碍阅读器混乱。**
+
+#### 例题组织原则（必须遵守）
+
+> **每个 level-2 章（`ch fade-in`）内的所有例题必须统一收入该章末尾的 `<h3 class="section-title">例题区</h3>` 下，禁止散落在正文各处。**
+
+散落例题的问题：
+1. 打断正文的叙述节奏——读者跟着概念推导走，突然被一道完整例题截断
+2. 页面纵向过长——例题通常占 10-20 行，三道例题就占半个屏幕
+3. 考前复习时难以快速翻阅所有例题
+
+#### 例题区 + 可折叠 Tabs（推荐模式）
+
+当一章有 ≥2 道例题时，使用 `code-tabs` + `collapsible` + `example-tabs` 三个 class 的组合：
+
+```html
+<h3 class="section-title">例题区</h3>
+
+<div class="code-tabs collapsible example-tabs">
+  <div class="code-tabs-header">
+    <button class="code-tab-btn active" data-tab="ex1">例题 1：简短标题</button>
+    <button class="code-tab-btn" data-tab="ex2">例题 2：简短标题</button>
+    <button class="code-tab-btn" data-tab="ex3">例题 3：简短标题</button>
+  </div>
+  <div class="code-tab-content active" data-panel="ex1">
+    <div class="example-box">
+      <h3>例题 1：简短标题</h3>
+      <p>题目、推导、答案、易错点……</p>
+    </div>
+  </div>
+  <div class="code-tab-content" data-panel="ex2">
+    <div class="example-box">
+      <h3>例题 2：简短标题</h3>
+      <p>……</p>
+    </div>
+  </div>
+  <div class="code-tab-content" data-panel="ex3">
+    <div class="example-box">
+      <h3>例题 3：简短标题</h3>
+      <p>……</p>
+    </div>
+  </div>
+</div>
+```
+
+**可折叠模式行为**：
+- 点击 tab 标题 → 展开该例题内容
+- 再次点击 active tab → 收起内容（回到“点击标题展开内容”提示）
+- 默认第一道例题展开（第一个 tab 带 `active`）
+
+**单个例题时**：直接用 `<div class="example-box">`，不需要 tabs。
+
+**code-tabs 也可用 collapsible**：给任何 `.code-tabs` 容器加上 `collapsible` class 即可启用折叠模式。
+
+博客使用三级标题体系，与 TOC 目录系统一一对应：
+
+| 层级 | HTML 写法 | TOC level | 用途 | 示例 |
+|------|----------|-----------|------|------|
+| **章** | `<div class="ch-title">` | 2 | 大章节（Part / 第X章） | `Part 5 · FFT` |
+| **节** | `<h3 class="section-title">` | 3 | 编号小节（X.Y） | `5.1 直接计算 DFT 的运算量` |
+| **小节** | `<h4 class="ch-section">` | 4 | 编号子小节（X.Y.Z） | `5.3.1 分解推导` |
+
+**规则：**
+1. **禁止跳级**：`h4` 必须在 `h3` 之下，`h3` 必须在 `ch-title`（level 2）之下。
+2. **编号不决定层级**：TOC 只依据 HTML 标签和 class 判断层级。`5.1` 可以是 `h3`，`5.3.1` 是 `h4`。
+3. **X.Y 级别用 `h3`**：如 `5.1`、`5.2`、`5.3` 等一级编号小节用 `<h3 class="section-title">`。
+4. **X.Y.Z 级别用 `h4`**：如 `5.3.1`、`5.3.2` 等二级编号子小节用 `<h4 class="ch-section">` 或直接 `<h4>`。
+5. **组件内标题不算**：`example-box`、`def-box`、`theorem-box` 等容器内部的 `<h3>` 不进入 TOC，不影响层级。
+
+```html
+<!-- ✅ 正确：ch-title → h3 → h4，逐级递进 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">FFT</div>
+
+  <h3 class="section-title">5.1 直接计算 DFT 的运算量</h3>
+  <p>...</p>
+
+  <h3 class="section-title">5.3 按时间抽取（DIT）基 2 FFT</h3>
+  <h4>5.3.1 分解推导</h4>
+  <p>...</p>
+  <h4>5.3.2 蝶形运算</h4>
+  <p>...</p>
+</div>
+
+<!-- ❌ 错误：跳过 h3，直接用 h4 -->
+<div class="ch fade-in">
+  <div class="ch-title">FFT</div>
+  <h4>5.1 直接计算 DFT 的运算量</h4>  <!-- 跳级！应为 h3 -->
+  <h4>5.2 减少运算量的途径</h4>         <!-- 跳级！应为 h3 -->
+</div>
+```
 
 ### 传统分节（`.section`）
 
@@ -188,7 +304,7 @@
 
 ```html
 <div class="example-box">
-  <h3>例题</h3>
+  <h3>例题标题</h3>
   <p><strong>题目：</strong>……</p>
   <ol>
     <li><strong>第一步</strong>：……</li>
@@ -200,6 +316,11 @@
 ```
 
 适用：例题、计算示范、实验流程、算法步骤。
+
+> **⚠️ 课程笔记例题强制规则：**
+> - 同一 `ch` 章内 **≥2 道例题**时，必须用 `code-tabs collapsible example-tabs` 包裹所有 `example-box`，放在章末 `<h3 class="section-title">例题区</h3>` 下
+> - 仅 **1 道例题**时，可单独用 `example-box` 直接放在章节末尾
+> - 例题**禁止散落**在正文段落之间，必须统一归入章末的例题区
 
 ### Admonition 块
 
@@ -559,6 +680,88 @@ print("hello")
 | `.code-tabs` | 多语言代码块 tab 切换 |
 | `.wrap` | 正文容器（最大宽度 800px） |
 | `.fade-in` | 滚动渐入动画 |
+
+---
+
+## ⚠️ Box 组件 vs Admonition：使用分野
+
+> 博客有两大类「提示/强调」组件：**Box 系列**（info-box / def-box / theorem-box / example-box / callout）和 **Admonition**。两者各有适用场景，**不要只用一种**。
+
+### Box 系列（课程笔记主力）
+
+Box 组件有彩色左边线 + 标题，适合**结构化的知识块**，是课程笔记的首选。
+
+| 组件 | 适用场景 | 内容长度 | 示例 |
+|------|---------|---------|------|
+| `.def-box` + `<h3>` | 正式定义、符号约定 | 中等 | 「线性相位定义」「Z 变换定义」 |
+| `.theorem-box` + `<h3>` | 定理、命题、判定准则 | 中等 | 「Parseval 定理」「蝶形公式」 |
+| `.info-box` + `<h3>` | 前置知识、背景说明 | 中等 | 「前置知识回顾」「符号约定」 |
+| `.example-box` + `<h3>` | 例题、计算步骤 | 长 | 「例题：Z 变换求卷积」 |
+| `.callout`（无标题） | **一句话**要点、易错点、记忆口诀 | **1-2 句** | 「易错点：不要混淆 ROC」「记忆公式：...」 |
+
+### Admonition（多段深度展开）
+
+Admonition 带图标 + 按类型变色，适合**需要多段展开、按严重程度区分**的提示。
+
+| 类型 | 颜色/图标 | 适用场景 | 示例 |
+|------|----------|---------|------|
+| `note` | 蓝 ℹ️ | 附加说明、延伸知识 | 「补码的历史背景」「与连续时间对比」 |
+| `tip` | 金 💡 | 方法论、技巧、深入理解 | 「深入理解：为什么相位线性意味着延迟相同」 |
+| `warning` | 橙 ⚠️ | 常见陷阱、易混概念 | 「第三类 vs 第二类的区分」 |
+| `danger` | 红 🔴 | 致命错误、会导致全题错 | 「把循环卷积当线性卷积计算」 |
+| `success` | 绿 ✅ | 验证方法、检查清单 | 「验证 DFT 结果的正确方法」 |
+| `info` | 蓝 ℹ️ | 与 note 近似，偏「你需要知道这个」 | 「本课程所有例题默认因果」 |
+
+### 选择决策树
+
+```
+这个提示有几句话？
+├── 1-2 句 → 用 .callout（金色左边线，无标题）
+├── 3-5 句，且有明确标题 → 用 .info-box / .def-box / .theorem-box
+└── 需要多段公式 + 列表 + 表格 → 用 admonition
+
+这个提示需要区分严重程度吗？
+├── 是 → 用 admonition（warning / danger）
+└── 否 → 用 callout 或 box
+
+这个提示是正式的定义/定理吗？
+├── 是 → 用 .def-box / .theorem-box（带 h3 标题）
+└── 否 → 用 callout 或 admonition
+```
+
+### 反模式（禁止）
+
+1. **禁止所有提示都用 callout**：一篇文章全是金色 callout 会视觉疲劳。需要多段展开的内容改用 admonition。
+2. **禁止用 admonition 代替 def-box**：正式的数学定义仍然用 `.def-box`，不要用 `admonition note`。
+3. **禁止 callout 里放多段公式**：callout 是「一句话」，超过 3 行就该换成 admonition 或 box。
+
+### HTML 语法
+
+```html
+<!-- Box 系列 -->
+<div class="def-box">
+  <h3>定义标题</h3>
+  <p>定义内容...</p>
+</div>
+
+<!-- Admonition -->
+<div class="admonition tip">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="16" x2="12" y2="12"/>
+      <line x1="12" y1="8" x2="12.01" y2="8"/>
+    </svg>
+    标题
+  </div>
+  <div class="admonition-content">
+    <p>多段内容...</p>
+    <p>可以包含公式、列表、表格。</p>
+  </div>
+</div>
+```
+
+> **图标 SVG**：admonition 标题建议带一个 `<svg class="icon">`，不同类型用不同图标。如果没有图标，admonition 仍能正常渲染，只是标题前没有图标。
 
 ---
 

@@ -205,7 +205,8 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 | 课程笔记质量门 | 本文件 §核心质量标准 |
 | 网页参考笔记搜索与筛选 | `phases/web-references.md` |
 | 笔记写作结构和模板 | `phases/composition.md` |
-| HTML 片段模板 | 读取 `html-blog/templates/course-note-section-template.html`，由 html-blog 维护 |
+| HTML 片段模板（含 h3/h4 层级规范、例题区/admonition/callout 用法示例） | 读取 `html-blog/templates/course-note-section-template.html`，由 html-blog 维护 |
+| 标题层级规范 | `blog-syntax/references/html-components.md` §标题层级规范 |
 | PDF 内容分析 | `docling skill`（`~/.hanako/skills/docling/scripts/convert.py`） |
 | 博客 docref/docpage/docpages 与 functionplot/jsxgraph/mermaid shortcode 语法 | `html-blog/references/syntax.md`（§本地课件引用、§数学/信号函数图、§Mermaid 图表） |
 | 纯图片 PDF 截图分析 | 先渲染关键页为图片；当前工作机专属可用 `~/.venv` + `PyMuPDF` + `read_file` 视觉确认，其他环境再按可用工具选择 `pdftoppm` / 视觉 MCP |
