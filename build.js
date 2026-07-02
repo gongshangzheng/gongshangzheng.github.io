@@ -473,7 +473,26 @@ function build() {
   logSummary('rss', rssStats);
   if (removedPages.length) logVerbose(`Removed cache entries: ${removedPages.length}`);
 
-  console.log('\n✅ Build complete!');
+  console.log('\n✅ Build complete!\n');
+
+  // Post-build lint: check page files for HTML structure errors
+  try {
+    const { execSync } = require('child_process');
+    const out = execSync('node lib/lint-html.js src/pages/*.html 2>&1 || true', { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    const lines = out.split('\n');
+    let errCount = 0, errNames = [], pendingFile = '';
+    lines.forEach(l => {
+      if (l.startsWith('🔍 ')) pendingFile = l.replace('🔍 ', '');
+      if (l.includes('❌ Errors:') && pendingFile) {
+        errCount++;
+        errNames.push(pendingFile);
+      }
+    });
+    if (errCount > 0 && errCount < 5) {
+      console.log(`  ⚠ Lint: ${errCount} file(s) with errors`);
+      errNames.forEach(n => console.log('    ' + n));
+    }
+  } catch(e) {}
 }
 
 build();

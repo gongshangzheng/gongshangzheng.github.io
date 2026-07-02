@@ -101,7 +101,7 @@
 | 一句话要点 / 做题经验 / 限制条件 | `callout` | "做题时先查 ROC"、"不要漏掉收敛条件" |
 | 需要按严重程度区分的多段提示 | `admonition`（见下方详表） | 考试常见致命错误、跨章节方法论总结 |
 | 背景说明 / 前置知识 / 阅读建议 | `info-box` | 前置知识回顾、符号约定汇总 |
-| 例题 / 计算步骤 / 实验流程 | `example-box` | 手算 DTFT、从差分方程求频率响应 |
+| 例题 / 计算步骤 / 实验流程 | `code-tabs collapsible example-tabs` 内嵌 `example-box` | 多道例题用 tabs 折叠，单道直接用 `example-box` |
 | 复习速查 | `review-box` 或 `info-box` | 章节末尾的公式/方法速查表 |
 | 参考来源 | `sources` | 课程材料、教材、网页参考 |
 
