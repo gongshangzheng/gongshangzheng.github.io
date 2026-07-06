@@ -79,8 +79,9 @@ def print_table(posts: list[dict], max_rows: int | None = None):
     title_w = max(len(p.get("title", "")) for p in display)
     title_w = min(title_w, 60)  # 防止过宽
     date_w = 10
+    sub_id_w = 6
 
-    header = f"{'标题':<{title_w}}  {'日期':<{date_w}}  分类/子分类  标签"
+    header = f"{'标题':<{title_w}}  {'日期':<{date_w}}  {'sub_id':>{sub_id_w}}  分类/子分类  标签"
     print(header)
     print("-" * len(header.encode('gbk', errors='replace')))
 
@@ -89,11 +90,13 @@ def print_table(posts: list[dict], max_rows: int | None = None):
         if len(title) > title_w:
             title = title[:title_w - 1] + "…"
         date = (p.get("created_at") or "")[:10]
+        sid = p.get("sub_id")
+        sid_display = str(sid) if sid is not None else ""
         cat = "/".join(p.get("categories", []))
         sub = p.get("subcategory", "")
         cat_display = f"{cat}/{sub}" if sub else cat
         tags = ", ".join(p.get("tags", []))
-        print(f"{title:<{title_w}}  {date:<{date_w}}  {cat_display:<20}  {tags}")
+        print(f"{title:<{title_w}}  {date:<{date_w}}  {sid_display:>{sub_id_w}}  {cat_display:<20}  {tags}")
 
     if max_rows and len(posts) > max_rows:
         print(f"\n… 共 {len(posts)} 篇，仅显示前 {max_rows} 篇。加 --limit 调整。")
