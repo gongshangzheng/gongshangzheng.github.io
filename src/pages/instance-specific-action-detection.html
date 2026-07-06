@@ -1,0 +1,508 @@
+---
+title: "动作识别系列（五）：个体特定动作检测——先认识"这只猫"，再理解"它在做什么""
+description: "调研个体特定动作检测（Instance-Specific Action Detection）的双阶段范式：先从参考图/视频建立个体模型（姿态/3D重建），再基于个体模型做身份感知的动作检测。覆盖 IGMN、SkeleTR、TTA-Pose、PoseBridge、SuperAnimal、DeepLabCut、AniMer 等 15 篇核心论文，包含方法对比、发展时间线、实验配置和开放问题。"
+created_at: 2026-07-06T16:35:00
+updated_at: 2026-07-06T16:35:00
+tags: [动作识别, Instance-Specific, Identity-Aware, Pose Estimation, Skeleton AR, IGMN, SkeleTR, DeepLabCut, TTA, AniMer, PoseBridge]
+aliases: ["categories/AI/动作识别"]
+sub_id: 50
+hub: action-recognition-hub
+mathjax: true
+hero_title: "个体特定动作检测"
+hero_sub: "先认识'这只猫'，再理解'它在做什么'"
+hero_tagline: "15 篇核心论文 · 双阶段范式 · 身份感知 TAD · 个体姿态建模"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">15</span><span class="label">核心论文</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">阶段范式</span></div>
+  <div class="stat"><span class="num">30.2%</span><span class="label">AVA SOTA</span></div>
+  <div class="stat"><span class="num b">0.81M</span><span class="label l">SkeleTR 参数</span></div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么需要个体特定动作检测</div>
+
+  在[[video-foundation-model-action-detection | 系列四]]中我们看到，视频基础模型（VFM）已经把动作检测推到了很高精度：InternVideo2 在 THUMOS14 上达到 72.0 mAP，OpenTAD 在 ActivityNet 上达到 39.51%。但这些方法都隐含一个假设——**所有演员都是"无差别"的**。检测器不关心"谁在做动作"，只关心"发生了什么动作"。
+
+  这个假设在人体动作识别上或许可以接受（人体结构高度一致），但在以下场景中它开始崩塌：
+
+  <ul>
+    <li><strong>多宠物家庭</strong>：两只猫在同一个画面中，一只在呕吐（需要告警），另一只在舔毛（正常行为）。通用检测器可能把"呕吐"错误关联到健康的猫，因为模型不区分个体身份</li>
+    <li><strong>个性化医疗</strong>：帕金森患者的步态评估需要基于该患者的基线姿态，而非人群平均。通用模型给出的"正常行走"评分对个体患者毫无参考价值</li>
+    <li><strong>运动员分析</strong>：俄亥俄州立大学的研究证明，视频模型可以从运动特征中识别球员身份——即每个运动员有独特的 <strong>identity-specific motion signatures</strong>（身份特定运动签名）#CO5#。这意味着动作执行方式本身就编码了身份信息</li>
+    <li><strong>动物行为学</strong>：同一物种的不同个体在执行同一行为时，表现可能截然不同。动物行为综述指出"追踪多个外观相同的个体具有挑战性"#Eddy et al., 2023#，而现有系统大多只关注物种级别的行为分类，不区分个体</li>
+  </ul>
+
+  IGMN（Identity-aware Graph Memory Network）#Ni et al., 2021# 是首个在学术上验证这个直觉的工作。在 AVA 时序动作检测中，IGMN <strong>显式建模 actor 身份信息</strong>，将上下文关系分为三类：同一身份跨时间（intra-actor）、不同身份同一时刻（inter-actor intra-clip）、不同身份跨时间（inter-actor inter-clip）。消融实验表明，仅添加身份感知的图记忆网络（HGNN）就使 mAP 从 26.52% 提升至 30.76%，提升达 4.24 个百分点。完整模型在 AVA v2.1 上达到 <strong>30.2% mAP</strong>（首次以 ResNet50 级别 backbone 突破 30%），使用 SlowFast-R101 在 v2.2 上达到 <strong>33.0%</strong>。
+
+  更关键的是，涉及人与人交互的动作（如"握手""推搡""拥抱"）提升最大——AVA 三大类中，Person Interaction 类别提升达 <strong>+7.0% mAP</strong>。这正是因为身份混淆会严重影响交互类动作的判断：当红框中的 actor 被标为"pull"，但黄框中的干扰 actor 区域与其重叠时，模型误判为"grab"。
+
+  但 IGMN 只是在特征空间中编码身份（通过 actor 框的跟踪 ID），没有真正回答一个更根本的问题：<strong>能不能先"认识"一个个体（建立它的 3D 模型、骨骼结构），再基于这个个体模型做后续所有动作检测？</strong>
+
+  这正是本文的核心调研问题。我们系统检索了 arXiv、Nature、CVPR、ICCV、ACM MM、NeurIPS 等来源的 15 篇核心论文，发现：<strong>这个完整的双阶段范式尚未形成独立的命名研究方向</strong>，但多条技术线各自覆盖了范式的关键组件。本文将这些分散的技术线组织为一个统一的技术地图，定义这个新范式，并指出空白区域和可能的端到端架构。
+
+  <div class="callout"><strong>本文与系列其他文章的关系</strong>：[[action-recognition-landscape | 系列一]]给出宏观导览；[[animal-action-recognition-survey | 系列二]]聚焦动物动作识别全景；[[coarse-fine-animal-action-review-2025 | 系列三]]做粗粒度到细粒度综述；[[video-foundation-model-action-detection | 系列四]]深入 VFM 范式；本文则从"身份感知"这个垂直维度切入，探讨如何从通用模型走向个体特定。另见[[pet-action-detection-phase1 | 宠物动作识别（一）]]和[[pet-action-detection-model-survey | 宠物动作识别（二）]]的工程实践视角。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">双阶段范式的定义与技术地图</div>
+
+  <h3 class="section-title">2.1 范式定义</h3>
+
+  我们将"个体特定动作检测"（Instance-Specific Action Detection）定义为以下双阶段 pipeline：
+
+  {{< mermaid >}}
+flowchart LR
+  subgraph S1["阶段1: 个体建模"]
+    direction TB
+    R1["参考图/视频"]
+    P1["姿态估计<br/>DeepLabCut / SuperAnimal"]
+    P2["3D 重建<br/>SMPL / AniMer"]
+    P3["测试时适配<br/>TTA-Pose / Online TTA"]
+    R1 --> P1
+    R1 --> P2
+    P1 --> P3
+  end
+  subgraph S2["阶段2: 身份感知动作检测"]
+    direction TB
+    A1["骨架动作识别<br/>SkeleTR / SkateFormer"]
+    A2["身份感知 TAD<br/>IGMN"]
+    A3["零样本泛化<br/>PoseBridge"]
+    A1 --> A2
+    A1 --> A3
+  end
+  S1 -->|"个体模型"| S2
+  {{< /mermaid >}}
+
+  <p><strong>阶段 1：个体建模</strong>——从参考图片或视频中建立个体模型。可以是一套关键点骨架（2D/3D）、一个参数化体型模型（如 SMAL/SPL），或者一个经 test-time adaptation 微调后的个体特定姿态估计器。这一阶段的目标是让模型"认识"这个特定的个体——知道它的关节在哪、体型如何、运动习惯是什么。</p>
+
+  <p><strong>阶段 2：身份感知动作检测</strong>——基于阶段 1 建立的个体模型做动作检测。利用骨架序列、身份编码或零样本泛化来识别该特定个体的动作。这一阶段的关键挑战是：如何在多人/多动物场景中保持个体身份的一致性，并利用个体先验增强动作识别精度。</p>
+
+  <h3 class="section-title">2.2 现有技术在范式中的位置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>范式组件</th><th>代表工作</th><th>覆盖程度</th><th>关键数据</th><th>arXiv ID</th></tr></thead>
+      <tbody>
+        <tr><td><strong>个体姿态估计</strong></td><td>SuperAnimal, APT-36K, DiffPose-Animal</td><td>✅ 成熟（动物）</td><td>SuperAnimal 45+ 物种, 微调效率 10-100×</td><td>2203.07436, 2206.05683, 2508.08783</td></tr>
+        <tr><td><strong>3D 个体重建</strong></td><td>AniMer</td><td>⚠️ 新兴</td><td>Animal3D AUC=88.9, PA-MPJPE=80.4mm</td><td>2412.00837</td></tr>
+        <tr><td><strong>测试时个体适配</strong></td><td>TTA-Pose, Online TTA</td><td>⚠️ 场景级（非个体级）</td><td>TTA-Pose 3DPW PA-MPJPE 47.2mm (↑12.3%)</td><td>2502.10724, 2503.11194</td></tr>
+        <tr><td><strong>身份感知 TAD</strong></td><td>IGMN</td><td>⚠️ 仅特征空间编码</td><td>AVA v2.1 mAP 30.2%, 46/60 类受益</td><td>2108.11559</td></tr>
+        <tr><td><strong>两阶段骨架 AR</strong></td><td>SkeleTR</td><td>✅ 最接近完整范式</td><td>AVA +7.8%, 0.81M params, 336 clip/s</td><td>2309.11445</td></tr>
+        <tr><td><strong>零样本个体泛化</strong></td><td>PoseBridge</td><td>⚠️ 动作级（非个体级）</td><td>Kinetics PURLS 超越 SOTA 13.3-17.4 分</td><td>2605.11497</td></tr>
+        <tr><td><strong>动物行为 pipeline</strong></td><td>DeepLabCut, BCST-GCN, AnimalMotionCLIP</td><td>✅ 实用但无身份感知</td><td>DLC 仅需 ~200 帧标注; AK mAP=74.63%</td><td>2301.06187, 2505.00569</td></tr>
+        <tr><td><strong>端到端完整系统</strong></td><td>—</td><td>❌ 空白</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">2.3 核心发现</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2.01 3h16.94a2 2.01 3L13.71 3.86a2 2.01 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      完整的双阶段系统尚不存在
+    </div>
+    <div class="admonition-content"><p>没有任何一篇已发表论文将"从参考图重建个体 3D 模型"作为动作检测的前置步骤形成端到端流程。各组件技术已各自成熟——SuperAnimal 覆盖 45+ 物种、IGMN 在 AVA 上突破 30% mAP、SkeleTR 以 0.81M 参数实现 SOTA——但将它们组装为完整系统是一个<strong>尚未被充分探索的研究方向</strong>。本文提出三种可能的端到端架构（见 Part 6），为这一方向的后续研究提供路线图。</p></div>
+  </div>
+
+  <p>从技术地图可以清晰地看到：阶段 1 的组件（姿态估计、3D 重建、TTA）各自有成熟的工作，阶段 2 的组件（骨架 AR、身份感知 TAD、零样本泛化）也有代表性方法。但<strong>两个阶段之间的"桥接"是缺失的</strong>——没有论文系统性地研究"个体模型如何增强动作检测"这个问题。这正是本文要定义和填补的空白。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">阶段 1——个体姿态建模</div>
+
+  <h3 class="section-title">3.1 人体姿态：从通用模型到场景适配</h3>
+
+  3D 骨架动作识别是当前最成熟的技术线 #Zhang et al., 2025#。根据 2025 年的综述，骨架动作识别已发展出八大架构族——RNN、CNN、GCN、Transformer、Hybrid、Mamba、LLM-Assisted、Generative——在 NTU RGB+D 60 上 GCN/Transformer 方法已达 93.6%/97.8% Top-1。标准做法是四模态融合：Joint、Bone、Joint Motion、Bone Motion 分别训练后取平均。GCN 图构建已从固定拓扑（ST-GCN 的 3-part 邻接矩阵）演进到动态拓扑（2s-AGCN 的自适应邻接矩阵）再到高阶拓扑（Hyper-GNN 的超图）。Transformer 方面，SkateFormer 将关节和帧按四种骨骼-时序关系分区，以仅 <strong>2.03M 参数</strong>实现 92.6% NTU X-Sub60，单模态即可匹敌多模态集成 #Li et al., 2024#。
+
+  但所有这些方法都假设输入骨架来自<strong>训练分布内的场景</strong>。当通用姿态模型面对 in-the-wild 视频时，域差异会导致严重失效：预训练 HMR 在 3DPW 上 MPJPE 高达 230.3mm，PA-MPJPE 123.4mm。
+
+  TTA-Pose #Li et al., 2025#（ICML 2025）首次引入<strong>语义感知运动先验</strong>来解决这个问题。其核心洞察是：知道"在做什么动作"可以极大缩小 3D 姿态的解空间。具体方法是用 GPT-4o 为视频片段生成动作标签（如 "walking", "climbing stairs"），然后在 MotionCLIP 的运动-文本对齐嵌入空间中约束 3D 预测：
+
+  $$\mathcal{L}_{\text{TTA}} = \lambda_1 \mathcal{L}_{\text{2D}} + \lambda_2 \mathcal{L}_{\text{align}} + \mathcal{L}_{\text{smooth}}$$
+
+  其中语义对齐损失 $\mathcal{L}_{\text{align}} = 1 - \text{sim}(\mathbf{s}_i, \hat{\boldsymbol{\vp}}'_{i:i+T})$，利用 MotionCLIP 的余弦相似度衡量预测运动与文本标签的对齐程度。GPT-4o 标签准确率达 96.4%，即使 3.6% 的标签错误，MPJPE 仍从 213.8 降至 92.2（正确标签降至 83.7），因为语义对齐是正则项而非硬约束。最终在 3DPW 上将 PA-MPJPE 从 53.8mm 降至 <strong>47.2mm</strong>（提升 12.3%），在 3DHP 上从 74.4mm 降至 <strong>65.1mm</strong>（提升 12.5%）。
+
+  <p>但这仍然是<strong>场景级</strong>适配，不是个体级。TTA-Pose 适配的是"这个视频/场景中的运动模式"，而非"这个特定个体的运动风格"。要做到"认识这只猫"，需要更进一步的个体建模——这正是动物姿态估计和 3D 重建要解决的问题。</p>
+
+  <h3 class="section-title">3.2 动物姿态估计：跨物种的挑战</h3>
+
+  动物姿态估计比人体更难：物种间形态差异巨大（猫 vs 蛇 vs 鸟），标注数据极度稀缺。四条技术路线正在并行推进：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>核心思想</th><th>数据规模</th><th>关键指标</th><th>年份/来源</th></tr></thead>
+      <tbody>
+        <tr><td><strong>SuperAnimal</strong></td><td>统一关键点空间 + 记忆回放</td><td>45+ 物种</td><td>微调数据效率 {{< bg green >}}10-100×{{< /bg >}}</td><td>2024, Nature Commun.</td></tr>
+        <tr><td><strong>APT-36K</strong></td><td>大规模姿态+跟踪基准</td><td>30 物种 / 2400 视频 / 36K 帧</td><td>跨域泛化评测</td><td>NeurIPS 2022</td></tr>
+        <tr><td><strong>DiffPose-Animal</strong></td><td>LLM 条件引导扩散去噪</td><td>AP-10K / APT-36K</td><td>AP={{< bg green >}}73.97{{< /bg >}}, AP50=95.55</td><td>2025</td></tr>
+        <tr><td><strong>DeepLabCut</strong></td><td>迁移学习 + 用户标注微调</td><td>用户自定义</td><td>仅需 ~200 帧标注, 520 Hz 推理</td><td>2018, Nature Neuro.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  SuperAnimal #Ye et al., 2022# 的范式最值得注意：它训练了一个覆盖 45+ 物种的通用姿态基础模型，通过统一关键点空间（generalized data converter）和记忆回放（memory replay）解决跨物种数据不平衡问题。用户拿到预训练模型后，只需标注<strong>少量目标物种/个体的数据</strong>即可微调——这正是"阶段 1"的产品化实现。其数据效率比传统迁移学习方法高 10-100 倍，支持 ResNet-50 和 MobileNetV2 两种 backbone，后者可直接在边缘设备上运行。
+
+  DiffPose-Animal #Li et al., 2025b# 代表了最新进展：将姿态估计重构为 LLM 条件引导的扩散去噪过程，用文本描述（如"猫，侧面视角"）引导生成合理的关键点分布。在 AP-10K 上 AP 达到 73.97，在 AnimalPose 上 AP 达到 73.77，均超过 HRNet 基线。这种语义条件注入方式为少样本/零样本个体动作检测提供了新的条件化思路。
+
+  DeepLabCut #Eddy et al., 2023# 虽然技术较老，但它是目前<strong>最接近"先认识个体，再做行为分析"范式的实际工具</strong>。其工作流为：(1) 用户对特定动物个体的少量帧（~200 帧）标注关键点；(2) 基于 ImageNet 预训练的 ResNet 迁移学习微调得到个体特定的姿态估计器；(3) 用该估计器做持续视频流的关键点提取；(4) 基于关键点序列做行为分类（如 B-SoiD 的 UMAP+HDBScan 聚类，SimBA 的 Random Forest）。这本质上就是一个双阶段系统，只是阶段 1 是 2D 而非 3D，且阶段 2 使用手工特征（关键点速度、角度、距离）而非深度模型。
+
+  <h3 class="section-title">3.3 3D 个体重建：从姿态到体型</h3>
+
+  AniMer #Ren et al., 2024#（CVPR 2025）是目前唯一同时建模动物<strong>姿态 + 形状</strong>的工作。它使用 ViT 编码器 + 科属对比学习（family-aware contrastive learning），在多物种上学习 SMAL 参数化体型模型。引入扩散合成数据 CtrlAni3D（~10K 图像）扩充 3D 标注后，总训练集达 41.3K 图像。在 Animal3D 基准上 AUC 达到 <strong>88.9</strong>，PCK@HTH = 89.5，PA-MPJPE = 80.4mm。在分布外数据 Animal Kingdom 上 AUC 达到 82.9，比 HMR2.0 高 5.6 个点。
+
+  这意味着 AniMer 不仅知道"这只猫的关节在哪"，还知道"这只猫有多胖、腿有多长"——这为阶段 2 的动作检测提供了更强的个体先验。其科属对比学习策略（同一科属的动物形状拉近，不同科属推远）可自然迁移到个体对比学习：同一个体的不同帧拉近，不同个体推远。但目前还没有工作将 AniMer 的 3D 重建接入下游动作识别——这是本文识别的一个明确空白。
+
+  <h3 class="section-title">3.4 测试时个体适配：在线微调</h3>
+
+  Online TTA for 3D Pose #Chen et al., 2025# 提出了更轻量的方案：不需要预先建立个体模型，而是在推理时<strong>逐帧自适应</strong>。其核心是三步适应策略：(1) 自适应聚合——跨视频初始化，利用历史视频的运动先验；(2) 两阶段优化——先优化全局参数再微调个体参数，限制误差传播；(3) 局部增强——利用高置信样本辅助低置信样本。在仅使用估计 2D 姿态（OpenPose）的条件下，MPJPE 达到 101.3mm，比 DynaBOA 的 138.5mm 改善 <strong>18.0%</strong>。
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      个体适配的三种范式对比
+    </div>
+    <div class="admonition-content">
+      <p><strong>离线注册</strong>（DeepLabCut）：标注 200 帧 → 微调 → 固定模型。精度高但需要前期投入，适合长期监控同一个体。</p>
+      <p><strong>少样本微调</strong>（SuperAnimal）：10-50 帧标注 → 快速适配。平衡精度和效率，适合产品化场景。</p>
+      <p><strong>在线自适应</strong>（Online TTA）：零标注 → 逐帧微调。无前期投入但精度有上限，适合临时部署或隐私敏感场景。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">3.5 实验配置对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>数据集</th><th>Backbone</th><th>训练数据</th><th>推理速度</th><th>硬件</th></tr></thead>
+      <tbody>
+        <tr><td>TTA-Pose</td><td>3DPW / 3DHP / EgoBody</td><td>HMR / HMR2.0</td><td>Human3.6M</td><td>107.6 ms/帧</td><td>❌ 未披露</td></tr>
+        <tr><td>Online TTA</td><td>3DPW / Human3.6M</td><td>ST→3D lifting</td><td>Human3.6M</td><td>❌ 未披露</td><td>❌ 未披露</td></tr>
+        <tr><td>SuperAnimal</td><td>6 个姿态基准</td><td>ResNet-50 / MobileNetV2</td><td>45+ 物种联合</td><td>520 Hz (DLC)</td><td>❌ 未披露</td></tr>
+        <tr><td>DiffPose-Animal</td><td>AP-10K / APT-36K</td><td>HRNet-W32</td><td>AP-10K 3-split</td><td>❌ 未披露</td><td>❌ 未披露</td></tr>
+        <tr><td>AniMer</td><td>Animal3D / CtrlAni3D / AK</td><td>ViT</td><td>41.3K 图像</td><td>❌ 未披露</td><td>❌ 未披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><small>注：多数论文未完整披露硬件配置，这反映了该领域在实验可复现性方面的不足。</small></p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">少样本个体适配——从"认识"到"记住"</div>
+
+  <h3 class="section-title">4.1 DeepLabCut 范式：个体标注 → 微调 → 个体模型</h3>
+
+  如 Part 3 所述，DeepLabCut 是目前<strong>最接近"先认识个体，再做行为分析"范式的实际工具</strong>。动物行为综述 #Eddy et al., 2023# 系统梳理了从姿态到行为的完整 pipeline，揭示了三种主要范式：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Pipeline 类型</th><th>处理步骤</th><th>标注需求</th><th>发现新行为</th><th>代表系统</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Pose-based supervised</strong></td><td>PE → 特征 → 分类</td><td>姿态标签 + 行为标签</td><td>低</td><td>MARS, SimBA, DeepBehavior</td></tr>
+        <tr><td><strong>RGB supervised</strong></td><td>CNN → 时序模型</td><td>行为标签</td><td>低</td><td>DeepEthogram, MF-Net</td></tr>
+        <tr><td><strong>Fully unsupervised</strong></td><td>降维 → 聚类</td><td>无</td><td>{{< bg green >}}高{{< /bg >}}</td><td>MotionMapper, MoSeq, Selfee</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  在 Pose-based supervised 范式中，SimBA（Simple Behavioral Analysis）的流程最为典型：DeepLabCut/LEAP 提取关键点 → 异常值校正 → 498 个滚动窗口指标（速度、角度、距离）→ Random Forest 分类。B-SoiD 则走半监督路线：DLC 提取 6 关节关键点 → 时空特征 → UMAP 降维 → HDBScan 聚类 → RF 分类器。这些系统的共同特点是：<strong>阶段 1 是 2D 而非 3D，阶段 2 使用手工特征而非深度模型</strong>，且没有显式的身份感知模块。
+
+  <h3 class="section-title">4.2 Few-shot 动作识别到新个体</h3>
+
+  当需要从"认识个体"快速升级到"识别该个体的动作"时，few-shot action recognition 提供了理论框架 #Wang et al., 2024#。Few-shot AR 综述明确指出 "few-shot video data with significant individual differences are always far from enough to describe the real distribution of the action"——<strong>个体差异是 few-shot AR 的核心挑战</strong>。
+
+  <p><strong>CLIP 路线的碾压性优势</strong>：2023 年后基于 CLIP 的方法在 Kinetics 1-shot 上达到 96.2%（TSAM）、95.7%（MA-FSAR），碾压传统 ResNet 方法（~70-75%）。CLIP 的视觉-语言对齐使得"用文本描述新个体的动作"成为可能——这一思路可以直接迁移到个体特定检测：用文本描述"张三的走路""李四的走路"来实现个体区分。</p>
+
+  <p><strong>骨架 few-shot AR 的天然优势</strong>：骨架表示对个体外观差异<strong>天然鲁棒</strong>——一只橘猫和一只黑猫的骨架拓扑完全相同。代表方法包括 PAINet（双分支骨架间/内关联）、CD-GCN（对比扩散图卷积）和 SMAM（自&互自适应匹配）。这些方法利用骨架的拓扑结构而非外观特征来匹配动作，因此跨个体泛化能力更强。</p>
+
+  <p><strong>个体特定匹配的先驱</strong>：M³Net 提出 instance-specific + category-specific + task-specific 三级匹配，是目前最接近"个体特定"思路的方法。它不是简单地将所有样本视为同一类别，而是显式建模"这个执行者的特征"和"这个动作类别的特征"的交互关系。</p>
+
+  <h3 class="section-title">4.3 One-shot 骨架动作识别</h3>
+
+  Skeleton-DML #Zhu et al., 2020# 将骨架序列编码为"骨架图像"（包括时序图、热力图、轨迹图等多种表示），用深度度量学习实现<strong>单样本动作识别</strong>——仅用一个参考视频即可建立新个体的动作模板。在 NTU-120 one-shot 协议上比 SOTA 提升 <strong>3.3-7.7%</strong>。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>参考样本数</th><th>NTU-120 Top-1</th><th>核心机制</th><th>对个体差异的鲁棒性</th></tr></thead>
+      <tbody>
+        <tr><td>ProtoNet 基线</td><td>1-shot</td><td>~52%</td><td>原型匹配</td><td>低</td></tr>
+        <tr><td><strong>Skeleton-DML</strong></td><td>1-shot</td><td>{{< bg green >}}~59%{{< /bg >}}</td><td>骨架图像 + 度量学习</td><td>中</td></tr>
+        <tr><td>CD-GCN</td><td>5-shot</td><td>~71%</td><td>对比扩散图卷积</td><td>高</td></tr>
+        <tr><td>TSAM (CLIP)</td><td>1-shot</td><td>96.2% (Kinetics)</td><td>CLIP 视觉-语言对齐</td><td>高</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Skeleton-DML 的意义在于：它证明了<strong>仅用 1 个参考视频就能建立新个体的动作模板</strong>。这正是"先认识个体"的最极端形式——只需要一个样本就能"记住"这个个体的动作模式。其骨架图像表示消融实验显示，时序图表示优于热力图和轨迹图，说明时序动态信息比空间拓扑信息对个体识别更重要。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">阶段 2——身份感知动作检测</div>
+
+  <h3 class="section-title">5.1 IGMN：首个身份感知 TAD</h3>
+
+  IGMN #Ni et al., 2021#（ACM MM 2021）在 AVA 时序动作检测中引入了三种身份感知的图结构：
+
+  <ol>
+    <li><strong>Intra-actor edges</strong>：同一个 actor 在不同时间步的关系（自环），连接同一 tracklet 中相邻 clip 的节点</li>
+    <li><strong>Inter-actor intra-clip edges</strong>：同一帧内不同 actor 的关系，全连接</li>
+    <li><strong>Inter-actor inter-clip edges</strong>：跨时间步、不同身份的长程关系，actor 节点作为 query，memory 节点作为 key</li>
+  </ol>
+
+  这种边的分类<strong>显式地将身份一致性编码进图结构</strong>：intra-actor 边只连接同一身份，inter-actor 边只连接不同身份。三种消息传递分别处理：intra-actor 使用有序时序聚合器（保留时序顺序，而非位置无关的 self-attention）；inter-actor intra-clip 使用 self-attention block；inter-actor inter-clip 仅更新 actor 节点特征。
+
+  核心创新是 <strong>DAM（Dual Attention Module）</strong>，将注意力解耦为两个独立维度：
+
+  $$\alpha_{\text{sem}} = \text{softmax}(Q_s K_s^T / \sqrt{d}) \quad \text{(Semantic Attention: 看什么)}$$
+  $$\alpha_{\text{id}} = \text{softmax}(Q_i K_i^T / \sqrt{d}) \quad \text{(Identity Attention: 看谁)}$$
+
+  Semantic Attention 定位对动作识别有判别力的区域（不管属于哪个 actor），Identity Attention 聚焦于代表 actor 的区域（mask 掉干扰 actor）。消融实验表明，单独使用 SA 或 IA 反而使性能下降（SA: 30.57%, IA: 30.35%），只有两者协同才能达到最佳（full IGMN: 31.22%）。总损失包含分类损失和空间先验损失：
+
+  $$L = L_{\text{cls}}^{\text{fuse}} + \lambda_{\text{aux}}(L_{\text{cls}}^{\text{sem}} + L_{\text{cls}}^{\text{idt}} + L_{\text{prior}}^{\text{sem}} + L_{\text{prior}}^{\text{idt}})$$
+
+  其中 $\lambda_{\text{aux}} = 0.5$。SA 使用 relaxed BCE loss（降低干扰 actor 负样本权重），IA 使用标准 BCE loss。在 AVA v2.1 上，IGMN 使用 SlowFast-R50 达到 <strong>30.2% mAP</strong>，使用 SF-R101 在 v2.2 上达到 <strong>33.0%</strong>。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>身份建模</th><th>AVA v2.1 mAP</th><th>AVA v2.2 mAP</th><th>Backbone</th></tr></thead>
+      <tbody>
+        <tr><td>LFB</td><td>❌ 无</td><td>25.8</td><td>—</td><td>R50-NL</td></tr>
+        <tr><td>Context-Aware RCNN</td><td>❌ 无</td><td>28.0</td><td>—</td><td>R50-NL</td></tr>
+        <tr><td>AIA</td><td>弱</td><td>28.9</td><td>29.8 (R50) / 32.2 (R101)</td><td>SF-R50/R101</td></tr>
+        <tr><td><strong>IGMN</strong></td><td>{{< bg green >}}强（图记忆）{{< /bg >}}</td><td>{{< bg green >}}30.2{{< /bg >}}</td><td>{{< bg green >}}31.2 (R50) / 33.0 (R101){{< /bg >}}</td><td>SF-R50/R101</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>IGMN 的消融实验揭示了层次化建模的重要性：HGNN 从 1 层到 3 层，mAP 从 29.32 提升到 30.76；而无下采样的 HGNN-s 在 3 层时反而下降到 29.21（过平滑）。身份感知建模使 <strong>46/60</strong> 个动作类别受益，特别是需要跨 clip 身份线索的动作（如 "open", "falling down"）和需要局部细节的动作（如 "push", "hug"）。</p>
+
+  <p>但 IGMN 的局限在于：(1) 身份信息依赖外部 tracker，跟踪错误会产生噪声；(2) 身份是隐式建模而非显式 embedding；(3) 只在 AVA 上评估，AVA 以 1 FPS 稀疏采样，不适用于快速动作。它证明了身份感知的价值，但没有建立真正的个体模型。</p>
+
+  <h3 class="section-title">5.2 SkeleTR：两阶段骨架 AR 的标杆</h3>
+
+  SkeleTR #Berti et al., 2023#（ICCV 2023）是目前<strong>最接近"先建个体模型，再做动作检测"范式的完整系统</strong>。它的架构精确对应双阶段设计：
+
+  <p><strong>Stage 1（个体内 GCN）</strong>：用 ST-GCN++ 为每个 skeleton 序列提取时空特征。核心创新是用<strong>大量短序列</strong>（20-80 个，每个 15-30 帧/1-2 秒）取代少量长序列（2 个，覆盖全视频），通过 IoU-based matching 减少关联噪声。消融显示 IoU matching vs confidence score matching 在 Posetics 上提升约 2-4% Top-1。GCN 在个体内建模上显著优于 MLP（45.19% vs 53.90% Top-1）和 Transformer（51.35% vs 53.90%）。</p>
+
+  <p><strong>Stage 2（个体间 Transformer）</strong>：用堆叠 Transformer 编码器捕获多个体之间的交互关系。核心设计是 <strong>Mix Pooling</strong>：三流并行压缩——1×1（时空全局平均，序列整体表示）、T×1（空间平均保留时间，时间动态）、1×P（时间平均 V 关节聚合为 P=5 身体部位，空间结构）——将 Transformer 计算量从 52.7 GFLOPs 降至 <strong>0.594 GFLOPs</strong>。消融显示三流组合在所有数据集上取得最佳性能。统一 Transformer（0.627M params）不仅性能最优，参数量也仅为分支独立方案的 1/3。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>指标</th><th>SkeleTR vs 前SOTA</th><th>最大受益场景</th></tr></thead>
+      <tbody>
+        <tr><td>Posetics</td><td>Top-1</td><td>{{< bg green >}}+3.8%{{< /bg >}} (57.9 vs 54.1)</td><td>—</td></tr>
+        <tr><td>AVA</td><td>mAP</td><td>{{< bg green >}}+7.8%{{< /bg >}} (含 joint training)</td><td>Person Interaction (+7.0)</td></tr>
+        <tr><td>Volleyball</td><td>Top-1</td><td>+0.7% (94.4 vs 93.7)</td><td>—</td></tr>
+        <tr><td>NTU-Inter</td><td>Top-1</td><td>+1.1% (94.8 vs 93.6)</td><td>多人交互</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  SkeleTR-S 仅 <strong>0.81M params</strong>、2.74 GFLOPs、336 clip/s——比 CTR-GCN（1.36M, 5.36 GFLOPs, 195 clip/s）更小更快同时精度更高。注意力头分析显示：head 1 建模个体内时间模式，head 4 建模个体间交互——验证了两阶段解耦设计的有效性。多人场景（≥5人/帧）提升约 <strong>10%</strong>，是单人场景的 2 倍。AVA 提升最大的动作类全是交互类：Hand Clap (+20.0)、Listen to a person (+16.1)、Hug a person (+11.1)。
+
+  SkeleTR 与 RGB 模态具有强互补性：late fusion 带来 +2.3% Posetics Top-1 和 +3% AVA mAP。联合训练（Posetics + AVA）作为强正则化器，缓解 AVA 上的过拟合，额外带来 +4.1% mAP。
+
+  <h3 class="section-title">5.3 PoseBridge：零样本泛化到新个体</h3>
+
+  PoseBridge #Liu et al., 2026#（NeurIPS 2026 预印本）识别了零样本骨架 AR 中一个被忽视的瓶颈——<strong>Skeletonization Gap</strong>：骨架不是完整的动作观测，而是 HPE 的压缩输出。在骨架化过程中，物体存在、人-物交互等关键线索丢失。例如「戴帽子/戴耳机/戴眼镜」三个动作具有相似的手到头部轨迹，但区别在于操纵的物体及其与手、头的空间配置——骨架坐标无法区分。
+
+  PoseBridge 的解决方案是<strong>重用产生骨架的同一 HPE 过程的中间表示</strong>：通过层级姿态结构化精炼（浅层保留局部外观，深层编码身体配置）+ 身体感知语义池化（从预测关节概率构建注意力图）+ 骨架条件语义桥（多头交叉注意力将 pose-anchored 语义注入骨架表示）。
+
+  $$\tilde{\mathbf{F}}^{l+1} = \mathbf{F}^{l+1} + \alpha\,\mathcal{R}^l(\psi^l(\mathcal{P}^l(\tilde{\mathbf{F}}^l))), \quad l=1,\ldots,L-1$$
+
+  未见类原型适配使用残差迁移：从文本空间中 top-K 近邻已见类迁移位移模式：
+
+  $$\tilde{\mathbf{t}}_{c} = \mathbf{t}_{c} + \rho \sum_{j \in \mathcal{N}_K(c)} \omega_{cj}(\bm\mu_j - \mathbf{t}_j)$$
+
+  在 Kinetics-200/400 PURLS 基准上超越最强基线 <strong>13.3-17.4 分</strong>，同时实现最快推理速度（1398 FPS），可训练参数仅 3.8M。
+
+  对个体特定检测的启示：将"新个体"类比为"未见类"，通过个体描述空间的近邻关系实现零样本个体泛化——无需新个体的标注数据。PoseBridge 的核心思想——<strong>在信息压缩过程中保留区分性语义线索，而非事后对齐</strong>——对个体特定检测有直接指导意义。
+
+  <h3 class="section-title">5.4 动物行为识别：从姿态到行为的完整 Pipeline</h3>
+
+  BCST-GCN（Frontiers in Veterinary Science, 2026）是目前<strong>最接近双阶段范式的动物端实现</strong>：先用 DeepLabCut 提取骨架关键点，再用 GCN 做行为分类。这正是一个实际的两阶段系统，只是阶段 1 是 2D 而非 3D，且没有身份感知模块。
+
+  AnimalMotionCLIP #Xu et al., 2025#（CVPR 2024 Workshop）提供了另一条路线：在 CLIP 中交错 RGB + 光流输入，结合 dense/semi-dense/sparse 三种时序建模方案，在 Animal Kingdom 上 mAP 达到 <strong>74.63%</strong>（vs MSQNet+pretrain 73.10%）。其稀疏采样策略使其特别适合长视频监控场景——这与宠物摄像头的使用场景高度吻合。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>身份建模方式</th><th>核心架构</th><th>关键指标</th><th>与双阶段范式的关系</th></tr></thead>
+      <tbody>
+        <tr><td><strong>IGMN</strong></td><td>显式图结构（三种边）</td><td>HGNN + DAM</td><td>AVA 30.2% mAP</td><td>阶段 2 身份感知，无阶段 1</td></tr>
+        <tr><td><strong>SkeleTR</strong></td><td>隐式（个体内 GCN）</td><td>GCN + Transformer</td><td>AVA +7.8%, 0.81M params</td><td>最接近完整范式</td></tr>
+        <tr><td><strong>PoseBridge</strong></td><td>无（零样本动作）</td><td>HPE 中间特征 + 桥接</td><td>Kinetics +13.3-17.4 分</td><td>零样本个体泛化思路</td></tr>
+        <tr><td><strong>BCST-GCN</strong></td><td>无</td><td>DLC → GCN</td><td>❌ 未披露</td><td>动物端两阶段（无身份）</td></tr>
+        <tr><td><strong>AnimalMotionCLIP</strong></td><td>无</td><td>CLIP + 光流</td><td>AK mAP=74.63%</td><td>CLIP 路线的动物行为</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">端到端联合优化与空白区域</div>
+
+  <h3 class="section-title">6.1 发展时间线</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间段</th><th>标志性进展</th><th>对个体特定检测的意义</th></tr></thead>
+      <tbody>
+        <tr><td><strong>2018-2020：奠基期</strong></td><td>DeepLabCut（Nature Neuro., 2018）开创个体特定动物姿态估计范式；ST-GCN（CVPR 2018）开创骨架 AR 的 GCN 范式；Skeleton-DML（2020）实现 one-shot 骨架动作识别</td><td>确立了"标注→微调→个体模型"的基本工作流，但姿态估计和动作识别是分离的 pipeline，没有端到端联合优化</td></tr>
+        <tr><td><strong>2021-2023：身份感知觉醒期</strong></td><td>IGMN（ACM MM 2021）首次显式建模 actor 身份，AVA 突破 30% mAP；SkeleTR（ICCV 2023）提出两阶段骨架 AR，0.81M 参数实现 SOTA；SuperAnimal（2022）覆盖 45+ 物种，数据效率提升 10-100×</td><td>身份感知从"锦上添花"变为"一等公民"，两阶段解耦设计被验证有效，跨物种基础模型使个体微调成本大幅降低</td></tr>
+        <tr><td><strong>2024-2026：个体建模深化期</strong></td><td>TTA-Pose（ICML 2025）引入语义感知运动先验，3DPW 提升 12.3%；AniMer（CVPR 2025）首次同时建模动物姿态+形状；PoseBridge（NeurIPS 2026）识别 Skeletonization Gap，Kinetics 超越 SOTA 13.3-17.4 分；DiffPose-Animal（2025）用 LLM 引导扩散</td><td>个体建模从 2D 骨架走向 3D 形状，从离线微调走向在线自适应，从动作级零样本走向个体级泛化——但端到端完整系统仍未出现</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 现有联合优化尝试</h3>
+
+  Re-ID-AR（BMVC 2021）是最直接的联合优化尝试：将行人重识别（Re-ID）和动作识别（AR）作为多任务联合学习。Re-ID 建立个体身份模型（"这是谁"），AR 利用身份信息增强动作检测（"在做什么"）。但这种联合训练需要在数据集中同时有身份标注和动作标注，限制了适用范围。
+
+  IGMN + SkeleTR 的组合是一条可行的技术路线：IGMN 的 Identity Attention 注入 SkeleTR 的 Transformer 阶段，使两阶段骨架 AR 同时具备身份感知能力。具体来说，SkeleTR 的 Stage 2 Transformer 输出可以增加一个 Identity Attention 分支，用 IGMN 的 DAM 机制 mask 掉非目标个体的特征。但这种组合尚无论文实现。
+
+  PoseBridge 的零样本范式提供了另一条路径：将"新个体"类比为"未见类"，通过个体描述空间的近邻关系实现零样本个体泛化。PoseBridge 的未见类原型适配公式 $\tilde{\mathbf{t}}_{c} = \mathbf{t}_{c} + \rho \sum \omega_{cj}(\bm\mu_j - \mathbf{t}_j)$ 可以自然映射到"新个体原型适配"：从已知个体的位移模式迁移到新个体。
+
+  <h3 class="section-title">6.3 三个空白区域</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>空白</th><th>组件已就绪</th><th>缺口</th><th>解决难度</th></tr></thead>
+      <tbody>
+        <tr><td><strong>3D 重建 → TAD</strong></td><td>AniMer (3D) + OpenTAD (TAD)</td><td>无人将 3D 个体模型作为 TAD 前置步骤</td><td>中（需对接两个独立 pipeline）</td></tr>
+        <tr><td><strong>在线个体注册 → 持续检测</strong></td><td>Online TTA + SkeleTR</td><td>无论文实现"注册个体→持续检测"的在线系统</td><td>高（需解决在线学习的灾难性遗忘）</td></tr>
+        <tr><td><strong>跨个体零样本泛化</strong></td><td>PoseBridge (零样本动作)</td><td>PoseBridge 处理未见类而非未见个体</td><td>高（个体差异比类别差异更微妙）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.4 三种可能的端到端架构</h3>
+
+  基于组件成熟度，我们提出三种可实现的端到端方案：
+
+  {{< mermaid >}}
+flowchart TB
+  subgraph A["方案 A: 最实用 (SuperAnimal + SkeleTR/IGMN)"]
+    A1["SuperAnimal 姿态估计"] --> A2["SkeleTR 骨架 AR"]
+    A2 --> A3["IGMN 身份模块"]
+  end
+  subgraph B["方案 B: 最前沿 (AniMer + 骨架 AR)"]
+    B1["AniMer 3D 形状估计"] --> B2["参数化个体模型"]
+    B2 --> B3["骨架 AR"]
+  end
+  subgraph C["方案 C: 最强但最贵 (VFM + adapter)"]
+    C1["VFM InternVideo2"] --> C2["个体 adapter"]
+    C2 --> C3["OpenTAD neck/head"]
+  end
+  {{< /mermaid >}}
+
+  <p><strong>方案 A（最实用）</strong>：SuperAnimal 姿态估计 → SkeleTR 骨架 AR + IGMN 身份模块。全部组件已有开源实现，只需对接。SuperAnimal 的 10-100× 数据效率使个体注册成本极低，SkeleTR-S 的 0.81M 参数适合边缘部署，IGMN 的 Identity Attention 提供多个体区分能力。适合宠物摄像头产品。</p>
+
+  <p><strong>方案 B（最前沿）</strong>：AniMer 3D 形状估计 → 参数化个体模型 → 骨架 AR。3D 重建提供更强的个体先验（不仅知道关节位置，还知道体型参数），AniMer 的科属对比学习可迁移为个体对比学习。但 AniMer 尚未有下游验证，需要从头训练 3D→AR 的映射。</p>
+
+  <p><strong>方案 C（最强但最贵）</strong>：VFM（如[[video-foundation-model-action-detection | 系列四]]的 InternVideo2-6B）+ 个体 adapter + OpenTAD neck/head。利用 VFM 的通用表征能力，通过轻量 adapter 实现个体适配。这是上限最高的方案，但 6B 参数的推理成本使其仅适合云端。</p>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      部署建议
+    </div>
+    <div class="admonition-content">
+      <p><strong>云端高精度</strong>：方案 C，InternVideo2-6B + 个体 adapter，适合研究验证。</p>
+      <p><strong>边缘部署</strong>：方案 A，SuperAnimal + SkateFormer（仅 2M 参数），可在 RV11xx 级 NPU 上运行。</p>
+      <p><strong>快速原型</strong>：DeepLabCut 注册 + STGCN++（1.39M 参数）推理，一周内可搭建 baseline。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">在地图上的位置</div>
+
+  <h3 class="section-title">7.1 与已有系列文章的关系</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文章</th><th>覆盖范围</th><th>本文的差异视角</th></tr></thead>
+      <tbody>
+        <tr><td>[[action-recognition-landscape | 系列一·导览]]</td><td>7 条技术路线概览</td><td>深入"身份感知"垂直维度</td></tr>
+        <tr><td>[[animal-action-recognition-survey | 系列二·动物]]</td><td>动物动作识别全景</td><td>覆盖动物姿态→行为完整 pipeline</td></tr>
+        <tr><td>[[coarse-fine-animal-action-review-2025 | 系列三·CG→FG]]</td><td>粗粒度到细粒度综述</td><td>个体建模可能是 CG→FG 的桥梁</td></tr>
+        <tr><td>[[video-foundation-model-action-detection | 系列四·VFM]]</td><td>视频基础模型</td><td>VFM 做通用表征，本文做个体特定</td></tr>
+        <tr><td>[[pet-action-detection-phase1 | 宠物识别（一）·规划]]</td><td>Phase 1 任务规划，500 元 BOM</td><td>双阶段范式是 Phase 2 的潜在方案</td></tr>
+        <tr><td>[[pet-action-detection-model-survey | 宠物识别（二）·选型]]</td><td>mmaction2 + 边缘部署</td><td>骨架路线直接衔接部署选型</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">7.2 六个开放问题</h3>
+
+  <ol>
+    <li><strong>个体注册需要多少数据？</strong>DeepLabCut 需要 ~200 帧标注，SuperAnimal 仅需 10-50 帧即可微调，Online TTA 完全零标注。精度-标注成本的 trade-off 曲线是什么？是否存在一个"甜蜜点"——比如 30 帧标注就能达到 90% 的个体识别精度？这需要系统性的消融实验来回答。目前没有任何论文做过这种跨方法的标注效率对比。</li>
+    <li><strong>3D 个体重建对动作检测的增益有多大？</strong>AniMer 的 3D 形状估计（Animal3D AUC=88.9, PA-MPJPE=80.4mm）理论上提供更强的个体先验——不仅知道关节位置，还知道体型参数（腿长、体围等）。但目前没有下游验证。3D 比 2D 骨架在 TAD 上能提升多少？如果提升不到 1%，3D 重建的计算开销可能不划算；如果提升 5%+，则值得投入。</li>
+    <li><strong>在线个体适配 vs 离线注册</strong>：Online TTA 的精度上限（3DPW MPJPE 101.3mm 用 OpenPose 2D）低于离线微调，但无需前期投入。实际产品中，哪种策略的用户体验更好？用户是否愿意花 5 分钟标注 200 帧来换取更高精度？还是更倾向于"开箱即用"的零标注方案？这需要用户研究来回答。</li>
+    <li><strong>多宠物场景的个体混淆</strong>：当两只外观相似的猫（同品种、同毛色）同时出现时，如何保持个体身份的一致性？IGMN 的图记忆网络在密集遮挡下的鲁棒性如何？DeepLabCut 的多动物版本使用 Transformer 做重识别，但在外观完全相同时仍会失败。骨架拓扑是否有足够的个体区分力？</li>
+    <li><strong>边缘部署约束</strong>：[[pet-action-detection-phase1 | 宠物动作识别（一）]]设定了 500 元 BOM 约束（0.5-1.0 TOPS NPU）。SuperAnimal（MobileNetV2 backbone）+ SkateFormer（2.03M 参数, 3.62 GFLOPs）+ STGCN++（1.39M 参数）的全链路能否在 0.5 TOPS 的 NPU 上实现实时推理？SkeleTR-S 的 336 clip/s 推理速度是在高端 GPU 上的结果，边缘设备上可能降低 10-50 倍。</li>
+    <li><strong>跨物种个体建模的可迁移性</strong>：SuperAnimal 在猫上微调的个体模型能否迁移到新猫？还是每只新猫都需要重新标注？如果猫 A 的微调模型可以零样本迁移到猫 B（即使精度降低），则产品部署成本将大幅下降。但不同猫的体型差异（缅因猫 vs 美短）可能使这种迁移失效。</li>
+  </ol>
+
+  <h3 class="section-title">7.3 可操作启发</h3>
+
+  <p>如果要在宠物摄像头产品中实现"个体特定动作检测"，当前的最佳实践路径是：</p>
+
+  <ul>
+    <li><strong>Phase 1（1-2 天）</strong>：用 SuperAnimal 预训练模型 + 10-20 帧用户标注 → 微调得到该猫的姿态估计器。SuperAnimal 的 10-100× 数据效率意味着这是目前最低成本的个体注册方案。</li>
+    <li><strong>Phase 2（1 天）</strong>：用 SkateFormer（2.03M 参数, 11.46ms 推理）或 STGCN++（1.39M 参数）在骨架序列上做动作分类。SkateFormer 的分区注意力策略对骨架拓扑的利用更充分。</li>
+    <li><strong>Phase 3（可选）</strong>：引入 IGMN 的 Identity Attention 模块，在多猫场景下区分身份。IGMN 的 DAM 解耦"看什么"和"看谁"，在多宠物家庭中可以防止身份混淆导致的误报。</li>
+    <li><strong>长期演进</strong>：替换为 VFM + 个体 adapter 的方案，利用[[video-foundation-model-action-detection | 系列四]]的前沿进展。InternVideo2-6B 的通用表征 + 轻量 adapter（如 LoRA）可能是最终的个体特定检测方案。</li>
+  </ul>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="video-foundation-model-action-detection.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">视频基础模型时代的动作检测</span></a>
+    <a class="nav-card nav-hub" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别 Hub</span></a>
+  </div>
+
+  <!-- 参考来源 -->
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Ni et al., 2021">Ni, J. et al. (2021). Identity-aware Graph Memory Network for Action Detection. ACM MM 2021. <a href="https://arxiv.org/abs/2108.11559" target="_blank">arXiv:2108.11559</a></li>
+      <li data-cite-key="Berti et al., 2023">Berti, S. et al. (2023). SkeleTR: Towards Skeleton-based Action Recognition in the Wild. ICCV 2023. <a href="https://arxiv.org/abs/2309.11445" target="_blank">arXiv:2309.11445</a></li>
+      <li data-cite-key="Li et al., 2025">Li, Y. et al. (2025). Semantics-aware Test-time Adaptation for 3D Human Pose Estimation. ICML 2025. <a href="https://arxiv.org/abs/2502.10724" target="_blank">arXiv:2502.10724</a></li>
+      <li data-cite-key="Liu et al., 2026">Liu, Z. et al. (2026). PoseBridge: Bridging the Skeletonization Gap for Zero-Shot Skeleton-Based Action Recognition. NeurIPS 2026. <a href="https://arxiv.org/abs/2605.11497" target="_blank">arXiv:2605.11497</a></li>
+      <li data-cite-key="Eddy et al., 2023">Eddy, C. et al. (2023). CNN-Based Action Recognition and Pose Estimation for Classifying Animal Behaviors from Videos: A Survey. <a href="https://arxiv.org/abs/2301.06187" target="_blank">arXiv:2301.06187</a></li>
+      <li data-cite-key="Zhang et al., 2025">Zhang, Y. et al. (2025). 3D Skeleton-Based Action Recognition: A Review. <a href="https://arxiv.org/abs/2506.00915" target="_blank">arXiv:2506.00915</a></li>
+      <li data-cite-key="Wang et al., 2024">Wang, H. et al. (2024). A Comprehensive Review of Few-shot Action Recognition. <a href="https://arxiv.org/abs/2407.14744" target="_blank">arXiv:2407.14744</a></li>
+      <li data-cite-key="Ye et al., 2022">Ye, S. et al. (2022). SuperAnimal: Pretrained Pose Estimation Models for Behavioral Analysis. Nature Communications. <a href="https://arxiv.org/abs/2203.07436" target="_blank">arXiv:2203.07436</a></li>
+      <li data-cite-key="He et al., 2022">He, J. et al. (2022). APT-36K: A Large-scale Benchmark for Animal Pose Estimation and Tracking. NeurIPS 2022. <a href="https://arxiv.org/abs/2206.05683" target="_blank">arXiv:2206.05683</a></li>
+      <li data-cite-key="Li et al., 2025b">Li, X. et al. (2025). DiffPose-Animal: A Language-Conditioned Diffusion Framework for Animal Pose Estimation. <a href="https://arxiv.org/abs/2508.08783" target="_blank">arXiv:2508.08783</a></li>
+      <li data-cite-key="Li et al., 2024">Li, J. et al. (2024). SkateFormer: Skeletal-Temporal Transformer for Human Action Recognition. ECCV 2024. <a href="https://arxiv.org/abs/2403.09508" target="_blank">arXiv:2403.09508</a></li>
+      <li data-cite-key="Chen et al., 2025">Chen, Y. et al. (2025). Online Test-time Adaptation for 3D Human Pose Estimation. <a href="https://arxiv.org/abs/2503.11194" target="_blank">arXiv:2503.11194</a></li>
+      <li data-cite-key="Xu et al., 2025">Xu, L. et al. (2025). AnimalMotionCLIP: Embedding Motion in CLIP for Animal Behavior Analysis. CVPR 2024 Workshop. <a href="https://arxiv.org/abs/2505.00569" target="_blank">arXiv:2505.00569</a></li>
+      <li data-cite-key="Ren et al., 2024">Ren, Y. et al. (2024). AniMer: Animal Pose and Shape Estimation Using Family Aware Transformer. CVPR 2025. <a href="https://arxiv.org/abs/2412.00837" target="_blank">arXiv:2412.00837</a></li>
+      <li data-cite-key="Zhu et al., 2020">Zhu, L. et al. (2020). Skeleton-DML: Deep Metric Learning for Skeleton-Based One-Shot Action Recognition. <a href="https://arxiv.org/abs/2012.13823" target="_blank">arXiv:2012.13823</a></li>
+      <li data-cite-key="CO5">OSU Research. Video Models Identify Identity-Specific Motion Signatures. Ohio State University.</li>
+    </ul>
+  </div>
+</div>

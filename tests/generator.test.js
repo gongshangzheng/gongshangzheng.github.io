@@ -397,9 +397,9 @@ window.MathJax = {
 
   // ===== taxonomy helpers =====
 
-  'taxonomySlug: chinese names convert to pinyin': () => {
+  'taxonomySlug: chinese names convert to slug (translation or pinyin)': () => {
     assert.equal(taxonomySlug('人工智能', 'category'), 'ren-gong-zhi-neng');
-    assert.equal(taxonomySlug('机器学习'), 'ji-qi-xue-xi');
+    assert.equal(taxonomySlug('机器学习'), 'machine-learning');
   },
 
   'categoryUrl: uses taxonomy registry slug': () => {
@@ -412,8 +412,8 @@ window.MathJax = {
 
   'taxonomy resolver: same subcategory under different categories can reuse slug': () => {
     const taxonomy = createTaxonomyResolver({ version: 1, tags: {}, categories: {}, subcategories: {} });
-    assert.equal(taxonomy.getSubcategorySlug('数学', '基础'), 'ji-chu');
-    assert.equal(taxonomy.getSubcategorySlug('计算机', '基础'), 'ji-chu');
+    assert.equal(taxonomy.getSubcategorySlug('数学', '基础'), 'fundamentals');
+    assert.equal(taxonomy.getSubcategorySlug('计算机', '基础'), 'fundamentals');
   },
 
   'taxonomy resolver: same pinyin in one category gets numeric suffix': () => {

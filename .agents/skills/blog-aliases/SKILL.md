@@ -11,7 +11,7 @@ tags: [blog, aliases, taxonomy, hub, sub_id, shortcode]
 # Blog Aliases & Taxonomy Index
 
 > 本文档是 `aliases`、`sub_id`、taxonomy 索引页替换的唯一事实来源。
-> Subcategory 分布数据和开谱段示例见 `references/subcategory-structure.md`（分配 sub_id 时按需读取）。
+> Subcategory 描述、谱段划分和编号规则见 `blog-categories/references/subcategory-organization.md`（分配 sub_id 时按需读取）。
 
 ---
 
@@ -39,9 +39,8 @@ Hub 页设置与 category/tag 同名的别名时，构建系统自动替换 taxo
 ```yaml
 ---
 title: "图论——枢纽页"
-aliases: ["图论", "categories/数学/图论/index"]
-categories: ["数学"]
-subcategory: "图论"
+aliases: ["图论", "categories/数学/图论/index", "categories/数学/图论"]
+sub_id: 0
 ---
 ```
 
@@ -56,8 +55,9 @@ subcategory: "图论"
 | 类型 | URL 格式 |
 |------|----------|
 | Tag | `tags/{tag-slug}/index.html` |
-| Category | `categories/{cat-slug}/index.html` |
-| Subcategory | `categories/{cat-slug}/{subcat-slug}/index.html` |
+| Category (top) | `categories/{cat-slug}/index.html` |
+| Subcategory | `categories/{cat-slug}/{sub-slug}/index.html` |
+| Deep path | `categories/{slug1}/{slug2}/{slug3}/index.html` |
 
 旧格式 URL 自动生成重定向页。
 
@@ -109,7 +109,7 @@ subcategory: "图论"
 
 ### 赋值规范
 
-- 分配前**必须检查**同 subcategory 已有 sub_id（见 `references/subcategory-structure.md` §1）
+- 分配前**必须检查**同 subcategory 已有 sub_id（见 `blog-categories/references/subcategory-organization.md` 已发布文章清单）
 - 如有冲突，先修旧文编号
 
 ### 系列文章强制要求
@@ -118,7 +118,7 @@ subcategory: "图论"
 - **总览篇接管 subcategory index**：
 
 ```yaml
-aliases: ["数字人", "categories/AI/数字人/index"]
+aliases: ["数字人", "categories/AI/数字人/index", "categories/AI/数字人"]
 sub_id: 0
 ```
 

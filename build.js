@@ -80,17 +80,37 @@ function collectPosts() {
     // Exclude files with `excluded: true` from post list
     if (fm.excluded) continue;
 
+    const aliases = parseListField(fm.aliases);
+    // Derive categoryPath from aliases: "categories/AI/动作识别/宠物动作识别" → ["AI", "动作识别", "宠物动作识别"]
+    // Also support legacy categories/subcategory/subsubcategory fields during migration
+    let categoryPath = [];
+    const catAlias = aliases.find(a => typeof a === 'string' && a.startsWith('categories/') && !a.replace(/^\/+|\/+$/g, '').endsWith('/index'));
+    if (catAlias) {
+      categoryPath = catAlias.replace(/^\/+|\/+$/g, '').slice('categories/'.length).split('/').filter(Boolean);
+    } else {
+      // Legacy fallback: derive from categories/subcategory/subsubcategory fields
+      const cats = parseListField(fm.categories);
+      const sub = String(fm.subcategory || '').trim();
+      const subsub = String(fm.subsubcategory || '').trim();
+      if (cats.length) {
+        categoryPath = [cats[0]];
+        if (sub) categoryPath.push(sub);
+        if (subsub) categoryPath.push(subsub);
+      }
+    }
+
     rawRecords.push({
       file,
       sourcePath,
       title: fm.title || fallbackTitle,
       description: fm.description || '',
       tags: parseListField(fm.tags),
-      categories: parseListField(fm.categories),
-      subcategory: String(fm.subcategory || '').trim(),
-      subcategory_index: typeof fm.subcategory_index === 'number' ? fm.subcategory_index : null,
+      categoryPath,
+      // Derived for backward compat with code that still reads .categories / .subcategory
+      categories: categoryPath.length ? [categoryPath[0]] : [],
+      subcategory: categoryPath.length > 1 ? categoryPath[1] : '',
       sub_id: typeof fm.sub_id === 'number' ? fm.sub_id : null,
-      aliases: parseListField(fm.aliases),
+      aliases,
       pin: fm.pin === true || String(fm.pin).toLowerCase() === 'true',
       created_at: fm.created_at || '',
       updated_at: fm.updated_at || '',
@@ -188,8 +208,7 @@ function postsFingerprint(allPosts) {
     title: p.title,
     description: p.description,
     tags: p.tags,
-    categories: p.categories,
-    subcategory: p.subcategory,
+    categoryPath: p.categoryPath,
     aliases: p.aliases,
     pin: p.pin === true,
     created_at: p.created_at,

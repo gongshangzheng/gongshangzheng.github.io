@@ -8,14 +8,14 @@
 ## sub_id 与 taxonomy
 
 → 规则见 `blog-aliases` skill（`~/gongshangzheng.github.io/.agents/skills/blog-aliases/SKILL.md` §5）
-→ 分布数据见 `blog-aliases/references/subcategory-structure.md`（分配 sub_id 时按需读取）
+→ 分布数据见 `blog-categories/references/subcategory-organization.md`（分配 sub_id 时按需读取）
 
 **快速参考**（完整规则以 blog-aliases 为准）：
 - Hub 固定 `sub_id: 0`
 - 所有步长统一为 **10**，无例外
 - 系列章节 `10–999`，论文精读 `1000–1999`，工程 `2000–2999`
 - 新内容类型开新谱段：`3000`, `4000`, `5000`...（1000 的整数倍入口）
-- 分配前**必须检查**同 subcategory 已有 sub_id（命令见 `subcategory-structure.md` §1）
+- 分配前**必须检查**同 subcategory 已有 sub_id（见 `blog-categories/references/subcategory-organization.md` 已发布文章清单）
 
 ---
 

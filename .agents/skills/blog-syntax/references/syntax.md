@@ -112,15 +112,17 @@ citation.js 的 `slugifyKey()` 将 `<cite>` 文本转为匹配用的 key（保�
 
 ```html
 <div class="chapter-nav">
-  <a class="nav-card" href="prev-chapter.html">
+  <a class="nav-card nav-prev" href="prev-chapter.html">
+    <span class="nav-arrow">←</span>
     <span class="nav-label">上一章</span>
     <span class="nav-title">上一章标题</span>
   </a>
-  <a class="nav-card current" href="course-hub.html">
+  <a class="nav-card nav-hub" href="course-hub.html">
     <span class="nav-label">枢纽页</span>
     <span class="nav-title">课程枢纽页</span>
   </a>
-  <a class="nav-card" href="next-chapter.html">
+  <a class="nav-card nav-next" href="next-chapter.html">
+    <span class="nav-arrow">→</span>
     <span class="nav-label">下一章</span>
     <span class="nav-title">下一章标题</span>
   </a>

@@ -1,0 +1,388 @@
+---
+title: "红外图像压缩论文精读（九）：红外夜视观瞄轮廓提取，Sobel 增强 + FPGA 实时实现"
+description: "拆解江苏北方湖光光电的红外目标轮廓提取方案：高斯滤波 + Sobel + 指数对比度增强 + 暗背景边缘去除，在 Intel Cyclone IV 上以 <2% 资源实现 25Hz@1280×1024 实时处理。"
+date: 2026-07-06T15:00:00
+created_at: 2026-07-06T15:00:00
+updated_at: 2026-07-06T15:00:00
+tags: [红外图像, 图像压缩, 边缘检测, Sobel, FPGA, 红外夜视, 目标凸显]
+aliases: ["categories/AI/图像压缩"]
+sub_id: 3580
+hub: infrared-compression-hub
+mathjax: true
+hero_title: "红外夜视观瞄轮廓提取"
+hero_sub: "太赫兹科学与电子信息学报 2024 · Sobel + Gaussian + FPGA"
+hero_tagline: "一篇来自兵工厂的工程论文：不追求边缘检测的理论最优，而是在 FPGA 资源 <2% 的硬约束下，用四级增强管线让 Sobel 算子在红外夜视场景中真正可用。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num"><2%</span><span class="label">FPGA 资源占用</span></div>
+  <div class="stat"><span class="num b">25 Hz</span><span class="label g">实时帧率</span></div>
+  <div class="stat"><span class="num">1280×1024</span><span class="label">分辨率</span></div>
+  <div class="stat"><span class="num b">1462</span><span class="label l">逻辑单元</span></div>
+</div>
+
+<div class="callout"><strong>论文信息：</strong>李文, 王洪涛, 黄晓江等. 红外夜视观瞄系统的目标轮廓提取方法及 FPGA 实现. <em>太赫兹科学与电子信息学报</em>, 2024, 22(12): 1388-1393. DOI: 10.11805/TKYDA2023132. <a href="https://www.researching.cn/ArticlePdf/m00078/2024/22/12/11.pdf" target="_blank">PDF 原文</a></div>
+
+<!-- ============================================================
+  Part 1 · 引言
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">为什么红外夜视观瞄需要目标轮廓提取？</div>
+
+  <p>红外夜视观瞄系统是现代军事装备的核心感知器件。从单兵热像仪到装甲车火控系统，红外探测器捕获的热辐射图像可在完全黑暗、烟雾、逆光等极端条件下呈现目标信息 #Bai-2011#。全球夜视设备市场 2025 年规模约 101.9 亿美元，军用夜视系统预计 2034 年达 147.3 亿美元 #Background-2025#。</p>
+
+  <p>在这些观瞄系统中，一个关键的图像处理环节是<strong>目标凸显</strong>——在原始红外图像上叠加目标轮廓，帮助射手快速识别威胁。这本质上就是我们系列中反复讨论的"红外轮廓图像"的一个典型工程应用：从热辐射场中提取目标边界，再以颜色渲染叠加回原始图像。</p>
+
+  <p>本文作者来自江苏北方湖光光电有限公司——中国兵器工业集团下属的专业夜视观瞄设备研制单位 #Li-2024#。他们面对的工程约束极为严苛：FPGA 芯片资源有限、必须满足 25 Hz 实时帧率、分辨率高达 $1280 \times 1024$、功耗受限。在这种约束下，深度学习目标检测 #Wu-2023# 虽然效果更好，但无法在观瞄系统的 FPGA 上运行。</p>
+
+  <p>论文的核心思路是：<mark>以经典 Sobel 算子为骨架，通过四级增强管线（高斯滤波去噪、Sobel 梯度、指数对比度增强、暗背景边缘去除）弥补 Sobel 在红外图像中的先天不足</mark>，最终在 Intel Cyclone IV FPGA 上以 <2% 的资源占用实现实时目标轮廓提取。这是一种典型的"工程优化优先"路线——不追求理论最优的边缘检测质量，而是在硬约束下让经典方法真正可用。</p>
+</div>
+
+<!-- ============================================================
+  Part 2 · 问题剖析
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">Sobel 算子在红外图像上为什么"水土不服"？</div>
+
+  <p>Sobel 算子是最经典的边缘检测算子之一，运算简单（仅需两次 $3 \times 3$ 卷积），非常适合 FPGA 流水线实现 #Xu-2022#。然而，直接将 Sobel 应用于红外夜视图像会遇到三个严重问题：</p>
+
+  <h3 class="section-title">问题一：噪声伪边缘</h3>
+  <p>红外图像受限于探测器器件工艺，不可避免地存在<strong>条纹噪声</strong>和<strong>随机噪声</strong> #Li-2024#。Sobel 算子本质上是梯度计算，对噪声极度敏感——任何灰度跳变都会被识别为"边缘"，导致大量伪边缘淹没真实目标轮廓。</p>
+
+  <h3 class="section-title">问题二：边缘断裂</h3>
+  <p>标准 Sobel 通过硬阈值分割提取边缘，处于阈值附近的梯度值会被"撕裂"。在红外图像中，目标的温度梯度通常比可见光图像的颜色梯度更平缓，这使得阈值附近的边缘断裂问题更为严重，目标边界<strong>不连续、不闭合</strong>。</p>
+
+  <h3 class="section-title">问题三：暗背景干扰</h3>
+  <p>Sobel 算子无法区分"亮目标边缘"和"暗背景边缘"。在红外夜视场景中，树干、围栏、地面纹理等暗区域同样会产生梯度变化，被 Sobel 检测为边缘。这些干扰边缘使画面杂乱，反而<strong>降低</strong>了目标的凸显性。</p>
+
+  <div class="callout"><strong>替代方案的代价</strong>：Canny 算子 #Cui-2021# 边缘定位更精确，但其非极大值抑制和双阈值滞后处理计算复杂，FPGA 资源消耗约 5-15% #Background-2025#。Katırcıoğlu 的热传导矩阵方法 #Katircioglu-2020# 边缘质量更好，但模型较为复杂，需要构建热传导矩阵并迭代计算，不利于在资源受限的 FPGA 平台上实时部署。本文的策略是：保持 Sobel 的低复杂度优势，通过针对性预处理和后处理解决上述三个问题。</div>
+</div>
+
+<!-- ============================================================
+  Part 3 · 方法详解
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 方法详解</div>
+  <div class="ch-title">四级增强管线：让 Sobel 在红外场景真正可用</div>
+
+  <p>本文设计了一条<strong>两路并行</strong>的处理管线，路径 A 负责边缘提取，路径 B 负责局部阈值计算，最终在判定节点汇合：</p>
+
+  <div class="photo">
+    <img src="/media/images/ir-contour-fpga-2024/fig7-simulation.webp" alt="算法仿真对比效果图" style="width:100%;border-radius:14px;">
+    <div class="cap">图 1：算法仿真效果图对比。(a) 原始红外图像 → (b) 直接 Sobel（大量杂散边缘）→ (c) 高斯滤波+Sobel（杂散边缘减少）→ (d) 指数对比度增强后（进一步抑制）→ (e) 暗边缘去除后（树干和围栏边缘被抑制）→ (f) Canny 结果（边界连续性稍差）。来源：论文 Fig.7 #Li-2024#</div>
+  </div>
+
+  <h3 class="section-title">阶段 1 · 高斯滤波预处理</h3>
+
+  <p>对输入红外图像 $I(x,y)$ 施加 $2n+1$ 阶二维高斯卷积，抑制条纹噪声与随机噪声：</p>
+
+  \[R(x, y) = \sum_{k=-n}^{n} \sum_{t=-n}^{n} I(x+k,\; y+t) \cdot G(k, t)\]
+
+  <p>其中高斯核函数为：</p>
+
+  \[G(x, y) = \frac{1}{2\pi\sigma^2} \exp\!\left(-\frac{x^2 + y^2}{2\sigma^2}\right)\]
+
+  <p>$\sigma^2$ 为图像方差，控制平滑程度。高斯滤波的效果可从图 1(b) → (c) 的对比中直观验证：经过滤波后，大量由噪声引起的杂散边缘被消除，保留的梯度变化来自真实的灰度跳变。</p>
+
+  <h3 class="section-title">阶段 2 · Sobel 边缘检测</h3>
+
+  <p>使用标准 $3 \times 3$ Sobel 模板 $G_X$ 和 $G_Y$ 分别计算水平和垂直梯度：</p>
+
+  \[G_X = \begin{bmatrix} -1 & 0 & +1 \\ -2 & 0 & +2 \\ -1 & 0 & +1 \end{bmatrix}, \quad G_Y = \begin{bmatrix} +1 & +2 & +1 \\ 0 & 0 & 0 \\ -1 & -2 & -1 \end{bmatrix}\]
+
+  <p>梯度幅值为：</p>
+
+  \[g(x, y) = \sqrt{g_x(x, y)^2 + g_y(x, y)^2}\]
+
+  <p>其中 $g_x$ 和 $g_y$ 分别为 $G_X$ 和 $G_Y$ 与图像的卷积结果。这一步计算量极小（仅 2 次 $3 \times 3$ 卷积 + 1 次平方和开方），完全适合 FPGA 流水线。</p>
+
+  <h3 class="section-title">阶段 3 · 指数对比度增强</h3>
+
+  <p>这是本文最具技巧性的环节。直接对梯度图 $g(x,y)$ 做硬阈值分割会导致边缘断裂，因此引入一个<strong>Sigmoid 型指数映射</strong>展宽阈值附近的灰度值：</p>
+
+  \[q = \frac{1}{1 + \left(\dfrac{Th}{p}\right)^E} \times 255\]
+
+  <p>其中 $p$ 为输入梯度灰度值，$q$ 为增强后输出值，$Th$ 和 $E$ 为可调参数。该函数在 $p \approx Th$ 附近具有最大的灰度拉伸率，使得弱边缘被增强、强边缘保持饱和，从而获得<strong>连续性更好</strong>的目标边界。参数 $Th$ 控制展宽中心位置，$E$ 控制展宽陡度，需根据不同红外系统的图像特征手动调优 #Li-2024#。</p>
+
+  <div class="info-box">
+    <h3>参数披露状态</h3>
+    <table>
+      <thead><tr><th>参数</th><th>作用</th><th>论文是否给出具体值</th></tr></thead>
+      <tbody>
+        <tr><td>高斯核尺寸 $n$</td><td>控制滤波窗口大小</td><td>未披露（仅给出 $2n+1$ 表达式）</td></tr>
+        <tr><td>$Th$</td><td>对比度增强中心阈值</td><td>未披露（"根据不同系统确定"）</td></tr>
+        <tr><td>$E$</td><td>对比度增强陡度</td><td>未披露</td></tr>
+        <tr><td>全局阈值</td><td>边缘候选筛选</td><td>未披露</td></tr>
+        <tr><td>目标阈值 $T_{\text{target}}$</td><td>暗边缘去除判据</td><td>未披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">阶段 4 · 暗背景边缘去除</h3>
+
+  <p>这是管线的最后一级，也是最具"红外场景特异性"的操作。在红外夜视观瞄中，典型目标（人员、车辆）表现为<strong>高亮度区域</strong>，而暗背景（树干、围栏、地面）的边缘是干扰信息。本文提出基于 $3 \times 3$ 局部均值的阈值判断：</p>
+
+  \[\mu_{\text{local}}(x, y) = \frac{1}{9} \sum_{i=-1}^{1} \sum_{j=-1}^{1} I(x+i,\; y+j)\]
+
+  <p>判定规则：当 $\mu_{\text{local}} > T_{\text{target}}$ 时保留边缘，否则视为暗背景边缘予以去除。从图 1(d) → (e) 的效果可以看到，树干和马路围栏的暗边缘被有效抑制，而人物的亮目标轮廓被完整保留。</p>
+</div>
+
+<!-- ============================================================
+  Part 4 · 算法参数与工程约束
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 算法参数与工程约束</div>
+  <div class="ch-title">FPGA 约束下的工程智慧</div>
+
+  <p>这篇论文最值得关注的不仅是算法本身，更是它在<strong>严苛硬件约束</strong>下的工程实现。平台选择为 Intel Cyclone IV EP4CE75U19I7 芯片，具体资源如下：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>资源类型</th><th>消耗量</th><th>芯片总资源</th><th>利用率</th></tr></thead>
+      <tbody>
+        <tr><td>逻辑单元</td><td>1,462</td><td>75,408</td><td><strong>1.9%</strong></td></tr>
+        <tr><td>存储器位</td><td>38,866 bits</td><td>2,810,880 bits</td><td><strong>1%</strong></td></tr>
+        <tr><td>嵌入式乘法器</td><td>4</td><td>400（9 位）</td><td><strong>1%</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>三个数字全部低于 2%，这意味着算法对硬件资源的需求极为克制。在同一块 FPGA 上，还有大量其他功能模块（非均匀校正、盲元补偿、图像增强、显示合成等）需要共享资源，<2% 的占用率使得该算法可以轻松嵌入现有观瞄系统的处理链路。</p>
+
+  <h3 class="section-title">行缓存器：流式处理的关键</h3>
+
+  <p>FPGA 中图像视频以流水线形式处理，无法像 CPU/GPU 那样随机访问像素。实现 $3 \times 3$ 卷积需要同时获取<strong>相邻 3 行</strong>的像素数据。本文使用 shift register IP 核构建两级行缓存器：</p>
+
+  <ul>
+    <li><strong>Shift Register 2</strong>：存储第 $n-2$ 行数据</li>
+    <li><strong>Shift Register 1</strong>：存储第 $n-1$ 行数据</li>
+    <li><strong>当前行</strong>：第 $n$ 行数据</li>
+  </ul>
+
+  <p>三路数据并行送入 $3 \times 3$ 卷积核，实现完全流水线的滑窗运算。</p>
+
+  <h3 class="section-title">查找表技巧：1 个时钟完成指数运算</h3>
+
+  <p>公式 (7) 中的指数运算在 FPGA 中是一大难点——直接实现需要消耗大量逻辑资源和乘法器。本文采用了一个精妙的工程技巧：<strong>离线预计算所有 256 个灰度值的指数运算结果</strong>，存入 FPGA 片上 ROM（只读存储器），运行时以像素灰度值作为地址索引，<mark>单个时钟周期</mark>即可完成指数运算。这一查找表策略将复杂的非线性运算转化为简单的存储器访问，是 FPGA 图像处理中的经典手法。</p>
+
+  <div class="photo">
+    <svg viewBox="0 0 980 320" role="img" aria-label="FPGA 两路并行管线架构图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
+      <defs>
+        <linearGradient id="fpgaGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#151b2d"/><stop offset="1" stop-color="#1a2535"/></linearGradient>
+        <marker id="fpgaArrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#9bdcff"/></marker>
+      </defs>
+      <rect x="20" y="100" width="130" height="60" rx="12" fill="url(#fpgaGrad)" stroke="#53627c" stroke-width="2"/>
+      <text x="85" y="136" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">IR 图像输入</text>
+      <line x1="150" y1="130" x2="190" y2="130" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <!-- 分叉 -->
+      <line x1="190" y1="130" x2="190" y2="50" stroke="#9bdcff" stroke-width="2"/>
+      <line x1="190" y1="130" x2="190" y2="210" stroke="#9bdcff" stroke-width="2"/>
+      <text x="190" y="42" text-anchor="middle" fill="#ffd17a" font-size="13">路径 A</text>
+      <text x="190" y="232" text-anchor="middle" fill="#ffd17a" font-size="13">路径 B</text>
+      <!-- 路径A -->
+      <line x1="190" y1="50" x2="230" y2="50" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="230" y="25" width="110" height="50" rx="10" fill="#143444" stroke="#79f2ff" stroke-width="1.5"/>
+      <text x="285" y="55" text-anchor="middle" fill="#e8edf7" font-size="14">高斯滤波</text>
+      <line x1="340" y1="50" x2="370" y2="50" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="370" y="25" width="110" height="50" rx="10" fill="#143444" stroke="#79f2ff" stroke-width="1.5"/>
+      <text x="425" y="55" text-anchor="middle" fill="#e8edf7" font-size="14">Sobel 边缘</text>
+      <line x1="480" y1="50" x2="510" y2="50" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="510" y="25" width="130" height="50" rx="10" fill="#143444" stroke="#79f2ff" stroke-width="1.5"/>
+      <text x="575" y="45" text-anchor="middle" fill="#e8edf7" font-size="14">指数对比度</text>
+      <text x="575" y="63" text-anchor="middle" fill="#9bdcff" font-size="12">ROM 查找表</text>
+      <line x1="640" y1="50" x2="670" y2="50" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="670" y="25" width="100" height="50" rx="10" fill="#143444" stroke="#79f2ff" stroke-width="1.5"/>
+      <text x="720" y="55" text-anchor="middle" fill="#e8edf7" font-size="14">全局阈值</text>
+      <!-- 路径B -->
+      <line x1="190" y1="210" x2="230" y2="210" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="230" y="185" width="130" height="50" rx="10" fill="#2b1a20" stroke="#ff8a65" stroke-width="1.5"/>
+      <text x="295" y="205" text-anchor="middle" fill="#e8edf7" font-size="14">3×3 局部</text>
+      <text x="295" y="223" text-anchor="middle" fill="#e8edf7" font-size="14">均值计算</text>
+      <line x1="360" y1="210" x2="390" y2="210" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="390" y="185" width="120" height="50" rx="10" fill="#2b1a20" stroke="#ff8a65" stroke-width="1.5"/>
+      <text x="450" y="205" text-anchor="middle" fill="#e8edf7" font-size="14">数据延迟</text>
+      <text x="450" y="223" text-anchor="middle" fill="#ff8a65" font-size="12">时序对齐</text>
+      <!-- 汇合 -->
+      <line x1="770" y1="50" x2="830" y2="130" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <line x1="510" y1="210" x2="830" y2="130" stroke="#ff8a65" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="830" y="105" width="130" height="50" rx="12" fill="#1a3020" stroke="#66bb6a" stroke-width="2"/>
+      <text x="895" y="125" text-anchor="middle" fill="#e8edf7" font-size="14">暗边缘去除</text>
+      <text x="895" y="143" text-anchor="middle" fill="#66bb6a" font-size="12">阈值判断</text>
+      <line x1="895" y1="155" x2="895" y2="190" stroke="#9bdcff" stroke-width="2" marker-end="url(#fpgaArrow)"/>
+      <rect x="840" y="190" width="110" height="45" rx="10" fill="url(#fpgaGrad)" stroke="#53627c" stroke-width="2"/>
+      <text x="895" y="218" text-anchor="middle" fill="#e8edf7" font-size="15" font-weight="700">目标轮廓</text>
+      <!-- 资源标注 -->
+      <text x="490" y="295" text-anchor="middle" fill="#9bdcff" font-size="14">FPGA 资源占用：逻辑单元 1,462 (1.9%) · 存储器 38,866 bits (1%) · 乘法器 4 (1%)</text>
+      <text x="490" y="315" text-anchor="middle" fill="#ffd17a" font-size="13">Intel Cyclone IV EP4CE75U19I7 · 25 Hz @ 1280×1024</text>
+    </svg>
+    <div class="cap">图 3：FPGA 两路并行管线架构。路径 A（蓝）完成边缘提取链，路径 B（橙）计算局部阈值，通过时序对齐在判定节点汇合，实现暗背景边缘去除。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 5 · FPGA 实时推理管线
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · FPGA 实时推理管线</div>
+  <div class="ch-title">两路并行 + 时序对齐的实时架构</div>
+
+  <p>算法在 FPGA 中的实现框图如下所示，核心设计思想是<strong>两路并行 + 时序对齐</strong>：</p>
+
+  <div class="photo">
+    <img src="/media/images/ir-contour-fpga-2024/fig8-realtime.webp" alt="FPGA 实时成像系统效果" style="width:100%;border-radius:14px;">
+    <div class="cap">图 2：实时红外成像系统效果。(a) 关闭勾边功能的人物图像 → (b) 开启勾边后的凸显效果（红色轮廓叠加，背景边缘被有效消除）→ (c)(d) 分别为两者的显著度图，可见勾边后目标显著区域更集中。来源：论文 Fig.8 #Li-2024#</div>
+  </div>
+
+  <p>原始红外图像输入后一分为二：</p>
+
+  <ul>
+    <li><strong>路径 A（边缘提取路）</strong>：高斯滤波 → 行缓存 → Sobel 边缘检测 → 指数对比度增强（ROM 查找表）→ 全局阈值 → 候选边缘</li>
+    <li><strong>路径 B（局部阈值路）</strong>：$3 \times 3$ 局部均值计算 → 数据延迟（与路径 A 的流水线延迟对齐）</li>
+  </ul>
+
+  <p>两路在最终判定节点汇合：比较路径 B 的局部均值与目标阈值 $T_{\text{target}}$，决定路径 A 输出的候选边缘是保留还是去除。最终边缘可以不同颜色渲染（论文中使用红色）并叠加回原始红外图像，实现目标凸显。</p>
+
+  <h3 class="section-title">实时性能指标</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>数值</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>FPGA 芯片</td><td>Intel Cyclone IV EP4CE75U19I7</td><td>论文披露</td></tr>
+        <tr><td>视频分辨率</td><td>$1280 \times 1024$</td><td>论文披露</td></tr>
+        <tr><td>帧频</td><td>25 Hz</td><td>论文披露</td></tr>
+        <tr><td>像素时钟</td><td>未披露</td><td>未披露</td></tr>
+        <tr><td>处理延迟（帧级）</td><td>未披露（估计为数行延迟）</td><td>未披露</td></tr>
+        <tr><td>功耗</td><td>未披露</td><td>未披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>在 $1280 \times 1024$ 分辨率、25 Hz 帧率下，算法能够完全满足实时处理需求。由于采用全流水线设计，每帧的处理延迟仅为数个行周期（约微秒量级），远小于帧间隔的 40 ms。</p>
+</div>
+
+<!-- ============================================================
+  Part 6 · 实验验证
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验验证</div>
+  <div class="ch-title">静态仿真 + 实时系统验证</div>
+
+  <h3 class="section-title">静态图像仿真对比</h3>
+
+  <p>论文在静态红外图像上进行了逐步消融式的视觉对比（图 1），清晰展示了每个增强阶段的贡献：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>处理阶段</th><th>效果</th><th>解决的问题</th></tr></thead>
+      <tbody>
+        <tr><td>原始 Sobel (b)</td><td>大量杂散边缘，目标淹没在噪声中</td><td>—</td></tr>
+        <tr><td>+ 高斯滤波 (c)</td><td>杂散边缘明显减少</td><td>噪声伪边缘</td></tr>
+        <tr><td>+ 指数对比度增强 (d)</td><td>进一步抑制弱干扰，保留主要目标轮廓</td><td>边缘断裂</td></tr>
+        <tr><td>+ 暗边缘去除 (e)</td><td>树干、围栏等暗背景边缘被抑制</td><td>暗背景干扰</td></tr>
+        <tr><td>Canny 算子 (f)</td><td>边界连续性稍差于本文方法</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">实时系统验证</h3>
+
+  <p>在真实红外夜视观瞄系统中测试（图 2），视频帧率 25 Hz、分辨率 $1280 \times 1024$。结果显示：</p>
+
+  <ul>
+    <li>开启勾边功能后，背景中除天地线外的绝大多数背景边缘被有效消除</li>
+    <li>人物目标的红色轮廓清晰可见，起到目标凸显作用</li>
+    <li>使用 Hou & Zhang #Hou-2007# 的谱残差方法评价显著度：勾边后目标显著区域更集中在人物附近</li>
+  </ul>
+
+  <h3 class="section-title">FPGA 边缘检测横向对比</h3>
+
+  <p>将本文方法与其他基于 FPGA 的边缘检测工作对比：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工作</th><th>算法</th><th>FPGA 平台</th><th>分辨率</th><th>针对红外优化</th></tr></thead>
+      <tbody>
+        <tr><td>徐旭 2022 #Xu-2022#</td><td>Sobel</td><td>未详述</td><td>未详述</td><td>否</td></tr>
+        <tr><td>崔玉 2021 #Cui-2021#</td><td>改进 Canny</td><td>FPGA</td><td>未详述</td><td>否</td></tr>
+        <tr><td>隋旭阳 2021 #Sui-2021#</td><td>Canny 加速</td><td>FPGA</td><td>实时视频</td><td>否</td></tr>
+        <tr><td>Ravivarma 2021 #Ravivarma-2021#</td><td>Sobel</td><td>FPGA</td><td>未详述</td><td>否</td></tr>
+        <tr><td><strong>本文</strong></td><td><strong>增强 Sobel</strong></td><td><strong>Cyclone IV</strong></td><td><strong>$1280 \times 1024$ @ 25Hz</strong></td><td><strong>是（三级后处理）</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>关键区别：上述工作均将边缘检测作为通用图像处理任务，<strong>未考虑红外图像的目标特性</strong>（高亮度目标 + 暗背景干扰）。本文的核心贡献不是更好的边缘检测算子，而是针对红外夜视观瞄场景的<strong>领域适配</strong>。</p>
+</div>
+
+<!-- ============================================================
+  Part 7 · 讨论与启发
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">从兵工厂论文中提炼的研究启示</div>
+
+  <h3 class="section-title">局限性</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      可复现性不足
+    </div>
+    <div class="admonition-content"><p>论文未给出 $Th$、$E$、$n$、$T_{\text{target}}$ 等关键参数的具体数值，仅说明"根据不同系统确定"。这使得其他研究者无法直接复现算法，也限制了方法在不同红外系统间的迁移性。</p></div>
+  </div>
+
+  <p>其他局限包括：仅测试了静态图像和简单人物动态场景，缺乏多目标、复杂天气、不同距离的鲁棒性验证；缺乏定量指标（F1、Chamfer 距离等）对比；消融实验仅以视觉方式呈现，未给出各模块的独立贡献度。</p>
+
+  <h3 class="section-title">对本系列的启发</h3>
+
+  <p>尽管论文在学术贡献上有限（属于工程应用型工作），但它为我们的红外图像压缩系列提供了几个有价值的观察：</p>
+
+  <ol>
+    <li><strong>红外轮廓图的真实应用形态</strong>：本文展示的轮廓提取结果（红色边缘叠加在红外图像上）就是红外轮廓图在军事领域的典型应用形态。压缩这类数据时，需要保留的是<strong>轮廓的连通性和目标几何形状</strong>，而非每个边缘像素的精确位置。</li>
+    <li><strong>暗背景边缘去除 ≈ 结构化稀疏</strong>：论文的局部阈值判断本质上是一种空间自适应的稀疏化操作——只保留亮区域的边缘，其余全部置零。这与我们系列中讨论的"红外轮廓图应被视为稀疏结构图"的观点高度一致。</li>
+    <li><strong>FPGA 约束定义了压缩的上限</strong>：在观瞄系统中，轮廓提取已经是 FPGA 上实时完成的，后续的压缩编码同样需要在资源受限的平台上运行。本文 <2% 的资源占用意味着，剩余的 98% 资源需要支撑图像处理、显示合成和潜在的压缩编码——这对压缩算法的复杂度提出了硬约束。</li>
+  </ol>
+
+  <div class="callout"><strong>核心判断</strong>：本文不是一篇边缘检测的理论创新论文，而是一份来自兵工厂一线的<strong>工程实践报告</strong>。它的价值在于展示了红外轮廓提取在真实军事系统中的工程约束和解决策略——这些约束（FPGA 资源 <2%、实时 25Hz、参数经验调优）是学术论文中经常被忽略但工程上至关重要的因素。</div>
+</div>
+
+<!-- ============================================================
+  References
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">References · 参考来源</div>
+  <div class="ch-title">文献索引</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Li-2024">李文, 王洪涛, 黄晓江等. 红外夜视观瞄系统的目标轮廓提取方法及 FPGA 实现. <em>太赫兹科学与电子信息学报</em>, 2024, 22(12): 1388-1393. DOI: 10.11805/TKYDA2023132. <a href="https://www.researching.cn/ArticlePdf/m00078/2024/22/12/11.pdf" target="_blank">PDF</a></li>
+      <li data-cite-key="Bai-2011">白宏刚. 红外夜视技术及其军事应用. <em>现代物理知识</em>, 2011, 23(6): 44-46. <a href="http://mp.ihep.ac.cn/article/id/11554" target="_blank">HTML</a></li>
+      <li data-cite-key="Background-2025">背景调研综合：Fortune Business Insights, Global Market Insights, 光电股份 (600184) 年报等. <a href="https://www.researching.cn/" target="_blank">Researching</a></li>
+      <li data-cite-key="Wu-2023">吴捷, 马小虎. 基于特征融合与通道感知的无人机红外目标跟踪算法. <em>激光与红外</em>, 2023, 53(4): 626-632. DOI: 10.3969/j.issn.1001-5078.2023.04.022. <a href="http://hwjs.nvir.cn/en/article/id/71d3b386-cb81-49b6-986a-24e589c1ca88" target="_blank">DOI</a></li>
+      <li data-cite-key="Xu-2022">徐旭, 陈曦. 基于 FPGA 的 Sobel 边缘检测算法的实现. <em>电子测试</em>, 2022, 36(23): 63-65. <a href="https://www.cnki.com.cn/" target="_blank">CNKI</a></li>
+      <li data-cite-key="Cui-2021">崔玉, 俞建定, 邹洪彬等. 改进的 Canny 实时边缘检测算法在 FPGA 上的实现. <em>无线通信技术</em>, 2021, 30(4): 27-31. <a href="https://www.cnki.com.cn/" target="_blank">CNKI</a></li>
+      <li data-cite-key="Katircioglu-2020">Katırcıoğlu F. Edge detection method based on heat conduction matrix for infrared image. <em>Optical Engineering</em>, 2020, 59(9): 093103. <a href="https://doi.org/10.1117/1.OE.59.9.093103" target="_blank">DOI</a></li>
+      <li data-cite-key="Sui-2021">隋旭阳, 陈卓, 刘议聪等. 基于 FPGA 的实时视频边缘检测系统. <em>兵工自动化</em>, 2021, 40(2): 58-60. DOI: 10.7690/bgzdh.2021.02.015. <a href="https://search.ebscohost.com/login.aspx?direct=true&profile=ehost&scope=site&authtype=crawler&jrnl=10061576&AN=149740616" target="_blank">DOI</a></li>
+      <li data-cite-key="Ravivarma-2021">Ravivarma G, Gavaskar K, Malathi D, et al. Implementation of Sobel operator based image edge detection on FPGA. <em>Materials Today: Proceedings</em>, 2021, 45(2): 2401-2407. DOI: 10.1016/j.matpr.2020.10.825. <a href="https://doi.org/10.1016/j.matpr.2020.10.825" target="_blank">DOI</a></li>
+      <li data-cite-key="Hou-2007">Hou Xiaodi, Zhang Liqing. Saliency detection: a spectral residual approach. <em>CVPR 2007</em>: 1-8. DOI: 10.1109/CVPR.2007.383267. <a href="https://doi.org/10.1109/CVPR.2007.383267" target="_blank">DOI</a></li>
+    </ul>
+  </div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="infrared-compression-hub.html"><span class="nav-arrow">←</span><span class="nav-label">红外图像压缩系列</span><span class="nav-title">返回系列总览</span></a>
+  <a class="nav-card nav-prev" href="spire-irstd-2026.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">SPIRE：单点监督红外小目标检测</span></a>
+  <a class="nav-card nav-next" href="infrared-compression-benchmark.html"><span class="nav-arrow">→</span><span class="nav-label">相关</span><span class="nav-title">红外压缩 Benchmark</span></a>
+</div>
