@@ -285,13 +285,12 @@ const tests = {
       slug: 'demo',
       title: 'Demo',
       url: './demo.html',
-      categories: ['人工智能'],
-      subcategory: '基础',
+      categoryPath: ['人工智能', '基础'],
       created_at: '2026-01-01'
     }];
     const { sidebar } = buildTocSidebar([], posts, posts[0], taxonomy);
     assert(sidebar.includes('ren-gong-zhi-neng'), sidebar);
-    assert(sidebar.includes('ji-chu'), sidebar);
+    assert(sidebar.includes('fundamentals'), sidebar);
   },
 
   // ===== tree structure =====

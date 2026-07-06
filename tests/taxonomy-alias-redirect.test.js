@@ -25,8 +25,7 @@ const tests = {
       slug: 'kuo-san-mo-xing-gai-shu',
       url: './kuo-san-mo-xing-gai-shu.html',
       tags: ['信号处理'],
-      categories: ['课程'],
-      subcategory: '数字信号处理',
+      categoryPath: ['课程', '数字信号处理'],
       aliases: ['categories/课程/index', 'categories/课程/数字信号处理/index'],
       created_at: '2026-01-01',
       updated_at: '2026-01-01'
@@ -35,8 +34,7 @@ const tests = {
       slug: 'pu-tong-wen-zhang',
       url: './pu-tong-wen-zhang.html',
       tags: [],
-      categories: ['课程'],
-      subcategory: '数字信号处理',
+      categoryPath: ['课程', '数字信号处理'],
       aliases: [],
       created_at: '2026-01-02',
       updated_at: '2026-01-02'

@@ -1,233 +1,390 @@
 ---
-title: "aeic-shallow-encoder-ultra-low-bitrate-2024"
-description: ""
-date: 2026-05-28T11:32:44
-created_at: 2026-05-28T11:32:44
-updated_at: 2026-05-28T11:32:44
-tags: []
-categories: ["AI"]
-subcategory: "图像压缩"
+title: "图像压缩论文精读（十六）：AEIC，浅编码器的超低码率感知压缩"
+description: "深读 CVPR 2026 Asymmetric Extreme Image Compression：0.94M 参数浅编码器在 ≤0.05 bpp 下实现 35.8 FPS 1080P 实时编码，双面蒸馏将教师知识迁移到轻量学生。"
+date: 2026-07-06T17:00:00
+created_at: 2026-07-06T17:00:00
+updated_at: 2026-07-06T17:00:00
+tags: ["image-compression", "ultra-low-bitrate", "shallow-encoder", "one-step-diffusion", "knowledge-distillation"]
+aliases: ["categories/AI/图像压缩"]
+sub_id: 1960
+hub: image-compression-hub
+mathjax: true
+notify: true
+papers: ["https://arxiv.org/abs/2512.12229"]
+repos: ["https://github.com/LuizScarlet/AEIC"]
+hero_title: "AEIC 深度解读"
+hero_sub: "CVPR 2026 · USTC & PolyU"
+hero_tagline: "0.94M 浅编码器 + 单步扩散解码 + 双面蒸馏：35.8 FPS 实时超低码率编码"
 ---
-<!-- ============================================================
-  本模板展示所有构建系统支持的语法。
-  详细规范参见 ~/.hanako/skills/html-blog/references/
-  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
-  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
-  ============================================================ -->
 
-<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
 <div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+  <div class="stat"><span class="num b">0.94M</span><span class="label g">编码器参数</span></div>
+  <div class="stat"><span class="num">35.8</span><span class="label">FPS @ 1080P 编码</span></div>
+  <div class="stat"><span class="num b">18.2×</span><span class="label g">编码加速 vs DLF</span></div>
+  <div class="stat"><span class="num">0.005–0.035</span><span class="label">bpp 码率范围</span></div>
 </div>
 
 <!-- ============================================================
-  章节容器
+  Part 1 · 超低码率压缩的边缘设备困境
   ============================================================ -->
-
-<!-- 章节叙事（.ch）— .ch-title 自动加入 TOC -->
 <div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">超低码率压缩：边缘设备的最后一公里</div>
 
-  <p>正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。</p>
+  <p>当码率降到 0.05 bpp 以下——一张 1080P 图像只能传输不到 50 KB 的数据——传统压缩算法（H.266/VVC）的输出几乎无法辨认，而感知导向的生成式方法（PerCo #Careil et al., 2023#、DiffEIC #Li et al., 2024#、StableCodec #Zhang et al., 2025#、DLF #Xue et al., 2025#）能合成视觉上逼真的重建。然而这些方法有一个共同的代价：<strong>编码端极其昂贵</strong>。</p>
 
-  <!-- ==高亮== → <mark> -->
-  <p>这是一段包含 ==高亮文字== 的正文。</p>
+  <p>以 StableCodec 为例，编码端需要串联 SD VAE 编码器 + ELIC 编码器 + 潜空间变换编码器，总参数量达到 47.16M，在 GTX 1080Ti 上编码一张 768×512 图像需要 328ms #Zhang et al., 2025#。DLF 更慢，同样分辨率下需要 494ms #Xue et al., 2025#。这意味着在 IoT 终端、无人机、卫星通信等<strong>编码端资源受限</strong>的场景中，这些方法根本不可部署。</p>
 
-  <!-- Markdown 加粗/斜体也支持（HTML 源文件中） -->
-  <!-- **加粗** → <strong> / *斜体* → <em> -->
+  <div class="tags">
+    <span class="tag">Tianyu Zhang (USTC, 一作)</span>
+    <span class="tag">Dong Liu (USTC, 通讯)</span>
+    <span class="tag">Chang Wen Chen (PolyU)</span>
+    <span class="tag">CVPR 2026</span>
+    <span class="tag"><a href="https://github.com/LuizScarlet/AEIC" target="_blank">GitHub: LuizScarlet/AEIC</a></span>
+  </div>
 
-  <!-- 图片 — 放在所讲解段落之后，不要堆在文件末尾 -->
+  <p>AEIC（<strong>A</strong>symmetric <strong>E</strong>xtreme <strong>I</strong>mage <strong>C</strong>ompression）的核心洞察非常直接：<strong>超低码率意味着 latent 的信息量天然受限，因此不需要深层编码器</strong>#Zhang et al., 2026#。基于这个洞察，作者用 StarNet 架构 #Ma et al., 2024# 构建了两个轻量编码器——AEIC-ME（3.09M 参数）和 AEIC-SE（0.94M 参数），配合基于 SD-Turbo 的单步扩散解码器 #Sauer et al., 2024#，在超低码率下实现了感知质量 SOTA，同时 AEIC-SE 在 1080P 分辨率下达到 <strong>35.8 FPS 实时编码</strong>，比 DLF 快 18.2 倍，比 StableCodec 快 19.3 倍 #Zhang et al., 2026#。</p>
+
+  <div class="callout"><strong>一句话概括</strong>：超低码率压缩的编码端可以很轻——0.94M 参数的浅编码器配合单步扩散解码和双面蒸馏，在 ≤0.05 bpp 下同时拿到感知 SOTA 和实时编码。</div>
+</div>
+
+<!-- ============================================================
+  Part 2 · 浅编码器的理论基础
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">浅编码器为什么可行？——从码率到复杂度的理论分析</div>
+
+  <p>AEIC 最反直觉的贡献在于：它证明了超低码率压缩不需要复杂的编码器。现有方法几乎全部遵循"先过一遍预训练生成模型编码器（如 SD VAE encoder），再用一个额外的潜空间变换编码器做压缩"的两阶段范式 #Zhang et al., 2025# #Xue et al., 2025# #Li et al., 2024#。编码端堆叠了大量参数，仅仅是为了产出一个极低维度的 latent。</p>
+
+  <h3 class="section-title">离散码本分析</h3>
+
+  <p>作者从离散和连续两个角度给出了理论论证。对于离散码本 $C = \{c_1, c_2, \dots, c_M\}$，最大可表示码率为 $\log_2 M$。编码时如果采用穷举搜索，计算复杂度为 $\mathcal{O}(M) = \mathcal{O}(2^{\mathcal{R}})$。这意味着当码率 $\mathcal{R}$ 降低时，所需的搜索空间随码率<strong>指数级</strong>缩小——超低码率天然允许低复杂度的编码过程 #Zhang et al., 2026#。</p>
+
+  <h3 class="section-title">连续高斯分析</h3>
+
+  <p>对于连续情况，高斯隐变量 $z \sim \mathcal{N}(\mu, \sigma^2)$ 的微分熵为：</p>
+
+  <p style="text-align:center">
+  \[h(z) = \frac{1}{2} \log(2\pi e\sigma^2)\]
+  </p>
+
+  <p>码率（熵）完全由方差 $\sigma^2$ 决定。超低码率意味着 $\sigma^2$ 必须很小，即 latent 的取值范围非常窄。一个取值范围极窄的连续变量，不需要深层网络来表达——这就像只需要很少的离散码本元素一样 #Zhang et al., 2026#。</p>
+
   <div class="photo">
-    <img src="media/images/sengoku-japan/nobunaga.webp" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
+    <img src="media/images/aeic-shallow-encoder-2026/encoder.webp" alt="浅编码器动机分析" loading="lazy">
+    <div class="cap">图 1：浅编码器的理论动机。(a) 编码器复杂度对比；(b) 正常码率编码 ELIC 的 latent 方差；(c) 超低码率方法的 latent 方差急剧缩小。（来源：Zhang et al., 2026, Fig. 2）</div>
   </div>
 
-  <!-- 提示框 -->
-  <div class="callout"><strong>提示</strong>：提示框内容。</div>
+  <p>Fig. 1 的实证数据完美印证了这个分析：当码率从正常范围降到超低范围（0.01–0.035 bpp）时，无论是 ELIC #He et al., 2022#、StableCodec 还是 DLF，latent 方差都急剧缩小。AEIC 的浅编码器可以产出与复杂编码器相同方差范围的 latent，说明超低码率下编码器的表达力根本不是瓶颈 #Zhang et al., 2026#。</p>
 
-  <!-- 信息框（蓝底） -->
-  <div class="info-box">
-    <h3>信息框标题</h3>
-    <p>信息框内容。标题不加入 TOC。</p>
-  </div>
-
-  <!-- 定义框 / 定理框 / 例题框 / 复习速查 / 章节导航 -->
   <div class="def-box">
-    <h3>定义框</h3>
-    <p>放定义、符号、直觉解释。</p>
+    <h3>核心 Insight</h3>
+    <p>超低码率压缩的信息瓶颈在<strong>解码端</strong>——如何从极少的比特中重建视觉上可信的图像——而不在编码端。编码器只需要把输入映射到一个方差很小的 latent 空间，这是一个"简单"的任务。</p>
   </div>
-  <div class="theorem-box">
-    <h3>定理框</h3>
-    <p>放命题、定理、推论和判定条件。</p>
-  </div>
-  <div class="example-box">
-    <h3>例题框</h3>
-    <p><strong>题目：</strong>示例题目。</p>
-    <p><strong>答案：</strong>示例答案。</p>
-    <div class="callout"><strong>易错点</strong>：示例提醒。</div>
-  </div>
-  <div class="review-box">
-    <h3>复习速查</h3>
-    <ul>
-      <li><strong>定义</strong>：一行回忆核心概念。</li>
-      <li><strong>公式</strong>：列最重要的结论。</li>
-    </ul>
-  </div>
-  <div class="chapter-nav">
-    <a class="nav-card" href="prev.html"><span class="nav-label">上一章</span><span class="nav-title">上一章标题</span></a>
-    <a class="nav-card current" href="hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">枢纽页标题</span></a>
-    <a class="nav-card" href="next.html"><span class="nav-label">下一章</span><span class="nav-title">下一章标题</span></a>
+</div>
+
+<!-- ============================================================
+  Part 3 · AEIC 非对称架构详解
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">AEIC 非对称架构：轻编码 + 重解码 + 双面蒸馏</div>
+
+  <p>AEIC 的整体架构遵循<strong>非对称</strong>设计哲学：编码端尽量轻量（适合边缘设备），解码端承担重建的复杂性（可以在云端或高性能设备上运行）。这与传统压缩中"编码慢、解码快"的范式恰好相反，但在超低码率的 IoT/边缘场景中更为合理 #Zhang et al., 2026#。</p>
+
+  <div class="photo">
+    <img src="media/images/aeic-shallow-encoder-2026/framework.webp" alt="AEIC 整体管线" loading="lazy">
+    <div class="cap">图 2：AEIC-SE 整体管线。编码端用 StarNet 浅编码器直接在像素空间做分析变换，解码端通过合成变换、单步去噪和 lite VAE 解码器重建。（来源：Zhang et al., 2026, Fig. 1）</div>
   </div>
 
-  <!-- 引用块 -->
-  <blockquote>
-    <p>引用内容。</p>
-    <p><em>— 来源</em></p>
-  </blockquote>
+  <h3 class="section-title">3.1 浅层分析变换编码器</h3>
 
-  <!-- 表格 -->
+  <p>给定输入图像 $x$，编码器直接应用浅层变换 $g_a$（基于 StarNet #Ma et al., 2024# 的高效卷积网络）将其压缩为紧凑的 latent $y$，空间压缩比为 32×。量化后得到 $\hat{y}$，通过 hyperprior + 四叉树分区自回归上下文模型 #Minnen et al., 2018# #Li et al., 2023# 估计高斯参数 $(\mu, \sigma)$ 进行算术编码。两个变体的配置如下：</p>
+
   <div class="table-wrap">
     <table>
-      <thead><tr><th>表头1</th><th>表头2</th><th>表头3</th></tr></thead>
+      <thead><tr><th>模型</th><th>$g_a$ 每层深度</th><th>$g_a$ 维度</th><th>熵模型深度</th><th>熵模型维度</th><th>编码器参数</th></tr></thead>
       <tbody>
-        <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+        <tr><td>AEIC-ME</td><td>2</td><td>(64, 128, 192, 256, 320)</td><td>4</td><td>960</td><td>3.09M</td></tr>
+        <tr><td><strong>AEIC-SE</strong></td><td>1</td><td>(32, 64, 128, 192, 256)</td><td>3</td><td>512</td><td><strong>0.94M</strong></td></tr>
       </tbody>
     </table>
   </div>
 
-  <!-- 有序/无序列表 -->
-  <ol>
-    <li>第一项</li>
-    <li>第二项</li>
-  </ol>
-  <ul>
-    <li>列表项</li>
-  </ul>
+  <p>AEIC-ME 和 AEIC-SE 仅在编码器 $g_a$ 和熵模型配置上不同，<strong>解码端完全相同</strong>。</p>
 
-  <!-- 术语解释：Term :: Definition → <dl class="term-list"> -->
-  <ul>
-    <li><strong>术语一</strong> :: 这是定义说明</li>
-    <li><em>带强调的术语</em> :: 定义内容</li>
-  </ul>
+  <h3 class="section-title">3.2 单步扩散解码器</h3>
 
-  <!-- 代码块 -->
-  <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-  </code></pre>
-</div>
-
-<!-- ============================================================
-  数学公式 — 需要 frontmatter mathjax: true
-  ============================================================ -->
-<!--
-  行内：$...$ 或 \(...\) → <span class="math-inline">...</span>
-  独立：$$...$$ 或 \[...\] → <div class="math-block">$$...$$</div>
-  引用：#key# → <cite>@key</cite>
-  注意：< 替换为 \lt，避免 \left( 改用 \Bigl(
--->
-
-<div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
-
-  <p>行内公式 $O(T\epsilon^2)$ 或 \(x\in\mathbb{R}^{d}\)，必须嵌入段落中。</p>
+  <p>解码端的核心创新是将 SD-Turbo #Sauer et al., 2024# 裁剪为<strong>无条件</strong>单步去噪器。标准 SD-Turbo 的条件去噪过程为：</p>
 
   <p style="text-align:center">
-  \[\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)\]
+  \[l_0 = [l_T - \sqrt{1-\bar{\alpha}_T} \cdot \epsilon_{\mathrm{SD}}(l_T, c, T)] / \sqrt{\bar{\alpha}_T}\]
   </p>
+
+  <p>其中 $c$ 是文本条件，$T$ 是时间步。但在图像压缩场景中，传输文本提示会增加额外码率开销，而已有研究 #Vonderfecht et al., 2025# 表明文本提示对压缩重建质量的贡献微乎其微。因此 AEIC 直接移除文本编码器、时间步嵌入和所有交叉注意力层，将去噪器简化为无条件格式 #Chen et al., 2025#：</p>
+
+  <p style="text-align:center">
+  \[l_0 = \epsilon_{\mathrm{SD}}(l_T)\]
+  </p>
+
+  <p>这一裁剪移除了超过 75M 参数，同时<strong>略微提升</strong>了性能（BD-rate -1.29% PSNR, -0.23% LPIPS）#Zhang et al., 2026#。</p>
+
+  <p>解码器还采用了<strong>双分支</strong>结构 #Zhang et al., 2025#：合成变换 $g_s$ 的输出被拆分为纹理分支 $l_T$ 和结构残差分支 $l_{res}$，纹理经单步去噪后与残差相加，再送入 VAE 解码器：</p>
+
+  <p style="text-align:center">
+  \[\hat{x} = \mathcal{D}_{\mathrm{SD}}(l_0 + l_{res})\]
+  </p>
+
+  <p>与 StableCodec 使用独立的辅助解码器不同，AEIC 将两个分支直接集成在 $g_s$ 中，增强了跨分支交互效率。此外，原始 SD-Turbo 的 VAE 解码器被替换为 50% 通道裁剪的轻量版本（49.5M → 12.4M 参数），性能退化不到 1% #Zhang et al., 2026#。</p>
+
+  <h3 class="section-title">3.3 双面特征蒸馏</h3>
+
+  <p>浅编码器 AEIC-SE 从头训练会导致严重性能下降（LPIPS BD-rate +8.47%）。作者提出<strong>双面特征蒸馏</strong>策略，将 AEIC-ME（教师）的知识迁移到 AEIC-SE（学生）。</p>
+
+  <div class="photo">
+    <img src="media/images/aeic-shallow-encoder-2026/distill.webp" alt="双面特征蒸馏" loading="lazy">
+    <div class="cap">图 3：双面特征蒸馏。编码器侧对齐 $y, z, \phi, \hat{y}$ 四个中间表征，解码器侧对齐 $l_T, l_{res}, l_0$ 及 UNet 内部特征。（来源：Zhang et al., 2026, Fig. 5）</div>
+  </div>
+
+  <p><strong>编码器侧蒸馏</strong> $\mathcal{L}_{enc}$ 对齐四个中间表征——$g_a$ 的输出 $y$、hyperprior 分析 $z$、hyperprior 合成 $\phi$、量化后 $\hat{y}$。由于师生维度不匹配，引入可学习投影 $f(\cdot)$（单层卷积）：</p>
+
+  <p style="text-align:center">
+  \[\mathcal{L}_{enc} = \|y^{tea} - f(y^{stu})\|_2^2 + \|z^{tea} - f(z^{stu})\|_2^2 + \|\phi^{tea} - f(\phi^{stu})\|_2^2 + \|\hat{y}^{tea} - f(\hat{y}^{stu})\|_2^2\]
+  </p>
+
+  <p><strong>解码器侧蒸馏</strong> $\mathcal{L}_{dec}$ 对齐双分支 latent $l_T, l_{res}$、去噪结果 $l_0$，以及 UNet 各 block 的内部特征 $h_n$：</p>
+
+  <p style="text-align:center">
+  \[\mathcal{L}_{dec} = \|l_T^{tea} - f(l_T^{stu})\|_2^2 + \|l_{res}^{tea} - f(l_{res}^{stu})\|_2^2 + \|l_0^{tea} - f(l_0^{stu})\|_2^2 + \sum_n \|h_n^{tea} - f(h_n^{stu})\|_2^2\]
+  </p>
+
+  <p>双面蒸馏将 AEIC-SE 与 AEIC-ME 的性能差距缩小到 LPIPS BD-rate 仅 +0.60%——几乎可以忽略 #Zhang et al., 2026#。</p>
 </div>
 
 <!-- ============================================================
-  引用语法
+  Part 4 · 三阶段渐进训练
   ============================================================ -->
-<!--
-  #key# → <cite>@key</cite>（注意 @ 前缀）
-  key 含空格 → 引用；无空格 → 行内公式
--->
-
 <div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
+  <div class="ch-label">Part 4 · Training Pipeline</div>
+  <div class="ch-title">三阶段渐进训练：宽松码率 → 极端码率 → 高分辨率微调</div>
 
-  <p>根据 #Hinton et al., 2015# 的开创性工作。#KL Divergence# 是核心指标。</p>
+  <p>AEIC 的训练采用两阶段<strong>隐式码率剪枝</strong>策略 #Zhang et al., 2025#——先在宽松码率约束下让模型充分探索，再突然收紧到极端码率目标。这个策略是理解 AEIC 训练设计的关键。</p>
 
-  <div class="sources">
-    <h3>参考来源</h3>
-    <ul>
-      <li><a href="https://arxiv.org/abs/1503.02531" target="_blank">#Hinton et al., 2015# — Distilling the Knowledge in a Neural Network</a></li>
-    </ul>
+  <div class="photo">
+    <img src="media/images/aeic-shallow-encoder-2026/training.webp" alt="两阶段隐式码率剪枝" loading="lazy">
+    <div class="cap">图 4：AEIC-ME 的两阶段隐式码率剪枝。Stage 1 宽松码率（λ=1）下码率逐渐上升到 0.05 bpp，重建质量稳步提升；Stage 2 突然收紧（λ=16），码率骤降到目标范围。（来源：Zhang et al., 2026, Fig. 4）</div>
+  </div>
+
+  <h3 class="section-title">教师（AEIC-ME）训练</h3>
+
+  <p><strong>Stage 1</strong>（300K 迭代）：使用 512×512 patch，batch=8（实际每卡 batch=1 + 4 步梯度累积），学习率从 $1\times10^{-4}$ 在 280K 迭代后降到 $5\times10^{-5}$。码率约束 $\lambda_{S1}=1$，失真项包含重建损失、LPIPS 感知损失 #Zhang et al., 2018# 和语义损失 #Lee et al., 2024#，权重分别为 $\gamma_1=2, \gamma_2=1, \gamma_3=0.1$ #Zhang et al., 2026#。</p>
+
+  <p><strong>Stage 2</strong>（30K 迭代）：batch 增大到 32，码率约束 $\lambda_{S2} \in \{2, 4, 8, 16, 32\}$ 对应不同目标码率。关键变化：(1) 感知损失从 LPIPS 切换到 <strong>OC-EA-DISTS</strong> #Wu et al., 2025# #Li & Wang, 2024#（overlap-chunked edge-aware DISTS），对超低码率下的纹理约束更有效；(2) 加入基于 DINOv3 #Simeoni et al., 2025# 的 GAN 判别器损失，权重 $\alpha=0.1$ #Zhang et al., 2026#。</p>
+
+  <h3 class="section-title">学生（AEIC-SE）蒸馏训练</h3>
+
+  <p><strong>Student Stage 1</strong>（200K 迭代）：与教师 Stage 1 类似，但额外加入编码器蒸馏项 $\beta_1 \mathcal{L}_{enc}$（$\beta_1=0.5$）。<strong>关键 trick</strong>：180K 迭代后 drop $\mathcal{L}_{enc}$ 并 reset $\{\lambda, \gamma_1\} = \{1.1, 0.5\}$ 以加速收敛 #Zhang et al., 2026#。</p>
+
+  <p><strong>Student Stage 2</strong>（30K 迭代）：加入 GAN 损失 + 解码器蒸馏 $\beta_2 \mathcal{L}_{dec}$（$\beta_2=0.001$）。20K 迭代后 drop $\mathcal{L}_{dec}$ 以加速收敛 #Zhang et al., 2026#。</p>
+
+  <p><strong>Stage 3 · 高分辨率微调（HRF）</strong>（5K 迭代）：仅 AEIC-SE 需要。使用 1024×1024 patch，学习率 $2\times10^{-5}$ 阶梯衰减。浅编码器对高分辨率图像泛化能力较弱，这 5K 步微调可以显著提升 2K 分辨率下的性能，尤其是 DISTS 指标 #Zhang et al., 2026#。</p>
+
+  <div class="info-box">
+    <h3>训练配置披露</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>配置项</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td>训练数据</td><td>论文披露：DF2K + CLIC 2020 Pro + LSDIR 前 10K</td></tr>
+          <tr><td>硬件</td><td>论文披露：2× RTX 3090 (24GB)</td></tr>
+          <tr><td>优化器</td><td>论文披露：Adam, LoRA 蒸馏权重 $\{\beta_1,\beta_2\}=\{0.5, 0.001\}$</td></tr>
+          <tr><td>总训练时长</td><td>论文披露：约 9 天</td></tr>
+          <tr><td>Checkpoint 选择</td><td>未披露</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 
 <!-- ============================================================
-  Shortcode 语法 {{< ... >}}
+  Part 5 · 推理链路
   ============================================================ -->
-
 <div class="ch fade-in">
-  <div class="ch-label">Shortcode</div>
-  <div class="ch-title">Shortcode 语法</div>
+  <div class="ch-label">Part 5 · Inference Pipeline</div>
+  <div class="ch-title">推理链路：从像素到重建的完整数据流</div>
 
-  <p>{{< bg yellow >}}黄色高亮{{< /bg >}}</p>
-  <p>{{< bg red >}}红色高亮{{< /bg >}}</p>
-  <p>{{< bg blue >}}蓝色高亮{{< /bg >}}</p>
+  <p>AEIC 的推理链路清晰地分为编码和解码两个阶段，体现了非对称设计的工程实用性。</p>
 
-  <p>{{< details summary="点击展开" openByDefault=true >}}</p>
-  <p>隐藏内容。</p>
-  <p>{{< /details >}}</p>
+  <h3 class="section-title">编码端（边缘设备友好）</h3>
 
-  <p>{{< bilibili BV1xxooXX1Xx >}}</p>
-  <p>{{< youtube dQw4w9WgXcQ "说明" >}}</p>
-  <p>{{< video "media/images/video/sample.mp4" >}}</p>
-  <p>{{< googleslides "https://docs.google.com/presentation/d/..." >}}</p>
+  <ol>
+    <li><strong>分析变换</strong>：$y = g_a(x)$，StarNet 浅层卷积网络将输入图像映射到 latent 空间，空间下采样 32×</li>
+    <li><strong>熵编码</strong>：hyperprior 模块估计高斯参数 $(\mu, \sigma)$，四叉树分区自回归上下文模型进行算术编码：$\hat{y} = \mathrm{quantize}[y - \mu] + \mu$</li>
+  </ol>
+
+  <p>AEIC-SE 的编码复杂度极低：编码器仅 16.10M 参数（含熵模型），MACs 仅 46.02K/pixel，在 RTX 4090D 上编码 1080P 图像仅需 <strong>27.9ms</strong>（35.8 FPS），在 GTX 1080Ti 上也只需 110.4ms #Zhang et al., 2026#。</p>
+
+  <h3 class="section-title">解码端（高性能设备）</h3>
+
+  <ol>
+    <li><strong>算术解码</strong>：从 bitstream 恢复量化 latent $\hat{y}$</li>
+    <li><strong>合成变换</strong>：$l_T, l_{res} = \mathrm{split}[g_s(\hat{y})]$，产出纹理和结构残差两个分支</li>
+    <li><strong>单步去噪</strong>：$l_0 = \epsilon_{\mathrm{SD}}(l_T)$，无条件 UNet（LoRA rank=32）一步去噪</li>
+    <li><strong>融合 + VAE 解码</strong>：$\hat{x} = \mathcal{D}_{\mathrm{SD}}(l_0 + l_{res})$，lite VAE 解码器（12.4M 参数）产出最终重建</li>
+  </ol>
+
+  <p>对于高分辨率图像，推理时使用 tiling 策略：AEIC-ME 的 UNet tile size=96（overlap=32），AEIC-SE 为 192（overlap=64），配合 16-bit color fix 消除拼接伪影 #Zhang et al., 2026#。解码端整体参数量约 913M（主要来自 UNet），1080P 解码延迟约 836ms（RTX 4090D）#Zhang et al., 2026#。</p>
+
+  <div class="callout"><strong>非对称性的体现</strong>：编码端 27.9ms vs 解码端 836ms（RTX 4090D），相差约 30 倍。这在边缘→云端场景中完全合理：IoT 设备快速编码并传输极少量比特，云端服务器有充足算力做生成式解码。</div>
 </div>
 
 <!-- ============================================================
-  Wiki 链接 [[...]]
+  Part 6 · 实验配置与结果
   ============================================================ -->
-
 <div class="ch fade-in">
-  <div class="ch-label">链接语法</div>
-  <div class="ch-title">Wiki 类链接</div>
+  <div class="ch-label">Part 6 · 实验配置与验证</div>
+  <div class="ch-title">R-D-P 曲线、延迟对比与消融实验</div>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>详情</th></tr></thead>
+      <tbody>
+        <tr><td>测试集</td><td>CLIC 2020 Test (428张, 2K) + DIV2K Val (100张, 2K) + Kodak (24张, 768×512)</td></tr>
+        <tr><td>码率范围</td><td>0.005–0.035 bpp</td></tr>
+        <tr><td>感知指标</td><td>FID, KID, DISTS, LPIPS (AlexNet)</td></tr>
+        <tr><td>失真指标</td><td>PSNR, MS-SSIM</td></tr>
+        <tr><td>传统基线</td><td>H.266/VVC (VTM-23.13 intra)</td></tr>
+        <tr><td>失真基线</td><td>ELIC #He et al., 2022#, EVC-Small #Wang et al., 2023#</td></tr>
+        <tr><td>感知基线</td><td>MS-ILLM, GLC, PerCo #Careil et al., 2023#, DiffEIC #Li et al., 2024#, ResULIC, OSCAR, DLF #Xue et al., 2025#, StableCodec #Zhang et al., 2025#</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Rate-Distortion-Performance 曲线</h3>
+
+  <div class="photo">
+    <img src="media/images/aeic-shallow-encoder-2026/rdpcurve.webp" alt="RDP 曲线对比" loading="lazy">
+    <div class="cap">图 5：CLIC 2020 和 DIV2K 上的 Rate-Perception（红框）和 Rate-Distortion（蓝框）曲线。AEIC-ME 和 AEIC-SE 在所有感知指标上全面领先。（来源：Zhang et al., 2026, Fig. 6）</div>
+  </div>
+
+  <p>在 0.005–0.035 bpp 的完整超低码率范围内，AEIC-ME 在所有感知指标（FID、KID、DISTS、LPIPS）上一致优于 StableCodec、DLF 等最新方法。AEIC-SE 虽然在失真指标上略逊于 AEIC-ME，但在感知指标上<strong>持平甚至更好</strong>——这说明浅编码器并没有牺牲感知重建质量 #Zhang et al., 2026#。</p>
+
+  <h3 class="section-title">计算复杂度对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>步骤</th><th>编码参数</th><th>编码 MACs/pixel</th><th>编码延迟 (1080P, 4090D)</th></tr></thead>
+      <tbody>
+        <tr><td>ELIC</td><td>-</td><td>33.38M</td><td>346.03K</td><td>300.5ms</td></tr>
+        <tr><td>EVC-Small</td><td>-</td><td>11.64M</td><td>71.12K</td><td>35.3ms</td></tr>
+        <tr><td>DLF</td><td>-</td><td>437.35M</td><td>1915.35K</td><td>508.1ms</td></tr>
+        <tr><td>StableCodec</td><td>1</td><td>102.23M</td><td>2537.51K</td><td>538.4ms</td></tr>
+        <tr><td>AEIC-ME</td><td>1</td><td>55.91M</td><td>204.26K</td><td>58.7ms</td></tr>
+        <tr><td><strong>AEIC-SE</strong></td><td>1</td><td><strong>16.10M</strong></td><td><strong>46.02K</strong></td><td><strong>27.9ms (35.8 FPS)</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>AEIC-SE 的编码复杂度与 EVC-Small（一个面向正常码率的实时编码器）接近，远低于所有超低码率方法。更重要的是，AEIC-SE 在 GTX 1080Ti（11GB 显存）上支持完整 1080P 编解码，无需 tiling——这对于消费级 GPU 部署意义重大 #Zhang et al., 2026#。</p>
+
+  <h3 class="section-title">消融实验</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>消融项</th><th>关键发现</th></tr></thead>
+      <tbody>
+        <tr><td>空间压缩比</td><td>32× 最优：16× 过度优化失真（PSNR -5.53%），64× 丢失过多空间信息（PSNR +14.30%）</td></tr>
+        <tr><td>蒸馏</td><td>无蒸馏 LPIPS +8.47%；仅 $\mathcal{L}_{enc}$ +3.92%；双面蒸馏 +0.60%（接近教师）</td></tr>
+        <tr><td>HRF</td><td>对 768×512 patch 影响可忽略，但对 2K 全分辨率显著改善 DISTS</td></tr>
+        <tr><td>感知损失选择</td><td>OC-EA-DISTS 比 LPIPS 在超低码率下更有效：LPIPS -5.19%, DISTS -20.35%</td></tr>
+        <tr><td>解码器裁剪</td><td>Variant 1（无条件化）略优于 Base（PSNR -1.29%, LPIPS -0.23%）；Variant 2（lite VAE）退化 &lt;1%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">用户研究</h3>
+
+  <p>15 名用户、每人 24 组对比的偏好研究显示：AEIC-SE 相比 H.266/VVC 获得 <strong>96.2%</strong> 偏好，相比 DLF 获得 <strong>82.7%</strong>，相比 StableCodec 获得 <strong>72.1%</strong> #Zhang et al., 2026#。这进一步证明在超低码率下，失真指标（PSNR/MS-SSIM）已经不能反映视觉质量——H.266/VVC 的 PSNR 最高，但用户几乎一边倒地偏好 AEIC 的生成式重建。</p>
+
+  <div class="photo">
+    <img src="media/images/aeic-shallow-encoder-2026/visual1.webp" alt="定性对比" loading="lazy">
+    <div class="cap">图 6：Kodak 数据集上的定性对比（512×512 patches）。AEIC-SE 用最少的比特产出最逼真的重建，而 H.266/VVC 虽然 MS-SSIM 最高，但输出明显模糊且有块效应。（来源：Zhang et al., 2026, Suppl. Fig. 4）</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 7 · 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">在地图上的位置：非对称压缩的范式意义</div>
+
+  <h3 class="section-title">竞品定位对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>StableCodec</th><th>DLF</th><th>PerCo</th><th><strong>AEIC-SE</strong></th></tr></thead>
+      <tbody>
+        <tr><td>编码端复杂度</td><td>47.16M (多阶段)</td><td>437.35M</td><td>&gt;1B</td><td><strong>0.94M</strong></td></tr>
+        <tr><td>编码速度 (1080P)</td><td>538ms</td><td>508ms</td><td>OOM</td><td><strong>27.9ms</strong></td></tr>
+        <tr><td>解码步骤</td><td>1 步扩散</td><td>直接</td><td>20 步扩散</td><td>1 步扩散</td></tr>
+        <tr><td>码率范围</td><td>0.005–0.035</td><td>0.005–0.035</td><td>~0.01</td><td>0.005–0.035</td></tr>
+        <tr><td>边缘编码可行性</td><td>低</td><td>不可行</td><td>不可行</td><td><strong>高</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">局限性</h3>
+
+  <p>AEIC 的非对称设计解决了编码端的效率问题，但也留下了明确的局限：</p>
 
   <ul>
-    <li>[[wiki.en Albert Einstein | 爱因斯坦]]</li>
-    <li>[[wiki.zh 日本历史]]</li>
+    <li><strong>解码端仍然很重</strong>：约 913M 参数（主要来自 UNet），1080P 解码约 836ms（RTX 4090D）。实现真正的实时解码仍然困难</li>
+    <li><strong>失真指标劣势</strong>：在 PSNR/MS-SSIM 上不如 H.266/VVC 和 ELIC，这是生成式压缩的固有代价</li>
+    <li><strong>浅编码器泛化</strong>：AEIC-SE 对高分辨率图像泛化能力弱，需要额外的 HRF 阶段补救</li>
+    <li><strong>训练代码</strong>：GitHub 仓库的训练代码尚未完全开放</li>
   </ul>
 
-  <p>[[arxiv 2301.00001 abs | 论文]]</p>
-  <p>[[github pytorch/pytorch | PyTorch]]</p>
-  <p>[[google transformer architecture | 搜索 Transformer]]</p>
+  <h3 class="section-title">可操作启发</h3>
 
-  <!-- 内部跳转 -->
-  <p>[[posts/index.html | 返回文章列表]]</p>
+  <p>AEIC 对后续研究有几个直接的启发方向：</p>
+
+  <ol>
+    <li><strong>码率-复杂度关系的理论深化</strong>：论文的离散码本和连续高斯分析虽然简洁，但只给出了启发式论证。更严格的理论框架（如信息瓶颈理论）可能给出更强的设计指导</li>
+    <li><strong>解码端的效率化</strong>：作者指出未来可以探索更紧凑的生成先验、硬件友好的解码器设计和新的解码器剪枝机制</li>
+    <li><strong>蒸馏方法的泛化</strong>：双面特征蒸馏的思路——编码器侧对齐中间表征 + 解码器侧对齐生成特征——可能适用于其他需要轻量编码器的生成式任务</li>
+  </ol>
+
+  <div class="callout"><strong>核心收获</strong>：超低码率压缩的信息瓶颈不在编码端。当码率足够低时，latent 空间的信息量天然受限，一个 0.94M 参数的浅编码器就足够了。这个洞察不仅适用于图像压缩，也适用于任何"编码端受限、解码端不受限"的非对称通信场景。</div>
 </div>
 
 <!-- ============================================================
-  Wiki 图片 ![[...]]
+  参考来源
   ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">资源引用</div>
-  <div class="ch-title">Wiki 图片语法</div>
-
-  <!-- ![[filename | width # caption]] -->
-  <p>![[sengoku-japan/nobunaga.jpg | 400 # 织田信长]]</p>
-
-  <!-- 纯图片，无宽度无说明 -->
-  <p>![[japan-history/oda-nobunaga.jpg]]</p>
-</div>
-
-<!-- ============================================================
-  普通 Section（不加入 TOC）
-  ============================================================ -->
-
-<div class="section fade-in">
-  <div class="section-title">结语</div>
-  <p>使用 <code>.section</code> 创建普通段落，不出现在 TOC 中。</p>
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Zhang et al., 2026"><a href="https://arxiv.org/abs/2512.12229" target="_blank">Zhang et al., 2026 — Ultra-Low Bitrate Perceptual Image Compression with Shallow Encoder (AEIC), CVPR 2026</a></li>
+    <li data-cite-key="Zhang et al., 2025"><a href="https://arxiv.org/abs/2503.10467" target="_blank">Zhang et al., 2025 — StableCodec: Taming Diffusion Models for Ultra-Low Bitrate Image Compression, ICCV 2025</a></li>
+    <li data-cite-key="Xue et al., 2025"><a href="https://openaccess.thecvf.com/content/ICCV2025/papers/Xue_DLF_Dual-Branch_Latent_Fusion_for_Ultra-Low_Bitrate_Image_Compression_ICCV_2025_paper.pdf" target="_blank">Xue et al., 2025 — DLF: Dual-Branch Latent Fusion for Ultra-Low Bitrate Image Compression, ICCV 2025</a></li>
+    <li data-cite-key="Careil et al., 2023"><a href="https://arxiv.org/abs/2310.02561" target="_blank">Careil et al., 2023 — Towards Image Compression with Perfect Realism at Ultra-Low Bitrates (PerCo), ICLR 2024</a></li>
+    <li data-cite-key="Li et al., 2024"><a href="https://arxiv.org/abs/2401.09625" target="_blank">Li et al., 2024 — DiffEIC: Diffusion-based Extreme Image Compression</a></li>
+    <li data-cite-key="Ma et al., 2024"><a href="https://arxiv.org/abs/2403.06257" target="_blank">Ma et al., 2024 — Rewrite the Stars (StarNet), CVPR 2024</a></li>
+    <li data-cite-key="Sauer et al., 2024"><a href="https://arxiv.org/abs/2311.17042" target="_blank">Sauer et al., 2024 — Adversarial Diffusion Distillation (SD-Turbo), ECCV 2024</a></li>
+    <li data-cite-key="He et al., 2022"><a href="https://arxiv.org/abs/2203.10897" target="_blank">He et al., 2022 — ELIC: Efficient Learned Image Compression with Uneven Grouping, CVPR 2022</a></li>
+    <li data-cite-key="Minnen et al., 2018"><a href="https://arxiv.org/abs/1809.02736" target="_blank">Minnen et al., 2018 — Joint Autoregressive and Hierarchical Priors for Learned Image Compression, NeurIPS 2018</a></li>
+    <li data-cite-key="Wang et al., 2023"><a href="https://arxiv.org/abs/2302.14579" target="_blank">Wang et al., 2023 — EVC: Real-time Neural Image Compression, ICLR 2023</a></li>
+    <li data-cite-key="Chen et al., 2025"><a href="https://arxiv.org/abs/2501.01423" target="_blank">Chen et al., 2025 — AdcSR: Adversarial Compressed Super-Resolution</a></li>
+    <li data-cite-key="Li et al., 2023"><a href="https://arxiv.org/abs/2302.05071" target="_blank">Li et al., 2023 — Neural Image Compression with Quadtree Partition, CVPR 2023</a></li>
+    <li data-cite-key="Vonderfecht et al., 2025"><a href="https://arxiv.org/abs/2503.01079" target="_blank">Vonderfecht et al., 2025 — Lossy Image Compression with Text-Conditioned Diffusion</a></li>
+    <li data-cite-key="Wu et al., 2025"><a href="https://arxiv.org/abs/2501.12456" target="_blank">Wu et al., 2025 — OC-EA-DISTS for Perceptual Image Quality</a></li>
+    <li data-cite-key="Li & Wang, 2024"><a href="https://arxiv.org/abs/2407.02531" target="_blank">Li & Wang, 2024 — Unleashing the Potential of DISTS for Perceptual Compression</a></li>
+    <li data-cite-key="Simeoni et al., 2025"><a href="https://arxiv.org/abs/2501.16422" target="_blank">Simeoni et al., 2025 — DINOv3</a></li>
+    <li data-cite-key="Lee et al., 2024"><a href="https://arxiv.org/abs/2407.01449" target="_blank">Lee et al., 2024 — Neural Semantic Loss</a></li>
+    <li data-cite-key="Zhang et al., 2018"><a href="https://arxiv.org/abs/1801.03924" target="_blank">Zhang et al., 2018 — The Unreasonable Effectiveness of Deep Features as a Perceptual Metric (LPIPS)</a></li>
+    <li data-cite-key="Blau & Michaeli, 2019"><a href="https://arxiv.org/abs/1901.02837" target="_blank">Blau & Michaeli, 2019 — Rethinking Lossy Compression: The Rate-Distortion-Perception Tradeoff, ICML 2019</a></li>
+  </ul>
 </div>

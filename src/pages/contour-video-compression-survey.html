@@ -1,0 +1,336 @@
+---
+title: "图像压缩专题（八）：轮廓视频压缩 — 从 MPEG-4 形状编码到语义条件扩散"
+description: "系统调研轮廓/边缘视频压缩方法：从 MPEG-4 二值形状编码、链码时域跟踪，到学习式轮廓压缩和语义条件扩散视频编码。"
+date: 2026-07-06T18:00:00
+created_at: 2026-07-06T18:00:00
+tags: ["轮廓视频压缩", "边缘视频压缩", "二值形状编码", "链码", "语义压缩", "扩散模型", "MPEG-4", "Coding for Machines"]
+sub_id: 800
+hub: image-compression-hub
+aliases: ["轮廓视频压缩", "Contour Video Compression", "Edge Video Compression", "categories/AI/图像压缩"]
+mathjax: true
+hero_title: "轮廓视频压缩调研"
+hero_sub: "MPEG-4 形状编码 · 链码 · INR · 语义扩散"
+---
+
+<div class="callout"><strong>调研范围：</strong>本文系统调研 11 篇论文，覆盖轮廓/边缘在视频压缩中的五种角色：二值形状传输信号（MPEG-4/V-PCC）、分割 mask 辅助帧间预测（Seg-VVC）、学习式轮廓编码（MoRIC/SA-NeRV）、语义条件信号（DiSCo/MMSD）和二值草图传输（SketchVision）。所有引用标注均指向本文参考文献列表。</div>
+
+<!-- ============================================================
+  Part 0 · 引言
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 0 · 引言与问题定义</div>
+  <div class="ch-title">从图像压缩到视频压缩：轮廓的时域维度</div>
+
+  <p>我们在前九篇精读和系列调研中，已经深入讨论了<strong>单帧</strong>轮廓图像的压缩：从 CCITT G4、JBIG 等经典二值编码，到链码、线段几何编码，再到面向机器的 SA-ICM 等学习式方案。然而，真实的红外观瞄、安防监控、自动驾驶等应用处理的都是<strong>视频流</strong>——轮廓不再是一张静态图，而是随时间演化的序列。</p>
+
+  <p>视频压缩的核心挑战是<strong>时域冗余</strong>的利用：相邻帧的轮廓高度相关，但目标运动、遮挡、形变使得简单帧间差分不够用。传统视频编码（H.264/H.265/VVC）用运动补偿预测来处理像素级的时域冗余，但轮廓图的稀疏性和拓扑变化给运动估计带来了额外困难。</p>
+
+  <h3 class="section-title">轮廓在视频中的两种角色</h3>
+
+  <p>调研发现，轮廓/边缘在视频压缩中扮演两种截然不同的角色：</p>
+
+  <div class="info-box">
+    <p><strong>角色 ①：传输信号本身</strong> — 发送端只传轮廓（或轮廓+少量辅助信息），接收端用轮廓重建或直接用于下游任务。这是最极致的压缩：码率可以降到 0.001 bpp 以下。</p>
+    <p><strong>角色 ②：辅助/条件信号</strong> — 轮廓不单独传输，而是作为传统或学习式编码器的辅助输入，改进运动预测或条件生成。码率节省来自更高效的预测。</p>
+  </div>
+
+  <h3 class="section-title">二值轮廓 vs 非二值轮廓</h3>
+
+  <p>如我们之前讨论的，轮廓图是否二值取决于提取方法而非图像类型。在视频场景中，这个区分尤为重要：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>类型</th><th>提取方法</th><th>视频中的典型应用</th><th>时域特性</th></tr>
+      <tr><td>二值轮廓</td><td>Canny / SAM mask / Occupancy</td><td>MPEG-4 形状编码, V-PCC, SketchVision, Seg-VVC</td><td>帧间轮廓可用链码运动补偿</td></tr>
+      <tr><td>非二值轮廓</td><td>HED 概率图 / Sobel 梯度 / sketch 线描</td><td>DiSCo sketch, SA-NeRV 边缘, MoRIC 链码残差</td><td>需要额外编码梯度/概率值</td></tr>
+    </table>
+  </div>
+
+  <h3 class="section-title">本文调研的论文池</h3>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>论文</th><th>年份</th><th>路线</th><th>轮廓类型</th><th>角色</th></tr>
+      <tr><td>MPEG-4 Shape #MPEG4-Shape#</td><td>2000s</td><td>经典</td><td>二值 mask</td><td>传输信号</td></tr>
+      <tr><td>MC-TLCC #MC-TLCC-2002#</td><td>2002</td><td>经典</td><td>二值轮廓</td><td>传输信号</td></tr>
+      <tr><td>V-PCC Occupancy #Yang-V-PCC-2020#</td><td>2020</td><td>经典</td><td>二值 occupancy</td><td>传输信号</td></tr>
+      <tr><td>CC-SMC / ECC #Yang-CCSMC-2024# #Yang-ECC-2026#</td><td>2024/26</td><td>经典</td><td>语义边界</td><td>传输信号</td></tr>
+      <tr><td>Seg-VVC #SegVVC-2024#</td><td>2024</td><td>辅助</td><td>分割 mask</td><td>辅助信号</td></tr>
+      <tr><td>SA-NeRV #Shindo-SANeRV-2024#</td><td>2024</td><td>学习式</td><td>SAM 边缘</td><td>传输信号</td></tr>
+      <tr><td>MoRIC #Li-MoRIC-2025#</td><td>2025</td><td>学习式</td><td>自适应链码</td><td>传输信号</td></tr>
+      <tr><td>DiSCo #Wang-DiSCo-2026#</td><td>2026</td><td>语义</td><td>sketch/pose</td><td>条件信号</td></tr>
+      <tr><td>MMSD #Assylbek-MMSD-2026#</td><td>2026</td><td>语义</td><td>edge map</td><td>传输信号</td></tr>
+      <tr><td>SketchVision #Wang-SketchVision-2026#</td><td>2026</td><td>边缘-云</td><td>二值草图</td><td>传输信号</td></tr>
+      <tr><td>MISC #Liu-MISC-2024#</td><td>2024</td><td>语义</td><td>CLIP map</td><td>辅助信号</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 1 · 经典路线
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 经典路线</div>
+  <div class="ch-title">二值形状编码：MPEG-4 的遗产与链码的复兴</div>
+
+  <p>轮廓视频压缩的最早系统化尝试可以追溯到 1990 年代末的 <strong>MPEG-4 Part 2</strong> 标准 #MPEG4-Shape#。与 MPEG-1/2 的矩形帧编码不同，MPEG-4 引入了<strong>基于对象的编码</strong>：视频被分解为若干 Video Object (VO)，每个 VO 在每一帧形成一个 Video Object Plane (VOP)，包含三类信息——纹理、运动和<strong>形状</strong>。</p>
+
+  <h3 class="section-title">Binary Alpha Plane 与五种编码方法</h3>
+
+  <p>VOP 的形状信息被表示为<strong>二值 alpha 平面 (Binary Alpha Plane, BAB)</strong>：每个像素用 1 bit 标记——1 表示对象内，0 表示对象外。MPEG-4 标准化过程中评估了五种 BAB 编码方法：</p>
+
+  <div class="info-box">
+    <p><strong>Vertex-Based</strong>：用顶点坐标 + 直线段近似轮廓，码率高但简单。</p>
+    <p><strong>Baseline</strong>：逐行扫描编码边界位置，适合简单形状。</p>
+    <p><strong>MMR (Modified Modified READ)</strong>：基于传真标准 Group 4 的二维游程编码，帧间差分增强。</p>
+    <p><strong>CAE (Context-based Arithmetic Encoding)</strong>：对每个像素的局部上下文（周围 10 个像素的状态）做算术编码。<mark>这是 MPEG-4 最终采纳的核心方法</mark>，因为它在统计建模和压缩效率之间取得了最好的平衡。</p>
+    <p><strong>Chroma-Keying</strong>：将 alpha 信息嵌入色度通道，利用现有色度编码器处理。</p>
+  </div>
+
+  <p>CAE 的帧间模式还引入了<strong>运动补偿</strong>：对当前帧的 BAB 做块级运动估计，用参考帧的 BAB 预测当前帧，只对残差做 CAE 编码。这使得 MPEG-4 形状编码天然利用了时域冗余。</p>
+
+  <h3 class="section-title">运动补偿链码：MC-TLCC (SPIE 2002)</h3>
+
+  <p>Lee 等人在 2002 年提出了<strong>Motion-Compensated Two-Link Chain Coding (MC-TLCC)</strong> #MC-TLCC-2002#，将链码编码从单帧扩展到视频序列。其核心思想是：相邻帧的对象轮廓高度相似，可以用帧间运动矢量估计轮廓位移，然后只对<strong>预测残差</strong>做链码编码。</p>
+
+  <p>"Two-Link" 指的是将链码符号按两两配对进行联合编码——每对符号描述一个拐角或直线段，利用符号间的统计依赖性进一步降低熵。</p>
+
+  <h3 class="section-title">V-PCC Occupancy Map 链码 (VCIP 2020)</h3>
+
+  <p>MPEG 的 Video-Based Point Cloud Compression (V-PCC) 标准将 3D 点云投影为 2D 视频帧进行编码。其中 <strong>occupancy map</strong> 是一张二值辅助图：每个像素标记该位置是否有对应的 3D 点 #Yang-V-PCC-2020#。</p>
+
+  <p>Yang 等人发现，occupancy map 具有<strong>大片均匀区域 + 锐利边界</strong>的典型特征，非常适合链码编码。他们设计了<strong>四叉树分块 + 链码轮廓编码 + 自适应算术编码</strong>的方案，替代 HEVC 对 occupancy map 的编码。实验结果：链码 vs HEVC-SCM 平均节省 <mark>~22%</mark> 码率（原始分辨率），下采样后可达 ~34%。且为无损压缩，不影响点云重建质量。</p>
+
+  <h3 class="section-title">链码的语义图演进：CC-SMC → ECC</h3>
+
+  <p>链码技术在语义图压缩中持续发展。Yang 等人 2024 年的 <strong>CC-SMC</strong> #Yang-CCSMC-2024# 将四叉树分块与链码结合，用于语义分割图的无损压缩：均匀块直接编码标签，含边界的块用链码编码轮廓。2026 年的 <strong>ECC (Extended Chain Code)</strong> #Yang-ECC-2026# 进一步扩展符号集，允许长距离轮廓跳转，并引入共享边界跳过机制，在语义图数据集上比 CC-SMC 再节省 ~18% 码率。ECC 还在 occupancy map 上做了扩展评估，确认链码路线在二值图压缩中具有持续生命力。</p>
+
+  <div class="info-box">
+    <p><strong>MPEG-4 形状编码为何未被广泛采用？</strong>主要原因有三：(1) 自动视频对象分割在当时极为困难；(2) 实际应用中 ROI (Region of Interest) 编码可以用更简单的方式近似；(3) H.264/AVC 放弃了对象编码路线，回归块级编码。但这并不意味着形状编码已死——它在 V-PCC、语义图压缩和当前轮廓视频压缩中持续以新形态复活。</p>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 2 · 轮廓辅助传统编码
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 轮廓辅助传统编码</div>
+  <div class="ch-title">分割 Mask 如何改进 VVC 帧间预测</div>
+
+  <p>如果说 Part 1 讨论的是"把轮廓当作传输内容"，那么本节讨论的是<strong>"把轮廓当作编码器的辅助工具"</strong>。轮廓信息不直接传输给解码端，而是在编码端帮助做出更好的编码决策。</p>
+
+  <h3 class="section-title">SAIP：分割辅助帧间预测 (arXiv 2403.11694)</h3>
+
+  <p>Object Segmentation-Assisted Inter Prediction (SAIP) #SegVVC-2024# 针对 VVC 标准提出了一种巧妙的思路：用<strong>分割 mask 指导运动补偿</strong>。传统块级运动补偿在对象边界处会产生"鬼影"——一个 CU 跨越两个不同运动对象时，整块用同一个运动矢量预测会导致边界模糊。</p>
+
+  <p>SAIP 的解决方案：在编解码端同步运行一个轻量分割网络（SCNet + STCN），获得当前帧的分割 mask。然后在三个模块中利用 mask 信息：</p>
+
+  <ul>
+    <li><strong>运动补偿 (ORMC)</strong>：按 mask 边界将 CU 分割为前景/背景两个区域，分别做运动补偿后融合</li>
+    <li><strong>运动矢量候选 (MVC)</strong>：构建双候选列表，前景和背景各一组候选</li>
+    <li><strong>RDO 联合搜索</strong>：在率失真优化中联合搜索最优分割和运动参数</li>
+  </ul>
+
+  <p>关键设计：由于分割网络在编解码端同步运行，<mark>mask 本身不需要传输——零码率开销</mark>。实验结果：LDP 配置下 BD-rate 平均 <strong>-0.82%</strong>（最大 -1.98%），且与 VVC 的 GEO（几何分割）模式互补。代价是编码时间增加 ~72%。</p>
+
+  <p>这种方法代表了一个重要趋势：<strong>将高级视觉能力（分割）注入传统编码器的决策流程</strong>，而非替换编码器本身。轮廓信息在这里的角色不是传输信号，而是编码优化信号。</p>
+</div>
+
+<!-- ============================================================
+  Part 3 · 学习式轮廓压缩
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 学习式轮廓压缩</div>
+  <div class="ch-title">从 SA-NeRV 到 MoRIC：边缘信息驱动的学习编码器</div>
+
+  <p>学习式图像/视频压缩（Learned Image/Video Compression, LIC/LVC）近年来取得了显著进展 #LearnedVCSurvey-2025#。其中一个新兴方向是：<strong>能否只编码轮廓/边缘信息，而丢弃纹理细节？</strong>这对面向机器的视频编码 (Video Coding for Machines, VCM) 尤为重要——检测模型需要的是结构信息而非像素级保真。</p>
+
+  <h3 class="section-title">SA-NeRV：用 SAM 边缘训练视频神经表示</h3>
+
+  <p>Shindo 等人 2024 年提出的 <strong>SA-NeRV</strong> #Shindo-SANeRV-2024# 将边缘信息压缩从图像扩展到视频。其核心思想是：用 Segment Anything (SAM) 生成边缘图，然后训练 NeRV (Neural Representations for Videos) 只编码这些边缘信息。</p>
+
+  <p>具体流程：(1) SAM 生成语义分割 mask → (2) Canny 边缘检测将 mask 转化为二值边缘图 → (3) 用边缘图训练 NeRV。损失函数为：</p>
+
+  \[\mathcal{L} = \alpha \cdot \mathcal{L}_{\text{edge}} + (1 - \alpha) \cdot \mathcal{L}_{\text{rate}}\]
+
+  <p>其中 \(\alpha = 0.78\) 控制边缘保真与码率的权衡。使用 COCO-train (118,287 张) 训练，LIC-TCM 架构，\(N=5\) slices，\(\lambda=0.05\)。</p>
+
+  <p>实验覆盖 8 个视频序列（COCO / VisDrone / Cityscapes / SFU-HW-Objects），下游任务为 YOLOv5 目标检测。SA-NeRV 在 <mark>8/8 序列上均优于基线 NeRV</mark>，最高提升 BlowingBubbles 序列 +7.01 mAP。</p>
+
+  <h3 class="section-title">MoRIC：自适应链码 + 隐式神经表示 (NeurIPS 2025)</h3>
+
+  <p>Li 等人的 <strong>MoRIC</strong> #Li-MoRIC-2025# 是本文调研中<strong>最接近"轮廓视频压缩"概念的工作</strong>——它直接以轮廓链码作为编码核心，结合隐式神经表示 (INR) 做区域级图像压缩。</p>
+
+  <p>传统 INR codec（如 COIN、COOL-CHIC）用单个小型 MLP 对整幅图像 overfitting：输入坐标 \((x,y)\)，输出 \((R,G,B)\)。但一幅图像包含差异极大的统计分布——平滑天空、高频纹理、锐利边缘——要求单一 MLP 同时高效拟合所有分布，要么增大网络（码率爆炸），要么牺牲质量。</p>
+
+  <p>MoRIC 的解决方案是<strong>区域级编码</strong>：将图像分割为任意形状区域，每个区域分配一个 Local Synthesis Network (LSN)，所有区域共享一个 Global Modulation Network (GMN)。</p>
+
+  <div class="info-box">
+    <p><strong>C* Coding：自适应链码的革命</strong></p>
+    <p>MoRIC 的核心创新之一是 <strong>C* coding</strong>——一种自适应步长的链码方法。与 Freeman 8-方向链码（固定 1 像素步长）不同，C* 允许步长 \(T\) 自适应调整：</p>
+    <ul>
+      <li>长直边界：大步长，一个符号覆盖多个像素</li>
+      <li>弯曲边界：小步长，精确跟踪</li>
+      <li>支持角度匹配、全局重置、偏移适应和轮廓膨胀</li>
+    </ul>
+    <p>C* 同时支持有损与无损轮廓压缩。</p>
+  </div>
+
+  <p>实验结果令人印象深刻：<mark>Kodak 数据集上 BD-rate vs VTM-19.1 (VVC 参考实现) 达到 -2.79%</mark>——这是首个 overfitted codec 在标准指标上超越 VVC。CLIC2020 上达到 -10.58%，DAVIS 单对象视频上达到 -16.31%。解码复杂度仅 <strong>< 800 MACs/pixel</strong>，远低于传统 autoencoder codec 的数十万~百万级。</p>
+
+  <p>轮廓码率占比分析（Figure 7）揭示了一个关键洞察：<mark>低码率时轮廓占总码率的 ~83%，高码率时降至 ~18-25%</mark>。这意味着在极低码率场景下，轮廓编码的效率直接决定了整体压缩性能。</p>
+</div>
+
+<!-- ============================================================
+  Part 4 · 语义视频压缩
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 语义视频压缩</div>
+  <div class="ch-title">轮廓作为条件信号：DiSCo、MMSD 与 MISC</div>
+
+  <p>当码率降到极低（< 0.01 bpp）时，传统编码器彻底失效——像素级保真已无意义。2024-2026 年涌现的<strong>语义视频压缩</strong>路线提供了一种范式转换：只传输语义描述（文字、分割图、边缘图），接收端用生成模型重建。轮廓/边缘在这里的角色从"传输内容"变成了<strong>条件信号</strong>——引导扩散模型生成与原始视频语义一致的重建。</p>
+
+  <h3 class="section-title">DiSCo：语义条件扩散视频压缩 (CVPR 2026)</h3>
+
+  <p>Wang 等人的 <strong>DiSCo</strong> #Wang-DiSCo-2026# 是目前最完整的语义视频压缩框架。它将源视频分解为三种互补模态：</p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>模态</th><th>功能</th><th>提取方式</th><th>编码方式</th></tr>
+      <tr><td>文字描述</td><td>全局语义（物体、场景、动作）</td><td>LLaVA 视觉-语言模型</td><td>Zlib 无损压缩</td></tr>
+      <tr><td>退化视频</td><td>粗粒度外观与结构引导</td><td>联合时空下采样</td><td>预训练 DCVC-RT</td></tr>
+      <tr><td><strong>Sketch（可选）</strong></td><td>运动与几何线索（物体轮廓）</td><td>InformativeDrawings</td><td>微调 DCVC-RT</td></tr>
+      <tr><td>2D 姿态（可选）</td><td>以人为中心的运动线索</td><td>DWPose</td><td>LZMA 无损 (16-bit)</td></tr>
+    </table>
+  </div>
+
+  <p>解码端将语义压缩建模为 <strong>video-to-video 转换</strong>：以预训练的 LTX-Video (13B 参数) 为基座，采用 <strong>In-Context LoRA</strong>（rank 256，新增 ~625M 参数）适配多模态条件输入。一个关键设计是 <strong>Token Interleaving</strong>——将不同模态的 token 交错排列为统一序列，让扩散模型在一个注意力窗口内同时看到文字、退化帧和 sketch。</p>
+
+  <p>时域一致性通过 <strong>Forward Filling</strong> 保证：对缺失帧用前向帧的信息填充条件序列，比零值填充提升 17.52% BD-rate（零值填充则退化 60.56%）。</p>
+
+  <p>实验在 HEVC-B、MCL-JCV、UVG 三个基准上测试。码率范围 <strong>0.0002 ~ 0.0196 BPP</strong>，在感知指标（FID、LPIPS、FVD）上 vs H.266 提升 <mark>5-10×</mark>，BD-rate 达 -83% ~ -91%。但像素保真度指标（PSNR/SSIM）显著低于传统编码器——这是语义压缩的固有代价。</p>
+
+  <p>局限：推理延迟 390ms/帧（LTX-Video 13B），极低码率下存在语义偏差（生成的物体细节可能与原始不符）。</p>
+
+  <h3 class="section-title">MMSD：交通监控语义通信 (arXiv 2604.12622)</h3>
+
+  <p>Assylbek 等人的 <strong>MMSD</strong> #Assylbek-MMSD-2026# 面向交通监控场景，将图像替换为三种紧凑语义表示传输：</p>
+
+  <ul>
+    <li><strong>分割图</strong>：3.96 KB，约束物体的空间布局</li>
+    <li><strong>Edge map</strong>：18.41 KB，Canny 提取，提供物体边界结构引导</li>
+    <li><strong>文字描述</strong>：57-260 B，描述场景内容</li>
+  </ul>
+
+  <p>总载荷仅 <strong>22.42 KB</strong>，vs 原图 2.28 MB → <mark>码率节省 ~99%</mark>（压缩比 111×）。接收端用扩散模型从语义表示重建场景。一个令人印象深刻的发现：edge map 仅占总载荷的 ~82%，但<mark>去掉 edge map 后 VLM 联合任务成功率从 86.9% 暴跌至 24.2%</mark>——edge map 虽然体积小，却是扩散模型重建物体边界的关键条件。</p>
+
+  <h3 class="section-title">MISC：LMM 驱动超低码率压缩 (IEEE TIP 2024)</h3>
+
+  <p>Liu 等人的 <strong>MISC</strong> #Liu-MISC-2024# 是首个在编解码两端均集成大语言多模态模型 (GPT-4 Vision) 的压缩框架。编码端用 LMM 提取：整体语义描述（~50 词）+ 最多 3 组 Neural Descriptive Maps（物体名 + 细节描述 + 空间定位 map）。</p>
+
+  <p>与 DiSCo 和 MMSD 不同，<mark>MISC 不传 edge map</mark>，改用 CLIP Surgery 生成的 8×8 ~ 16×16 二值语义定位 map（< 0.001 bpp）替代。MISC-3 在 0.047 bpp 下综合评分 3.90，大幅超越 HiFiC (2.51) 和 PICS (0.97)。这暗示：在极低码率下，语义级空间定位可能比像素级边缘图更高效。</p>
+</div>
+
+<!-- ============================================================
+  Part 5 · 边缘-云协同
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 边缘-云协同</div>
+  <div class="ch-title">二值草图传输：SketchVision 的极简哲学</div>
+
+  <p>在边缘计算视频分析场景中，一个根本性的问题是：<strong>从摄像头到云端，真的需要传 RGB 视频吗？</strong>如果云端只需要做目标检测，那么二值草图可能就够了。</p>
+
+  <h3 class="section-title">SketchVision (IEEE TBC 2026)</h3>
+
+  <p>Wang 等人的 <strong>SketchVision</strong> #Wang-SketchVision-2026# 提出了一个极简方案：边缘端从 RGB 帧中提取<strong>二值语义线段图 (binary sketch)</strong>，压缩后传输到云端，云端用上下文感知模型做目标检测。</p>
+
+  <p>系统架构：</p>
+  <ul>
+    <li><strong>Sketch Extractor</strong>：从 RGB 图像中提取语义关键线段，生成 0/1 二值图</li>
+    <li><strong>Detail Patcher</strong>：含 Object Logger 和 Presence Detector，对草图中丢失的细节做区域增强</li>
+    <li><strong>Sketch Codec</strong>：设计专用编码器压缩二值草图</li>
+    <li><strong>锚帧</strong>：偶尔传输完整 RGB 帧辅助检测校准</li>
+  </ul>
+
+  <p>实验结果：在 COCO 数据集上，<mark>草图目标检测准确率 82% vs JPG 传输 68%</mark>（640×360 分辨率）。核心原因是二值草图消除了纹理干扰，迫使检测模型聚焦于结构特征。带宽节省显著——从传输 RGB 视频流变为传输二值图序列。</p>
+
+  <p>这种"只传轮廓不传像素"的思路，与 DiSCo、MMSD 的语义压缩在哲学上一脉相承：当任务不需要像素保真时，结构信息是最高效的传输载体。</p>
+</div>
+
+<!-- ============================================================
+  Part 6 · 对比与展望
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 方法对比与开放问题</div>
+  <div class="ch-title">全景地图与五大未解难题</div>
+
+  <h3 class="section-title">跨方法对比总表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>方法</th><th>年份</th><th>任务</th><th>轮廓类型</th><th>轮廓角色</th><th>码率</th><th>核心指标</th></tr>
+      <tr><td>MPEG-4 CAE</td><td>2000s</td><td>视频编码</td><td>二值 BAB</td><td>传输信号</td><td>~0.01-0.1 bpp</td><td>形状保真度</td></tr>
+      <tr><td>MC-TLCC</td><td>2002</td><td>视频编码</td><td>二值链码</td><td>传输信号</td><td>比 CAE 低 ~30%</td><td>形状 PSNR</td></tr>
+      <tr><td>V-PCC 链码</td><td>2020</td><td>点云编码</td><td>二值 occupancy</td><td>传输信号</td><td>比 HEVC 省 ~22%</td><td>点云 D1 PSNR</td></tr>
+      <tr><td>CC-SMC → ECC</td><td>2024/26</td><td>语义图压缩</td><td>语义边界</td><td>传输信号</td><td>比 CC-SMC 再省 ~18%</td><td>无损</td></tr>
+      <tr><td>Seg-VVC (SAIP)</td><td>2024</td><td>视频编码</td><td>分割 mask</td><td>辅助信号</td><td>零额外开销</td><td>BD-rate -0.82%</td></tr>
+      <tr><td>SA-NeRV</td><td>2024</td><td>VCM 视频</td><td>SAM 边缘(二值)</td><td>传输信号</td><td>与 NeRV 相当</td><td>mAP +7.01</td></tr>
+      <tr><td>MoRIC</td><td>2025</td><td>图像压缩</td><td>C* 链码</td><td>传输信号</td><td>可变 bpp</td><td>BD-rate -2.79% vs VTM</td></tr>
+      <tr><td>DiSCo</td><td>2026</td><td>语义视频</td><td>sketch(非二值)</td><td>条件信号</td><td>0.0002-0.0196</td><td>FID -83% vs H.266</td></tr>
+      <tr><td>MMSD</td><td>2026</td><td>语义通信</td><td>edge map(二值)</td><td>传输信号</td><td>22.42 KB/帧</td><td>VLM 成功率 86.9%</td></tr>
+      <tr><td>SketchVision</td><td>2026</td><td>边缘-云 OD</td><td>二值草图</td><td>传输信号</td><td>远低于 RGB</td><td>mAP 82% vs 68%</td></tr>
+      <tr><td>MISC</td><td>2024</td><td>语义图像</td><td>CLIP map(二值)</td><td>辅助信号</td><td>~0.047 bpp</td><td>综合评分 3.90</td></tr>
+    </table>
+  </div>
+
+  <h3 class="section-title">五大开放问题</h3>
+
+  <p><strong>1. 红外/热成像视频轮廓压缩</strong>：我们已有的 FPGA 轮廓提取（精读九）只处理单帧。红外视频流的轮廓具有独特的时域特性——热目标的运动比可见光目标更"粘连"（热扩散），帧间轮廓的连续性更强但边缘更模糊。目前没有专门针对红外视频轮廓的压缩工作。</p>
+
+  <p><strong>2. 端到端学习式轮廓视频 Codec</strong>：MoRIC 只做图像，SA-NeRV 是 NeRV 而非传统 codec。能否设计一个端到端的学习式编码器，以轮廓序列为输入，利用时域冗余做运动补偿式编码？</p>
+
+  <p><strong>3. 时域一致性保证</strong>：DiSCo 用 Forward Filling + Token Interleaving 维持视频时域一致性，但推理延迟 390ms/帧。如何在保持低延迟的同时确保轮廓帧间连续？</p>
+
+  <p><strong>4. 二值 vs 非二值的选择策略</strong>：何时应该硬二值化（节省码率但丢梯度信息）？何时保留连续值（MoRIC 的 C* 链码可以有损压缩轮廓）？目前缺乏系统性的率-失真-任务分析框架。</p>
+
+  <p><strong>5. 面向机器 vs 面向人类的统一框架</strong>：SketchVision 和 SA-NeRV 面向机器（mAP），DiSCo 和 MMSD 面向人类感知（FID/LPIPS），Seg-VVC 面向传统编码效率（BD-rate）。能否设计一个自适应框架，根据下游任务动态选择轮廓编码策略？ #HumanMachine-Survey-2024#</p>
+</div>
+
+<!-- ============================================================
+  参考文献
+  ============================================================ -->
+
+<div class="ref-section">
+  <div class="ref-list">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="MPEG4-Shape">Ostermann J, et al. Coding of Binary Shape in MPEG-4. <em>tnt.uni-hannover.de</em>. <a href="https://www.tnt.uni-hannover.de/papers/data/368/368_1.pdf" target="_blank">PDF</a></li>
+      <li data-cite-key="MC-TLCC-2002">Lee YK, et al. Motion-compensated two-link chain coding for binary shape sequence. <em>SPIE 2002</em>, 4671: 356. <a href="https://ui.adsabs.harvard.edu/abs/2002SPIE.4671..356L/abstract" target="_blank">ADS</a></li>
+      <li data-cite-key="Yang-V-PCC-2020">Yang R, et al. Chain Code-Based Occupancy Map Coding for Video-Based Point Cloud Compression. <em>IEEE VCIP 2020</em>. <a href="https://ui.adsabs.harvard.edu/abs/2020vcip.conf...65Y/abstract" target="_blank">ADS</a></li>
+      <li data-cite-key="Yang-CCSMC-2024">Yang R, et al. Chain coding-based segmentation map lossless compression. <em>JVCIR 2024</em>. <a href="https://www.sciencedirect.com/science/article/abs/pii/S1047320324001780" target="_blank">ScienceDirect</a></li>
+      <li data-cite-key="Yang-ECC-2026">Yang R, et al. Context Adaptive Extended Chain Coding for Semantic Map Compression. arXiv:2603.03073. <a href="https://arxiv.org/abs/2603.03073" target="_blank">arXiv</a></li>
+      <li data-cite-key="SegVVC-2024">Object Segmentation-Assisted Inter Prediction for Versatile Video Coding. arXiv:2403.11694. <a href="https://arxiv.org/abs/2403.11694" target="_blank">arXiv</a></li>
+      <li data-cite-key="Shindo-SANeRV-2024">Shindo T, et al. Image Coding for Machines with Edge Information Learning Using Segment Anything. <em>ICIP 2024</em>. arXiv:2403.04173. <a href="https://arxiv.org/abs/2403.04173" target="_blank">arXiv</a></li>
+      <li data-cite-key="Li-MoRIC-2025">Li G, Wu H, Gündüz D. MoRIC: A Modular Region-based Implicit Codec for Image Compression. <em>NeurIPS 2025</em>. <a href="https://eedavidwu.github.io/MoRIC/" target="_blank">Project</a> · <a href="https://papers.nips.cc/paper_files/paper/2025/file/37f6be32f832caf0f7980469fb06165b-Paper-Conference.pdf" target="_blank">PDF</a></li>
+      <li data-cite-key="Wang-DiSCo-2026">Wang L, et al. Low-Bitrate Video Compression through Semantic-Conditioned Diffusion. <em>CVPR 2026</em>. arXiv:2512.00408. <a href="https://arxiv.org/abs/2512.00408" target="_blank">arXiv</a></li>
+      <li data-cite-key="Assylbek-MMSD-2026">Assylbek D, et al. Efficient Semantic Image Communication for Traffic Monitoring at the Edge. arXiv:2604.12622. <a href="https://arxiv.org/abs/2604.12622" target="_blank">arXiv</a></li>
+      <li data-cite-key="Liu-MISC-2024">Liu X, et al. MISC: Ultra-low Bitrate Image Semantic Compression Driven by Large Multimodal Model. <em>IEEE TIP 2024</em>. arXiv:2402.16749. <a href="https://arxiv.org/abs/2402.16749" target="_blank">arXiv</a></li>
+      <li data-cite-key="Wang-SketchVision-2026">Wang H, et al. SketchVision: Bandwidth-Efficient Edge-Cloud Video Object Detection via Compressed Sketches. <em>IEEE TBC 2026</em>, 72(2). <a href="https://ieeexplore.ieee.org/document/11495562" target="_blank">IEEE</a></li>
+      <li data-cite-key="LearnedVCSurvey-2025">Emerging Advances in Learned Video Compression. <em>IJCAI 2025</em>. arXiv:2504.21445. <a href="https://arxiv.org/abs/2504.21445" target="_blank">arXiv</a></li>
+      <li data-cite-key="HumanMachine-Survey-2024">Human-Machine Collaborative Image and Video Compression. <em>ATSIP 2024</em>, 13(6). <a href="https://www.emerald.com/atsip/article/13/6/1/1331411" target="_blank">Emerald</a></li>
+    </ul>
+  </div>
+</div>
+
+<div class="nav-cards">
+  <a class="nav-card" href="infrared-compression-hub.html"><span class="nav-label">红外图像压缩系列</span><span class="nav-title">返回系列总览</span></a>
+  <a class="nav-card" href="edge-image-compression-survey.html"><span class="nav-label">上一篇</span><span class="nav-title">边缘图像压缩调研</span></a>
+  <a class="nav-card" href="ir-contour-fpga-2024.html"><span class="nav-label">相关</span><span class="nav-title">红外轮廓提取 FPGA</span></a>
+</div>

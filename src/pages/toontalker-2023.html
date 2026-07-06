@@ -1,0 +1,409 @@
+---
+title: "数字人论文精读（三十三）：ToonTalker，首个跨域卡通-真实双向人脸重演"
+description: "深读 ICCV 2023 论文 ToonTalker：拆解基于 Transformer 的跨域重演三阶段 Pipeline（特征提取→规范空间变换→图像生成），分析类比约束如何解决无配对训练数据问题，汇总自建 Disney 卡通数据集（344 视频/47K 帧）和 Real↔Cartoon 双向实验数据，解读 20 人 User Study 设计。"
+date: 2026-07-06T19:00:00
+created_at: 2026-07-06T19:00:00
+updated_at: 2026-07-06T19:00:00
+tags: [数字人, ToonTalker, 卡通, Cross-Domain, Face Reenactment, ICCV 2023, 论文精读, Cartoon, Transformer]
+aliases: ["categories/AI/数字人"]
+sub_id: 1320
+toc: true
+mathjax: true
+notify: true
+hub: "digital-human-hub"
+hero_title: "ToonTalker：跨域卡通重演"
+hero_sub: "无配对数据条件下，如何让真人的运动迁移到卡通角色？"
+hero_tagline: "论文精读（三十三）· Cross-Domain · Analogy Constraint · Disney Dataset · ICCV 2023"
+papers: []
+repos: []
+---
+
+<!-- ============================================================
+  Part 1: 引言与问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：卡通域的 motion 从哪来</div>
+
+  <div class="photo">
+    <img src="media/images/toontalker-2023/teaser.webp" alt="ToonTalker 跨域卡通重演效果展示" loading="lazy">
+    <div class="cap">图 1：ToonTalker 跨域重演效果——真实人脸驱动卡通角色，卡通人脸驱动真实角色（来源：ToonTalker, Fig. 1）</div>
+  </div>
+
+  <p>让卡通角色"活起来"的核心挑战是：卡通视频数据稀缺且难以标注。真实人脸有丰富的数据集（VoxCeleb 有 <strong>171K</strong> 视频 #Gong-et-al.-2023#，MEAD、HDTF 规模也在万级以上），但卡通域的数据通常是无配对、无标注的。现实中不可能找到"同一角色做同一表情"的配对数据，更不存在卡通人脸的 3DMM 参数标注。</p>
+
+  <p>ToonTalker #Gong-et-al.-2023# 来自清华深研院、腾讯 AI Lab 和蚂蚁集团，发表于 ICCV 2023。它提出了一种优雅的解决方案：通过<strong>共享的规范运动空间</strong>（Canonical Motion Space）和<strong>类比约束</strong>（Analogy Constraint），在<strong>无配对数据</strong>条件下实现真实域和卡通域的双向运动迁移。</p>
+
+  <h3 class="section-title">1.1 与已有路线的核心区别</h3>
+
+  <p>在 ToonTalker 之前，卡通域的 talking head 方法大致有三条路线：</p>
+
+  <ul>
+    <li><strong>关键点驱动</strong>（FOMM #Siarohin-et-al.-2020#、LIA #Wang-et-al.-2022#、DaGAN #Wang-et-al.-2023#）：这些方法本身不支持跨域，只能在卡通数据上微调，但微调后跨域泛化能力有限</li>
+    <li><strong>3DMM 配对数据</strong>（AnimeCeleb #Liu-et-al.-2022#）：依赖卡通 3DMM 参数标注（20D 向量），虽然有效但数据获取成本极高，且 20D 参数无法捕捉精细表情</li>
+    <li><strong>角度一致性</strong>（MAA #Xu-et-al.-2022#）：仅约束头部角度一致，无法捕捉表情级变化</li>
+  </ul>
+
+  <p>ToonTalker 的独特之处在于：<strong>不依赖配对数据、不依赖 3DMM、不预设动作表示</strong>，而是让模型自己学习一个跨域共享的规范运动空间，通过类比约束保证跨域动作语义的一致性。</p>
+
+  <p>这篇论文是数字人系列中第一篇以卡通/风格化为核心对象的精读，也是系列（十三）卡通评测专题 #tangwen-2026-cartoon-eval# 的上游工作之一。</p>
+</div>
+
+<!-- ============================================================
+  Part 2: 模型架构与创新
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">三阶段 Pipeline：从域特异到域共享再到图像生成</div>
+
+  <div class="photo">
+    <img src="media/images/toontalker-2023/architecture.webp" alt="ToonTalker 三阶段架构示意图" loading="lazy">
+    <div class="cap">图 2：ToonTalker 框架总览——特征提取、规范空间变换、图像生成三个阶段（来源：ToonTalker, Fig. 3）</div>
+  </div>
+
+  <h3 class="section-title">2.1 架构总览</h3>
+
+  <p>ToonTalker 的框架分为三个功能模块：</p>
+
+  <ol>
+    <li><strong>特征提取</strong>：外观编码器 \(E_a\) 提取源图像的多尺度空间特征 \(S = \{S^i\}_{i=1}^N\)，动作编码器 \(E_m\) 从源图像和驱动图像中提取动作描述符 \(F_s, F_d \in \mathbb{R}^{512}\)</li>
+    <li><strong>规范空间变换</strong>：Source Query Transformer \(T_{s\to r}\) 和 Driving Query Transformer \(T_{r\to d}\) 将不同域的动作描述符投射到共享的规范运动空间，运动迁移通过向量加法实现：\(w_{s \to d} = w_{s \to r} + w_{r \to d}\)</li>
+    <li><strong>图像生成</strong>：Backward Transformer \(T_B\) 将编辑后的运动码投射回源域，渐进式生成器 \(G\) 逐层扭曲和细化特征图</li>
+  </ol>
+
+  <h3 class="section-title">2.2 域特异 vs 域共享的设计哲学</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>数量</th><th>域属性</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>Appearance Encoder \(E_a\)</td><td>×2</td><td>域特异</td><td>6 层 ResBlock，提取多尺度空间特征</td></tr>
+        <tr><td>Motion Encoder \(E_m\)</td><td>×2</td><td>域特异</td><td>7 层 ResBlock + 4×4 Conv → 512D 动作描述符</td></tr>
+        <tr><td>Motion Code Base \(p\)</td><td>×2</td><td>域特异</td><td>\(K=20\) 个可学习嵌入，\(p^k \in \mathbb{R}^{512}\)</td></tr>
+        <tr><td>Backward Transformer \(T_B\)</td><td>×2</td><td>域特异</td><td>3 层 Transformer，投射回源域</td></tr>
+        <tr><td>Generator \(G\)</td><td>×2</td><td>域特异</td><td>6 层 StyleConv + SFT 细化</td></tr>
+        <tr><td>Discriminator \(D\)</td><td>×2</td><td>域特异</td><td>对抗训练保证生成质量</td></tr>
+        <tr><td><strong>Source Query Transformer</strong></td><td>×1</td><td><strong>域共享</strong></td><td>投射到规范空间</td></tr>
+        <tr><td><strong>Driving Query Transformer</strong></td><td>×1</td><td><strong>域共享</strong></td><td>投射到规范空间</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>核心设计思路：域特异组件负责"各说各话"（提取各域独有的外观和动作），域共享组件负责"翻译对齐"（确保不同域的运动在同一个语义空间中可比）。两个 Query Transformer <strong>共享参数</strong> #Gong-et-al.-2023#，这是跨域对齐的关键——因为参数共享，不同域的动作描述符被强制投射到同一个向量空间。</p>
+
+  <p>Motion Code Base \(p\) 的设计借鉴了 Perceiver #Jaegle-et-al.-2021# 中的 latent array 思想：\(K=20\) 个可学习嵌入向量作为 Query Token，通过 Attention 机制与输入的动作描述符交互，输出一个紧凑的规范空间运动码。</p>
+
+  <h3 class="section-title">2.3 类比约束：无配对数据的桥梁</h3>
+
+  <p>跨域重演的最大难题是<strong>无配对数据</strong>。ToonTalker 的解决方案是<strong>类比约束（Analogy Constraint）</strong>，其直觉来自一个关键观察：虽然我们无法获得配对数据，但"运动的变化量"在两个域中应该是可比的。</p>
+
+  <p>具体来说，给定真实域的两张图像 \(x_a^R, x_b^R\) 和卡通源图像 \(x_s^C\)，首先计算真实域的相对动作 \(\Delta\omega_{real} = w_{r \to b} - w_{r \to a}\)，然后将其应用于卡通域：</p>
+
+  \[w_{s \to g} = (w_{s \to r} + w_{r \to s}) + (w_{r \to b} - w_{r \to a}) \tag{Eq. 6}\]
+
+  <p>生成合成卡通人脸后，验证规范空间中的动作一致性：</p>
+
+  \[\mathcal{L}_{motion}^{R \to C} = \mathbb{E}\left[\left\|(w_{r \to g} - w_{r \to s}) - (w_{r \to b} - w_{r \to a})\right\|_1\right] \tag{Eq. 9}\]
+
+  <p>这个损失不需要配对数据——它只要求"真实域的动作差异"等于"卡通域的对应动作差异"。在几何上，这等价于在规范空间中构造一个<strong>平行四边形</strong>：真实域和卡通域的相对动作向量应当平行且等长。</p>
+
+  <h3 class="section-title">2.4 SFT：高分辨率特征细化</h3>
+
+  <p>生成器的最后 3 层使用 Spatial Feature Transformation (SFT) 减少扭曲伪影：</p>
+
+  \[o^i = \alpha^i \odot f_w^i + \beta^i \tag{Eq. 4}\]
+
+  <p>其中 \(\alpha^i = \text{StyleConv}(f_w^i, w_{s \to d})\)，\(\beta^i = \text{StyleConv}(f_w^i, w_{s \to d})\)。SFT 对高分辨率特征图的逐像素调制，有效减轻了扭曲带来的伪影。</p>
+
+  <h3 class="section-title">2.5 与先前方法的关键区别</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>特性</th><th>ToonTalker</th><th>AnimeCeleb</th><th>MAA</th><th>FOMM/LIA/DaGAN</th></tr></thead>
+      <tbody>
+        <tr><td>配对数据需求</td><td>❌ 不需要</td><td>✅ 需要</td><td>❌</td><td>❌</td></tr>
+        <tr><td>3DMM 依赖</td><td>❌</td><td>✅</td><td>❌</td><td>❌</td></tr>
+        <tr><td>动作表示</td><td>潜在空间码（512D）</td><td>20D 预定义向量</td><td>关键点</td><td>关键点/潜在码</td></tr>
+        <tr><td>跨域训练</td><td>类比约束</td><td>配对监督</td><td>角度一致性</td><td>不支持</td></tr>
+        <tr><td>精细表情捕捉</td><td>✅</td><td>❌（20D 限制）</td><td>有限</td><td>域内有效</td></tr>
+        <tr><td>双向跨域</td><td>✅</td><td>单向</td><td>❌</td><td>❌</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 3: 训练 Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">训练 Pipeline：两阶段训练与完整损失函数</div>
+
+  <h3 class="section-title">3.1 两阶段训练策略</h3>
+
+  <p>真实视频数据量（<strong>171K</strong> 视频）远大于卡通视频数据量（<strong>289</strong> 训练视频），数据极度不平衡。直接混合训练会导致真实域主导数据分布，卡通域学习不充分。</p>
+
+  <p><strong>Stage 1：大规模真实数据预训练</strong>——用 VoxCeleb 训练集（171K 视频）执行域内重建任务，学习面部动作的通用知识：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>Stage 1</th><th>Stage 2</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>VoxCeleb 训练集</td><td>Disney 卡通 + VoxCeleb 子集</td></tr>
+        <tr><td>训练视频数</td><td>171K</td><td>289 卡通 + VoxCeleb 子集</td></tr>
+        <tr><td>Iterations</td><td><strong>450,000</strong></td><td><strong>10,000</strong></td></tr>
+        <tr><td>Batch Size</td><td>64</td><td>8</td></tr>
+        <tr><td>优化器</td><td>Adam</td><td>Adam</td></tr>
+        <tr><td>初始学习率</td><td>5×10⁻⁴</td><td>1×10⁻⁴</td></tr>
+        <tr><td>损失函数</td><td>\(\mathcal{L}_{rec}^R\)</td><td>完整 \(\mathcal{L}\)（Eq. 12）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>Stage 2：跨域联合微调</strong>——将 Stage 1 的真实域特异组件（\(E_a^R\)、\(E_m^R\)、\(p^R\)、\(T_B^R\)、\(G^R\)）<strong>复制</strong>作为卡通域初始组件 #Gong-et-al.-2023#，用少量卡通数据 + 类比约束联合微调。</p>
+
+  <h3 class="section-title">3.2 完整目标函数</h3>
+
+  <p>完整损失函数包含 6 项：</p>
+
+  \[\mathcal{L} = \mathcal{L}_{rec}^R + \mathcal{L}_{rec}^C + \lambda_m (\mathcal{L}_{motion}^{R \to C} + \mathcal{L}_{motion}^{C \to R}) + \mathcal{L}_{adv}^C + \mathcal{L}_{adv}^R \tag{Eq. 12}\]
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>损失项</th><th>符号</th><th>作用</th><th>公式</th></tr></thead>
+      <tbody>
+        <tr><td>重建 L1</td><td>\(\mathcal{L}_1\)</td><td>像素级重建精度</td><td>\(\|x_{s \to d} - x_d\|_1\)</td></tr>
+        <tr><td>感知损失</td><td>\(\mathcal{L}_{per}\)</td><td>感知层面重建质量</td><td>VGG 特征距离</td></tr>
+        <tr><td>对抗损失</td><td>\(\mathcal{L}_{adv}\)</td><td>生成图像真实性</td><td>\(-\log(D(x_g))\)</td></tr>
+        <tr><td>重建总损失</td><td>\(\mathcal{L}_{rec}\)</td><td>域内重建综合</td><td>\(\mathcal{L}_1 + \lambda_{per}\mathcal{L}_{per} + \mathcal{L}_{adv}\)</td></tr>
+        <tr><td>Motion Loss</td><td>\(\mathcal{L}_{motion}\)</td><td>跨域动作一致性</td><td>\(\|(\Delta\omega_{cartoon}) - (\Delta\omega_{real})\|_1\)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>关键超参数：<strong>\(\lambda_{per} = 10\)</strong>（感知损失权重），<strong>\(\lambda_m = 20\)</strong>（类比约束权重）。后者的权衡效应将在 §5.4 消融实验中详细分析。</p>
+</div>
+
+<!-- ============================================================
+  Part 4: 推理 Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">推理 Pipeline：双向跨域推理流程</div>
+
+  <h3 class="section-title">4.1 Real→Cartoon（真实驱动卡通）</h3>
+
+  <ol>
+    <li>真实驱动视频帧 \(x_d^R\) → \(E_m^R\) → 动作描述符 \(F_d^R\)</li>
+    <li>卡通源图像 \(x_s^C\) → \(E_a^C\) → 外观特征 \(S^C\)，\(E_m^C\) → \(F_s^C\)</li>
+    <li>\(T_{s \to r}(F_s^C, p^C) = w_{s \to r}\)，\(T_{r \to d}(F_d^R, p^R) = w_{r \to d}\)</li>
+    <li>规范空间向量加法：\(w_{s \to d} = w_{s \to r} + w_{r \to d}\)</li>
+    <li>\(T_B^C(w_{s \to d})\) → 条件特征</li>
+    <li>\(G^C(\text{条件特征}, S^C)\) → 输出动画卡通图像</li>
+  </ol>
+
+  <h3 class="section-title">4.2 Cartoon→Real（卡通驱动真实）</h3>
+
+  <p>角色互换，流程对称。卡通视频帧经 \(E_m^C\) 提取动作描述符，经 \(T_{r \to d}\) 投射到规范空间；真实源图像经 \(E_a^R\) 提取外观特征，经 \(T_{s \to r}\) 投射到规范空间。向量加法后，\(T_B^R\) 投射回真实域，\(G^R\) 生成动画真实图像。</p>
+
+  <p>双向推理的一个关键特点是：<strong>规范空间充当了"通用翻译中间层"</strong>——任何域的动作都先"翻译"到规范空间，再"翻译"回目标域。这使得方法在理论上可以扩展到更多域，而无需重新训练。</p>
+</div>
+
+<!-- ============================================================
+  Part 5: 实验配置与验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <h3 class="section-title">5.1 Disney 风格卡通数据集</h3>
+
+  <p>ToonTalker 自建了一个 Disney 动画风格的卡通数据集：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>属性</th><th>值</th></tr></thead>
+      <tbody>
+        <tr><td>总视频数</td><td><strong>344</strong></td></tr>
+        <tr><td>总帧数</td><td>约 47,000</td></tr>
+        <tr><td>帧率</td><td>30 FPS</td></tr>
+        <tr><td>训练/测试划分</td><td>289 / 55</td></tr>
+        <tr><td>配对数据</td><td>❌</td></tr>
+        <tr><td>3DMM 标注</td><td>❌</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>与 AnimeCeleb 不同，该数据集不需要 3DMM 标注或配对数据，更接近实际应用——现实中卡通数据通常是无标注的。</p>
+
+  <h3 class="section-title">5.2 实验配置表</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>评估任务</th><th>驱动源</th><th>源图像</th><th>生成视频数</th><th>主要指标</th></tr></thead>
+      <tbody>
+        <tr><td>Real→Cartoon</td><td>60 VoxCeleb 视频</td><td>300 卡通图像</td><td>18,000</td><td>FID, CPBD</td></tr>
+        <tr><td>Cartoon→Real</td><td>55 卡通视频</td><td>275 CelebA-HQ</td><td>15,125</td><td>FID, CSIM, CPBD</td></tr>
+        <tr><td>域内同身份重建</td><td>200 VoxCeleb 测试视频</td><td>同源视频帧</td><td>—</td><td>L1, LPIPS, AKD, AED</td></tr>
+        <tr><td>域内跨身份（真实）</td><td>200 VoxCeleb 视频</td><td>1,000 CelebA-HQ</td><td>1,000</td><td>FID, CSIM, CPBD</td></tr>
+        <tr><td>域内跨身份（卡通）</td><td>55 卡通视频</td><td>275 卡通图像</td><td>—</td><td>FID, CPBD</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>所有对比方法（FOMM #Siarohin-et-al.-2020#、LIA #Wang-et-al.-2022#、DaGAN #Wang-et-al.-2023#）均使用相同卡通训练数据微调，保证公平比较。</p>
+
+  <h3 class="section-title">5.3 Real→Cartoon 跨域重演</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>FID ↓</th><th>CPBD ↑</th></tr></thead>
+      <tbody>
+        <tr><td>FOMM</td><td>30.369</td><td>0.0436</td></tr>
+        <tr><td>LIA</td><td>30.442</td><td>0.0493</td></tr>
+        <tr><td>DaGAN</td><td>29.779</td><td>0.0735</td></tr>
+        <tr><td><strong>ToonTalker</strong></td><td><strong>28.531</strong></td><td><strong>0.0840</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Real→Cartoon 方向的改进相对温和（FID 降低 4.2%–6.1%），这是因为真实域驱动信号本身就比较规范，各方法的差异不大。</p>
+
+  <h3 class="section-title">5.4 Cartoon→Real 跨域重演</h3>
+
+  <div class="photo">
+    <img src="media/images/toontalker-2023/cross-domain.webp" alt="跨域重演定性对比" loading="lazy">
+    <div class="cap">图 3：跨域重演定性对比——ToonTalker 在画质和动作一致性方面优于其他方法（来源：ToonTalker, Fig. 5）</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>FID ↓</th><th>CSIM ↑</th><th>CPBD ↑</th></tr></thead>
+      <tbody>
+        <tr><td>FOMM</td><td>51.929</td><td>0.536</td><td>0.0626</td></tr>
+        <tr><td>LIA</td><td>48.611</td><td>0.515</td><td>0.0727</td></tr>
+        <tr><td>DaGAN</td><td>47.222</td><td>0.561</td><td>0.0985</td></tr>
+        <tr><td><strong>ToonTalker</strong></td><td><strong>31.852</strong></td><td><strong>0.655</strong></td><td><strong>0.1230</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Cartoon→Real 方向的改进幅度惊人：FID 从 47.222 降到 31.852（<strong>降低 32.5%</strong>），CSIM 从 0.561 提升到 0.655（<strong>提升 16.8%</strong>）。这证明了类比约束在"高难度方向"上的价值更大——卡通面部比例和运动范围与真实差异巨大，传统方法很难处理。</p>
+
+  <h3 class="section-title">5.5 消融实验</h3>
+
+  <div class="photo">
+    <img src="media/images/toontalker-2023/ablation.webp" alt="消融实验定性结果" loading="lazy">
+    <div class="cap">图 4：消融实验定性对比——无类比约束时，模型无法准确模仿驱动动作（来源：ToonTalker, Fig. 8）</div>
+  </div>
+
+  <p><strong>① 类比约束消融（Table 5）</strong>：去除类比约束后，Cartoon→Real FID 从 31.852 暴升至 43.353（<strong>+36.1%</strong>），定性观察也发现模型无法准确模仿驱动动作（如闭眼动作失败）。</p>
+
+  <p><strong>② 超参数 \(\lambda_m\) 消融（Table 6）</strong>：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>\(\lambda_m\)</th><th>Real→Cartoon FID ↓</th><th>Cartoon→Real FID ↓</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td><strong>26.885</strong></td><td>33.463</td></tr>
+        <tr><td>20</td><td>28.531</td><td>31.852</td></tr>
+        <tr><td>40</td><td>32.094</td><td>30.176</td></tr>
+        <tr><td>100</td><td>41.936</td><td><strong>28.166</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>\(\lambda_m\) 本质上在两个跨域方向之间进行权衡：\(\lambda_m = 0\) 时 Real→Cartoon 最优但 Cartoon→Real 最差，\(\lambda_m = 100\) 时反过来。\(\lambda_m = 20\) 是两个方向的<strong>最佳平衡点</strong>。</p>
+
+  <p><strong>③ 架构消融（Table 7）</strong>：将 Query Transformer 替换为 MLP 导致 Real→Cartoon FID <strong>灾难性恶化</strong>（28.531 → 116.740，4 倍以上） #Gong-et-al.-2023#，证明 Transformer 在跨域动作对齐中不可替代。移除 SFT 对 Cartoon→Real 影响更大（+9.225 FID），因为高分辨率特征细化对生成质量至关重要。</p>
+
+  <h3 class="section-title">5.6 User Study：20 人四选一偏好测试</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
+      <tbody>
+        <tr><td>被试数量</td><td><strong>20 人</strong></td></tr>
+        <tr><td>任务形式</td><td>20 道选择题，从 4 个方法生成的卡通视频中选最佳</td></tr>
+        <tr><td>量表类型</td><td>Best-of-4 单选</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>偏好率</th></tr></thead>
+      <tbody>
+        <tr><td><strong>ToonTalker</strong></td><td><strong>72.75%</strong></td></tr>
+        <tr><td>LIA</td><td>13.75%</td></tr>
+        <tr><td>DaGAN</td><td>9.00%</td></tr>
+        <tr><td>FOMM</td><td>4.50%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>ToonTalker 以压倒性优势获得最高偏好率，是第二名（LIA）的 <strong>5.3 倍</strong>。该 User Study 只问"整体最佳"，不拆分画质/同步/自然度——在卡通领域这是合理选择，因为卡通的"好"是一个整体感知，很难像真实 talking head 那样分解为独立维度。</p>
+
+  <h3 class="section-title">5.7 规范空间 t-SNE 可视化</h3>
+
+  <p>为验证跨域对齐是否真正生效，作者使用 t-SNE 对规范空间的相对动作进行了可视化：从 3 个模板姿态出发，分别计算真实域和卡通域的相对动作向量。结果显示，同一模板驱动的真实域和卡通域相对动作在规范空间中<strong>聚集在一起</strong> #Gong-et-al.-2023#，证明两个域的动作已成功对齐。</p>
+</div>
+
+<!-- ============================================================
+  Part 6: 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">讨论与启发</div>
+
+  <h3 class="section-title">6.1 局限</h3>
+
+  <p><strong>极端姿态</strong>：极端头部姿态下产生伪影和形变，因为训练集中罕见这类样本。<strong>无 3D 先验</strong>：方法不依赖 3DMM，适用范围比 AnimeCeleb 更广，但也无法利用 3D 先验来约束不合理变形。<strong>单一卡通风格</strong>：Disney 数据集只包含一种风格，对日本动画、3D 渲染等风格的泛化能力未充分验证（虽然作者展示了 Stable Diffusion 生成角色的初步结果 #Gong-et-al.-2023#）。</p>
+
+  <h3 class="section-title">6.2 对评测的启示</h3>
+
+  <p>ToonTalker 使用的 FID、CPBD、CSIM 等指标在卡通域的可靠性存疑（如系列（十三） #tangwen-2026-cartoon-eval# 所分析的）。但它是目前唯一提供<strong>双向跨域</strong>定量评测的卡通 talking head 工作，其 Disney 数据集也为后续研究提供了重要的基础设施。</p>
+
+  <h3 class="section-title">6.3 类比约束的普适性</h3>
+
+  <p>类比约束的核心思想——"相对变化在不同域之间应当等价"——具有很强的普适性。它不仅适用于卡通-真实跨域，也可以推广到：</p>
+
+  <ul>
+    <li>不同艺术风格之间的运动迁移（如写实风格 → 抽象风格）</li>
+    <li>不同物种之间的表情迁移（如人脸 → 动物脸）</li>
+    <li>不同模态之间的运动对齐（如音频 → 视觉）</li>
+  </ul>
+
+  <p>关键在于能否定义一个"规范空间"使得不同域的相对运动可以比较。ToonTalker 通过参数共享的 Query Transformer 实现了这一点，这为后续的跨域生成工作提供了一个优雅的参考范式。</p>
+</div>
+
+<!-- ============================================================
+  Part 7: 总结与收获
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">总结与收获</div>
+
+  <ol>
+    <li><strong>跨域核心创新</strong>：类比约束在无配对数据条件下实现双向跨域运动迁移，核心思想是"相对动作在不同域之间等价"</li>
+    <li><strong>架构设计</strong>：域特异组件 + 域共享 Transformer 的组合，规范空间充当"通用翻译中间层"</li>
+    <li><strong>数据贡献</strong>：自建 Disney 卡通数据集（344 视频 / 47K 帧），不需要配对数据或 3DMM 标注</li>
+    <li><strong>定量优势</strong>：Cartoon→Real FID 降低 32.5%，CSIM 提升 16.8%；User Study 72.75% 压倒性偏好</li>
+    <li><strong>架构消融</strong>：Query Transformer 不可被 MLP 替代（FID 恶化 4 倍），SFT 对 Cartoon→Real 影响最大</li>
+    <li><strong>评测启示</strong>：卡通域 FID/CPBD 的可靠性仍需审视，ToonTalker 为评测方法论研究提供了重要的实验基础设施</li>
+  </ol>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Gong-et-al.-2023">Gong, Y. et al. (2023). ToonTalker: Cross-Domain Face Reenactment. <em>ICCV 2023</em>. <a href="https://arxiv.org/abs/2308.12866" target="_blank">arXiv:2308.12866</a></li>
+    <li data-cite-key="Siarohin-et-al.-2020">Siarohin, A. et al. (2020). First Order Motion Model for Image Animation. <em>NeurIPS 2019</em>. <a href="https://arxiv.org/abs/2003.00196" target="_blank">arXiv:2003.00196</a></li>
+    <li data-cite-key="Wang-et-al.-2022">Wang, S. et al. (2022). Latent Image Animator: Learning to Animate Images via Latent Space Navigation. <em>ICLR 2022</em>. <a href="https://arxiv.org/abs/2203.09043" target="_blank">arXiv:2203.09043</a></li>
+    <li data-cite-key="Wang-et-al.-2023">Wang, Z. et al. (2023). Dense Intra-adversarial Inconsistencies-aware Network for Face Animation. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2203.11317" target="_blank">arXiv:2203.11317</a></li>
+    <li data-cite-key="Liu-et-al.-2022">Liu, S. et al. (2022). AnimeCeleb: Large-Scale Animation Celebrities Dataset for Head Reenactment. <em>ECCV 2022</em>. <a href="https://arxiv.org/abs/2111.07640" target="_blank">arXiv:2111.07640</a></li>
+    <li data-cite-key="Xu-et-al.-2022">Xu, Z. et al. (2022). Motion Adaptive Transformer for Face Animation. <em>arXiv preprint</em>. <a href="https://arxiv.org/abs/2204.13377" target="_blank">arXiv:2204.13377</a></li>
+    <li data-cite-key="Jaegle-et-al.-2021">Jaegle, A. et al. (2021). Perceiver: General Perception with Iterative Attention. <em>ICML 2021</em>. <a href="https://arxiv.org/abs/2103.03206" target="_blank">arXiv:2103.03206</a></li>
+    <li data-cite-key="tangwen-2026-cartoon-eval">tangwen (2026). 数字人系列（十三）：卡通与风格化数字人——从跨域生成到评测方法论. <a href="digital-human-cartoon-stylized-evaluation.html">博客文章</a></li>
+  </ul>
+</div>

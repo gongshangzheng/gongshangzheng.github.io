@@ -1,0 +1,691 @@
+---
+title: "数字人系列（十三）：卡通与风格化数字人——从跨域生成到评测方法论"
+description: "系统梳理卡通/风格化数字人的代表性工作（ToonTalker、MakeItTalk、GenEAva、Co-Speech NPR、SadTalker 等），拆解主观测试设计（User Study / MOS / Likert / 2AFC），分析客观指标（FID / FVD / SyncNet / CSIM）在非真实感场景的失效模式，引入 THEval 八维评测框架与 StyleLoss 新指标，给出卡通数字人评测的完整方法论。"
+date: 2026-07-06T18:00:00
+created_at: 2026-07-06T18:00:00
+updated_at: 2026-07-06T18:00:00
+tags: [数字人, Cartoon, Stylized, 卡通, 风格化, Talking Head, Evaluation, User Study, FID, THEval, 评测指标, Non-Photorealistic]
+aliases: ["categories/AI/数字人"]
+sub_id: 130
+toc: true
+mathjax: true
+notify: true
+papers: []
+repos: []
+hub: "digital-human-hub"
+hero_title: "卡通与风格化数字人"
+hero_sub: "从跨域生成到评测方法论"
+hero_tagline: "系列（十三）· Cartoon · Stylized · Non-Photorealistic · Evaluation · User Study"
+---
+<div class="stats">
+  <div class="stat"><span class="num">8+</span><span class="label">核心代表工作</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label g">主观评测设计拆解</span></div>
+  <div class="stat"><span class="num">6</span><span class="label">客观指标失效分析</span></div>
+  <div class="stat"><span class="num b">8</span><span class="label l">THEval 评测维度</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">新兴评测方向</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列位置</div>
+  <div class="ch-title">当数字人走出恐怖谷——卡通与风格化路线的方法论全景</div>
+
+  前面十二篇系列文章几乎都围绕一个隐含假设展开：数字人的终极目标是<mark>尽可能像真人</mark>。但产业里有一条同样活跃、却很少被系统讨论的路线——<strong>卡通与风格化数字人</strong>。从迪士尼风格的 2D 卡通头像，到动漫风格的 3D 角色，再到手绘质感的非真实感肖像动画，这些工作追求的恰恰不是"逼真"，而是"风格化的自然"。
+
+  这条路线带来一个根本性的评测难题：如果目标不是"像真人"，那 FID 衡量的"生成分布与真实分布的距离"还有意义吗？SyncNet 训练的唇同步判别器能看懂卡通嘴型吗？CSIM 用 ArcFace 提取的身份特征对二次元角色还有效吗？
+
+  本文从代表性工作出发，拆解卡通数字人的生成方法、主观测试设计和客观指标适用性，最后给出评测方法论的反思与建议。
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="digital-human-realtime-gpu-comparison.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇 · 系列十二</span><span class="nav-title">实时性全景对比</span></a>
+    <a class="nav-card nav-hub current" href="digital-human-cartoon-stylized-evaluation.html"><span class="nav-label">本文</span><span class="nav-title">卡通与风格化数字人</span></a>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 1: 什么是卡通/风格化数字人
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">什么是卡通/风格化数字人</div>
+
+  <p>"卡通数字人"并不是一个严格的技术术语。在本系列的语境下，我们用三个层次来界定这个领域：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层次</th><th>定义</th><th>代表工作</th><th>视觉特征</th></tr></thead>
+      <tbody>
+        <tr><td><strong>卡通域生成</strong></td><td>在卡通/动漫图像空间中直接生成 talking head</td><td>ToonTalker、MakeItTalk、GenEAva</td><td>2D 卡通角色、动漫风格头像</td></tr>
+        <tr><td><strong>跨域迁移</strong></td><td>将真实域运动迁移到卡通域，或反向</td><td>ToonTalker（Real↔Cartoon）、SadTalker</td><td>真实运动 → 卡通渲染</td></tr>
+        <tr><td><strong>风格化控制</strong></td><td>在保持身份的前提下施加视觉风格</td><td>SVP、ChatAnyone、HunyuanPortrait、CapTalk</td><td>说话风格迁移、anime 化、手绘质感</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>还有一个特殊子方向：<strong>非真实感 3D 角色</strong>（Non-Photorealistic Characters）——以 Sony 2025 年 SIGGRAPH 工作为代表，专门为动漫风格 3D 角色生成共语音手势和夸张表情。这些角色的面部结构（大眼睛、夸张比例）与真实人脸有本质差异，评测方法也需要相应调整。</p>
+
+  <h3 class="section-title">1.1 为什么需要卡通数字人</h3>
+
+  <p>三个驱动力：</p>
+
+  <ul>
+    <li><strong>隐私与匿名性</strong>：虚拟主播、匿名播客、企业内部培训——用户希望有一个能说话的"形象"，但不想暴露真实面孔。</li>
+    <li><strong>IP 与品牌一致性</strong>：品牌吉祥物、游戏 NPC、教育类动画角色需要"活起来"，且保持固定的视觉风格。</li>
+    <li><strong>恐怖谷回避</strong>：当数字人用于儿童教育、心理健康辅助等场景时，卡通形象比“几乎像真人但不够像”的形象更容易被接受。</li>
+  </ul>
+
+  <h3 class="section-title">1.2 任务 Taxonomy：卡通数字人要解决什么问题</h3>
+
+  <p>从“要生成什么”的角度，卡通数字人领域可以划分为四类任务：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>任务类型</th><th>输入</th><th>输出</th><th>评测重点</th><th>代表论文</th><th>不适用场景</th></tr></thead>
+      <tbody>
+        <tr><td><strong>音频驱动卡通 Talking Head</strong></td><td>卡通/动漫图像 + 音频</td><td>唇音同步的卡通视频</td><td>唇同步质量、风格一致性、时序稳定性</td><td>MakeItTalk、ToonTalker</td><td>需要全身动作的场景</td></tr>
+        <tr><td><strong>跨域面部重演</strong></td><td>源域视频（真人）+ 目标域图像（卡通）</td><td>目标域风格的重演视频</td><td>身份保持、运动保真、风格一致性</td><td>ToonTalker（Real↔Cartoon）</td><td>无配对训练数据时</td></tr>
+        <tr><td><strong>风格化表情/手势生成</strong></td><td>音频/文本 + 角色模型</td><td>风格化的 3D 动画序列</td><td>表现力、风格匹配、夸张度合理性</td><td>Co-Speech NPR、CapTalk</td><td>实时交互场景</td></tr>
+        <tr><td><strong>卡通头像数据集构建</strong></td><td>真实人脸表情数据</td><td>卡通风格头像集</td><td>表情覆盖度、身份多样性、平衡性</td><td>GenEAva</td><td>视频级动画需求</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">1.3 技术路线 Taxonomy：用什么方法解决</h3>
+
+  <p>从“用什么表示和模型”的角度，卡通数字人的技术路线可分为四条：</p>
+
+  {{< mermaid >}}
+  flowchart TD
+    A["卡通数字人技术路线"] --> B["关键点驱动"]
+    A --> C["3DMM 运动系数"]
+    A --> D["扩散模型"]
+    A --> E["Transformer 直接映射"]
+    B --> B1["MakeItTalk"]
+    B --> B2["ToonTalker"]
+    C --> C1["SadTalker"]
+    C --> C2["ChatAnyone"]
+    D --> D1["GenEAva"]
+    D --> D2["HunyuanPortrait"]
+    E --> E1["Co-Speech NPR"]
+    E --> E2["CapTalk"]
+  {{< /mermaid >}}
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>技术路线</th><th>核心表示</th><th>适配任务</th><th>优势</th><th>限制</th><th>工程可得性</th></tr></thead>
+      <tbody>
+        <tr><td><strong>关键点驱动</strong></td><td>面部关键点（2D/3D landmarks）</td><td>音频驱动 2D 卡通生成、跨域重演</td><td>简单直观，卡通域可定制关键点</td><td>关键点检测在卡通域不稳定，缺乏标准工具</td><td>MakeItTalk 开源；ToonTalker 开源</td></tr>
+        <tr><td><strong>3DMM 运动系数</strong></td><td>3D Morphable Model 的 pose/expression 参数</td><td>跨域迁移、风格化控制</td><td>天然跨域（同一组系数驱动不同渲染器），物理可解释</td><td>对卡通夸张表情建模能力有限</td><td>SadTalker 开源；ChatAnyone 开源</td></tr>
+        <tr><td><strong>扩散模型</strong></td><td>去噪扩散过程 + 条件控制</td><td>高质量图像/视频生成、数据集构建</td><td>生成质量最高，支持多模态条件</td><td>推理慢，不适合实时场景</td><td>GenEAva 代码可用；HunyuanPortrait 开源</td></tr>
+        <tr><td><strong>Transformer 直接映射</strong></td><td>注意力机制学习输入-输出映射</td><td>共语音手势/表情生成、文本引导风格化</td><td>可处理多模态输入，建模长距离依赖</td><td>训练数据需求大，推理开销较高</td><td>Co-Speech NPR 未开源；CapTalk 开源</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 2: 代表性工作
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">代表性工作：从 MakeItTalk 到 Co-Speech NPR</div>
+
+  <p>以下按时间线梳理卡通/风格化数字人的核心工作。重点关注每篇论文如何处理"卡通域"的特殊挑战。</p>
+
+  <h3 class="section-title">2.1 MakeItTalk（SIGGRAPH Asia 2020）——统一框架的先驱</h3>
+
+  <p>MakeItTalk 是第一个在统一框架内同时处理真实人脸和非真实感风格的音频驱动 talking head 方法 #Zhou-et-al.-2020#。其核心思路是：</p>
+
+  <ol>
+    <li>从音频中解耦<strong>内容信息</strong>（说了什么）和<strong>说话人信息</strong>（怎么说的）；</li>
+    <li>用面部关键点（facial landmarks）作为中间表示，驱动图像合成；</li>
+    <li>为非真实感图像设计了专门的关键点驱动合成方法，区别于真实人脸的渲染路径。</li>
+  </ol>
+
+  <p>支持的风格范围极广：艺术绘画、素描、2D 卡通角色、日本漫画、风格化漫画。但局限也很明显——卡通域的关键点检测比真实人脸更具挑战性，缺乏标准工具，面部变形容易产生伪影。</p>
+
+  <h3 class="section-title">2.2 SadTalker（CVPR 2023）——3DMM 作为跨域桥梁</h3>
+
+  <p>SadTalker 的全称本身就是 "<strong>S</strong>tylized <strong>A</strong>udio-<strong>D</strong>riven Talking-head"#Zhang-et-al.-2023#。它通过 3DMM（3D Morphable Model）的运动系数作为中间表示，ExpNet 学习表情、PoseVAE 生成头部运动，再映射到无监督 3D 关键点空间。</p>
+
+  <p>虽然主实验仅在真实人脸上进行，但论文明确指出方法可扩展到 2D Cartoon animation（类似 MakeItTalk 管线）。3DMM 系数作为"运动语言"，天然具有跨域迁移的潜力——同一组表情和姿态参数可以驱动不同的渲染器。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标</th><th>Wav2Lip</th><th>MakeItTalk</th><th>SadTalker</th></tr></thead>
+      <tbody>
+        <tr><td>LSE-C ↑</td><td><strong>8.211</strong></td><td>5.110</td><td>7.290</td></tr>
+        <tr><td>FID ↓</td><td>21.725</td><td>28.243</td><td><strong>22.057</strong></td></tr>
+        <tr><td>CPBD ↑</td><td>0.368</td><td>0.283</td><td>0.335</td></tr>
+        <tr><td>运动多样性 ↑</td><td>—</td><td>0.212</td><td><strong>0.278</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">2.3 ToonTalker（ICCV 2023）——首个跨域卡通面部重演 · <a href="toontalker-2023.html">精读三十三</a></h3>
+
+  <p>ToonTalker 是目前最纯粹的"卡通数字人"工作 #Gong-et-al.-2023#。它基于 Transformer 架构，使用域特异和域共享组件将真实域和卡通域的运动对齐到共享规范运动空间，通过<strong>类比约束</strong>（Analogy Constraint）解决无配对训练数据问题。</p>
+
+  <div class="photo">
+    <img src="media/images/digital-human-cartoon-stylized-evaluation/toontalker-architecture.webp" alt="ToonTalker 三阶段架构：特征提取、规范空间变换、图像生成" loading="lazy">
+    <div class="cap">图 4：ToonTalker 框架——域特异组件（外观/动作编码器、生成器）+ 域共享 Query Transformer，通过规范空间中的向量加法实现跨域运动迁移（来源：ToonTalker, Fig. 3）</div>
+  </div>
+
+  <p>关键设计：自建 <strong>Disney 风格卡通视频数据集</strong>（344 个视频，约 47K 帧），双向跨域重演（Real→Cartoon 和 Cartoon→Real）。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方向</th><th>方法</th><th>FID ↓</th><th>CPBD ↑</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="4">Real→Cartoon</td><td>FOMM</td><td>30.369</td><td>0.0436</td></tr>
+        <tr><td>LIA</td><td>30.442</td><td>0.0493</td></tr>
+        <tr><td>DaGAN</td><td>29.779</td><td>0.0735</td></tr>
+        <tr><td><strong>ToonTalker</strong></td><td><strong>28.531</strong></td><td><strong>0.0840</strong></td></tr>
+        <tr><td rowspan="2">Cartoon→Real</td><td>DaGAN（次优）</td><td>47.222</td><td>0.0985</td></tr>
+        <tr><td><strong>ToonTalker</strong></td><td><strong>31.852</strong></td><td><strong>0.1230</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>精读三十三补充发现</strong> #Gong-et-al.-2023#：架构消融实验揭示了一个令人惊讶的事实——将 Query Transformer 替换为 MLP 导致 Real→Cartoon FID 从 28.5 灾难性恶化至 <strong>116.7</strong>（4 倍以上），证明 Transformer 在跨域动作对齐中不可替代。此外，类比约束损失权重 \(\lambda_m\) 在两个跨域方向之间存在根本性张力：\(\lambda_m = 0\) 时 Real→Cartoon 最优但 Cartoon→Real 最差，\(\lambda_m = 100\) 时反向。这揭示了一个评测方法论上的重要洞察：<strong>跨域评测的两个方向可能受不同机制主导</strong>，单一超参数设置无法同时优化双向表现。</p>
+
+  <h3 class="section-title">2.4 GenEAva（2025）——首个细粒度表情卡通头像数据集 · <a href="geneava-2025.html">精读三十五</a></h3>
+
+  <p>GenEAva 解决的是静态图像生成问题，但为卡通数字人的评测提供了重要的数据基础设施 #Yu-et-al.-2025#。其流程是：在 SDXL 上用 135 类表情数据集（Emo135）微调 → 生成高质量真实人脸表情 → 通过 DCTNet 转换为 3D cartoon 风格。</p>
+
+  <p>最终产出 <strong>GenEAva 1.0 数据集</strong>：13,230 张卡通头像，135 种表情，平衡性别、7 个种族群体和年龄分布。这是第一个专门为细粒度表情设计的卡通头像数据集。</p>
+
+  <h3 class="section-title">2.5 Co-Speech NPR（SIGGRAPH 2025）——非真实感角色的共语音生成 · <a href="cospeech-npr-2025.html">精读三十四</a></h3>
+
+  <p>Sony 的这项工作是目前唯一专门为<strong>非真实感 3D 角色</strong>设计共语音手势和表情的方法 #Omine-et-al.-2025#。两个核心创新：</p>
+
+  <ul>
+    <li><strong>语义优先手势生成</strong>：通过句子嵌入匹配对话短语到自建手势数据集（500 个实例）；</li>
+    <li><strong>漫画数据驱动表情</strong>：利用多模态 LLM 从 Manga109 等漫画中自动提取约 130 种情感类别的夸张表情（震惊蓝线、冒汗、脸红、圆眼等动漫特有表情）。</li>
+  </ul>
+
+  <p>这篇工作有一个值得注意的评测选择：<strong>完全不做客观指标评测</strong>，只进行 User Study。作者的判断是：对于动漫风格角色的“整体吸引力”和“视觉匹配度”，现有客观指标无法提供有意义的评估。</p>
+  
+  <div class="photo">
+    <img src="media/images/digital-human-cartoon-stylized-evaluation/cospeech-npr-expressions.webp" alt="Co-Speech NPR 的夸张表情类型" loading="lazy">
+    <div class="cap">图 1：Co-Speech NPR 针对非真实感角色设计的五类夸张表情（震惊蓝线、冒汗、脸红、圆眼、不等式眼），这些表情在真实域无对应物（来源：Co-Speech NPR, Fig. 2）</div>
+  </div>
+  
+  <div class="photo">
+    <img src="media/images/digital-human-cartoon-stylized-evaluation/cospeech-npr-comparison.webp" alt="Co-Speech NPR vs EMAGE 用户研究对比" loading="lazy">
+    <div class="cap">图 2：User Study 中 EMAGE（左）与 Co-Speech NPR（右）在三段对话中的对比，右侧在表情丰富度和手势语义匹配上显著优于左侧（来源：Co-Speech NPR, Fig. 1）</div>
+  </div>
+
+  <h3 class="section-title">2.6 其他重要工作</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>工作</th><th>年份</th><th>风格化类型</th><th>核心贡献</th></tr></thead>
+      <tbody>
+        <tr><td><strong>SVP</strong> #Tan-et-al.-2024#</td><td>2024</td><td>说话风格</td><td>首个建模内在说话风格的扩散 talking head，风格聚类强度 8.38</td></tr>
+        <tr><td><strong>ChatAnyone</strong> #Qi-et-al.-2025#</td><td>2025</td><td>说话风格 + 表情强度</td><td>实时 30fps 上半身生成，支持参考视频风格迁移</td></tr>
+        <tr><td><strong>HunyuanPortrait</strong> #Xu-et-al.-2025#</td><td>2025</td><td>Anime 风格</td><td>隐式条件控制 + 扩散模型，身份-运动解耦</td></tr>
+        <tr><td><strong>CapTalk</strong> #Chu-et-al.-2025#（<a href="captalk-2025.html">精读三十七</a>）</td><td>2025</td><td>文本引导 3D 风格化</td><td>24,441 clips 数据集 + 文本引导风格化 3D 头部动画</td></tr>
+        <tr><td><strong>Style Transfer 2D TH</strong> #Pham-et-al.-2024#</td><td>2024</td><td>可学习风格参考</td><td>给定风格参考帧生成风格化 2D talking head</td></tr>
+
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">2.7 方法矩阵：系统对比</h3>
+
+  <p>以下矩阵从 7 个维度系统对比卡通/风格化数字人的代表方法：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>核心表示</th><th>驱动信号</th><th>训练数据</th><th>输出形式</th><th>实时性</th><th>可控性</th><th>主要评测指标</th></tr></thead>
+      <tbody>
+        <tr><td><strong>MakeItTalk</strong></td><td>2D 关键点</td><td>音频（内容+说话人解耦）</td><td>VoxCeleb2 + 风格化图像</td><td>2D 卡通视频</td><td>非实时</td><td>低（仅音频驱动）</td><td>LSE-C, FID, User Study</td></tr>
+        <tr><td><strong>SadTalker</strong></td><td>3DMM 运动系数</td><td>音频</td><td>VoxCeleb2</td><td>2D 视频（可扩展卡通）</td><td>非实时</td><td>中（3DMM 系数可控）</td><td>LSE-C, FID, CPBD</td></tr>
+        <tr><td><strong>ToonTalker</strong></td><td>Transformer + 共享运动空间</td><td>视频（跨域重演）</td><td>Disney 卡通数据集（344 视频）</td><td>双向跨域视频</td><td>非实时</td><td>中（源视频控制）</td><td>FID, CPBD, User Study</td></tr>
+        <tr><td><strong>ChatAnyone</strong></td><td>3DMM + 扩散模型</td><td>音频 + 参考视频</td><td>MEAD + VoxCeleb2</td><td>上半身视频</td><td>实时 30fps</td><td>高（风格参考视频）</td><td>FID, 风格聚类, User Study</td></tr>
+        <tr><td><strong>GenEAva</strong></td><td>SDXL + DCTNet</td><td>表情标签</td><td>Emo135（自建）</td><td>卡通头像图像</td><td>非实时</td><td>高（135 类表情）</td><td>AMT 身份/表情保持率</td></tr>
+        <tr><td><strong>Co-Speech NPR</strong></td><td>Transformer + 漫画数据</td><td>音频 + 语义嵌入</td><td>自建手势库 + Manga109</td><td>3D NPR 角色动画</td><td>非实时</td><td>高（情绪类别控制）</td><td>仅 User Study（5 维 Likert）</td></tr>
+        <tr><td><strong>HunyuanPortrait</strong></td><td>扩散模型 + 隐式条件</td><td>视频（运动迁移）</td><td>VoxCeleb2 + AnimeGAN 转换</td><td>风格化视频</td><td>非实时</td><td>中（隐式控制）</td><td>FID, SSIM, User Study</td></tr>
+        <tr><td><strong>CapTalk</strong></td><td>多尺度 Codec + T5 文本条件</td><td>音频 + 文本</td><td>CapTalk 数据集（24,441 clips）</td><td>风格化 3D 头部动画</td><td>非实时</td><td>高（文本引导风格）</td><td>LVE, FFD, User Study (2AFC)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>几个值得注意的发现：<strong>实时性</strong>是目前只有 ChatAnyone 达到的（30fps），其余方法均为离线生成；<strong>可控性</strong>从“仅音频驱动”到“文本引导风格化”跨度极大；<strong>评测指标</strong>的碎片化程度严重——没有两个方法使用完全相同的指标组合。</p>
+
+  <h3 class="section-title">2.8 发展时间线：从探索到评测反思</h3>
+
+  <p>卡通数字人领域的发展可以分为三个阶段：</p>
+
+  <div class="timeline">
+    <div class="timeline-item">
+      <div class="year">2020–2022</div>
+      <div class="event"><strong>探索期：“能不能做”</strong>——MakeItTalk（2020）首次证明统一框架可同时处理真实人脸和非真实感风格，社区开始关注卡通域的 talking head 生成。核心共识：关键点可以作为中间表示桥接真实域和卡通域。但缺乏专门的卡通数据集和评测标准。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="year">2023–2024</div>
+      <div class="event"><strong>跨域期：“怎么迁移”</strong>——SadTalker（2023）证明 3DMM 运动系数可作跨域桥梁；ToonTalker（2023）首次实现双向跨域卡通重演并自建 Disney 数据集；SVP（2024）和 Style Transfer 2D TH（2024）将风格化控制引入讨论。核心共识：运动表示与视觉渲染可以解耦，同一运动可驱动不同风格。</div>
+    </div>
+    <div class="timeline-item">
+      <div class="year">2025–</div>
+      <div class="event"><strong>评测反思期：“怎么评”</strong>——THEval（CVPR 2025）用统计证据证明传统指标与人类偏好不显著相关；GenEAva 构建首个细粒度卡通表情数据集；Co-Speech NPR 完全放弃客观指标只做 User Study；CapTalk 引入文本引导的风格化控制。核心共识：卡通域需要专门的评测方法论，传统指标不能直接迁移。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 3: 主观测试设计
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">主观测试设计：User Study 的方法论拆解</div>
+
+  <p>卡通数字人领域有一个反直觉的现象：<strong>几乎所有核心工作都重度依赖 User Study</strong>，而非客观指标。这不是因为作者们偏好主观评测，而是因为——如 Part 4 将详细分析的——客观指标在风格化场景下大面积失效。</p>
+
+  <h3 class="section-title">3.1 ToonTalker：20 人四选一偏好测试</h3>
+
+  <p>ToonTalker 的 User Study 设计相对简洁 #Gong-et-al.-2023#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
+      <tbody>
+        <tr><td>被试数量</td><td><strong>20 人</strong></td></tr>
+        <tr><td>任务形式</td><td>20 道选择题，从 4 个竞争方法 + ToonTalker 生成的卡通视频中选最佳</td></tr>
+        <tr><td>量表类型</td><td>单选（Best-of-4）</td></tr>
+        <tr><td>结果</td><td>ToonTalker <strong>72.75%</strong> 被选，LIA 13.75%，DaGAN 9%，FOMM 4.5%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>优势是简洁直观，劣势是缺少多维度评估（只问"整体最佳"，不拆画质/同步/自然度）。</p>
+
+  <h3 class="section-title">3.2 Co-Speech NPR：Likert 量表五维评估</h3>
+
+  <p>Sony 的非真实感角色工作采用了更系统的评测设计 #Omine-et-al.-2025#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
+      <tbody>
+        <tr><td>对比方法</td><td>EMAGE（CVPR 2024）</td></tr>
+        <tr><td>评测维度</td><td><strong>Overall Appeal、Text Reflection、Visual Match、Audio Sync、Diversity</strong></td></tr>
+        <tr><td>情绪覆盖</td><td>7 种：Angry、Disgusted、Contempt、Fear、Happy、Sad、Surprised</td></tr>
+        <tr><td>量表类型</td><td>Likert 量表，报告 "Agree" + "Somewhat Agree" 百分比之和</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>结果差距极大：Overall Appeal 维度，EMAGE 仅 16%，本文 61%（+45pp）。最显著提升出现在 Fear 情绪的 Audio Sync（48% vs 92%）。</p>
+
+  <h3 class="section-title">3.3 CapTalk：13 人四维成对比较 · <a href="captalk-2025.html">精读三十七</a></h3>
+
+  <p>CapTalk 的 User Study 是风格化 3D talking head 领域目前最细粒度的设计 #Chu-et-al.-2025#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
+      <tbody>
+        <tr><td>被试数量</td><td><strong>13 人</strong></td></tr>
+        <tr><td>每人任务量</td><td>132 个问题（38 对对比试验）</td></tr>
+        <tr><td>评测维度</td><td><strong>Sync</strong>（唇同步）、<strong>Style</strong>（风格一致性）、<strong>Expression</strong>（表情一致性）、<strong>Pose</strong>（头部姿态）</td></tr>
+        <tr><td>量表类型</td><td>成对比较（2AFC），随机化呈现顺序</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>CapTalk vs FaceFormer：Sync 63%、Style 75%、Expression 73%。vs SelfTalk 差距最大：Sync 92%、Style 96%、Expression 98%。</p>
+
+  <h3 class="section-title">3.4 GenEAva：AMT 众包身份/表情双维验证 · <a href="geneava-2025.html">精读三十五</a></h3>
+
+  <p>GenEAva 在 Amazon Mechanical Turk 上做了卡通头像的身份和表情保持验证 #Yu-et-al.-2025#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
+      <tbody>
+        <tr><td>平台</td><td>Amazon Mechanical Turk (AMT)</td></tr>
+        <tr><td>被试数</td><td>9 名 Turkers / HIT</td></tr>
+        <tr><td>评测维度</td><td><strong>身份保持</strong> & <strong>表情保持</strong>（二分类：保持/未保持）</td></tr>
+        <tr><td>质量控制</td><td>每人 15 个示例 + 1 个测试题（明显不同身份），无效 HIT 丢弃</td></tr>
+        <tr><td>结果</td><td>表情保持 <strong>96%</strong>，身份保持 <strong>93%</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">3.5 THEval：成对比较 + Krippendorff α 一致性 · <a href="theval-2025.html">精读三十二</a></h3>
+
+  <p>THEval 虽然主要针对真实 talking head，但其 User Study 方法论对整个领域有重要参考价值 #Quignon-et-al.-2025#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
+      <tbody>
+        <tr><td>任务形式</td><td>成对比较（Pairwise），两视频并排播放，选更真实的</td></tr>
+        <tr><td>每人视频对数</td><td>153 对（覆盖所有方法对 + 真实视频）</td></tr>
+        <tr><td>偏差控制</td><td>位置随机化 + 内容随机化</td></tr>
+        <tr><td>一致性度量</td><td>Krippendorff's α = <strong>0.74</strong>（substantial agreement）</td></tr>
+        <tr><td>统计方法</td><td>Spearman 秩相关 + Bootstrap (n=10,000) 95% CI</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">3.6 主观测试设计要点总结</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>论文</th><th>被试数</th><th>维度数</th><th>量表类型</th><th>统计方法</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td>ToonTalker</td><td>20</td><td>1（整体）</td><td>Best-of-4</td><td>偏好率</td><td>快速方法对比</td></tr>
+        <tr><td>Co-Speech NPR</td><td>未报</td><td>5 × 7 情绪</td><td>Likert</td><td>Agree% 汇总</td><td>多维度细粒度评估</td></tr>
+        <tr><td>CapTalk</td><td>13</td><td>4</td><td>2AFC</td><td>偏好率 + 随机化</td><td>风格化质量对比</td></tr>
+        <tr><td>GenEAva</td><td>9/HIT</td><td>2</td><td>二分类</td><td>批准率</td><td>静态图像验证</td></tr>
+        <tr><td>THEval</td><td>未报</td><td>1（整体）</td><td>Pairwise</td><td>Spearman + Bootstrap</td><td>指标-人类对齐验证</td></tr>
+        <tr><td>4DHumanQA</td><td>48(24有效)</td><td>1（退化程度）</td><td>DSIS 5 级 MOS</td><td>ANOVA + SROCC</td><td>3D 动画质量评估</td></tr>
+        <tr><td>VIP-QA</td><td>25</td><td>1 + 失真标注</td><td>MOS (Z-score)</td><td>SRCC / PLCC</td><td>大规模 Talking Head QA</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>被试数量的隐含门槛</strong>：卡通/风格化领域的 User Study 被试数普遍偏少（9-25 人），远低于计算机图形学推荐的 30+ 人。THEval 和 4DHumanQA 虽然没有明确报告被试总数，但通过一致性系数（α = 0.74）和 ITU 标准化流程（24 人/刺激）间接保证了可信度。</div>
+</div>
+
+<!-- ============================================================
+  Part 4: 客观指标的失效分析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">客观指标的失效分析：为什么 FID 看不懂卡通</div>
+
+  <p>THEval #Quignon-et-al.-2025# 提供了目前最直接的证据：<strong>传统指标与人类偏好的相关性在统计上不显著</strong>。以下 Spearman 秩相关系数来自 17 个 talking head 模型的 benchmark：</p>
+
+  <h3 class="section-title">4.1 传统指标与人类评分的相关性</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>指标</th><th>Spearman ρ</th><th>p-value</th><th>95% CI</th><th>结论</th></tr></thead>
+      <tbody>
+        <tr><td>LSE-C (SyncNet Confidence)</td><td><strong>-0.164</strong></td><td>0.530</td><td>[-0.613, 0.388]</td><td class="muted">不显著，甚至为负</td></tr>
+        <tr><td>LSE-D (SyncNet Distance)</td><td><strong>-0.269</strong></td><td>0.297</td><td>[-0.675, 0.282]</td><td class="muted">不显著</td></tr>
+        <tr><td>FVD</td><td>0.289</td><td>0.260</td><td>[-0.321, 0.782]</td><td class="muted">不显著</td></tr>
+        <tr><td>FID</td><td>0.210</td><td>0.416</td><td>[-0.344, 0.710]</td><td class="muted">不显著</td></tr>
+        <tr><td>LMD-F</td><td>0.231</td><td>0.389</td><td>[-0.392, 0.775]</td><td class="muted">不显著</td></tr>
+        <tr><td>LMD-L</td><td>0.227</td><td>0.399</td><td>[-0.389, 0.759]</td><td class="muted">不显著</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>所有 p 值均远大于 0.05，没有一个传统指标与人类评分的相关性达到统计显著。</p>
+
+  <h3 class="section-title">4.2 六大指标的具体失效模式</h3>
+
+  <p><strong>FID</strong>：依赖 Inception-v3 提取特征，假设特征服从高斯分布。问题在于：(1) Inception 在 ImageNet 上训练，对卡通/动漫风格的特征提取不可靠；(2) 在有限样本上有偏；(3) 用于视频时只评估独立帧，忽略时序一致性。在卡通场景下，FID 衡量的是"生成分布与真实分布的距离"——但卡通图像本来就不属于"真实分布"。</p>
+
+  <p><strong>FVD</strong>：虽然使用了视频网络，但仍偏向单帧质量评估。对卡通视频的时序连贯性评估能力有限。</p>
+
+  <p><strong>SyncNet（LSE-C / LSE-D）</strong>：这可能是问题最严重的指标。SyncNet 在真实人脸上训练，对嘴部裁剪、图像质量、亮度等因素高度敏感。THEval 发现音频编码格式（mp4a vs mpga）变化可导致 LSE-D 差异高达 1.2。更讽刺的是，Wav2Lip 以 SyncNet 为判别器训练，算法分数最高但在 User Study 中<strong>最不被选中</strong>。</p>
+
+  <p><strong>CSIM</strong>：使用 ArcFace 提取身份特征，计算余弦相似度。ArcFace 在真实人脸上训练，对二次元角色的大眼睛、夸张比例等非真实感特征无法有效编码。</p>
+
+  <p><strong>LMD（Landmark Distance）</strong>：直接与 Ground Truth 对比关键点位距离。问题在于：头部运动和表情的微小差异会被过度惩罚，但人类评估者可能完全注意不到。卡通域的关键点定义本身就与真实域不同。</p>
+
+  <p><strong>SSIM / PSNR</strong>：需要图像完美对齐，关注局部结构而非全局感知质量。对风格化图像的评估几乎无意义。</p>
+
+  <h3 class="section-title">4.3 卡通场景的额外挑战</h3>
+
+  <p>除了上述通用失效模式，卡通/风格化场景还有三个独特挑战：</p>
+
+  <ol>
+    <li><strong>关键点检测的域偏移</strong>：标准面部关键点检测器（如 dlib、MediaPipe）在卡通面部上表现不稳定。ToonTalker 自建了卡通数据集但未报告关键点检测精度；MakeItTalk 明确承认卡通域关键点检测是瓶颈。</li>
+    <li><strong>"风格一致性"的度量缺失</strong>：一个卡通 talking head 需要在所有帧中保持相同的视觉风格（线条粗细、色彩饱和度、阴影风格），但现有指标不衡量这一点。FaceIt 提出的 StyleLoss 是目前唯一的尝试。</li>
+    <li><strong>夸张表情的"正确性"标准</strong>：动漫角色的惊讶表情可能包括眼睛放大 3 倍、嘴巴变成 "O" 形等非物理变形。用什么标准判断这种夸张是否"正确"？Co-Speech NPR 的回答是：只能靠人类判断。</li>
+  </ol>
+</div>
+
+<!-- ============================================================
+  Part 5: THEval 的启示
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">THEval 八维评测框架：一个可能的方向</div>
+
+  <p>THEval（CVPR 2025 Findings）#Quignon-et-al.-2025# 提出了一套与人类评分高度对齐的评测框架，Final Score 的 Spearman ρ 达到 <strong>0.870</strong>（p &lt; 0.0001）。虽然它主要针对真实 talking head，但其设计思路对卡通场景有重要启示。</p>
+
+  <div class="photo">
+    <img src="media/images/digital-human-cartoon-stylized-evaluation/theval-framework.webp" alt="THEval 评测框架总览" loading="lazy">
+    <div class="cap">图 3：THEval 评测框架——基于 Quality / Naturalness / Sync 三个维度、8 个指标的无权重平均，Final Score 与人类评分的 Spearman ρ 达到 0.870（来源：THEval, Fig. 1）</div>
+  </div>
+
+  <h3 class="section-title">5.1 三个维度 × 八个指标 · <a href="theval-2025.html">精读三十二</a></h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>维度</th><th>指标</th><th>计算方式</th><th>ρ（与人类评分）</th><th>卡通适用性</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="3"><strong>Quality</strong></td><td>Global Aesthetics</td><td>TOPIQ 逐帧 IAA 评分均值</td><td>0.544*</td><td>部分适用（需卡通美学适配）</td></tr>
+        <tr><td>Mouth Quality</td><td>嘴部区域 MUSIQ IQA 评分</td><td><strong>0.765***</strong></td><td>受限（卡通嘴部检测不稳定）</td></tr>
+        <tr><td>Face Quality</td><td>全脸 TOPIQ IQA 评分</td><td><strong>0.699**</strong></td><td>部分适用</td></tr>
+        <tr><td rowspan="3"><strong>Naturalness</strong></td><td>Lip Dynamics</td><td>唇部关键点标准差均值</td><td>0.414</td><td>受限（需卡通关键点）</td></tr>
+        <tr><td>Head Motion Dynamics</td><td>pitch/yaw/roll 标准差 × 差分方差</td><td><strong>0.763***</strong></td><td>较适用（3DMM 可跨域）</td></tr>
+        <tr><td>Eyebrow Dynamics</td><td>眉-眼距离标准差</td><td>0.527*</td><td>受限（卡通眉毛风格多样）</td></tr>
+        <tr><td rowspan="2"><strong>Sync</strong></td><td>Silent Lip Stability</td><td>静音段嘴张开度 MAD</td><td>0.484*</td><td>适用（与风格无关）</td></tr>
+        <tr><td>Lip-Sync</td><td>归一化嘴张开度与音频 RMS 平均绝对差</td><td>0.404</td><td>部分适用</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Final Score 计算：每个指标先相对 Ground Truth 归一化 \(s = 1 - \frac{|Model - GT|}{GT}\)，然后对 8 个归一化指标取无权重平均。</p>
+
+  <h3 class="section-title">5.2 对卡通场景的适配方向</h3>
+
+  <p>THEval 的<strong>核心洞察</strong>是：不比较生成图像和真实图像的"分布距离"，而是比较生成视频和真实视频在<strong>运动特征统计量</strong>上的对齐程度。这个思路天然适合卡通场景——只要把关键点检测器替换为卡通域检测器，大部分指标就可以直接使用。</p>
+
+  <p>三个最有可能直接迁移的指标：</p>
+  <ul>
+    <li><strong>Head Motion Dynamics</strong>（ρ = 0.763）：基于 3DMM 的 pitch/yaw/roll，卡通域可通过 ToonTalker 的共享运动空间获取。</li>
+    <li><strong>Silent Lip Stability</strong>（ρ = 0.484）：静音段嘴部稳定性，与视觉风格无关。</li>
+    <li><strong>Global Aesthetics</strong>（ρ = 0.544）：需要针对卡通美学训练专门的 IAA 模型。</li>
+  </ul>
+
+  <div class="callout"><strong>THEval 的局限</strong>：评测数据集包含 5,011 个视频，覆盖 6 种语言，但全部是真实 talking head。卡通适配需要构建专门的卡通评测数据集，这是目前尚未有人做的工作。</div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="digital-human-realtime-gpu-comparison.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇 · 系列十二</span><span class="nav-title">实时性全景对比</span></a>
+  <a class="nav-card nav-hub current" href="digital-human-cartoon-stylized-evaluation.html"><span class="nav-label">本文</span><span class="nav-title">卡通与风格化数字人</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列 Hub</span></a>
+</div>
+
+<!-- ============================================================
+  Part 6: 新兴评测方向
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">新兴评测方向：为风格化而生的指标</div>
+
+  <h3 class="section-title">6.1 StyleLoss（FaceIt, CGF 2025）</h3>
+
+  <p>FaceIt 提出了目前唯一专门衡量<strong>风格保持能力</strong>的客观指标 #FaceIt-2025#。基于 VGG 特征图的 Gram Matrix 差异（经典 Gatys 风格损失），计算生成帧与参考风格图像之间的风格距离。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>StyleLoss ↓</th></tr></thead>
+      <tbody>
+        <tr><td>FaceBlit</td><td>0.01774</td></tr>
+        <tr><td>Act-One</td><td><strong>0.01318</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>StyleLoss 的价值在于：它不衡量"像不像真人"，而是衡量"像不像参考风格"——这正是卡通数字人最需要的评测维度之一。局限是 Gram Matrix 只捕获纹理统计，对线条风格、色彩方案等高层风格特征的区分能力有限。</p>
+
+  <h3 class="section-title">6.2 FSCD（VIP-QA, ICCV 2025）</h3>
+
+  <p>VIP-QA（"Who is a Better Talker"）#Zhou-et-al.-2025# 构建了 <strong>THQA-10K 数据集</strong>：10,457 个 AI 生成的 talking head，25 名被试产生 261,425 个主观评分，并设计了 FSCD 客观评估方法：</p>
+
+  <ul>
+    <li><strong>F</strong>irst Frame：首帧质量</li>
+    <li>Y-T <strong>S</strong>lice：时空切片捕获时序特征</li>
+    <li>Tone-lip <strong>C</strong>onsistency：LSE-C</li>
+    <li>Tone-lip <strong>D</strong>etection：LSE-D</li>
+  </ul>
+
+  <p>FSCD 在 THQA-10K 上达到 SRCC = <strong>0.8066</strong>、PLCC = <strong>0.8322</strong>。虽然数据集包含多种角色材质（含风格化角色），但主要针对 T2I + Talker 管线，纯卡通场景的适用性尚需验证。</p>
+
+  <h3 class="section-title">6.3 4DHumanQA（2025）——感知验证的 3D 动画评估</h3>
+
+  <p>4DHumanQA #Rekik-et-al.-2025#（<a href="4dhumanqa-2025.html">精读三十六</a>）构建了 4DHumanPercept 数据集：250 个 3D 人体动画 + 48 名被试的 MOS 评分。使用 ITU 标准的 DSIS（Double Stimulus Impairment Scale）5 级量表。关键发现：</p>
+
+  <ul>
+    <li>单一客观特征与 MOS 的 Spearman 相关系数仅为 <strong>0.144-0.436</strong>；</li>
+    <li>组合 7 个特征的线性回归模型在测试集上 SROCC = <strong>0.961</strong>；</li>
+    <li>自动评估指标<strong>无法有效替代</strong>主观用户研究。</li>
+  </ul>
+
+  <p>这为卡通 3D 角色的评测提供了方法论参考：单指标不可靠，需要组合特征 + 人类验证。</p>
+
+  <h3 class="section-title">6.4 "Wild West" 评测反思（CGF 2025）</h3>
+
+  <p>Utrecht 大学的这篇工作 #Haque-et-al.-2025# 识别了语音驱动 3D 面部动画评测的五大问题：</p>
+
+  <ol>
+    <li><strong>无标准化评测方法</strong>：研究者之间对评测方法没有共识；</li>
+    <li><strong>实验设置不一致</strong>：不同论文使用不同数据集、指标、设置，跨论文比较困难；</li>
+    <li><strong>A/B 测试的局限性</strong>：感知研究通常只关注 2 个常见指标；</li>
+    <li><strong>主观与客观指标脱节</strong>：感知评分与客观指标缺乏相关性；</li>
+    <li><strong>模型排名不泛化</strong>：在不同数据集上的排名不一致。</li>
+  </ol>
+
+  <p>这五个问题在卡通/风格化场景下更加严重——不仅跨论文比较困难，连同一篇论文内的卡通实验和真实实验都可能使用完全不同的评测标准。</p>
+</div>
+
+<!-- ============================================================
+  Part 7: 评测方法论反思
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">评测方法论反思：卡通数字人应该怎么评</div>
+
+  <p>综合以上分析，卡通/风格化数字人的评测需要一个不同于真实 talking head 的方法论框架。</p>
+
+  <h3 class="section-title">7.1 评测维度的重新设计</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>评测维度</th><th>真实场景关注</th><th>卡通场景应关注</th><th>推荐指标</th></tr></thead>
+      <tbody>
+        <tr><td>视觉质量</td><td>像不像真人</td><td>风格是否一致、是否有伪影</td><td>StyleLoss + 卡通域 IQA</td></tr>
+        <tr><td>运动自然度</td><td>头部/嘴部运动像不像真人</td><td>运动是否符合角色风格（如卡通的夸张 vs 动漫的克制）</td><td>Head Motion Dynamics + User Study</td></tr>
+        <tr><td>唇音同步</td><td>嘴型是否与音频对齐</td><td>卡通嘴型变化是否与音频节奏对齐</td><td>Silent Lip Stability + Lip-Sync（THEval）</td></tr>
+        <tr><td>身份/风格保持</td><td>是否仍像同一个人</td><td>是否仍保持同一卡通角色的视觉特征</td><td>StyleLoss + DINO 相似度 + User Study</td></tr>
+        <tr><td>时序稳定性</td><td>长视频是否漂移</td><td>风格是否随时间退化（线条变模糊、颜色偏移）</td><td>Temporal Style Consistency（新指标）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">7.2 最小可行评测协议</h3>
+
+  <p>基于现有证据，一个卡通 talking head 的最小可行评测应包含：</p>
+
+  <ol>
+    <li><strong>客观指标</strong>：
+      <ul>
+        <li>StyleLoss（风格保持）</li>
+        <li>Head Motion Dynamics（运动自然度，基于 3DMM 或卡通关键点）</li>
+        <li>Silent Lip Stability（唇部稳定性）</li>
+        <li>DINO 相似度（结构保持，对风格变化更鲁棒 than ArcFace）</li>
+      </ul>
+    </li>
+    <li><strong>主观评测</strong>：
+      <ul>
+        <li>至少 20 名被试</li>
+        <li>至少 3 个维度（整体吸引力、唇音同步、风格一致性）</li>
+        <li>成对比较（2AFC）+ Likert 量表结合</li>
+        <li>报告评估者间一致性（Krippendorff's α 或 Fleiss' κ）</li>
+      </ul>
+    </li>
+    <li><strong>定性分析</strong>：
+      <ul>
+        <li>至少 5 个典型成功案例 + 5 个失败案例的可视化</li>
+        <li>极端表情/姿态下的表现分析</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h3 class="section-title">7.3 实验配置披露现状</h3>
+
+  <p>以下表格梳理代表工作在实验配置方面的披露情况，以便跨论文比较和复现：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>工作</th><th>训练数据集</th><th>评测数据集</th><th>硬件配置</th><th>训练配置</th><th>推理配置</th></tr></thead>
+      <tbody>
+        <tr><td><strong>MakeItTalk</strong></td><td>VoxCeleb2（已披露）</td><td>HDTF + 自建风格集（已披露）</td><td>未报告</td><td>未报告</td><td>未报告</td></tr>
+        <tr><td><strong>SadTalker</strong></td><td>VoxCeleb2（已披露）</td><td>HDTF + MEAD（已披露）</td><td>4×V100（已披露）</td><td>学习率/epoch（已披露）</td><td>未报告</td></tr>
+        <tr><td><strong>ToonTalker</strong></td><td>Disney 数据集 344 视频（自建，已披露）</td><td>自建测试集（已披露）</td><td>未报告</td><td>两阶段 450K+10K iter，\(\lambda_m=20\)（已披露）</td><td>未报告</td></tr>
+        <tr><td><strong>ChatAnyone</strong></td><td>MEAD + VoxCeleb2（已披露）</td><td>MEAD 测试集（已披露）</td><td>8×A100（已披露）</td><td>两阶段训练（已披露）</td><td>单卡 30fps（已披露）</td></tr>
+        <tr><td><strong>GenEAva</strong></td><td>Emo135（自建，已披露）</td><td>AMT 众包验证（已披露）</td><td>未报告</td><td>SDXL 微调配置（部分披露）</td><td>未报告</td></tr>
+        <tr><td><strong>Co-Speech NPR</strong></td><td>自建手势库 500 实例 + Manga109（已披露）</td><td>仅 User Study（已披露）</td><td>未报告</td><td>未报告</td><td>未报告</td></tr>
+        <tr><td><strong>CapTalk</strong></td><td>CapTalk 数据集 24,441 clips / 200.8h（自建，已披露）</td><td>LRS3 + VoxCeleb2 测试集（已披露）</td><td>8×A100（已披露）</td><td>学习率/batch/epoch（已披露）</td><td>未报告</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>披露缺口</strong>：硬件配置和推理配置是披露最薄弱的环节。对于卡通数字人，推理配置尤为重要——卡通渲染通常比真实渲染更轻量，但关键点检测和风格迁移可能增加开销。</div>
+
+  <h3 class="section-title">7.4 待解决的基础设施问题</h3>
+
+  <ul>
+    <li><strong>卡通域关键点检测器</strong>：StylizedFacePoint（ACM 2024）是目前唯一的专门工作，但覆盖面有限。</li>
+    <li><strong>卡通评测数据集</strong>：GenEAva 1.0 是第一个卡通头像数据集，但只覆盖静态图像。需要卡通 talking head 视频数据集 + 人类 MOS 标注。</li>
+    <li><strong>卡通域 IAA 模型</strong>：TOPIQ 等图像美学评估模型在 ImageNet 上训练，对卡通美学的理解有限。</li>
+  </ul>
+</div>
+
+<!-- ============================================================
+  Part 8: 开放问题
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 8</div>
+  <div class="ch-title">开放问题与未来方向</div>
+
+  <ol>
+    <li><strong>跨风格统一评测基准</strong>：能否设计一个同时适用于真实、卡通、动漫、手绘等多种风格的评测框架？THEval 的运动特征统计量思路是一个起点，但需要跨域关键点检测和风格适配。</li>
+
+    <li><strong>风格化程度的连续评估</strong>：从"轻微风格化"到"高度抽象卡通"，评测标准如何平滑过渡？是否存在一个"风格化程度"的度量，使得指标可以在不同风格化级别之间比较？</li>
+
+    <li><strong>卡通数字人的实时性</strong>：ChatAnyone 在真实场景达到 30fps，但卡通域的实时生成尚缺乏 benchmark。卡通渲染通常比真实渲染更轻量，但关键点检测和风格迁移可能增加开销。</li>
+
+    <li><strong>多模态卡通数字人</strong>：Co-Speech NPR 只做手势和表情，不涉及视频生成。能否在统一的卡通数字人框架中同时生成面部动画、身体手势和夸张表情？</li>
+
+    <li><strong>评测指标的"风格感知"改造</strong>：FID 使用 Inception-v3 特征，能否替换为在卡通/动漫数据集上训练的视觉编码器（如 CLIP 的 anime 微调版本）来计算"卡通域 FID"？</li>
+
+    <li><strong>用户研究的标准化</strong>：卡通数字人领域的 User Study 设计差异极大（被试数从 9 到 48，量表从二分类到 5 级 Likert），需要社区共识建立标准化评测协议。</li>
+
+    <li><strong>恐怖谷效应与卡通数字人的关系</strong>：在什么条件下，卡通数字人的"不完美"反而增加了吸引力？这对评测指标的设计意味着什么？</li>
+  </ol>
+</div>
+
+<!-- ============================================================
+  References
+  ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Zhou-et-al.-2020">Zhou, Y. et al. (2020). MakeItTalk: Speaker-Aware Talking-Head Animation. <em>SIGGRAPH Asia 2020</em>, ACM TOG. <a href="https://arxiv.org/abs/2004.12992" target="_blank">arXiv:2004.12992</a></li>
+    <li data-cite-key="Zhang-et-al.-2023">Zhang, W. et al. (2023). SadTalker: Learning Realistic 3D Motion Coefficients for Stylized Audio-Driven Single Image Talking Face Animation. <em>CVPR 2023</em>. <a href="https://arxiv.org/abs/2211.12194" target="_blank">arXiv:2211.12194</a></li>
+    <li data-cite-key="Gong-et-al.-2023">Gong, Y. et al. (2023). ToonTalker: Cross-Domain Face Reenactment. <em>ICCV 2023</em>. <a href="https://arxiv.org/abs/2308.12866" target="_blank">arXiv:2308.12866</a></li>
+    <li data-cite-key="Pham-et-al.-2024">Pham, T.T. et al. (2024). Style Transfer for 2D Talking Head Generation. <em>CVPR 2024 Workshop on GCV</em>. <a href="https://arxiv.org/abs/2403.09089" target="_blank">arXiv:2403.09089</a></li>
+    <li data-cite-key="Tan-et-al.-2024">Tan, W. et al. (2024). SVP: Style-Enhanced Vivid Portrait Talking Head Diffusion Model. <a href="https://arxiv.org/abs/2409.03270" target="_blank">arXiv:2409.03270</a></li>
+    <li data-cite-key="Yu-et-al.-2025">Yu, H. et al. (2025). GenEAva: Generating Cartoon Avatars with Fine-Grained Facial Expressions from Realistic Diffusion-based Faces. <a href="https://arxiv.org/abs/2504.07945" target="_blank">arXiv:2504.07945</a></li>
+    <li data-cite-key="Qi-et-al.-2025">Qi, J. et al. (2025). ChatAnyone: Stylized Real-time Portrait Video Generation with Hierarchical Motion Diffusion Model. <a href="https://arxiv.org/abs/2503.21144" target="_blank">arXiv:2503.21144</a></li>
+    <li data-cite-key="Omine-et-al.-2025">Omine, T. et al. (2025). Co-Speech Gesture and Facial Expression Generation for Non-Photorealistic 3D Characters. <em>SIGGRAPH 2025 Poster</em>. <a href="https://arxiv.org/abs/2506.16159" target="_blank">arXiv:2506.16159</a></li>
+    <li data-cite-key="Chu-et-al.-2025">Chu, X. et al. (2025). CapTalk: Text-Guided Stylization and Speech-Driven 3D Head Animation. <a href="https://arxiv.org/abs/2605.29316" target="_blank">arXiv:2605.29316</a></li>
+    <li data-cite-key="Quignon-et-al.-2025">Quignon, N. et al. (2025). THEval. Evaluation Framework for Talking Head Video Generation. <em>CVPR 2025 Findings</em>. <a href="https://arxiv.org/abs/2511.04520" target="_blank">arXiv:2511.04520</a></li>
+    <li data-cite-key="Zhou-et-al.-2025">Zhou, Y. et al. (2025). Who is a Better Talker: Subjective and Objective Quality Assessment. <em>ICCV 2025</em>. <a href="https://arxiv.org/abs/2503.17428" target="_blank">arXiv:2503.17428</a></li>
+    <li data-cite-key="Rekik-et-al.-2025">Rekik, R. et al. (2025). 4DHumanQA: Quality Assessment of 3D Human Animation. <a href="https://arxiv.org/abs/2505.23301" target="_blank">arXiv:2505.23301</a></li>
+    <li data-cite-key="Haque-et-al.-2025">Haque, K.I. et al. (2025). Wild West of Evaluating Speech-Driven 3D Facial Animation. <em>Computer Graphics Forum</em>. <a href="https://arxiv.org/abs/2503.08590" target="_blank">arXiv:2503.08590</a></li>
+    <li data-cite-key="Xu-et-al.-2025">Xu, Z. et al. (2025). HunyuanPortrait: Implicit Condition Control for Enhanced Portrait Animation. <em>CVPR 2025</em>. <a href="https://arxiv.org/abs/2503.18860" target="_blank">arXiv:2503.18860</a></li>
+    <li data-cite-key="FaceIt-2025">FaceIt: Real-Time On-Device Identity-Preserving Portrait Animation. <em>Computer Graphics Forum</em>, 2025. <a href="https://arxiv.org/abs/2504.14988" target="_blank">arXiv:2504.14988</a></li>
+  </ul>
+</div>

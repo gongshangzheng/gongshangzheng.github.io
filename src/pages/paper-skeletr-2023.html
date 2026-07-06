@@ -1,0 +1,289 @@
+---
+title: "动作识别论文精读（五）：SkeleTR，两阶段骨架动作识别的标杆"
+description: "深度解读 ICCV 2023 SkeleTR：大量短序列取代少量长序列、个体内 GCN + 个体间 Transformer 的两阶段架构、Mix Pooling 三流压缩，以 0.81M 参数实现 AVA +7.8% 提升，是双阶段范式最接近完整系统的代表作。"
+created_at: 2026-07-06T17:10:00
+updated_at: 2026-07-06T17:10:00
+tags: [SkeleTR, 骨架动作识别, 两阶段, GCN, Transformer, Mix Pooling, AVA, 动作识别]
+aliases: ["categories/AI/动作识别"]
+sub_id: 3540
+hub: action-recognition-hub
+mathjax: true
+hero_title: "SkeleTR 论文精读"
+hero_sub: "ICCV 2023 · 两阶段骨架动作识别的标杆"
+hero_tagline: "个体内 GCN + 个体间 Transformer：0.81M 参数实现 AVA +7.8% 提升。"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.81M</span><span class="label">SkeleTR-S 参数</span></div>
+  <div class="stat"><span class="num b">336</span><span class="label g">clip/s 推理</span></div>
+  <div class="stat"><span class="num">+7.8%</span><span class="label">AVA mAP 提升</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label l">阶段架构</span></div>
+</div>
+
+<div class="callout"><strong>一句话读懂</strong>：SkeleTR 将 wild 场景的骨架动作识别重新定义为<strong>两阶段问题</strong>——Stage 1 用 GCN 建模每个个体的短骨架序列（1-2 秒）内部动态，Stage 2 用 Transformer 建模多个体之间的交互关系。核心创新包括：大量短序列取代少量长序列（IoU-based matching 减少关联噪声）、Mix Pooling 三流压缩（将 Transformer 计算量从 52.7 降至 0.594 GFLOPs）、统一框架同时处理视频级分类/实例级检测/群体活动识别。SkeleTR-S 仅 <strong>0.81M 参数</strong>、2.74 GFLOPs、336 clip/s，在精度最高的同时比 CTR-GCN 更小更快。#Berti-et-al.-2023#</div>
+
+<div class="info-box">
+  <h3>系列定位</h3>
+  <p>本文是<a href="action-recognition-hub.html">动作识别系列</a>动物精读第五篇，是 <a href="instance-specific-action-detection.html">个体特定动作检测 survey</a> 的核心引用论文之一。</p>
+  <p>SkeleTR 是目前<strong>最接近"先建个体模型，再做动作检测"范式</strong>的完整系统——其两阶段架构精确对应双阶段设计。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">问题定义：Wild 场景骨架 AR 的挑战</div>
+
+  <h3 class="section-title">1.1 现有方法的三大局限</h3>
+
+  现有骨架动作识别方法（ST-GCN, CTR-GCN, MS-G3D 等）主要面向<strong>受控环境</strong>（如 NTU-RGBD），在 wild 场景中存在三个核心问题：
+
+  <p><strong>局限一：长序列关联噪声</strong>。Prior works 使用少量（通常 $\hat{M}=2$）长骨架序列（覆盖整个视频，$T \approx 300$），通过置信度分数排名来关联骨架。在 wild 场景中，这种朴素的 score-based matching 在长时间跨度内不可避免地产生关联错误（association errors），引入大量噪声。</p>
+
+  <p><strong>局限二：缺乏人际交互建模</strong>。Prior works 几乎不关注一组人之间的关系建模，而这对识别交互动作（如"与人交谈"）和群体活动（如"排球比赛中的传球/得分"）至关重要。</p>
+
+  <p><strong>局限三：输入格式不灵活</strong>。使用少量长序列意味着：对少量人时大量零填充造成冗余；对大量人时信息在输入采样阶段丢失。</p>
+
+  <h3 class="section-title">1.2 SkeleTR 的问题重新定义</h3>
+
+  <p>SkeleTR 将 wild 场景的骨架 AR 重新定义为：</p>
+  <ul>
+    <li><strong>输入</strong>：大量短骨架序列（而非少量长序列），每个短序列直接对应单个人的原子动作</li>
+    <li><strong>建模</strong>：分两阶段——先建模个体内动态，再建模个体间交互</li>
+    <li><strong>目标</strong>：在统一框架下同时解决视频级分类、实例级检测、群体级识别</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">两阶段架构</div>
+
+  <h3 class="section-title">2.1 Stage 1: 个体内骨架动态建模（GCN）</h3>
+
+  <p><strong>核心创新：大量短序列取代少量长序列</strong></p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>对比维度</th><th>Prior Works</th><th>SkeleTR</th></tr></thead>
+      <tbody>
+        <tr><td>序列数量 $M$</td><td>2（固定）</td><td>大量（20~80，可自适应）</td></tr>
+        <tr><td>序列长度 $T$</td><td>300（覆盖整个视频）</td><td>15~30（1~2秒）</td></tr>
+        <tr><td>关联方法</td><td>confidence score rank</td><td>IoU-based matching</td></tr>
+        <tr><td>序列一致性</td><td>差（长跨度关联错误多）</td><td>好（短跨度关联错误少）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>IoU-based 匹配策略</strong>：(1) 以 stride = T/2 均匀选取关键帧；(2) 对每个关键帧中的每个骨架，在 T 帧窗口内用 IoU 匹配关联骨架；(3) 生成 $M'$ 个序列（$M'$ 因视频而异）。训练时设定动态范围 $[M_{\text{min}}, M_{\text{max}}]$，每个 batch 随机采样 $\tilde{M}$。测试时使用实际序列数（clamp 到范围内）。</p>
+
+  <p><strong>GCN Backbone</strong>：使用 ST-GCN++ 作为默认 backbone。GCN Block = GCN 层（空间建模：融合同一骨架内关节特征）+ TCN 层（时序建模：1D Conv 捕获各关节运动模式）。两个变体：</p>
+  <ul>
+    <li><strong>SkeleTR-S</strong>：ST-GCN++[S]，6 个 stage，输出通道 128，<strong>0.81M params</strong>，2.74 GFLOPs</li>
+    <li><strong>SkeleTR-L</strong>：标准 ST-GCN++，10 个 stage，输出通道 256，3.82M params，7.30 GFLOPs</li>
+  </ul>
+
+  <p><strong>实验验证</strong>——GCN vs 其他架构做个体内建模：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>个体内建模架构</th><th>Posetics Top-1</th><th>AVA mAP</th></tr></thead>
+      <tbody>
+        <tr><td>MLP</td><td>45.19</td><td>15.96</td></tr>
+        <tr><td>Transformer (ST-TR)</td><td>51.35</td><td>19.92</td></tr>
+        <tr><td><strong>GCN (ST-GCN++[S])</strong></td><td><strong>53.90</strong></td><td><strong>21.65</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>GCN 在个体内动态建模上显著优于 MLP 和 Transformer——这是因为 GCN 的图卷积天然适配骨架的拓扑结构，而 MLP 忽略空间关系，Transformer 需要更多数据才能学到空间归纳偏置。</p>
+
+  <h3 class="section-title">2.2 Stage 2: 个体间交互建模（Transformer）</h3>
+
+  <p><strong>Mix Pooling（维度压缩）</strong>——Transformer 注意力计算复杂度为 $\Theta((M \times T \times V)^2)$，直接计算不可行：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>策略</th><th>每序列特征数 $L$</th><th>计算复杂度</th><th>问题</th></tr></thead>
+      <tbody>
+        <tr><td>无压缩</td><td>$T \times V = 255$</td><td>$\approx 52.7$ GFLOPs</td><td>计算不可行</td></tr>
+        <tr><td>全局平均池化</td><td>1</td><td>$\approx 0.013$ GFLOPs</td><td>丢失细粒度特征</td></tr>
+        <tr><td><strong>Mix Pooling</strong></td><td><strong>$1 + T + P$</strong></td><td><strong>$\approx 0.594$ GFLOPs</strong></td><td><strong>最佳权衡</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>Mix Pooling 三流设计</strong>：</p>
+
+  $$\text{MixPool}(\mathbf{F}_i) = \text{Concat}\left[\text{GAP}_{T,V}(\mathbf{F}_i),\; \text{GAP}_{V}(\mathbf{F}_i),\; \text{GAP}_{T}(\mathbf{F}_i)\right]$$
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>流</th><th>操作</th><th>输出维度</th><th>语义</th></tr></thead>
+      <tbody>
+        <tr><td>1×1</td><td>时空全局平均</td><td>1</td><td>序列整体表示</td></tr>
+        <tr><td>T×1</td><td>空间维度全局平均，保留时间</td><td>T</td><td>时间动态</td></tr>
+        <tr><td>1×P</td><td>时间维度全局平均，V 关节聚合为 P=5 身体部位</td><td>P=5</td><td>空间结构</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>三流拼接后，每序列保留 $L = 1 + T + P$ 个特征向量。消融实验显示三流组合在所有数据集上取得最佳性能，任何两流组合都不如三流。</p>
+
+  <p><strong>序列级时空嵌入</strong>：为每个序列添加位置信息——空间嵌入（序列中心骨架的 bounding box 坐标）+ 时间嵌入（归一化时间戳），通过全连接层编码后与 Mix Pooled 特征相加，再 LayerNorm。</p>
+
+  <p><strong>Transformer 交互建模</strong>：标准 Transformer，$N_2 = 2$ 个 encoder blocks，post-layernorm。每个 block：MHSA（8 个注意力头，每头通道宽度 $C/2$）+ FFN（两层 MLP，隐藏维度 $2C$）。</p>
+
+  <p><strong>多头设计的语义可解释性</strong>：注意力头 1 聚合单人内部的时间特征（个体内长程上下文）；注意力头 4 建模个体间交互（如握手动作中，$P_{21}$ 和 $P_{22}$ 的注意力权重最高，恰好对应握手的交互时刻）。这验证了两阶段解耦设计的有效性——不同注意力头自动学到了不同的语义角色。</p>
+
+  <p><strong>统一 Transformer vs 分支独立 Transformer</strong>：统一 Transformer（单一 Transformer 处理拼接后的多视图特征）不仅性能最优（53.90% vs 52.47%），参数量也仅为分支方案的 1/3（0.627M vs 1.880M）。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">实验结果</div>
+
+  <h3 class="section-title">3.1 动作分类（Posetics）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Top-1</th><th>Top-5</th></tr></thead>
+      <tbody>
+        <tr><td>ST-TR</td><td>47.5</td><td>71.3</td></tr>
+        <tr><td>MS-G3D</td><td>52.6</td><td>75.8</td></tr>
+        <tr><td>CTR-GCN</td><td>54.1</td><td>76.7</td></tr>
+        <tr><td>ST-GCN++</td><td>52.5</td><td>76.0</td></tr>
+        <tr><td>PoseC3D</td><td>53.1</td><td>77.1</td></tr>
+        <tr><td><strong>SkeleTR-L</strong></td><td><strong>57.9</strong></td><td><strong>80.3</strong></td></tr>
+        <tr><td>SkeleTR [CTR-GCN]</td><td>57.6</td><td>80.1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">3.2 时空动作检测（AVA v2.2）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Overall mAP</th><th>Person Movement</th><th>Object Manipulation</th><th>Person Interaction</th></tr></thead>
+      <tbody>
+        <tr><td>ST-TR</td><td>17.3</td><td>37.3</td><td>8.4</td><td>18.8</td></tr>
+        <tr><td>CTR-GCN</td><td>18.9</td><td>39.4</td><td>9.8</td><td>20.5</td></tr>
+        <tr><td>ST-GCN++</td><td>18.6</td><td>39.1</td><td>9.7</td><td>20.0</td></tr>
+        <tr><td>SkeleTR-S</td><td>22.8</td><td>43.8</td><td>12.3</td><td>26.9</td></tr>
+        <tr><td>SkeleTR-S* (joint)</td><td>26.8</td><td>48.2</td><td><strong>17.7</strong></td><td>27.8</td></tr>
+        <tr><td><strong>SkeleTR [CTR-GCN]*</strong></td><td><strong>27.3</strong></td><td><strong>50.9</strong></td><td>17.3</td><td><strong>28.3</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>*表示与 Posetics 联合训练。Joint training 带来额外 +4.1% mAP。Person Interaction 类别提升最大（+7.0% vs ST-GCN++），证明个体间建模对交互类动作至关重要。AVA 提升最大的动作类全是交互类：Hand Clap (+20.0)、Listen to a person (+16.1)、Hug a person (+11.1)。</p>
+
+  <h3 class="section-title">3.3 计算效率</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Posetics Top-1</th><th>Params (M)</th><th>GFLOPs</th><th>推理速度 (clip/s)</th></tr></thead>
+      <tbody>
+        <tr><td>ST-TR</td><td>47.45</td><td>6.44</td><td>26.92</td><td>97</td></tr>
+        <tr><td>MS-G3D</td><td>52.63</td><td>2.82</td><td>20.86</td><td>99</td></tr>
+        <tr><td>CTR-GCN</td><td>54.10</td><td>1.36</td><td>5.36</td><td>195</td></tr>
+        <tr><td><strong>SkeleTR-S</strong></td><td>55.85</td><td><strong>0.81</strong></td><td><strong>2.74</strong></td><td><strong>336</strong></td></tr>
+        <tr><td>SkeleTR-L</td><td><strong>57.90</strong></td><td>3.82</td><td>7.30</td><td>200</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>SkeleTR-S 在精度最高的同时，参数量仅为 CTR-GCN 的 60%，GFLOPs 仅为一半，推理速度最快。关键在于短序列减少了 GCN 的计算量，Mix Pooling 控制了 Transformer 的复杂度。</p>
+
+  <h3 class="section-title">3.4 与 RGB 模态的互补性</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>融合方案</th><th>Posetics Top-1</th><th>AVA mAP</th></tr></thead>
+      <tbody>
+        <tr><td>RGB only (TimeSformer / ACAR-R101)</td><td>74.42</td><td>31.30</td></tr>
+        <tr><td>RGB + ST-GCN++</td><td>75.98</td><td>31.95</td></tr>
+        <tr><td><strong>RGB + SkeleTR</strong></td><td><strong>76.70</strong></td><td><strong>34.34</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>首次观察到骨架动作识别与 RGB 的强互补性：SkeleTR + RGB late fusion 带来 +2.3% Posetics Top-1, +3% AVA mAP。说明骨架模态包含 RGB 无法捕获的运动信息。</p>
+
+  <h3 class="section-title">3.5 多人场景的收益</h3>
+
+  <p>多人场景（≥5人/帧）Top-1 提升约 <strong>10%</strong>，是其他视频（<5人/帧）的 2 倍。人越多，个体间交互建模的收益越大。</p>
+
+  <h3 class="section-title">3.6 短序列在受控环境中无额外优势</h3>
+
+  <p>当 GT 长骨架序列可用时（如 NTU-RGBD），短序列格式不会带来额外收益——长序列反而更好（NTU60: 88.8% vs 86.6%）。短序列的优势仅在 wild 场景中体现（Posetics: 55.6% vs 52.6%）。这说明短序列设计的核心价值在于<strong>减少 wild 场景中的关联噪声</strong>，而非模型架构本身的优势。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">与双阶段范式的对应关系</div>
+
+  <h3 class="section-title">4.1 范式映射</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>范式步骤</th><th>SkeleTR 对应模块</th><th>技术实现</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Step 1: 建个体模型</strong></td><td>Stage 1: GCN 个体内建模</td><td>每个短骨架序列独立通过 GCN backbone，提取个体运动模式特征</td></tr>
+        <tr><td><strong>Step 2: 做动作检测</strong></td><td>Stage 2: Transformer 个体间建模</td><td>所有序列特征拼接后通过 Transformer，捕获交互关系和全局上下文</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.2 关键设计选择与范式的对应</h3>
+
+  <ol>
+    <li><strong>短序列 = 个体原子动作表示</strong>：每个短序列（1~2秒）直接对应单个人的原子动作，是"个体模型"的最小语义单元。短序列的一致性远优于长序列，减少了 identity switch 问题。</li>
+    <li><strong>GCN 建模个体内动态 = 个体特征提取</strong>：GCN 的空间建模（关节间）和时序建模（帧间）能力，为每个个体提取丰富的运动表示。</li>
+    <li><strong>Transformer 建模个体间交互 = 上下文增强的动作检测</strong>：对实例级检测（AVA），Transformer 输出的序列特征融合了周围人的交互信息；对视频级分类（Posetics），所有序列特征平均池化后预测视频动作；对群体活动（Volleyball），多人序列特征共同聚合。</li>
+    <li><strong>Mix Pooling = 个体模型压缩</strong>：在传递给交互建模前，将每个个体的时空特征压缩为多视图紧凑表示，保留了时间动态（T×1）、空间结构（1×P）和全局信息（1×1）。</li>
+  </ol>
+
+  <h3 class="section-title">4.3 局限性</h3>
+
+  <ol>
+    <li><strong>依赖预提取骨架</strong>：使用从 RGB 视频预提取的骨架（Faster-RCNN + HRNet），pose estimation pipeline 相对较重。要在资源受限的真实应用中使用，需要切换到轻量级 pose estimation 方案。</li>
+    <li><strong>不可端到端的 pose estimation</strong>：骨架提取和动作识别是分离的 pipeline，无法联合优化。</li>
+    <li><strong>推理时的滑动窗口</strong>：AVA 推理使用 1 秒步长的滑动窗口策略，对于长视频计算开销较大。</li>
+    <li><strong>无显式身份建模</strong>：SkeleTR 的"个体"是隐式的（通过短序列的 IoU matching），没有学习显式的 identity embedding。如果两个外观相似的人被 tracker 混淆，SkeleTR 无法纠正。</li>
+  </ol>
+
+  <h3 class="section-title">4.4 对个体特定动作检测的启示</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>SkeleTR 设计原则</th><th>在个体特定检测中的应用</th></tr></thead>
+      <tbody>
+        <tr><td>短序列作为个体表示单元</td><td>将每个人的动作片段建模为独立的短序列，天然对应"个体特定"语义</td></tr>
+        <tr><td>两阶段解耦</td><td>Stage 1 专注个体运动建模不受他人干扰，Stage 2 专注交互建模利用上下文增强</td></tr>
+        <tr><td>IoU-based 序列关联</td><td>比 confidence score rank 更鲁棒的骨架关联方法</td></tr>
+        <tr><td>Mix Pooling</td><td>高效压缩个体特征，保留多视图信息</td></tr>
+        <tr><td>联合训练缓解过拟合</td><td>当目标检测数据集有限时，可用分类数据集做联合训练</td></tr>
+        <tr><td>骨架+RGB 互补</td><td>骨架提供独立于 RGB 的运动信息</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-igmn-2021.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">IGMN 论文精读</span></a>
+    <a class="nav-card nav-hub" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别 Hub</span></a>
+    <a class="nav-card nav-next" href="instance-specific-action-detection.html"><span class="nav-label">返回 survey</span><span class="nav-title">个体特定动作检测</span><span class="nav-arrow">→</span></a>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Berti-et-al.-2023">Duan, H., Xu, M., Shuai, B., Modolo, D., Tu, Z., Tighe, J., Bergamo, A. (2023). SkeleTR: Towards Skeleton-based Action Recognition in the Wild. ICCV 2023 (Paper ID: 6583). <a href="https://arxiv.org/abs/2309.11445" target="_blank">arXiv:2309.11445</a></li>
+    </ul>
+  </div>
+</div>

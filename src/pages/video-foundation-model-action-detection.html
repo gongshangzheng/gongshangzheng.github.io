@@ -1,0 +1,406 @@
+---
+title: "动作识别系列（四）：视频基础模型时代的动作检测——从掩码重建到零样本泛化"
+description: "系统调研视频基础模型（InternVideo2/V-JEPA 2/VideoMamba/RVM/UniFormerV2/VideoLLaMA 3）如何重塑时序动作检测，覆盖自监督预训练三大范式、统一 TAD 框架、零样本检测和 VLM 动作理解。"
+created_at: 2026-07-06T16:07:52
+updated_at: 2026-07-06T16:07:52
+tags: [动作识别, Video Foundation Model, InternVideo2, V-JEPA, VideoMamba, RVM, TAD, 零样本检测]
+aliases: ["categories/AI/动作识别"]
+sub_id: 40
+hub: action-recognition-hub
+mathjax: true
+hero_title: "视频基础模型时代的动作检测"
+hero_sub: "InternVideo2 · V-JEPA 2 · VideoMamba · RVM · UniFormerV2"
+hero_tagline: "8 篇核心论文深读 · 3 条预训练范式 · 统一 TAD 框架 · 零样本泛化前沿"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">8</span><span class="label">深读论文</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">预训练范式</span></div>
+  <div class="stat"><span class="num">92.1%</span><span class="label">K400 SOTA</span></div>
+  <div class="stat"><span class="num b">77.3</span><span class="label l">SSv2 SOTA</span></div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么视频基础模型正在重塑动作检测</div>
+
+  在[[coarse-fine-animal-action-review-2025 | 上一篇综述]]中我们看到，动物动作识别的核心瓶颈在于 CG→FG 的精度鸿沟。但如果把视角从"特定领域"拉升到"通用视频理解"，一个更深层的范式转型正在发生：**视频基础模型（Video Foundation Model）正在把动作检测从"训练一个小检测器"变成"提取通用表征后做轻量探测"**。
+
+  这个转变的标志性数字是：InternVideo2（6B 参数）在 THUMOS14 时序动作检测上达到 **72.0 mAP** #Wang et al., 2024#，而 OpenTAD 框架证明仅替换 backbone 为 InternVideo2 就能在 THUMOS14 上提升 **+3.92%** #Liu et al., 2025#。更激进的是 FreeZAD——完全无需训练，仅用冻结的 CoCa 视觉-语言模型就能在 THUMOS14 上达到 **10.0% mAP**，推理速度 **128.9 FPS** #Han et al., 2025#。
+
+  这些数字背后的逻辑链条很清晰：
+
+  <ol>
+    <li><strong>自监督预训练</strong>学到了通用的视频表征（VideoMAE → InternVideo2 → V-JEPA 2）</li>
+    <li><strong>表征质量</strong>直接决定了下游 TAD 的上限（OpenTAD 的 backbone 消融实验是最好的证据）</li>
+    <li><strong>视觉-语言对齐</strong>让零样本/开放词汇动作检测成为可能（FreeZAD、VideoLLaMA 3）</li>
+  </ol>
+
+  本文作为动作识别系列的第六篇，聚焦一个核心问题：**视频基础模型时代，动作检测的技术格局发生了什么变化？** 我们深读了 8 篇 2022-2026 年的核心论文，覆盖三条预训练范式（掩码重建 / 表示预测 / SSM）、两个下游任务（动作识别 / 时序动作检测）和两种泛化模式（零样本 / VLM）。
+
+  <div class="callout"><strong>本文与系列其他文章的关系</strong>：[[action-recognition-landscape | 系列一]]给出了 7 条技术路线的宏观导览；[[pet-action-detection-model-survey | 系列四]]聚焦 mmaction2 工具链和边缘部署选型；本文则从 VFM 视角深入前沿方法的技术细节。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">三条技术路线：从掩码重建到表示预测到状态空间模型</div>
+
+  视频基础模型的技术演进可以归纳为三条路线，每条路线解决的核心问题不同：
+
+  {{< mermaid >}}
+flowchart LR
+  subgraph MAE["掩码重建路线"]
+    direction TB
+    A1["VideoMAE V1<br/>NeurIPS 2022"]
+    A2["VideoMAE V2<br/>CVPR 2023"]
+    A3["InternVideo2<br/>ECCV 2024"]
+    A4["RVM<br/>DeepMind 2025"]
+    A1 --> A2 --> A3 --> A4
+  end
+  subgraph JEPA["表示预测路线"]
+    direction TB
+    B1["V-JEPA v1<br/>Meta 2024"]
+    B2["V-JEPA 2<br/>Meta 2025"]
+    B1 --> B2
+  end
+  subgraph SSM["SSM/Mamba 路线"]
+    direction TB
+    C1["VideoMamba<br/>ECCV 2024"]
+    C2["UniFormerV2<br/>ICLR 2024"]
+  end
+  MAE --> |"超越像素重建"| JEPA
+  MAE --> |"替代 Transformer"| SSM
+  {{< /mermaid >}}
+
+  <h3 class="section-title">六大模型核心指标对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>范式</th><th>参数量</th><th>K400 Top-1</th><th>SSv2 Top-1</th><th>预训练数据</th><th>会议</th></tr></thead>
+      <tbody>
+        <tr><td><strong>VideoMAEv2-g</strong></td><td>pixel MAE</td><td>1B</td><td>90.0%</td><td>77.0%</td><td>K710 (660K)</td><td>CVPR 2023</td></tr>
+        <tr><td><strong>InternVideo2-6B</strong></td><td>双教师蒸馏</td><td>6B</td><td>{{< bg green >}}92.1%{{< /bg >}}</td><td>77.5%</td><td>402M 条目</td><td>ECCV 2024</td></tr>
+        <tr><td><strong>V-JEPA 2 ViT-g</strong></td><td>JEPA</td><td>1B</td><td>87.3%</td><td>{{< bg green >}}77.3%{{< /bg >}}</td><td>VM22M (22M clips)</td><td>2025</td></tr>
+        <tr><td><strong>VideoMamba-M</strong></td><td>SSM</td><td>74M</td><td>85.0%</td><td>71.4%</td><td>CLIP-400M</td><td>ECCV 2024</td></tr>
+        <tr><td><strong>UniFormerV2-L/14</strong></td><td>图像迁移</td><td>354M</td><td>90.0%</td><td>73.0%</td><td>CLIP-400M + K710</td><td>ICLR 2024</td></tr>
+        <tr><td><strong>RVM-S</strong></td><td>循环 MAE</td><td>{{< bg green >}}34M{{< /bg >}}</td><td>49.6%</td><td>59.7%</td><td>8.4M clips</td><td>CVPR 2026</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这张表揭示了一个关键现象：<strong>不同范式在不同维度上各有所长</strong>。InternVideo2 在 K400（场景相关）上最强，V-JEPA 2 在 SSv2（细粒度运动）上与 InternVideo2 持平但仅用 1/6 参数，VideoMamba 以 74M 参数达到 85.0% K400，RVM-S 仅 34M 参数却在 8 个下游任务的归一化平均中超越 1B 级巨型模型。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2.01 3h16.94a2 2.01 3L13.71 3.86a2 2.01 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      K400 准确率 ≠ TAD 性能
+    </div>
+    <div class="admonition-content"><p>OpenTAD 的 backbone 消融实验发现：VideoSwin-S（K400 80.5%）和 MViTv2-L（K400 85.4%）在 TAD 上反而不如 SlowFast-R101（K400 78.7%）。动作分类精度与时序定位能力并非线性正相关，ViT 系 backbone 整体上更适合 TAD 任务 #Liu et al., 2025#。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">掩码视频建模的三个范式</div>
+
+  <h3 class="section-title">3.1 像素重建：从 VideoMAE 到 InternVideo2 的双教师蒸馏</h3>
+
+  VideoMAE #Liu et al., 2022# 开创了视频掩码自编码器的先河：随机遮挡 90% 的时空 token，让模型重建被遮挡的像素。VideoMAE V2 #Wang et al., 2023# 进一步引入双重掩码策略（encoder 和 decoder 使用不同的 masking ratio），在 K400 上达到 90.0%。
+
+  InternVideo2（前作 InternVideo #Wang et al., 2022# 融合生成式与判别式学习）在此基础上做了一个关键改进——**不重建被 mask 的 token，而是重建未被 mask 的 token**：
+
+  $$\mathcal{L}_{\text{Stage1}} = \frac{1}{Z}\sum_{p \in \mathcal{U}}\left(\alpha_1\|f^V(\mathbf{V}_p) - h(\mathbf{V}_p)\|^2 + \alpha_2\|f^V(\mathbf{V}_p) - g(\mathbf{V}_p)\|^2\right)$$
+
+  其中 $f^V$ 是学生编码器，$h$ 是 InternVL-6B（多模态教师），$g$ 是 VideoMAEv2-g（运动感知教师），$p \in \mathcal{U}$ 表示仅遍历<strong>未被 mask</strong> 的 token 集合。Masking 在此不是学习目标，而是<strong>数据增强和计算效率手段</strong>——80% 的 token 被丢弃，剩余 20% 的可见 token 同时逼近两个互补教师的表征空间 #Wang et al., 2024#。
+
+  <p>这种双教师设计的动机很直觉：InternVL-6B 提供语义丰富的表征（使编码器多模态友好），VideoMAEv2-g 提供运动敏感的表征（增强时序建模）。消融实验显示双教师比单教师（仅 UMT 或仅 VideoPrism）在 SSv2 上提升 0.4-0.6 个点。</p>
+
+  <h3 class="section-title">3.2 表示空间预测：V-JEPA 2 的 JEPA 范式</h3>
+
+  V-JEPA 2（前作 V-JEPA v1 #Bardes et al., 2024# 首次将 JEPA 引入视频域）选择了完全不同的路线：**不在像素空间做重建，而是在学到的表示空间中做预测** #Bardes et al., 2025#。
+
+  $$\min_{\theta,\phi,\Delta_y} \quad \| P_\phi(\Delta_y, E_\theta(x)) - \text{sg}(E_{\bar\theta}(y)) \|_1$$
+
+  其中 $E_\theta$ 是 Encoder（ViT-L/H/g，最大 1B），$E_{\bar\theta}$ 是 EMA-Teacher，$P_\phi$ 是轻量 Predictor（ViT-s，22M），$\Delta_y$ 是可学习的 mask token。损失仅在被遮挡 patch 的预测上计算。
+
+  JEPA 的核心优势在于**自动过滤不可预测信息**——模型不需要恢复草叶的精确位置或光照的细微变化，只需预测场景的语义和动态结构。这直接反映在 SSv2（细粒度运动理解）上的巨大领先：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>参数量</th><th>SSv2 Top-1</th><th>预训练方式</th></tr></thead>
+      <tbody>
+        <tr><td><strong>V-JEPA 2 ViT-g₃₈₄</strong></td><td>1B</td><td>{{< bg green >}}77.3%{{< /bg >}}</td><td>纯自监督</td></tr>
+        <tr><td>VideoPrism-g</td><td>1B</td><td>68.5%</td><td>自监督</td></tr>
+        <tr><td>InternVideo2-6B</td><td>6B</td><td>67.7%</td><td>自监督+有监督</td></tr>
+        <tr><td>VideoMAEv2-g</td><td>1B</td><td>56.1%</td><td>像素重建</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>V-JEPA 2 在 SSv2 上比 VideoMAEv2 高出 <strong>+21.2 points</strong>，同时预训练数据规模（VM22M：22M clips / 1M+ 小时）远小于 InternVideo2 的 402M 条目。更令人惊讶的是，V-JEPA 2 的编码器<strong>未经语言监督预训练</strong>，对齐 LLM 后在视频 QA 上即达到 SOTA（平均 59.5），颠覆了"视频模型需要文本对齐才能做好 QA"的传统认知。</p>
+
+  <h3 class="section-title">3.3 循环时序建模：RVM 的 30 倍参数效率</h3>
+
+  DeepMind 的 RVM 提出了第三条路线：**用循环神经网络替代时空自注意力** #Recasens et al., 2025#。其 Transformer-GRU 循环核心的数学表达为：
+
+  $$u_t = \sigma(W^u_e \hat{e}_t + W^u_s s_{t-1}) \quad \text{(update gate)}$$
+  $$\hat{h}_t = \text{Tx}(q=\hat{e}_t,\; kv=r_t \odot s_{t-1}) \quad \text{(cross+self attention)}$$
+  $$s_t = (1 - u_t) \odot s_{t-1} + u_t \odot \hat{h}_t \quad \text{(state update)}$$
+
+  RVM 的训练采用<strong>非对称掩码</strong>：源帧不遮挡，目标帧 95% 遮挡，模型从源帧的循环状态重建目标帧像素。这种设计显式建模了时间的因果性。
+
+  RVM 最惊人的发现是参数效率：**34M 参数的 RVM-S 在 8 个下游任务的归一化平均中超越 1B 级模型**（96.1 vs VideoMAEv2-g 的 77.9）。原因是循环架构的参数共享（ViT 编码器跨帧共享权重）和强归纳偏置（因果时序建模）。同时，仅用 4 帧训练的模型可稳定传播特征到 80+ 帧——这对长视频 TAD 极为关键。
+
+  <h3 class="section-title">3.4 SSM 路线：VideoMamba 的线性复杂度</h3>
+
+  VideoMamba 将 Mamba 状态空间模型适配到视频域 #Zhu et al., 2024#。三种扫描策略中，<strong>Spatial-First</strong>（逐帧扫描空间 token）最为简洁高效（SSv2 65.1%），可无缝复用 2D 预训练知识。在效率上，VideoMamba 处理 64 帧视频时比 TimeSformer 快 <strong>6 倍</strong>、GPU 显存降低 <strong>40 倍</strong>，74M 参数在 K400 上达到 85.0%（自监督），且在 Breakfast（97.9%）和 COIN（90.4%）长视频基准上大幅领先。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>效率指标</th><th>TimeSformer</th><th>VideoMamba-M</th><th>提升</th></tr></thead>
+      <tbody>
+        <tr><td>推理速度（64 帧）</td><td>1×</td><td>{{< bg green >}}6×{{< /bg >}}</td><td>6 倍</td></tr>
+        <tr><td>GPU 显存（64 帧）</td><td>1×</td><td>{{< bg green >}}1/40{{< /bg >}}</td><td>40 倍</td></tr>
+        <tr><td>参数量 vs ViViT-L</td><td>311M</td><td>74M</td><td>4.2 倍更少</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">时序动作检测的 VFM 革命</div>
+
+  <h3 class="section-title">4.1 OpenTAD：统一 16 种方法的模块化框架</h3>
+
+  OpenTAD #Liu et al., 2025# 是首个真正统一的 TAD 框架，将 TAD 方法解耦为三阶段 pipeline：<strong>Backbone → Neck → Detection Head</strong>。通过大规模消融实验（16 种方法 × 9 个数据集），论文发现了几个颠覆性的结论：
+
+  <ol>
+    <li><strong>Neck 设计对性能影响最大</strong>：Mamba block 在多尺度方法（ActionFormer/TriDet）中最优，Transformer block 在单尺度方法（BMN/GTAD）中最优</li>
+    <li><strong>混合 Neck 是全局最优</strong>：Mamba + Transformer block mix（SSM + LSTM）在所有方法上均取得最佳结果</li>
+    <li><strong>Stage 2 refinement 始终有益</strong>：one-stage 方法添加 Stage 2 后 ANet +0.29%，THU +0.68%</li>
+    <li><strong>InternVideo2 backbone 碾压一切</strong>：替换 TSP → InternVideo2 后 ActionFormer ANet 从 37.07% 跃升至 38.95%（+1.88%），THU 从 68.44% 跃升至 72.36%（+3.92%）</li>
+  </ol>
+
+  最终最优组合（InternVideo2-6B + block mix neck + Stage 2）在 ActivityNet 达到 **39.51%** Avg mAP，THUMOS-14 达到 **73.42%** Avg mAP。
+
+  <h3 class="section-title">4.2 Backbone 消融：K400 准确率不等于 TAD 性能</h3>
+
+  OpenTAD 最重要的发现之一是<strong>动作分类精度与时序定位能力的脱节</strong>：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Backbone</th><th>K400 Top-1</th><th>ANet mAP</th><th>THU mAP</th></tr></thead>
+      <tbody>
+        <tr><td>SlowFast-R101</td><td>78.7%</td><td>36.83%</td><td>67.33%</td></tr>
+        <tr><td>VideoSwin-S</td><td>80.5%</td><td>35.27%</td><td>64.42%</td></tr>
+        <tr><td>MViTv2-L</td><td>85.4%</td><td>35.86%</td><td>65.17%</td></tr>
+        <tr><td><strong>InternVideo2-6B</strong></td><td>{{< bg green >}}92.1%{{< /bg >}}</td><td>{{< bg green >}}38.95%{{< /bg >}}</td><td>{{< bg green >}}72.36%{{< /bg >}}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>VideoSwin-S 和 MViTv2-L 在 K400 上优于 SlowFast-R101，但在 TAD 上反而更差。这说明 CNN 系 backbone 学到的特征在时序定位上存在不匹配，ViT 系（尤其是经过自监督预训练的 VFM）才是 TAD 的最佳 backbone 选择。</p>
+
+  <h3 class="section-title">4.3 FreeZAD：完全无需训练的零样本 TAD</h3>
+
+  FreeZAD #Han et al., 2025# 走了一条完全不同的路线——<strong>完全不训练任何参数</strong>，直接利用预训练 CoCa（ViT-L/14）的冻结特征做时序动作检测。
+
+  方法分三步：(1) 用 CoCa 视觉编码器逐帧提取 RGB 特征，文本编码器将候选类别映射为原型；(2) 原型引导逐帧相似度计算，经平滑和阈值化生成候选片段；(3) 设计 <strong>LogOIC</strong>（对数衰减加权 Outer-Inner-Contrastive 分数）增强边界敏感性，并通过基于 FFT 的 <strong>Actionness Calibration</strong> 利用频率能量修正置信度。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>类型</th><th>THU mAP</th><th>ANet mAP</th><th>FPS</th><th>显存</th></tr></thead>
+      <tbody>
+        <tr><td>DeTAL</td><td>全监督</td><td>25.3%</td><td>25.8%</td><td>—</td><td>—</td></tr>
+        <tr><td>T3AL</td><td>无监督</td><td>9.2%</td><td>15.4%</td><td>10.1</td><td>8.6 GB</td></tr>
+        <tr><td><strong>FreeZAD</strong></td><td>无训练</td><td>10.0%</td><td>18.3%</td><td>{{< bg green >}}128.9{{< /bg >}}</td><td>{{< bg green >}}3.3 GB{{< /bg >}}</td></tr>
+        <tr><td><strong>AdaZAD</strong></td><td>TTA</td><td>14.0%</td><td>19.3%</td><td>28.4</td><td>3.7 GB</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>FreeZAD 的推理速度是 T3AL 的 <strong>12.8 倍</strong>，显存仅为 38%。AdaZAD 通过轻量测试时适配（仅 1.2M 参数）将 mAP 从 10.0% 提升至 14.0%（+40%），在 ActivityNet 上甚至超过有监督方法 Eff-Prompt（23.1% → 19.3%，差距仅 3.8%）。但 THUMOS14 上零样本（10.0%）与全监督（DeTAL 25.3%）仍有 15% 的绝对差距，Oracle 分析指出完美标签可提升 1.3%，完美采样提升 3.6%——伪标签质量是主要瓶颈。</p>
+
+  <h3 class="section-title">4.4 端到端 TAD 的兴起</h3>
+
+  OpenTAD 还揭示了一条新兴路线：<strong>端到端训练</strong>。AdaTAD 使用 VideoMAEv2-G backbone + adapter tuning 在 THUMOS14 上达到 **77.07%** Avg mAP，远超所有特征提取方法（最高 73.42%）。这暗示了未来 TAD 的最优范式可能不是"先预训练 VFM，再提取特征"，而是"VFM 做 backbone，端到端微调"。
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      端到端 vs 两阶段的权衡
+    </div>
+    <div class="admonition-content"><p>端到端训练消除了离线特征提取的信息损失，但需要 GPU 常驻大模型（VideoMAEv2-G 约 1B 参数）。两阶段方法可以离线提取特征后反复实验检测头设计，更适合研究迭代。OpenTAD 的代码库同时支持两种范式。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">视频语言模型——从识别到理解</div>
+
+  <h3 class="section-title">5.1 VideoLLaMA 3：vision-centric 范式</h3>
+
+  VideoLLaMA 3 #Wang et al., 2025# 代表了一种激进的设计哲学：<strong>高质量图像理解是视频理解的基础</strong>。与准备海量视频-文本数据集不同，VideoLLaMA 3 聚焦于构建大规模高质量图文数据集（>60M），视频数据仅约 6M。
+
+  训练分为 4 个阶段：(1) Vision Encoder Adaptation——用 2D-RoPE 替换 SigLIP 的绝对位置编码，支持任意分辨率输入；(2) Vision-Language Alignment——27.2M 图文数据全参数对齐；(3) Multi-task Fine-tuning——引入 2.92M 通用视频数据和 DiffFP 视频压缩器；(4) Video-centric Fine-tuning——增强时间定位能力。
+
+  结果：2B 模型在 13 项视频基准中 12 项最优，7B 模型全部 8 项最优。ActivityNet-QA（动作理解）达到 **61.3**，PerceptionTest（动作感知）达到 **72.8**，Charades-STA（时间定位）达到 **60.7**。
+
+  <h3 class="section-title">5.2 VLM 的时间定位能力</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>能力维度</th><th>VideoLLaMA3 7B</th><th>V-JEPA 2</th><th>InternVideo2</th></tr></thead>
+      <tbody>
+        <tr><td>动作理解（ActivityNet-QA）</td><td>{{< bg green >}}61.3{{< /bg >}}</td><td>—</td><td>—</td></tr>
+        <tr><td>动作感知（PerceptionTest）</td><td>{{< bg green >}}72.8{{< /bg >}}</td><td>—</td><td>—</td></tr>
+        <tr><td>时间定位（Charades-STA）</td><td>{{< bg green >}}60.7{{< /bg >}}</td><td>—</td><td>—</td></tr>
+        <tr><td>运动理解（SSv2 Top-1）</td><td>—</td><td>{{< bg green >}}77.3{{< /bg >}}</td><td>77.5</td></tr>
+        <tr><td>视频 QA 平均</td><td>SOTA</td><td>59.5</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这揭示了一个有趣的互补性：<strong>V-JEPA 2 擅长运动表征和预测，VideoLLaMA 3 擅长语言理解和多模态推理</strong>。两者结合（V-JEPA 2 编码器作为 VLM 的视觉 backbone）可能产生更强的 TAD 系统。</p>
+
+  <h3 class="section-title">5.3 UniFormerV2：图像预训练迁移的极致</h3>
+
+  UniFormerV2 #Li et al., 2022# 证明了一个反直觉的结论：<strong>不需要视频预训练</strong>，仅用 CLIP-400M 图像预训练的 ViT 加上轻量时序模块，5 epoch 微调即可在 K400 上达到 <strong>90.0%</strong>——首次突破 90% 大关。
+
+  其 Local UniBlock 在 ViT 块前插入局部时序 MHRA（参数仅 $t \times 1 \times 1$），Global UniBlock 用交叉注意力将复杂度从 $O(L^2)$ 降至 $O(L)$。B/16 模型仅 <strong>3.6T FLOPs</strong>（Swin-L 的 1/29），达到 83.4% K400。
+
+  这意味着对于资源有限的实际场景（如[[pet-action-detection-model-survey | 系列四]]讨论的边缘部署），UniFormerV2 的"图像预训练 + 极少微调"范式可能是最实用的 VFM 迁移方案。
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验全景与量化对比</div>
+
+  <h3 class="section-title">6.1 动作识别性能总表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>K400</th><th>SSv2</th><th>UCF101</th><th>HMDB51</th><th>MiT</th><th>ANet</th></tr></thead>
+      <tbody>
+        <tr><td><strong>InternVideo2-6B</strong></td><td>{{< bg green >}}92.1{{< /bg >}}</td><td>77.5</td><td>{{< bg green >}}97.3{{< /bg >}}</td><td>{{< bg green >}}80.7{{< /bg >}}</td><td>{{< bg green >}}51.2{{< /bg >}}</td><td>{{< bg green >}}95.9{{< /bg >}}</td></tr>
+        <tr><td><strong>V-JEPA 2 ViT-g</strong></td><td>87.3</td><td>{{< bg green >}}77.3{{< /bg >}}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td><strong>UniFormerV2-L/14</strong></td><td>90.0</td><td>73.0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td><strong>VideoMamba-M</strong></td><td>85.0</td><td>71.4</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td><strong>RVM-H</strong></td><td>60.0</td><td>68.7</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td><strong>VideoMAEv2-g</strong></td><td>90.0</td><td>77.0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 TAD 性能总表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Backbone</th><th>THUMOS14 mAP</th><th>ActivityNet mAP</th><th>类型</th></tr></thead>
+      <tbody>
+        <tr><td><strong>OpenTAD (ActionFormer+)</strong></td><td>InternVideo2-6B</td><td>{{< bg green >}}73.42%{{< /bg >}}</td><td>{{< bg green >}}39.51%{{< /bg >}}</td><td>全监督</td></tr>
+        <tr><td>AdaTAD</td><td>VideoMAEv2-G</td><td>77.07%</td><td>—</td><td>端到端</td></tr>
+        <tr><td>InternVideo2 直用</td><td>ViT-6B</td><td>72.0%</td><td>41.2%</td><td>特征提取</td></tr>
+        <tr><td>VideoMambaSuite</td><td>InternVideo2-6B</td><td>69.57%</td><td>37.45%</td><td>全监督</td></tr>
+        <tr><td><strong>AdaZAD</strong></td><td>CoCa ViT-L/14</td><td>14.0%</td><td>19.3%</td><td>TTA</td></tr>
+        <tr><td><strong>FreeZAD</strong></td><td>CoCa ViT-L/14</td><td>10.0%</td><td>18.3%</td><td>无训练</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.3 预训练成本与效率对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>预训练硬件</th><th>训练时长</th><th>数据规模</th><th>效率亮点</th></tr></thead>
+      <tbody>
+        <tr><td>InternVideo2-6B</td><td>256 A100</td><td>35 天</td><td>402M 条目</td><td>渐进式三阶段训练</td></tr>
+        <tr><td>V-JEPA 2 ViT-g</td><td>—</td><td>—</td><td>22M clips</td><td>渐进式分辨率 {{< bg green >}}8.4× 加速{{< /bg >}}</td></tr>
+        <tr><td>VideoMamba-M</td><td>—</td><td>—</td><td>CLIP-400M</td><td>推理 {{< bg green >}}6× 加速{{< /bg >}}，40× 显存</td></tr>
+        <tr><td>UniFormerV2-L/14</td><td>—</td><td>5 epoch</td><td>CLIP + K710</td><td>{{< bg green >}}5 epoch 即达 SOTA{{< /bg >}}</td></tr>
+        <tr><td>RVM-S</td><td>256 TPU-v6</td><td>1M steps</td><td>8.4M clips</td><td>34M 参数，无蒸馏</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">在地图上的位置</div>
+
+  <h3 class="section-title">与已有系列文章的关系</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文章</th><th>覆盖范围</th><th>本文的差异视角</th></tr></thead>
+      <tbody>
+        <tr><td>[[action-recognition-landscape | 系列一·导览]]</td><td>7 条技术路线概览</td><td>深入 VFM 范式的技术细节</td></tr>
+        <tr><td>[[animal-action-recognition-survey | 系列二·动物]]</td><td>动物动作识别全景</td><td>VFM 跨物种迁移（未来方向）</td></tr>
+        <tr><td>[[pet-action-detection-model-survey | 系列四·选型]]</td><td>mmaction2 + 边缘部署</td><td>VFM 前沿方法 + 云端训练</td></tr>
+        <tr><td>[[coarse-fine-animal-action-review-2025 | 系列五·CG→FG]]</td><td>粗粒度到细粒度综述</td><td>VFM 作为 CG→FG 的潜在解决方案</td></tr>
+        <tr><td>[[paper-videomae | VideoMAE 精读]]</td><td>VideoMAE V1 深度解读</td><td>覆盖 V2 及后续所有演进</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">六个开放问题</h3>
+
+  <ol>
+    <li><strong>VFM 特征 vs 端到端训练</strong>：AdaTAD（端到端，77.07% THU）远超特征提取方法（73.42%），但需要 1B 参数模型常驻 GPU。最优范式取决于部署约束。</li>
+    <li><strong>长视频 TAD</strong>：RVM 的线性推理复杂度和 80+ 帧特征稳定性、VideoMamba 的 6× 加速，是否意味着 SSM/RNN 在长视频 TAD 上碾压 Transformer？ActivityNet 平均 180 秒视频是最佳测试场。</li>
+    <li><strong>零样本精度上限</strong>：FreeZAD 与全监督方法有 15% 绝对差距。Oracle 分析指出伪标签质量是瓶颈，但 1.2M 参数的 AdaZAD 就能缩小到 11%——轻量适配是否是零样本 TAD 的最佳出路？</li>
+    <li><strong>多模态 VFM</strong>：InternVideo2 的四模态对比学习（视频+音频+语音+文本）表明多模态互利互惠。音频特征对 TAD（尤其是包含语音指令的动作）有多大增益？</li>
+    <li><strong>VFM 跨物种迁移</strong>：[[coarse-fine-animal-action-review-2025 | 系列五]]揭示 FG 动物动作识别仅 12.7-29.6% 准确率。VFM 的通用表征能否作为 CG→FG 的 bridge？V-JEPA 2 在运动理解上的强势表现值得关注。</li>
+    <li><strong>边缘部署</strong>：[[pet-action-detection-model-survey | 系列四]]讨论了 500 元 BOM 约束。VideoMamba 的 SSM 算子在 TensorRT/NCNN 上仍无原生支持，UniFormerV2-B/16（3.6T FLOPs）和 RVM-S（34M）是当前最可行的候选。</li>
+  </ol>
+
+  <h3 class="section-title">可操作启发</h3>
+
+  <p>如果要在实际项目中使用视频基础模型做动作检测，当前的最佳实践路径是：</p>
+
+  <ul>
+    <li><strong>云端高精度</strong>：InternVideo2-6B backbone + OpenTAD 最优 Neck/Head → ActivityNet 39.51%, THUMOS14 73.42%</li>
+    <li><strong>资源受限</strong>：UniFormerV2-B/16 + K710 中间训练 + 5 epoch 微调 → K400 83.4%, 仅 3.6T FLOPs</li>
+    <li><strong>零样本快速部署</strong>：FreeZAD（CoCa 冻结）→ 128.9 FPS, 3.3 GB 显存, 无需训练</li>
+    <li><strong>长视频监控</strong>：VideoMamba-M 或 RVM → 线性推理复杂度, 特征长期稳定</li>
+  </ul>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="coarse-fine-animal-action-review-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">从粗粒度到细粒度的动物动作识别综述</span></a>
+    <a class="nav-card nav-hub" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别 Hub</span></a>
+  </div>
+
+  <!-- 参考来源 -->
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Wang et al., 2024">Wang, Y. et al. (2024). InternVideo2: Scaling Foundation Models for Multimodal Video Understanding. ECCV 2024. <a href="https://arxiv.org/abs/2403.15377" target="_blank">arXiv:2403.15377</a></li>
+      <li data-cite-key="Bardes et al., 2025">Bardes, A. et al. (2025). V-JEPA 2: Self-Supervised Video Models Enable Understanding, Prediction and Planning. Meta FAIR. <a href="https://arxiv.org/abs/2506.09985" target="_blank">arXiv:2506.09985</a></li>
+      <li data-cite-key="Zhu et al., 2024">Zhu, Z. et al. (2024). VideoMamba: State Space Model for Efficient Video Understanding. ECCV 2024. <a href="https://arxiv.org/abs/2403.06977" target="_blank">arXiv:2403.06977</a></li>
+      <li data-cite-key="Liu et al., 2025">Liu, J. et al. (2025). OpenTAD: A Unified Framework and Comprehensive Study of Temporal Action Detection. <a href="https://arxiv.org/abs/2502.20361" target="_blank">arXiv:2502.20361</a></li>
+      <li data-cite-key="Han et al., 2025">Han, C. et al. (2025). FreeZAD: Training-Free Zero-Shot Temporal Action Detection with Vision-Language Models. IEEE TMM 2026. <a href="https://arxiv.org/abs/2501.13795" target="_blank">arXiv:2501.13795</a></li>
+      <li data-cite-key="Li et al., 2022">Li, K. et al. (2022). UniFormerV2: Spatiotemporal Learning by Arming Image ViTs with Video UniFormer. ICLR 2024. <a href="https://arxiv.org/abs/2211.09552" target="_blank">arXiv:2211.09552</a></li>
+      <li data-cite-key="Wang et al., 2025">Wang, K. et al. (2025). VideoLLaMA 3: Frontier Multimodal Foundation Models for Image and Video Understanding. <a href="https://arxiv.org/abs/2501.13106" target="_blank">arXiv:2501.13106</a></li>
+      <li data-cite-key="Recasens et al., 2025">Recasens, A. et al. (2025). Recurrent Video Masked Autoencoders. Google DeepMind. CVPR 2026. <a href="https://arxiv.org/abs/2512.13684" target="_blank">arXiv:2512.13684</a></li>
+      <li data-cite-key="Wang et al., 2023">Wang, Z. et al. (2023). VideoMAE V2: Scaling Video Masked Autoencoders with Dual Masking. CVPR 2023. <a href="https://arxiv.org/abs/2303.16727" target="_blank">arXiv:2303.16727</a></li>
+      <li data-cite-key="Wang et al., 2022">Wang, Y. et al. (2022). InternVideo: General Video Foundation Models via Generative and Discriminative Learning. <a href="https://arxiv.org/abs/2212.03191" target="_blank">arXiv:2212.03191</a></li>
+      <li data-cite-key="Liu et al., 2022">Liu, Z. et al. (2022). VideoMAE: Masked Autoencoders are Data-Efficient Learners for Self-Supervised Video Pre-Training. NeurIPS 2022. <a href="https://arxiv.org/abs/2203.12602" target="_blank">arXiv:2203.12602</a></li>
+      <li data-cite-key="Bardes et al., 2024">Bardes, A. et al. (2024). V-JEPA: Video Joint Embedding Predictive Architecture. Meta FAIR. <a href="https://arxiv.org/abs/2404.16790" target="_blank">arXiv:2404.16790</a></li>
+    </ul>
+  </div>
+</div>

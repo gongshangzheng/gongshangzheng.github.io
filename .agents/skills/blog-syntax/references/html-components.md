@@ -481,22 +481,30 @@
 
 ```html
 <div class="chapter-nav">
-  <a class="nav-card" href="prev-chapter.html">
+  <a class="nav-card nav-prev" href="prev-chapter.html">
+    <span class="nav-arrow">←</span>
     <span class="nav-label">上一章</span>
     <span class="nav-title">上一章标题</span>
   </a>
-  <a class="nav-card current" href="course-hub.html">
+  <a class="nav-card nav-hub" href="course-hub.html">
     <span class="nav-label">枢纽页</span>
     <span class="nav-title">课程枢纽页</span>
   </a>
-  <a class="nav-card" href="next-chapter.html">
+  <a class="nav-card nav-next" href="next-chapter.html">
+    <span class="nav-arrow">→</span>
     <span class="nav-label">下一章</span>
     <span class="nav-title">下一章标题</span>
   </a>
 </div>
 ```
 
-适用：课程笔记页末尾的上一章 / 枢纽页 / 下一章导航。
+- `.nav-prev`：左侧卡片，带 accent 左边框和 ← 箭头
+- `.nav-hub`：居中卡片，带金色上边框
+- `.nav-next`：右侧卡片，带 accent 右边框和 → 箭头
+- `.nav-card.current`：占位符（无链接时），半透明虚线边框
+- 只有两张卡片时（无枢纽页），prev 和 next 自动左右对齐
+
+适用：课程笔记页、系列文章末尾的上一章 / 枢纽页 / 下一章导航。
 
 ### 音乐播放器
 
@@ -668,7 +676,7 @@ print("hello")
 | `.callout` | 一句话要点、易错点、提醒 |
 | `.review-box` | 章节末尾复习速查 |
 | `.sources` | 参考来源（必须用此组件） |
-| `.chapter-nav` / `.nav-card` | 上一章 / 枢纽页 / 下一章导航 |
+| `.chapter-nav` / `.nav-prev` / `.nav-hub` / `.nav-next` | 上一章 / 枢纽页 / 下一章导航（带方向箭头和 accent 边框） |
 | `.vs` | 左右对比栏（`.vs .l` 红色调 / `.vs .r` 蓝色调） |
 | `.card-grid` / `.card` | 卡片网格 |
 | `.icon-grid` / `.icon-item` | 图标网格 |
@@ -771,8 +779,8 @@ Admonition 带图标 + 按类型变色，适合**需要多段展开、按严重�
 
 | 项目 | 说明 |
 |------|------|
-| Article Meta | 创建日期、更新日期、分类、标签、阅读时间自动渲染到文章头部 |
-| Article Footer | 分类和标签链接自动渲染到文章底部 |
+| Article Meta | 创建日期、更新日期、分类、标签、阅读时间、论文链接（papers）、代码仓库链接（repos）自动渲染到文章头部 |
+| Article Footer | 分类、标签、论文链接（papers）、代码仓库链接（repos）自动渲染到文章底部 |
 | Hero | 从 frontmatter `hero_title` / `hero_sub` / `hero_tagline` 自动生成 |
 | TOC 侧边栏 | `.ch-title` 和 `<h2>`~`<h6>` 自动生成目录 |
 | Heading 锚点 | 所有标题自动注入 ID 和锚点链接 |
