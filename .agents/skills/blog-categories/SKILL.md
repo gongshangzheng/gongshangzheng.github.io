@@ -7,7 +7,7 @@ description: |
   URL 用英文/pinyin slug，侧边栏等显示中文。sub_id 仅在同级排序。
   所有需要填写或校验分类的 skill（html-blog、content-creator、deep-research 等）必须读取本 skill。
   MANDATORY TRIGGERS: 分类, category, categories, subcategory, subsubcategory, 博客分类, 分类体系, 选分类, 归类, categorize
-version: 3.1.0
+version: 3.2.0
 category: blog-taxonomy
 tags: [blog, taxonomy, categories, aliases, alias-path]
 ---
@@ -220,8 +220,11 @@ sub_id: 0
 | | `动作识别/动作识别论文精读` | 动作识别单篇论文深度解读 |
 | | `动作识别/宠物动作识别` | 宠物行为识别系列 |
 | | `自回归` | 自回归视觉模型、AR 生成 |
-| | `图像压缩` | 学习式压缩、语义通信、JSCC、神经编解码 |
-| | `图像压缩/红外图像压缩` | 红外压缩技术路线 |
+| | `图像压缩` | 学习式压缩、语义通信、JSCC、神经编解码（主系列） |
+| | `图像压缩/图像压缩基础系列` | 基础知识教程 |
+| | `图像压缩/图像压缩专题` | 技术专题综述 |
+| | `图像压缩/图像压缩论文精读` | 单篇论文深度解读 |
+| | `图像压缩/红外图像压缩` | 红外压缩技术路线 + 精读 |
 | | `GAN` | 生成对抗网络、对抗式训练 |
 | | `强化学习` | 强化学习、RLHF、PPO、World Model |
 | | `微调` | LoRA、QLoRA、DoRA、PEFT、Adapter、Prefix Tuning |
@@ -229,7 +232,9 @@ sub_id: 0
 | | `Agent` | AI Agent、LLM Agent、Tool Use、MCP |
 | | `AI Infra` | AI 基础设施、LLMOps、推理系统 |
 | | `多模态` | 多模态大模型、VLM、视觉语言模型 |
-| | `数字人` | 数字人、Talking Head、Lip Sync、Avatar |
+| | `数字人` | 数字人、Talking Head、Lip Sync、Avatar（主系列） |
+| | `数字人/数字人论文精读` | 单篇论文深度解读 |
+| | `数字人/数字人工程解读` | 源码解读/工程拆解/Benchmark |
 | | `架构` | Transformer、MoE、蒸馏、数据集、框架 |
 | | `论文每日摘要` | 每日/每周 arXiv 摘要 |
 | **编程** | `前端` | HTML/CSS/JS/PHP、前端框架 |
