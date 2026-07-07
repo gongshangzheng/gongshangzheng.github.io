@@ -14,7 +14,7 @@
 ### 1. 统一分类
 
 检查所有章节文章的 frontmatter，确保：
-- 所有文章共享相同的 `subcategory`（如"数字信号处理"、"信息论"）
+- 所有文章共享相同的 `aliases` 分类路径（如 `categories/课程/数字信号处理`）
 - 所有文章共享一组核心 `tags`
 - 每篇文章已有 `sub_id` 字段（用于排序）
 
@@ -40,9 +40,7 @@ description: "课程名称的完整学习笔记系列"
 created_at: YYYY-MM-DDTHH:mm:ss
 updated_at: YYYY-MM-DDTHH:mm:ss
 tags: [与章节文章共享的 tags]
-categories: ["课程"]
-subcategory: "与章节文章相同的 subcategory"
-aliases: ["课程别名"]
+aliases: ["课程别名", "categories/课程/<课程名称>"]
 hero_title: "课程名称"
 hero_sub: "课程笔记系列"
 hero_tagline: "从问题动机到完整推导"

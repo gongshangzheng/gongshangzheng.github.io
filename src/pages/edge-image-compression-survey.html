@@ -1,5 +1,5 @@
 ---
-title: "红外图像压缩系列（三）：边缘与轮廓压缩 — 从二值编码到 Coding for Machines"
+title: "红外轮廓图像压缩系列（三）：边缘与轮廓压缩 — 从二值编码到 Coding for Machines"
 description: "系统调研面向红外轮廓图、二值边缘图和稀疏结构图的压缩算法：从 CCITT G4、JBIG/JBIG2，到链码、线段几何编码、结构保持近无损压缩与 Coding for Machines。"
 date: 2026-06-15T11:17:48
 created_at: 2026-06-15T11:17:48
@@ -7,8 +7,8 @@ updated_at: 2026-07-06T12:00:00
 tags: ["边缘图像压缩", "红外图像", "二值图像", "链码", "Coding for Machines"]
 sub_id: 30
 hub: infrared-compression-hub
-aliases: ["边缘图像压缩", "边缘图压缩", "Edge Image Compression", "Contour Compression", "categories/AI/图像压缩/红外图像压缩"]
-mathjax: false
+aliases: ["边缘图像压缩", "边缘图压缩", "Edge Image Compression", "Contour Compression", "categories/AI/图像压缩/红外轮廓图像压缩"]
+mathjax: true
 hero_title: "边缘图像压缩调研"
 hero_sub: "红外轮廓图 · 二值边缘图 · 稀疏结构编码"
 hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，而是结构、连通性与任务可用性"
@@ -30,6 +30,8 @@ hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，�
   <p>传统图像压缩的默认目标通常是在人眼视觉质量、PSNR/MS-SSIM、感知质量和码率之间折中；JPEG、JPEG2000、BPG、WebP、HEVC/VVC intra 以及现代 learned image compression 都默认图像存在丰富纹理、高频细节、颜色或灰度梯度。可是红外轮廓图经常更像一张稀疏的 1-bit 图：大部分区域为空背景，少量边缘像素组成线、曲线、闭合边界、断裂边界或噪声毛刺。对这类数据，继续使用面向自然图像纹理的 transform coding，可能并不是最优选择。</p>
 
   <div class="callout"><strong>核心判断：</strong>红外边缘图像应优先被看作“稀疏结构图 / 二值语义图 / 轮廓集合”，而不是普通灰度图像。压缩目标也应从“像素误差最小”转向“结构保持、连通性保持、任务性能保持”。</div>
+
+  <div class="callout"><strong>本文范围：</strong>本文聚焦<strong>静态图像</strong>中的轮廓/边缘压缩——即单帧二值边缘图、红外轮廓图和语义分割图的编码问题。当轮廓随时间演化形成视频序列时，时域冗余利用、运动补偿链码、语义条件扩散等视频专属问题在专题文章 <a href="contour-video-compression-survey.html">《图像压缩专题（八）：轮廓视频压缩》</a> 中专门讨论。</div>
 
   <div class="photo">
     <svg viewBox="0 0 980 360" role="img" aria-label="红外边缘图像压缩任务定义示意图" style="width:100%;height:auto;border-radius:14px;background:#0b1020;">
@@ -342,6 +344,32 @@ hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，�
 
   <p>这一路线的关键不是“少传一点像素”，而是改变编码对象：传输的是结构约束，未指定部分由解码器根据局部相关性补全。对红外边缘图而言，可以进一步把 specification 设计为端点、交叉点、角点、进入/离开块的位置、局部方向和连通关系。这样即使码率极低，也尽量保留目标轮廓的拓扑骨架。</p>
 
+  <p>具体而言，MRF 方法将二值图像分为均匀块（全黑/全白）和边界块（含黑白边界）。均匀块只需 1 bit 标记类别；边界块传输的 specification 包括：run endpoints（每行黑白交替的位置）、block class（边界类型：水平/垂直/对角/L 形等）和 decision bit（具体拓扑分支）。解码端的 MRF 模型以这些 specification 为约束，在所有满足约束的重建中选取<strong>最大后验概率 (MAP)</strong>的解——即最平滑、最符合局部空间相关性的二值图像。这一过程相当于"有约束的图像修复"：编码端只告诉解码器"这里有一条从左上到右下的边界"，解码器自行补全具体像素路径。</p>
+
+  <h3 class="section-title">层级 Cutset 采样：从粗到细的递进编码</h3>
+
+  <p>Zhao、Neuhoff 和 Pappas 在 TIP 2021 进一步提出<strong>层级 cutset 采样</strong>方法 #Zhao-Cutset-2021#。其核心思想是沿可变步长的矩形网格对二值图像进行采样——网格交叉点的像素值被传输，其余像素由解码器用 MRF 模型推断。关键是<strong>步长自适应</strong>：边缘密集区域用细网格（小步长），平坦区域用粗网格（大步长），形成从粗到细的层级结构。</p>
+
+  <p>与 Reyes 等人的块级 specification 不同，cutset 采样是<strong>点级</strong>的——直接选择关键像素传输，而非传输抽象的结构描述。这种方法更适合轮廓不规则、难以用有限 specification 类别描述的红外边缘图。例如，红外小目标的轮廓可能只有 3-5 个像素宽，块级 specification 可能将整个目标归入一个块而丢失形状信息；而 cutset 采样可以在目标区域加密采样点，保留局部几何。</p>
+
+  <h3 class="section-title">骨架与图方法：从形态学到拓扑编码</h3>
+
+  <p>除了 MRF 路线，<strong>形态学骨架 (morphological skeleton)</strong> 提供了另一种结构保持思路。骨架表示将二值图像分解为一系列以骨架点为中心的极大圆盘的叠加，只需编码骨架点坐标和半径。对于红外轮廓图，骨架天然对应轮廓的中轴线 (medial axis)，可以高效表示细长目标。但骨架表示的弱点是对噪声敏感——少量噪声像素可能产生大量短分支骨架，导致码率膨胀。</p>
+
+  <p><strong>图方法 (graph-based coding)</strong>将轮廓转化为图结构：节点对应端点、交叉点和角点，边对应轮廓段。编码时只传输图的拓扑（邻接矩阵）和节点坐标，边路径由解码器根据端点和方向信息重建。这种方法的优势是<strong>显式保留拓扑</strong>——连通组件数、欧拉数 (Euler number)、分支结构在编码过程中不会被破坏。对于红外场景中的多目标轮廓，图方法可以自然地将每个目标表示为一个连通子图，便于后续任务驱动的选择性编码。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>结构保持方法</th><th>编码对象</th><th>解码端重建</th><th>拓扑保证</th><th>红外适用性</th></tr></thead>
+      <tbody>
+        <tr><td>MRF Specification</td><td>块类别 + run endpoints + decision bit</td><td>MRF MAP 推断</td><td>间接（通过 specification 约束）</td><td>适合中等密度轮廓</td></tr>
+        <tr><td>层级 Cutset 采样</td><td>网格交叉点像素值</td><td>MRF 插值</td><td>间接（依赖采样密度）</td><td>适合不规则细轮廓</td></tr>
+        <tr><td>形态学骨架</td><td>骨架点坐标 + 半径</td><td>圆盘叠加重建</td><td>弱（噪声敏感）</td><td>适合细长目标</td></tr>
+        <tr><td>图方法</td><td>节点坐标 + 邻接矩阵</td><td>边路径推断</td><td><strong>显式保留</strong></td><td>适合多目标场景</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <div class="theorem-box">
     <h3>结构保持压缩的核心准则</h3>
     <p>对边缘图而言，错误的严重性不只取决于错了多少像素，而取决于这些错误是否改变了轮廓的结构功能：是否断开连通组件、是否删除小目标、是否破坏闭合边界、是否改变关键角点和分叉点。</p>
@@ -389,6 +417,22 @@ hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，�
 
   <p>近年来，语义分割图、占用图和地图轮廓压缩开始成为独立问题。它们与红外边缘图高度相似：像素取值有限，区域内部常常恒定，重要信息集中在边界。红外边缘图可以看成最简单的二值 semantic map：0 是 background，1 是 edge。若区分弱边缘、强边缘、目标边界和噪声，还可以扩展成多值标签图。</p>
 
+  <h3 class="section-title">从二值到多值：标签图的压缩挑战</h3>
+
+  <p>语义分割图的像素值是类别标签而非灰度——例如 COCO 的 80 类、Cityscapes 的 30 类、ADE20K 的 150 类。这与红外边缘图的关键区别在于：<strong>多值标签图中的边界不只是“有/无”，还携带“从哪个类别过渡到哪个类别”的信息</strong>。一条轮廓段可能同时是“行人→道路”和“车辆→道路”的边界，编码时需要区分。</p>
+
+  <p>对红外边缘图而言，可以自然地将二值边缘扩展为多值标签：<strong>0</strong> = 背景、<strong>1</strong> = 弱边缘（梯度幅值 30-60）、<strong>2</strong> = 强边缘（梯度幅值 60-100）、<strong>3</strong> = 目标边界（由检测器确认）、<strong>4</strong> = 噪声伪边缘。这种多值标签图比纯二值图携带更多语义信息，也为压缩提供了更大的空间——例如，弱边缘和噪声可以用更粗的量化或直接丢弃，而强边缘和目标边界需要精确保留。</p>
+
+  <p>多值标签图的压缩比二值图更复杂，因为同一块内可能有多个不同标签的边界重叠。CC-SMC 和 ECC 的四叉树 + 链码框架可以自然扩展到多值场景：均匀块编码标签值，边界块用链码编码每段边界的两侧标签。但码率会随标签种类数增长——若一幅图有 \(K\) 种标签，最坏情况下每个边界点需 \(\lceil\log_2 K\rceil\) bit 额外编码标签过渡信息。</p>
+
+  <h3 class="section-title">占用图压缩：V-PCC 的静态视角</h3>
+
+  <p><strong>占用图 (occupancy map)</strong>是 3D 点云压缩中的核心数据结构——V-PCC (Video-based Point Cloud Compression) 将 3D 点云投影到 2D 平面，生成 occupancy map 标记哪些像素有几何信息。这与红外边缘图在数据结构上几乎相同：都是<strong>稀疏二值图</strong>，前景像素占比通常 < 15%，大片背景为 0。</p>
+
+  <p>在静态视角下，V-PCC 的占用图压缩与 Part 1 讨论的 JBIG2 高度重合。但 V-PCC 场景提供了额外结构信息：占用图的边界对应 3D 表面的<strong>轮廓投影</strong>，通常形成连续的闭合或半闭合曲线。V-PCC 标准使用<strong>基于块的后处理</strong>——先用 HEVC 编码占用图，再对边界块做形态学平滑。VCIP 2020 的工作则将占用图边界提取为链码，用<strong>运动补偿链码</strong>利用帧间冗余 #VPCC-Occupancy-2020#。</p>
+
+  <p>对红外边缘图而言，V-PCC 占用图的经验说明：<strong>如果边缘图有对应的深度/3D 信息，可以将 2D 边缘与 3D 表面轮廓联合编码</strong>。这在红外-可见光融合、红外 3D 重建等场景中有直接应用价值。即使没有 3D 信息，占用图的稀疏二值编码经验（如 run-length + 链码混合）也完全适用于红外边缘图。</p>
+
   <h3 class="section-title">CC-SMC：四叉树分块 + 链码</h3>
 
   <p>Yang 等人在 2024 年提出 Chain coding-based segmentation map lossless compression, CC-SMC，用于语义分割图无损压缩 #Yang-CCSMC-2024#。其基本思想是：先对语义图做 quadtree partitioning，均匀块直接编码标签，含边界的块用链码编码轮廓，再对链码序列做熵编码。这个框架适合同时处理大片均匀区域和复杂边界区域。</p>
@@ -424,19 +468,62 @@ hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，�
   <div class="ch-label">Part 5 · Coding for Machines</div>
   <div class="ch-title">如果边缘图是给机器看的，评价目标就应该跟任务绑定</div>
 
-  <p>如果红外边缘图最终用于目标检测、跟踪、识别或态势感知，那么压缩不一定要服务人眼，而应服务机器视觉模型。这就是 Image / Video / Feature Coding for Machines 的基本视角：压缩后的数据只要能让机器完成任务，就不必保留人类视觉意义上的完整图像。</p>
+  <p>如果红外边缘图最终用于目标检测、跟踪、识别或态势感知，那么压缩不一定要服务人眼，而应服务机器视觉模型。这就是 Image / Video / Feature Coding for Machines (ICM/VCM/FCM) 的基本视角：压缩后的数据只要能让机器完成任务，就不必保留人类视觉意义上的完整图像。JPEG 和 MPEG 已分别启动 ICM 和 VCM 标准化，目标是将"机器可识别"作为与"人眼可看"并列的压缩优化目标。</p>
 
-  <h3 class="section-title">SA-ICM：只学习对机器有用的边缘信息</h3>
+  <h3 class="section-title">ICM 三种范式：ROI、Task-Loss 与 Region-Learning</h3>
 
-  <p>Shindo 等人在 ICIP 2024 的 <em>Image Coding for Machines with Edge Information Learning Using Segment Anything</em> 中提出 SA-ICM：用 Segment Anything Model 生成 mask，提取物体边缘信息，然后训练 Learned Image Compression 模型只编码/解码对象边缘 #Shindo-SAICM-2024#。论文摘要明确说，该方法 focuses on encoding and decoding only the edge information of object parts，并展示了其在图像识别任务中的优势，同时因为丢弃人脸纹理等细节而具有隐私保护效果 #Shindo-SAICM-2024#。</p>
+  <p>理解 SA-ICM 之前，需要先了解 ICM 领域的三种主要范式 #Shindo-SAICM-2024#：</p>
 
-  <p>这篇论文虽然面向自然图像，但与红外边缘图压缩有直接概念联系：红外轮廓图本身就是 edge information，因此可以把 SA-ICM 的训练目标改造成“直接压缩红外边缘表示，并以红外检测/跟踪任务性能为约束”。</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>范式</th><th>核心思想</th><th>损失函数</th><th>局限</th></tr></thead>
+      <tbody>
+        <tr><td>ROI-based</td><td>用 ROI-map 给目标区域分配更多比特</td><td>\(\mathcal{L}_h = \mathcal{R}(y) + \lambda \cdot \text{mse}(x, \hat{x})\)（全图 MSE + ROI 加权）</td><td>编码端需生成 ROI-map，负担重；对需要背景的任务无效</td></tr>
+        <tr><td>Task-Loss (TL)</td><td>将识别模型的输出作为损失项加入训练</td><td>\(\mathcal{L}_{tl} = \mathcal{R}(y) + \lambda_1 \cdot \text{mse}(x, \hat{x}) + \lambda_2 \cdot \mathcal{M}(\hat{x})\)</td><td>每个任务模型需对应一个 LIC 模型，泛化性差</td></tr>
+        <tr><td>Region-Learning (RL)</td><td>训练 LIC 只编码/解码物体区域，丢弃背景</td><td>\(\mathcal{L}_{rl} = \mathcal{R}(y) + \lambda \cdot \text{mse}(x \odot m_x, \hat{x} \odot m_x)\)</td><td>背景信息丢失，不适用于语义/全景分割</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>其中 \(\mathcal{R}(y)\) 是码率估计，\(\text{mse}\) 是均方误差，\(m_x\) 是二值 mask，\(\mathcal{M}(\hat{x})\) 是任务损失（如 YOLO 检测损失），\(\odot\) 是逐元素乘积。三种范式代表了"在哪里分配比特"和"用什么信号优化"的不同回答。</p>
+
+  <h3 class="section-title">SA-ICM：用 SAM 边缘 mask 驱动 Region-Learning</h3>
+
+  <p>Shindo 等人在 ICIP 2024 提出的 <strong>SA-ICM</strong> 属于 RL 范式的变体，但做了关键改进 #Shindo-SAICM-2024#。传统 RL 方法使用 COCO 数据集的手工 mask（图 b），只保留物体区域内部像素；SA-ICM 改用 <strong>Segment Anything Model (SAM)</strong> 生成分割 mask，再经 <strong>Canny 边缘检测</strong>转化为边缘 mask。</p>
+
+  <p>SA-ICM 的训练流程：(1) 输入图像 \(x\) → (2) SAM 以置信度 \(\alpha\) 生成分割图 → (3) Canny 检测器将分割边界转为二值边缘 mask \(\text{sam}_x(\alpha)\) → (4) 用边缘 mask 训练 LIC 模型。关键设计：<strong>mask 仅在训练时使用，推理时不需 SAM</strong>，编码端无需额外计算。损失函数为：</p>
+
+  \[\mathcal{L}_p = \mathcal{R}(y) + \lambda \cdot \text{mse}(x \odot \text{sam}_x(\alpha),\ \hat{x} \odot \text{sam}_x(\alpha))\]
+
+  <p>置信度 \(\alpha\) 控制边缘 mask 的密度：\(\alpha = 0.98\) 只保留高置信度物体的主要边界；\(\alpha = 0.48\) 则生成更多、更细的边缘。较小的 \(\alpha\) 意味着更多物体被分割、更多边缘被检测，重建图像中保留的结构信息更丰富，但码率也更高。LIC 骨架使用 <strong>LIC-TCM</strong>（Mixed Transformer-CNN），码率控制使用 <strong>CompressAI</strong> 库，训练数据为 <strong>COCO 2017</strong>（118,287 张）。</p>
+
+  <div class="callout"><strong>对红外边缘图的启示：</strong>SA-ICM 的核心洞察是——<em>边缘信息足以让机器识别物体</em>。红外轮廓图本身就是边缘信息，因此可以直接将 SA-ICM 的训练目标改造成"压缩红外边缘表示，并以红外检测/跟踪任务性能为约束"。更进一步，可以用红外边缘检测器（Sobel/Canny on IR）替代 SAM，将 SA-ICM 的框架完全迁移到红外域。</div>
+
+  <h3 class="section-title">Rate-Task-Distortion：面向机器的率失真优化</h3>
+
+  <p>传统压缩的率失真优化 (RDO) 最小化 \(J = D + \lambda R\)，其中 \(D\) 是像素级失真 (MSE/SSIM)。但在 Coding for Machines 场景下，像素失真与任务性能并不单调相关——一个 PSNR 更低的重建可能反而有更高的检测 mAP。因此需要 <strong>Rate-Task-Distortion (R-T-D)</strong> 优化框架。</p>
+
+  <p>Fischer 等人提出的 <strong>Feature-Based RDO (FRDO)</strong> #FRDO-2022# 用特征空间失真替代像素失真：将重建图像输入预训练的 ResNet50，在中间特征图上计算 \(D_{\text{feat}}\)，替代传统 MSE。这使得 RDO 直接优化"机器能看到什么"而非"人眼能看到什么"。类似地，<strong>Just Recognizable Distortion (JRD)</strong> 概念将 JND（Just Noticeable Distortion）从人眼感知阈值扩展到机器识别阈值——在 JRD 以下的失真不影响机器任务性能，可以大胆丢弃。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>优化框架</th><th>失真度量</th><th>适用场景</th></tr></thead>
+      <tbody>
+        <tr><td>传统 R-D</td><td>MSE / SSIM / MS-SSIM</td><td>面向人眼的图像/视频压缩</td></tr>
+        <tr><td>Feature R-D (FRDO)</td><td>ResNet50 特征距离</td><td>标准兼容（VTM 插件），检测/分割任务</td></tr>
+        <tr><td>R-D-Task (TL-based)</td><td>MSE + 任务损失 \(\mathcal{M}(\hat{x})\)</td><td>端到端 LIC，特定任务专用</td></tr>
+        <tr><td>R-JRD</td><td>机器识别阈值</td><td>极低码率，任务保真优先</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>对红外边缘图压缩而言，R-T-D 框架意味着：不必追求边缘像素的精确重建，而应保证<strong>检测器/跟踪器在压缩后的边缘图上仍能达到可接受的 mAP/MOTA</strong>。这是一个更合理的优化目标，也与 Part 3 讨论的结构保持评价体系（拓扑级、任务级指标）一脉相承。</p>
 
   <h3 class="section-title">扩散与地图辅助压缩：边缘作为生成条件</h3>
 
   <p>另一条相关路线是将边缘、深度或地图作为生成式压缩的条件。Morita 等人的 <em>Edge-based Denoising Image Compression</em> 在压缩框架中引入 Edge Estimation Network，从传输 latent 中估计边缘信息，并用边缘条件引导 diffusion denoising，以改善重建图像锐度 #Morita-EdgeDenoising-2024#。Ye 等人的 MAGC 则在遥感极低码率压缩中使用 vector maps 作为语义和结构 guidance，缓解 diffusion 在低码率下的结构幻觉问题 #Ye-MAGC-2024#。</p>
 
-  <p>这些工作提醒我们：边缘图既可以是压缩对象，也可以是辅助条件。如果原始红外图仍有灰度信息，可以考虑“边缘图 + 低频残差”的分层压缩；如果只有边缘图，则可直接把边缘作为主码流，并用任务模型或结构先验约束重建。</p>
+  <p>这些工作提醒我们：边缘图既可以是压缩对象，也可以是辅助条件。如果原始红外图仍有灰度信息，可以考虑"边缘图 + 低频残差"的分层压缩；如果只有边缘图，则可直接把边缘作为主码流，并用任务模型或结构先验约束重建。在视频时序场景下，边缘还可能作为扩散模型的时序条件引导语义一致的重建——这一方向在 <a href="contour-video-compression-survey.html">《图像压缩专题（八）：轮廓视频压缩》</a> Part 4 的 DiSCo 框架中得到了系统验证。</p>
 </div>
 
 <div class="ch fade-in">
@@ -479,6 +566,8 @@ hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，�
   </div>
 
   <div class="callout"><strong>最终建议：</strong>短期用 G4、JBIG1、JBIG2 和 RLE 建立强 baseline；中期做“空白跳过 + 线段 + 差分链码/ECC + generic fallback”的混合轮廓 codec；长期若要形成论文创新，应围绕拓扑保持近无损压缩或下游任务驱动红外边缘压缩展开。</div>
+
+  <div class="callout"><strong>延伸阅读：</strong>本文讨论的是<strong>静态图像</strong>中的轮廓压缩。当轮廓随时间演化形成视频序列时，MPEG-4 形状编码的运动补偿、Seg-VVC 的分割 mask 辅助帧间预测、DiSCo 的语义条件扩散等问题在 <a href="contour-video-compression-survey.html">《图像压缩专题（八）：轮廓视频压缩 — 从 MPEG-4 形状编码到语义条件扩散》</a> 中系统讨论。</div>
 </div>
 
 <div class="ch fade-in">
@@ -511,12 +600,15 @@ hero_tagline: "当图像只剩轮廓，压缩对象就不再是像素纹理，�
       <li data-cite-key="IR-VIS-Registration-2020">应用特征轮廓四边形的热红外图与可见光图配准. <em>红外与激光工程</em>, 2020. DOI: 10.3788/IRLA20200520. <a href="https://www.spacejournal.cn/hwyjggc/article/doi/10.3788/IRLA20200520" target="_blank">链接</a></li>
       <li data-cite-key="ST-ICM-2025">Shindo, T., Watanabe, T., Tatsumi, Y., &amp; Watanabe, H. (2025). <em>Image Coding for Object Recognition Tasks Based on Contour Feature Learning With Flexible Object Selection</em>. IEEE Access, 13, 106606–106617. DOI: 10.1109/ACCESS.2025.3578292.</li>
       <li data-cite-key="FLIR-Dataset">FLIR. <em>FLIR ADAS Dataset v1.3</em>. <a href="https://www.flir.com/oem/adas/adas-dataset-form/" target="_blank">FLIR</a></li>
+      <li data-cite-key="FRDO-2022">Fischer, T., Brand, F., &amp; Kaup, A. (2022). <em>Video Coding for Machines with Feature-Based Rate-Distortion Optimization</em>. IEEE MMSP 2022. arXiv:2203.05890. <a href="https://arxiv.org/abs/2203.05890" target="_blank">arXiv</a></li>
+      <li data-cite-key="Zhao-Cutset-2021">Zhao, X., Neuhoff, D. L., &amp; Pappas, T. N. (2021). <em>Hierarchical Lossy Bilevel Image Compression Based on Cutset Sampling</em>. IEEE Transactions on Image Processing, 30, 1837–1849. DOI: 10.1109/TIP.2021.3049243.</li>
+      <li data-cite-key="VPCC-Occupancy-2020">Ling, N., Liu, Y., &amp; Liu, D. (2020). <em>Lossless Compression of Occupancy Maps for Video-based Point Cloud Compression</em>. IEEE VCIP 2020.</li>
     </ul>
   </div>
 </div>
 
 <div class="chapter-nav">
-  <a class="nav-card nav-prev" href="image-compression-hub.html"><span class="nav-arrow">←</span><span class="nav-label">图像压缩专题</span><span class="nav-title">返回系列总览</span></a>
-  <a class="nav-card nav-hub current" href="edge-image-compression-survey.html"><span class="nav-label">当前文章</span><span class="nav-title">边缘图像压缩调研</span></a>
-  <a class="nav-card nav-next" href="sa-icm-2024.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">SA-ICM 深度解读</span></a>
+  <a class="nav-card nav-prev" href="infrared-compression-hub.html"><span class="nav-arrow">←</span><span class="nav-label">红外轮廓图像压缩系列</span><span class="nav-title">返回系列总览</span></a>
+  <a class="nav-card nav-hub current" href="edge-image-compression-survey.html"><span class="nav-label">当前文章</span><span class="nav-title">边缘与轮廓压缩</span></a>
+  <a class="nav-card nav-next" href="contour-video-compression-survey.html"><span class="nav-arrow">→</span><span class="nav-label">视频延伸</span><span class="nav-title">轮廓视频压缩调研</span></a>
 </div>

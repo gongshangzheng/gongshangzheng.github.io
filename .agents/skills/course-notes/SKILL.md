@@ -86,7 +86,7 @@ Phase 5 · REVIEW + PUBLISH ─ 三路并行审查 + 修复 + 发布
    node ~/.hanako/skills/html-blog/capture.js <course>-hub --hub
    ```
 3. **填充 Hub 页**：使用 `chapter-list` 布局，按章节顺序列出每篇文章
-4. **Frontmatter**：`subcategory` 与章节文章一致，添加 `aliases` 便于搜索
+4. **Frontmatter**：`aliases` 分类路径与章节文章一致，含 `categories/课程/<课程名>`
 5. **每篇文章 frontmatter 添加** `hub: <course>-hub`
 6. **构建验证**：`node build.js` + git push
 
@@ -140,10 +140,9 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 ## 课程笔记 Frontmatter 规范
 
 课程笔记的 frontmatter 除遵循 html-blog 规范外，还需注意：
-- `category`：必须为 `"课程笔记"`
-- `subcategory`：课程名称（如 `"微观经济学"`、`"线性代数"`）
+- `aliases`：必须含 `categories/课程/<课程名>` 路径（如 `categories/课程/线性代数`）
 - `description`：**必填**，必须是一句独立、可读、可直接用作页面摘要和 SEO 描述的话，概括本篇核心主题、方法或收获；禁止留空、禁止只写课程名、禁止用“课程笔记/第 X 讲”这类空泛描述敷衍
-- `sub_id`：章节顺序，整数；**默认自动分配**。生成新课程笔记时，先检索博客中同一 `subcategory` 的已有课程笔记，读取它们现有的 `sub_id`，再按顺序为新文章填写下一个可用整数。只有当用户明确指定章节号、或当前文章本身就是对某个既有章节的重写/覆盖时，才允许直接使用指定 `sub_id`
+- `sub_id`：章节顺序，整数；**默认自动分配**。生成新课程笔记时，先检索博客中同一分类路径的已有课程笔记，读取它们现有的 `sub_id`，再按顺序为新文章填写下一个可用整数。只有当用户明确指定章节号、或当前文章本身就是对某个既有章节的重写/覆盖时，才允许直接使用指定 `sub_id`
 - 其余字段（`title`、`tags`、`mathjax` 等）按 html-blog 规范填写
 
 ## 核心质量标准

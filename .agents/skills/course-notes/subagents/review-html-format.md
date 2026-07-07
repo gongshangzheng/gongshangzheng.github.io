@@ -37,7 +37,7 @@ trigger: 课程笔记 Review · HTML 格式规范审查
 - [ ] `created_at:` — `YYYY-MM-DDTHH:mm:ss` 格式
 - [ ] `updated_at:` — `YYYY-MM-DDTHH:mm:ss` 格式
 - [ ] `tags:` — `[tag1, tag2, ...]` 格式，数组，3-5 个
-- [ ] `categories:` — 从 blog-categories skill 选取
+- [ ] `aliases:` — 含 `categories/` 路径，从 blog-categories skill 选取
 - [ ] `mathjax:` — 含公式时必须为 `true`
 - [ ] `hero_title:` — Hero 区域大标题
 - [ ] `hero_sub:` — Hero 副标题（含课程名称/章节）

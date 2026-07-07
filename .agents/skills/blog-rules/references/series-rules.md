@@ -77,10 +77,8 @@ Hub/总览篇承担目录、导读和路线图功能，必须包含：
 所有系列文章必须共享：
 
 ```yaml
-categories: [同一个]
-subcategory: "同一个"
-hub: <hub-slug>       # 指向 Hub 页
-sub_id: <唯一编号>     # 按 blog-aliases 分段规则
+aliases: ["categories/<顶层分类>/<子分类>"]  # 分类路径，见 blog-categories skill
+sub_id: <唯一编号>     # 按 blog-aliases 同级编号规则
 ```
 
 ---
