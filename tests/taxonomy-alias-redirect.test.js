@@ -52,8 +52,9 @@ const tests = {
       }
     })(path.join(root, 'public'));
 
-    const catPath = publicFiles.find(p => p === 'categories/ke-cheng/index.html');
-    const subPath = publicFiles.find(p => p === 'categories/ke-cheng/shu-zi-xin-hao-chu-li/index.html');
+    // '课程' translates to 'courses' and '数字信号处理' to 'dsp' via category-names.json
+    const catPath = publicFiles.find(p => p === 'categories/courses/index.html');
+    const subPath = publicFiles.find(p => p === 'categories/courses/dsp/index.html');
 
     assert(catPath, 'category hub page should exist: ' + publicFiles.join(', '));
     assert(subPath, 'subcategory hub page should exist: ' + publicFiles.join(', '));
