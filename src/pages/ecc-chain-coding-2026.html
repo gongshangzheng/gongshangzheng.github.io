@@ -1,0 +1,455 @@
+---
+title: "图像压缩论文精读（八）：ECC，上下文自适应扩展链码"
+description: "语义地图无损压缩新框架：扩展链码(ECC) + 共享边界跳过机制，比 CC-SMC 平均降低 18% 码率，编码/解码速度最高提升 98%/50%。"
+created_at: 2026-07-07T23:26:24
+updated_at: 2026-07-07T23:35:00
+tags: [链码, 语义地图, 无损压缩, 轮廓编码, occupancy map]
+aliases: ["categories/AI/图像压缩/图像压缩论文精读"]
+sub_id: 180
+papers: ["https://arxiv.org/abs/2603.03073"]
+repos: ["https://github.com/InterDigitalInc/LosslessSegmentationMapCompression"]
+mathjax: true
+hero_title: "ECC"
+hero_sub: "arXiv 2026 · SFU / InterDigital / USTC"
+hero_tagline: "用扩展链码 + 共享边界跳过，实现语义地图无损压缩 18% 码率节省"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">18%</span><span class="label">平均码率降低</span></div>
+  <div class="stat"><span class="num b">36</span><span class="label g">ECC 符号集</span></div>
+  <div class="stat"><span class="num">98%</span><span class="label">编码加速</span></div>
+  <div class="stat"><span class="num b">243</span><span class="label l">上下文表</span></div>
+</div>
+
+<!-- ============================================================
+  Part 1 · 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">语义地图的"本质表示"是什么</div>
+
+  在机器人导航、自动驾驶感知、扩展现实（XR）和点云压缩（V-PCC）中，语义地图扮演着关键角色。它不像普通照片那样记录每个像素的颜色，而是用**离散的类别标签**标记每个区域——道路、行人、车辆、建筑。这种结构化的表示天然具有两个特性：有限的离散值集合，以及区域之间锐利的边界。
+
+  一个自然的疑问是：既然语义地图的结构如此特殊，为什么我们还在用通用图像编码器（如 FLIF、PNG+gzip、HEVC-SCC）来压缩它们？通用编码器处理的是像素网格上的连续信号，而语义地图的"本质"其实是**轮廓**——区域之间的分界线。用像素编码器处理轮廓，就像用文字描述一幅画：能表达，但不够直接。
+
+  链码（chain coding）正是轮廓的天然表示。自 Freeman 在 1961 年首次提出以来 #freeman1961encoding#，链码用方向符号序列描述轮廓，已经在二值图像压缩中证明了其高效性。但现代语义地图是**多值**的——一个场景中可能有几十个不同的语义区域，它们之间存在大量**共享边界**。传统链码方法没有显式利用这一结构特性。
+
+  本文 #Yang-et-al.-2026# 提出了一种全新的语义地图无损压缩框架，核心思想可以概括为三句话：
+
+  <div class="callout"><strong>核心贡献</strong>：消除块划分，用纯轮廓表示语义地图；设计扩展链码（ECC）用 36 个符号编码长距离轮廓转移；引入跳过编码（skip-coding）消除相邻区域共享边界的冗余表示。</div>
+
+  实验结果表明，该方法在三个语义地图数据集上比当前最优方法 CC-SMC #yang2024cc# 平均降低 **18%** 码率，编码和解码速度分别最高提升 **98%** 和 **50%**。
+
+</div>
+
+<!-- ============================================================
+  Part 2 · 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">通用编码器为什么做不好语义地图</div>
+
+  <h3 class="section-title">语义地图 vs. 自然图像：本质差异</h3>
+
+  自然图像的像素值在空间上连续变化，相邻像素之间高度相关。通用图像编码器（如 JPEG、FLIF）正是利用这种空间相关性来压缩数据。但语义地图完全不同——它的像素值是**离散的类别标签**，区域内部完全相同，区域之间突然跳变。
+
+  这意味着通用编码器在语义地图上浪费了大量计算：它们试图建模区域内部的"相关性"（实际上所有像素值完全相同），却无法有效处理区域边界的"突变"（这正是语义地图信息最密集的地方）。
+
+  <h3 class="section-title">经典链码的局限：从二值到多值的鸿沟</h3>
+
+  链码方法从 Freeman F4/F8 到 VCC（顶点链码 #bribiesca1999new#）再到 3OT（三正交链码 #cruz2005compressing#），一直在优化**单条轮廓**的表示效率。但它们都是为二值图像设计的——只编码一条轮廓，不考虑多个区域之间的关系。
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/F84VCC3OT.webp" alt="经典链码方法对比：F4, F8, VCC, 3OT" loading="lazy">
+    <div class="cap">图 1：经典链码表示方法对比。F4/F8 用绝对方向，VCC 编码顶点配置，3OT 用三符号相对方向。（来源：Yang et al. 2026, Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">CC-SMC 的两个根本局限</h3>
+
+  Yang 等人在 2020 年和 2024 年提出的 CC-SMC 框架 #yang2020chain# #yang2024cc# 首次将链码扩展到多值语义地图。它的策略是：**四叉树分区 + 块内链码**。这个方案比通用编码器好很多，但引入了两个根本性问题：
+
+  <div class="info-box">
+    <h3>局限一：块划分截断链码序列</h3>
+    <p>四叉树把语义地图切成块，每条轮廓可能被多个块截断。截断后的链码序列变短，上下文建模的效果大幅下降——就像把一篇长文拆成碎片后再做语言模型，上下文信息丢失了。</p>
+  </div>
+
+  <div class="info-box">
+    <h3>局限二：分区信令开销</h3>
+    <p>每个块是否需要链码编码、块的大小和位置，都需要额外的比特来传递。对于高分辨率的 occupancy map（如 V-PCC 中的全分辨率图），这些细碎结构的分区信令开销不可忽视。</p>
+  </div>
+
+  本文的洞察很简单：**既然语义地图的本质是轮廓，为什么不直接编码轮廓，完全绕过块划分？** 这就是 ECC 框架的出发点。
+
+</div>
+
+<!-- ============================================================
+  Part 3 · ECC 方法详解
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">扩展链码：从单位步长到长距离跳跃</div>
+
+  <h3 class="section-title">ECC 的核心直觉</h3>
+
+  传统链码（如 F8）用 8 个方向符号编码轮廓，每个符号代表**一步**移动。如果一条轮廓在某个方向上延伸了 10 个像素，F8 需要 10 个符号。
+
+  ECC 的想法很直接：如果轮廓在某个方向上持续延伸，为什么不直接用一个符号表示"走两步"或"走三步"？就像在高速公路上，F8 要求你每经过一个出口都报一次"继续直行"，而 ECC 允许你说"直行 3 个出口"。
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/ecc.webp" alt="ECC 扩展链码符号设计" loading="lazy">
+    <div class="cap">图 2：(a) ECC 扩展链码。三层 F8 方向扩展，共 36 个符号。优先选择长距离符号（如符号 24）代替多个短距离符号组合。（来源：Yang et al. 2026, Fig.4a）</div>
+  </div>
+
+  <h3 class="section-title">36 符号集：三层 F8 扩展</h3>
+
+  ECC 通过将 F8 的 8 方向扩展到**三层**，总共得到 **36 个符号**：
+
+  <div class="def-box">
+    <h3>扩展链码（ECC）符号集</h3>
+    <p>ECC 在 F8 的 8 个基本方向上，向外扩展两层（步长 2 和步长 3），形成三层方向布局：</p>
+    \[ \text{ECC} = \{ \text{Layer}_1 \cup \text{Layer}_2 \cup \text{Layer}_3 \}, \quad |\text{ECC}| = 36 \]
+    <p>其中 Layer₁ 是 F8 的 8 个基本方向（步长 1），Layer₂ 和 Layer₃ 分别对应步长 2 和步长 3 的扩展方向。</p>
+    <p><strong>符号选择策略</strong>：优先选择长距离符号。例如符号 24（步长 3 方向）代替序列 [0, 8]（两个步长 1 符号）。</p>
+  </div>
+
+  初步实验验证了这个设计的效率：在 28 个几何形状测试中，ECC 仅需 **24,550** 个符号表示所有轮廓，而 F8 需要 54,671 个，F4/VCC/3OT 各需约 73,000 个 #Yang-et-al.-2026#。ECC 的符号数不到 F8 的一半，约为其他方法的三分之一。
+
+  <h3 class="section-title">RECC：相对链码降维</h3>
+
+  36 个符号的字母表太大了——每符号需要的比特数会增加。ECC 的解决方案是：**只在第一个轮廓方向用 ECC 直接编码，后续方向用二阶差分表示**。
+
+  这就是 RECC（Relative Extended Chain Code）——ECC 的链码差分版本：
+
+  <div class="def-box">
+    <h3>相对扩展链码（RECC）</h3>
+    <p>RECC 将 ECC 符号通过旋转映射转换为相对表示，共 **27 个符号**：</p>
+    \[ \text{RECC}(s_i, s_{i-1}) = \text{Rotate}(s_i, \theta(s_{i-1})) \]
+    <p>其中 \(s_i\) 是当前 ECC 符号，\(\theta(s_{i-1})\) 是前一个符号的旋转角度 \(\in \{0^\circ, +90^\circ, \pm180^\circ, -90^\circ\}\)。</p>
+    <p><strong>关键设计</strong>：第三象限为空（轮廓不会直接反向），实际有效符号更少。</p>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/recc.webp" alt="RECC 相对链码符号布局" loading="lazy">
+    <div class="cap">图 3：(b) RECC 相对链码。27 个符号，第三象限为空（轮廓不反向）。红框标注低频符号（12-20），蓝框标注自引用上下文符号。（来源：Yang et al. 2026, Fig.4b）</div>
+  </div>
+
+  <h3 class="section-title">上下文自适应熵编码</h3>
+
+  RECC 符号序列用基于 **Markov 模型**的上下文自适应算术编码压缩：
+
+  <ul>
+    <li><strong>一阶上下文</strong>：前一个 RECC 符号</li>
+    <li><strong>二阶上下文</strong>：通过自引用（self-reference）获得——将旋转角度应用到当前 ECC 符号本身</li>
+    <li><strong>上下文表总数</strong>：最大 27 × 9 = **243** 个</li>
+  </ul>
+
+  <div class="callout"><strong>稀有符号优化</strong>：RECC 符号 12-20 出现频率较低（第二象限）。引入标志位控制是否启用该象限符号，消融实验显示始终启用会增加码率。</div>
+
+  <h3 class="section-title">3OT Fallback：小符号集的优势</h3>
+
+  虽然 ECC 在规则轮廓上效率很高，但对于不规则、碎片化的轮廓，3OT 的小符号集（仅 3 个符号）配合四阶上下文模型反而更高效。
+
+  本文保留了 3OT 作为 fallback 模式：对每个 blob，分别计算 ECC 和 3OT 的总比特数，选择更优者。消融实验揭示了有趣的模式选择分布：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>ECC 选择率</th><th>3OT 选择率</th><th>轮廓特征</th></tr></thead>
+      <tbody>
+        <tr><td>CASIA-B</td><td>64.9%</td><td>35.1%</td><td>大而规则的轮廓</td></tr>
+        <tr><td>DAVIS 480p</td><td>35.2%</td><td>64.8%</td><td>不规则/碎片化轮廓</td></tr>
+        <tr><td>Cityscapes</td><td>53.9%</td><td>46.1%</td><td>混合型轮廓</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这个结果说明：**没有一种链码能通吃所有场景**。ECC + 3OT 的自适应组合才是最优策略。
+
+  <h3 class="section-title">Skip-coding：共享边界的免费午餐</h3>
+
+  语义地图中，相邻区域共享边界。当编码内部 blob 时，与已编码 blob 的共享边界可以直接推断，无需重复编码。
+
+  类比：画地图时，两个省份的边界只需画一次——第二个省份只需说"这条边界和 XX 省共用"。
+
+  <div class="def-box">
+    <h3>Skip-coding 机制</h3>
+    <p><strong>完全跳过（Full Skip）</strong>：共享边界延伸到轮廓末尾时，设置 <code>complete_skip_mode = 1</code>，仅需 <strong>1 bit</strong>，剩余轮廓全部在解码端推断。</p>
+    <p><strong>局部跳过（Partial Skip）</strong>：共享边界在轮廓中间结束时，设置 <code>complete_skip_mode = 0</code> + run-length 值（跳过符号数），之后恢复正常链码编码。</p>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/full_skip_mode.webp" alt="完全跳过模式示例" loading="lazy">
+    <div class="cap">图 4：完全跳过模式示例。共享边界段的 RECC 符号序列被替换为 skip flag = 1，解码端自动推断。（来源：Yang et al. 2026, Fig.6）</div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+  Part 4 · 编码 Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">从语义地图到比特流</div>
+
+  <h3 class="section-title">Blob 扫描策略</h3>
+
+  编码的第一步是识别所有语义区域（blob）。blob 是具有相同标签的连续连通像素组，分为两类：
+
+  <ul>
+    <li><strong>边界 blob</strong>：触及帧边界的区域。从左上角开始，沿帧边界逆时针扫描。</li>
+    <li><strong>内部 blob</strong>：完全被其他 blob 包围的区域。光栅扫描（raster scan）识别。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/boundary_blob_scan.webp" alt="边界 blob 扫描" loading="lazy">
+    <img src="media/images/ecc-chain-coding-2026/inner_blob_scan.webp" alt="内部 blob 扫描" loading="lazy">
+    <div class="cap">图 5：(a) 边界 blob 沿帧边界逆时针扫描；(b) 内部 blob 光栅扫描。圆圈标记共享边界起始点，红色曲线为注册轮廓。（来源：Yang et al. 2026, Fig.3）</div>
+  </div>
+
+  扫描过程中同时识别共享边界段——当检测到相邻像素标签变化时，对应的边界段归属于当前 blob 的轮廓。
+
+  <h3 class="section-title">完整编码流程</h3>
+
+  {{< mermaid >}}
+flowchart TD
+  A["输入语义地图 X"] --> B["Blob 扫描与注册"]
+  B --> C["边界 blob / 内部 blob 分类"]
+  C --> D["对每个 blob 轮廓编码"]
+  D --> E{"ECC vs 3OT 模式选择"}
+  E -->|"比特数更少"| F["ECC: 36 符号 → RECC 27 符号"]
+  E -->|"比特数更少"| G["3OT: 3 符号 + 四阶上下文"]
+  F --> H["Skip-coding 检测共享边界"]
+  G --> H
+  H --> I["上下文自适应算术编码"]
+  I --> J["输出比特流"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">编码实例</h3>
+
+  下图展示了完整的 ECC 编码过程，包含边界 blob 和内部 blob 的处理步骤：
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/chain_codes.webp" alt="ECC 编码过程完整示例" loading="lazy">
+    <div class="cap">图 6：ECC 编码过程完整示例。左侧为边界 blob，右侧为内部 blob。从 ECC 符号分配 → 旋转映射 → RECC 符号 → 自引用上下文 → 最终链码序列。（来源：Yang et al. 2026, Fig.5）</div>
+  </div>
+
+  <h3 class="section-title">比特流结构</h3>
+
+  比特流包含两类信息：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>信息类型</th><th>内容</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>高层元数据</td><td>地图尺寸、blob 数量、标签信息、语义值映射、起始位置</td><td>解码端重建框架</td></tr>
+        <tr><td>链码数据</td><td>模式标志 + 链码符号序列 + skip 信令</td><td>逐 blob 轮廓重建</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- ============================================================
+  Part 5 · 解码 Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">从比特流到无损重建</div>
+
+  解码过程是自包含的——比特流中包含重建所需的全部信息。
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/decoding_process.webp" alt="解码流程总览" loading="lazy">
+    <div class="cap">图 7：解码流程总览。解析元数据 → 逐 blob 解码轮廓 → 应用标签 → 完整重建。（来源：Yang et al. 2026, Fig.7）</div>
+  </div>
+
+  <h3 class="section-title">解码步骤详解</h3>
+
+  <ol>
+    <li><strong>解析高层元数据</strong>：获取边界/内部 blob 总数 \(N_k\)，维护计数器 \(i_k\) 追踪已解码 blob 数</li>
+    <li><strong>逐 blob 解码</strong>：
+      <ul>
+        <li>解析起始位置 + 标签索引</li>
+        <li>解析链码模式标志（ECC 或 3OT）</li>
+        <li>根据模式解析链码符号序列，重建轮廓</li>
+        <li>处理 skip-coding 信令，推断共享边界</li>
+      </ul>
+    </li>
+    <li><strong>应用标签信息</strong>：将语义标签填充到重建的轮廓区域内</li>
+    <li><strong>循环直到完成</strong>：当 \(i_k = N_k\) 时，所有 blob 重建完成</li>
+  </ol>
+
+  <div class="callout"><strong>无损保证</strong>：解码后的语义地图与原始输入完全相同。这是无损压缩的硬性要求，尤其对于用作中间表示的语义地图（如 DSSLIC 框架 #akbari2019dsslic#）至关重要。</div>
+
+</div>
+
+<!-- ============================================================
+  Part 6 · 实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">18% 码率节省从何而来</div>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>详情</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>数据集</td><td>CASIA-B (8443 maps), DAVIS 480p (6268 maps), Cityscapes (2975 maps)</td><td>论文披露</td></tr>
+        <tr><td>Baseline</td><td>JBIG1, FLIF, SCM-7.0 (HEVC-SCC), CC-SMC</td><td>论文披露</td></tr>
+        <tr><td>硬件环境</td><td>—</td><td>未披露</td></tr>
+        <tr><td>Occupancy Map</td><td>MPEG V-PCC CTC 5 序列 × 3 分辨率 × 32 帧</td><td>论文披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">语义地图主实验</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>指标</th><th>JBIG1</th><th>FLIF</th><th>SCM-7.0</th><th>CC-SMC</th><th>ECC (Ours)</th><th>vs CC-SMC</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="3">CASIA-B<br>320×240</td><td>码率 (Bytes)</td><td>187.4</td><td>136.7</td><td>272.9</td><td>75.8</td><td><strong>65.2</strong></td><td>-13.98%</td></tr>
+        <tr><td>编码时间 (s)</td><td>0.0223</td><td>0.0472</td><td>0.3261</td><td>0.0157</td><td><strong>0.0117</strong></td><td>—</td></tr>
+        <tr><td>解码时间 (s)</td><td>0.0025</td><td>0.0257</td><td>0.0109</td><td><strong>0.0013</strong></td><td><strong>0.0013</strong></td><td>—</td></tr>
+        <tr><td rowspan="3">DAVIS 480p<br>848×480</td><td>码率 (Bytes)</td><td>620.7</td><td>618.7</td><td>997.5</td><td>459.1</td><td><strong>385.4</strong></td><td>-16.05%</td></tr>
+        <tr><td>编码时间 (s)</td><td><strong>0.0245</strong></td><td>0.1948</td><td>1.2831</td><td>0.0557</td><td>0.0392</td><td>—</td></tr>
+        <tr><td>解码时间 (s)</td><td>0.0275</td><td>0.0341</td><td>0.0542</td><td>0.0106</td><td><strong>0.0038</strong></td><td>—</td></tr>
+        <tr><td rowspan="3">Cityscapes<br>2048×1024</td><td>码率 (Bytes)</td><td>6829.8</td><td>4882.8</td><td>6314.9</td><td>3549.4</td><td><strong>2708.4</strong></td><td>-23.69%</td></tr>
+        <tr><td>编码时间 (s)</td><td><strong>0.0701</strong></td><td>0.9461</td><td>6.6576</td><td>0.2003</td><td>0.2302</td><td>—</td></tr>
+        <tr><td>解码时间 (s)</td><td>0.1120</td><td>0.1175</td><td>0.1472</td><td><strong>0.0671</strong></td><td>0.0996</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：Cityscapes 上的 23.69% 码率节省最大——这正是因为高分辨率场景中四叉树分区的信令开销更大，消除分区带来的收益更显著。</div>
+
+  <h3 class="section-title">运行时性能分析</h3>
+
+  在码率最优的同时，ECC 的运行时表现也值得关注：
+
+  <ul>
+    <li><strong>低分辨率场景</strong>（CASIA-B、DAVIS）：编码/解码时间均为最优或接近最优</li>
+    <li><strong>高分辨率场景</strong>（Cityscapes）：编码时间略高于 CC-SMC（0.2302 vs 0.2003），解码时间也更高（0.0996 vs 0.0671）</li>
+  </ul>
+
+  这是因为 ECC 采用**全局扫描策略**，计算复杂度随 blob 数量近似线性增长。Cityscapes 平均每帧 123.97 个 blob，全局操作成为瓶颈。作者指出并行化可能缓解这一问题 #Yang-et-al.-2026#。
+
+  <h3 class="section-title">消融实验：每个组件贡献多少？</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>完整框架</th><th>仅 3OT</th><th>仅 ECC</th><th>仅 ECC + 始终 RECC</th></tr></thead>
+      <tbody>
+        <tr><td>CASIA-B</td><td><strong>65.2</strong></td><td>65.8</td><td>65.4</td><td>67.3</td></tr>
+        <tr><td>DAVIS</td><td><strong>385.4</strong></td><td>390.2</td><td>398.4</td><td>402.1</td></tr>
+        <tr><td>Cityscapes</td><td><strong>2708.4</strong></td><td>2791.3</td><td>2751.0</td><td>2758.1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  三个关键发现：
+
+  <ol>
+    <li><strong>ECC + 3OT 自适应 > 单独任何一种</strong>：完整框架在所有数据集上最优</li>
+    <li><strong>选择性禁用稀有符号很重要</strong>：始终启用 RECC 第二象限符号（12-20）会增加码率——CASIA-B 从 65.4 增至 67.3，DAVIS 从 398.4 增至 402.1</li>
+    <li><strong>数据集特性决定模式偏好</strong>：规则轮廓（CASIA-B）偏好 ECC，碎片化轮廓（DAVIS）偏好 3OT</li>
+  </ol>
+
+  <h3 class="section-title">Occupancy Map 扩展评估</h3>
+
+  本文还将方法扩展到 V-PCC 点云压缩中的 occupancy map。在 5 个 MPEG V-PCC 测试序列 × 3 种分辨率下评估：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>序列</th><th>CC-SMC (Bytes)</th><th>ECC (Bytes)</th><th>胜者</th></tr></thead>
+      <tbody>
+        <tr><td>Loot (全分辨率)</td><td>175,829</td><td><strong>148,095</strong></td><td>ECC (-15.8%)</td></tr>
+        <tr><td>Solider (全分辨率)</td><td>338,007</td><td><strong>296,004</strong></td><td>ECC (-12.4%)</td></tr>
+        <tr><td>LD (全分辨率)</td><td>211,998</td><td><strong>197,092</strong></td><td>ECC (-7.0%)</td></tr>
+        <tr><td>Queen (全分辨率)</td><td><strong>478,501</strong></td><td>664,455</td><td>CC-SMC</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      Queen 序列异常
+    </div>
+    <div class="admonition-content"><p>Queen 序列包含大量碎片化 blob（见下图），CC-SMC 的块分区策略对此更有效。这再次印证了"没有一种链码通吃所有场景"的结论。</p></div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/ecc-chain-coding-2026/semantic.webp" alt="语义地图数据集示例" loading="lazy">
+    <div class="cap">图 8：语义地图数据集示例。(a) CASIA-B 步态轮廓，(b) DAVIS 视频分割，(c) Cityscapes 城市场景。复杂度从简单到复杂。（来源：Yang et al. 2026, Fig.8）</div>
+  </div>
+
+</div>
+
+<!-- ============================================================
+  Part 7 · 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">轮廓表示的回归与边界</div>
+
+  <h3 class="section-title">技术定位</h3>
+
+  本文在链码压缩发展史上的位置可以这样理解：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>年代</th><th>方法</th><th>核心思想</th><th>局限</th></tr></thead>
+      <tbody>
+        <tr><td>1961</td><td>Freeman F4/F8</td><td>链码概念诞生</td><td>仅二值图像</td></tr>
+        <tr><td>1999</td><td>VCC</td><td>顶点链码，减少符号</td><td>仅二值图像</td></tr>
+        <tr><td>2005</td><td>3OT</td><td>三正交链码，3 符号集</td><td>仅二值图像</td></tr>
+        <tr><td>2020/2024</td><td>CC-SMC</td><td>链码 + 四叉树，扩展到多值</td><td>块划分截断上下文</td></tr>
+        <tr><td>2026</td><td>ECC (本文)</td><td>无分区 + 扩展链码 + skip</td><td>碎片化场景受限</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  从 Freeman 到 ECC，链码的发展经历了"**绝对方向 → 相对方向 → 块分区 → 回归纯轮廓**"的螺旋上升。本文的关键突破不在于发明了新的链码符号，而在于**消除了块划分**，让链码回归其最自然的表示形式——完整的轮廓。
+
+  <h3 class="section-title">局限性与开放问题</h3>
+
+  <ul>
+    <li><strong>高分辨率全局扫描瓶颈</strong>：Cityscapes (2048×1024) 上运行时高于 CC-SMC。并行化是自然方向，但共享边界推断引入 blob 间依赖，需要仔细设计</li>
+    <li><strong>碎片化 blob 场景</strong>：Queen 序列上不如 CC-SMC。或许可以考虑自适应策略——在碎片化区域回退到块分区</li>
+    <li><strong>仅无损压缩</strong>：本文只考虑无损场景。有损语义地图压缩（如允许少量边界误差）是一个有趣的方向</li>
+    <li><strong>未与学习型方法对比</strong>：深度语义压缩方法（如 DSSLIC #akbari2019dsslic#）在有损场景下表现优异，但无损场景下的对比尚未展开</li>
+  </ul>
+
+  <h3 class="section-title">可操作的启发</h3>
+
+  <ol>
+    <li><strong>轮廓优先</strong>：对于具有锐利边界的离散信号（语义地图、分割掩码、occupancy map），轮廓表示可能比像素网格更本质</li>
+    <li><strong>自适应模式选择</strong>：ECC + 3OT 的自适应策略说明，与其设计一个"万能"编码器，不如让编码器根据数据特性自适应选择</li>
+    <li><strong>共享边界是免费信息</strong>：Skip-coding 的核心洞察——相邻区域的共享边界不需要重复编码——可以推广到其他多值离散信号压缩场景</li>
+    <li><strong>MPEG 标准化前景</strong>：InterDigital 是 MPEG 标准化的重要参与者，本文方法可能影响 MPEG FCM（Feature Coding for Machines）标准中的语义地图编码</li>
+  </ol>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Yang-et-al.-2026">Yang, R. et al. (2026). Context Adaptive Extended Chain Coding for Semantic Map Compression. <a href="https://arxiv.org/abs/2603.03073" target="_blank">arXiv:2603.03073</a></li>
+      <li data-cite-key="freeman1961encoding">Freeman, H. (1961). On the encoding of arbitrary geometric configurations. IRE Trans. Electronic Computers.</li>
+      <li data-cite-key="freeman1974computer">Freeman, H. (1974). Computer processing of line-drawing images. ACM Computing Surveys.</li>
+      <li data-cite-key="bribiesca1999new">Bribiesca, E. (1999). A new chain code. Pattern Recognition, 32(2), 235-251.</li>
+      <li data-cite-key="cruz2005compressing">Sánchez-Cruz, H. &amp; Rodríguez-Dagnino, R.M. (2005). Compressing bi-level images by means of a 3-bit chain code. SPIE Opt. Eng.</li>
+      <li data-cite-key="yang2020chain">Yang, R. et al. (2020). Chain code-based occupancy map coding for video-based point cloud compression. VCIP.</li>
+      <li data-cite-key="yang2024cc">Yang, R. et al. (2024). CC-SMC: Chain coding-based segmentation map lossless compression. J. Vis. Commun. Image Represent.</li>
+      <li data-cite-key="sneyers2016flif">Sneyers, J. &amp; Wuille, P. (2016). FLIF: Free lossless image format based on MANIAC compression. ICIP.</li>
+      <li data-cite-key="akbari2019dsslic">Akbari, M. et al. (2019). DSSLIC: Deep semantic segmentation-based layered image compression. ICASSP.</li>
+      <li data-cite-key="xu2015overview">Xu, J. et al. (2015). Overview of the emerging HEVC screen content coding extension. IEEE TCSVT.</li>
+      <li data-cite-key="vzalik2021lossless">Žalik, B. et al. (2021). Lossless chain code compression with an improved Binary Adaptive Sequential Coding of zero-runs. JVCIR.</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-hub" href="categories/ai/image-compression/image-compression-paper-reading/index.html"><span class="nav-label">枢纽页</span><span class="nav-title">图像压缩论文精读</span></a>
+  </div>
+
+</div>
