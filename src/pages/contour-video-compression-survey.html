@@ -35,6 +35,18 @@ hero_sub: "MPEG-4 形状编码 · 链码 · INR · 语义扩散"
     <p><strong>角色 ②：辅助/条件信号</strong> — 轮廓不单独传输，而是作为传统或学习式编码器的辅助输入，改进运动预测或条件生成。码率节省来自更高效的预测。</p>
   </div>
 
+  {{< mermaid >}}
+  graph TB
+    subgraph "轮廓在视频压缩中的五种角色"
+        A[轮廓/边缘视频信号] --> B{角色类型}
+        B -->|传输信号本身| C1[经典二值形状编码<br/>MPEG-4 / MC-TLCC / V-PCC]
+        B -->|传输信号本身| C2[学习式轮廓编码<br/>SA-NeRV / MoRIC]
+        B -->|传输信号本身| C3[语义条件传输<br/>DiSCo / MMSD / SketchVision]
+        B -->|辅助信号| D1[分割 mask 辅助帧间预测<br/>Seg-VVC / SAIP]
+        B -->|辅助信号| D2[边缘作为生成条件<br/>MISC / Edge-Denoising]
+    end
+  {{< /mermaid >}}
+
   <h3 class="section-title">二值轮廓 vs 非二值轮廓</h3>
 
   <p>如我们之前讨论的，轮廓图是否二值取决于提取方法而非图像类型。在视频场景中，这个区分尤为重要：</p>
@@ -128,6 +140,11 @@ hero_sub: "MPEG-4 形状编码 · 链码 · INR · 语义扩散"
 
   <p>SAIP 的解决方案：在编解码端同步运行一个轻量分割网络，获得参考帧的分割 mask。关键设计是<strong>分割在参考帧而非当前帧上进行</strong>——参考帧已重建，两端都能获得。分割 mask 随参考帧存储在 buffer 中，用于后续帧的帧间预测。</p>
 
+  <div class="photo">
+  media/images/contour-video-compression-survey/saip-introduction.webp
+  <div class="cap">图 1: SAIP 整体框架。编解码端同步运行分割网络，分割 mask 无需传输，零码率开销。（来源：SAIP, arXiv:2403.11694, Fig.1）</div>
+  </div>
+
   <p>分割管线采用<strong>两阶段策略</strong>以适配 GOP 结构：</p>
   <ul>
     <li><strong>IIS 阶段</strong>：GOP 第一帧（关键帧）用 <strong>SCNet</strong>（Sample Consistency Network）做图像实例分割， AP 达 48.3/42.7（box/mask），比 Cascade Mask R-CNN 快 38%</li>
@@ -148,6 +165,11 @@ hero_sub: "MPEG-4 形状编码 · 链码 · INR · 语义扩散"
     <li><strong>类别 0</strong>：距分割线 >2 像素，权重 \(w_0 = 1, w_1 = 0\)（纯主区域预测）</li>
   </ul>
   <p>最终预测为：\(P_{\text{final}} = w_0 \cdot P_{\text{primary}} + w_1 \cdot P_{\text{secondary}}\)，其中权重由像素到分割线的距离决定。这种<strong>距离加权融合</strong>消除了区域级边界伪影，同时保留了对象边界处的运动不连续性。</p>
+
+  <div class="photo">
+  media/images/contour-video-compression-survey/saip-ormc-framework.webp
+  <div class="cap">图 2: ORMC 重叠区域运动补偿框架。分割线两侧 2 像素宽边缘区域用距离自适应权重融合两个区域的预测。（来源：SAIP, arXiv:2403.11694, ORMC-framework）</div>
+  </div>
 
   <p>在<strong>分数像素运动补偿</strong>阶段，ORMC 策略同样适用：先用 DCTIF（离散余弦变换插值滤波器）对每个子区域分别做分数像素插值，再用相同的距离加权策略融合两个子区域的分数像素预测。这保证了亚像素精度下边界区域的一致性。</p>
 
@@ -183,13 +205,18 @@ hero_sub: "MPEG-4 形状编码 · 链码 · INR · 语义扩散"
 
   <p>Shindo 等人 2024 年提出的 <strong>SA-NeRV</strong> #Shindo-SANeRV-2024# 是 <a href="sa-icm-2024.html">SA-ICM</a>（见《边缘与轮廓压缩》Part 5）的视频扩展：将边缘信息压缩从图像推广到视频。其核心思想是：用 Segment Anything (SAM) 生成边缘图，然后训练 NeRV (Neural Representations for Videos) 只编码这些边缘信息。</p>
 
-  <p>具体流程：(1) SAM 生成语义分割 mask → (2) Canny 边缘检测将 mask 转化为二值边缘图 → (3) 用边缘图训练 NeRV。损失函数为：</p>
+  <p>具体流程：(1) SAM 以置信度 \(\alpha\) 生成语义分割 mask → (2) Canny 边缘检测将 mask 转化为二值边缘图 \(\text{sam}_x(\alpha)\) → (3) 用边缘图训练 NeRV。损失函数为：</p>
 
-  \[\mathcal{L} = \alpha \cdot \mathcal{L}_{\text{edge}} + (1 - \alpha) \cdot \mathcal{L}_{\text{rate}}\]
+  \[\mathcal{L}_{sa\text{-}n} = \mathcal{L}_n + \frac{1}{T}\sum_{t=1}^{T}\left[\beta \| x \odot \text{sam}_x(\alpha) - \hat{x} \odot \text{sam}_x(\alpha) \| + (1-\beta)\left(1 - \text{ssim}(x \odot \text{sam}_x(\alpha),\ \hat{x} \odot \text{sam}_x(\alpha))\right)\right]\]
 
-  <p>其中 \(\alpha = 0.78\) 控制边缘保真与码率的权衡。使用 COCO-train (118,287 张) 训练，LIC-TCM 架构，\(N=5\) slices，\(\lambda=0.05\)。</p>
+  <p>其中 \(\mathcal{L}_n\) 是原始 NeRV 损失，\(\beta\) 平衡 L1 与 SSIM，\(\alpha = 0.78\) 是 SAM 置信度阈值（控制边缘密度），\(T\) 是总帧数。SA-ICM 图像压缩部分使用 COCO-train (118,287 张) 训练，LIC-TCM 架构，\(N=5\) slices，\(\lambda=0.05\)。</p>
 
-  <p>实验覆盖 8 个视频序列（COCO / VisDrone / Cityscapes / SFU-HW-Objects），下游任务为 YOLOv5 目标检测。SA-NeRV 在 <mark>8/8 序列上均优于基线 NeRV</mark>，最高提升 BlowingBubbles 序列 +7.01 mAP。</p>
+  <div class="photo">
+  media/images/sa-icm-2024/nerv1.webp
+  <div class="cap">图 3: SA-NeRV 训练流程。SAM 生成边缘 mask 后，用边缘加权 L1 + SSIM 损失训练 NeRV 视频神经表示。（来源：SA-ICM/SA-NeRV, arXiv:2403.04173）</div>
+  </div>
+
+  <p>SA-NeRV 实验在 <strong>SFU-HW-Objects-v1</strong> 数据集（8 个视频序列）上进行，下游任务为 YOLOv7 目标检测。SA-NeRV 在 <mark>7/8 序列上优于基线 NeRV</mark>，最高提升 BlowingBubbles 序列 +7.01 mAP；仅 RaceHorsesD 序列略降 0.14 mAP（可忽略）。</p>
 
   <h3 class="section-title">MoRIC：自适应链码 + 隐式神经表示 (NeurIPS 2025)</h3>
 
