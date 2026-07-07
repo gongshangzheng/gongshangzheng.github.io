@@ -177,24 +177,17 @@
     return slugs;
   }
 
-  // Render the breadcrumb as links to the category / subcategory index pages.
-  // path[0] -> category index, path[1] -> subcategory index.
+  // Render the breadcrumb as clickable links that navigate the category browser in-place.
+  // Every level — including the root "Categories" — is a JS-driven link with data-path.
   function renderBreadcrumb(tree, path) {
-    if (!path.length) return 'Categories';
-    var slugs = collectCategorySlugs(tree, path);
-    var categorySlug = slugs[0];
-    return path.map(function(name, index) {
-      var href;
-      if (index === 0) {
-        href = './categories/' + categorySlug + '/index.html';
-      } else if (index === 1) {
-        href = './categories/' + categorySlug + '/' + slugs[1] + '/index.html';
-      }
-      if (!href || !categorySlug || (index === 1 && !slugs[1])) {
-        return escapeHtmlText(name);
-      }
-      return '<a class="category-breadcrumb-link" href="' + escapeHtmlText(href) + '">' + escapeHtmlText(name) + '</a>';
-    }).join('<span class="category-breadcrumb-sep"> / </span>');
+    var parts = [];
+    parts.push('<a class="category-breadcrumb-link category-breadcrumb-root" href="#" data-path="[]">Categories</a>');
+    path.forEach(function(name, index) {
+      var partialPath = path.slice(0, index + 1);
+      parts.push('<span class="category-breadcrumb-sep"> / </span>');
+      parts.push('<a class="category-breadcrumb-link' + (index === path.length - 1 ? ' category-breadcrumb-current' : '') + '" href="#" data-path="' + escapeHtmlText(JSON.stringify(partialPath)) + '">' + escapeHtmlText(name) + '</a>');
+    });
+    return parts.join('');
   }
 
   function renderCategoryBrowserList(nodes, path) {
@@ -253,6 +246,16 @@
     });
 
     nav.addEventListener('click', function(e) {
+      // Breadcrumb link: navigate to the clicked path level in-place
+      var breadcrumbLink = e.target.closest('.category-breadcrumb-link');
+      if (breadcrumbLink && nav.contains(breadcrumbLink)) {
+        e.preventDefault();
+        e.stopPropagation();
+        try { currentPath = JSON.parse(breadcrumbLink.getAttribute('data-path') || '[]'); } catch (err) { currentPath = []; }
+        render();
+        return;
+      }
+      // Folder label: drill into the clicked folder
       var folderLabel = e.target.closest('.category-folder-label');
       if (!folderLabel || !nav.contains(folderLabel)) return;
       e.preventDefault();
