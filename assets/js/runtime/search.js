@@ -11,8 +11,44 @@
   if (!toggleBtn || !dropdown || !overlay || !input || !results) return;
 
   var index = null;
+  var indexLoading = false;
   var activeIdx = -1;
   var resultItems = [];
+
+  function runSearch() {
+    var q = input.value.trim().toLowerCase();
+    if (!q) {
+      results.innerHTML = '<div class="search-hint">输入关键词搜索文章</div>';
+      resultItems = [];
+      activeIdx = -1;
+      return;
+    }
+    if (!index) {
+      results.innerHTML = '<div class="search-hint">加载索引中…</div>';
+      resultItems = [];
+      activeIdx = -1;
+      return;
+    }
+    var keywords = q.split(/\s+/);
+    var matched = index.filter(function(post) {
+      var text = (post.title + ' ' + post.description + ' ' + (post.tags || []).join(' ') + ' ' + (post.categoryPath || []).join(' ') + ' ' + (post.subcategory || '') + ' ' + (post.aliases || []).join(' ')).toLowerCase();
+      return keywords.every(function(kw) { return text.indexOf(kw) >= 0; });
+    });
+    renderResults(matched);
+  }
+
+  function loadIndex() {
+    if (index || indexLoading) return;
+    indexLoading = true;
+    fetch('/search-index.json').then(function(r) { return r.json(); }).then(function(data) {
+      index = data;
+      indexLoading = false;
+      runSearch();
+    }).catch(function() {
+      indexLoading = false;
+      results.innerHTML = '<div class="search-hint">索引加载失败，请刷新重试</div>';
+    });
+  }
 
   function fmtDate(val) {
     if (!val) return '';
@@ -24,9 +60,7 @@
     overlay.classList.add('is-open');
     document.body.style.overflow = 'hidden';
     input.focus();
-    if (!index) {
-      fetch('./search-index.json').then(function(r) { return r.json(); }).then(function(data) { index = data; });
-    }
+    if (!index && !indexLoading) loadIndex();
   }
 
   function closeSearch() {
@@ -78,21 +112,7 @@
 
   overlay.addEventListener('click', closeSearch);
 
-  input.addEventListener('input', function() {
-    var q = this.value.trim().toLowerCase();
-    if (!q || !index) {
-      results.innerHTML = '<div class="search-hint">输入关键词搜索文章</div>';
-      resultItems = [];
-      activeIdx = -1;
-      return;
-    }
-    var keywords = q.split(/\s+/);
-    var matched = index.filter(function(post) {
-      var text = (post.title + ' ' + post.description + ' ' + (post.tags || []).join(' ') + ' ' + (post.categoryPath || []).join(' ') + ' ' + (post.subcategory || '') + ' ' + (post.aliases || []).join(' ')).toLowerCase();
-      return keywords.every(function(kw) { return text.indexOf(kw) >= 0; });
-    });
-    renderResults(matched);
-  });
+  input.addEventListener('input', runSearch);
 
   input.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
