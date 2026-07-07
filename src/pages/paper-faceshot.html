@@ -1,0 +1,405 @@
+---
+title: "数字人论文精读（四十一）：FaceShot，用扩散特征匹配给任何角色做动画"
+description: "FaceShot 是 ICLR 2025 的 training-free 肖像动画框架，用扩散模型的语义对应能力为任意角色生成精确 landmark。"
+date: 2026-07-07T18:00:00
+created_at: 2026-07-07T18:00:00
+updated_at: 2026-07-07T18:00:00
+tags: [数字人, FaceShot, Portrait Animation, Landmark, Diffusion, 论文精读]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 400
+mathjax: true
+notify: true
+hero_title: "FaceShot"
+hero_sub: "ICLR 2025 · Tongji / Shanghai AI Lab"
+hero_tagline: "Training-free · 扩散特征匹配 · 任意角色动画 · CharacBench"
+papers: ["https://arxiv.org/abs/2503.00740"]
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.848</span><span class="label">ArcFace</span></div>
+  <div class="stat"><span class="num b">8.569</span><span class="label g">NME↓</span></div>
+  <div class="stat"><span class="num">46</span><span class="label">CharacBench 角色</span></div>
+  <div class="stat"><span class="num b">0</span><span class="label l">需训练参数</span></div>
+</div>
+
+<div class="callout"><strong>系列说明</strong>：本文属于数字人系列论文精读。FaceShot 与 <a href="paper-liveportrait.html">LivePortrait</a> 和 <a href="paper-ditto.html">Ditto</a> 同属肖像动画路线，但它走的不是「改进模型」而是「改进运动接口」——用扩散模型的语义理解能力为任意角色生成精确 landmark，再交给任意 landmark-driven 动画模型。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">引言：当 landmark 检测器遇到非人类角色</div>
+
+  <p>肖像动画的核心任务是把一张静态肖像图像「活起来」——用驱动视频中的头部运动、表情和嘴部动作来动画源图像。在这条路线上，<a href="paper-liveportrait.html">LivePortrait</a> #Guo-et-al.-2024# 证明了隐式关键点 + stitching + retargeting 的工程价值，把 GAN 路线推到了产品可用。但 LivePortrait 和同期方法都依赖一个隐含假设：驱动视频和源图像都是人类面孔，且面部 landmark 可以被准确检测。</p>
+
+  <p>FaceShot 要解决的正是这个假设的盲区。来自同济大学、上海 AI Lab 和南京理工大学的团队发现：当源图像是非人类角色——emoji、玩具、动物、动漫人物——面部 landmark 检测器（如 FAN、STAR、Uni-Pose）会彻底失效 #GaoJ-et-al.-2025#。检测失败导致后续的动画模型要么无法工作，要么在狗脸上贴出人类的嘴巴，产生荒诞效果。</p>
+
+  <p>论文的核心洞察是：不需要训练一个更好的 landmark 检测器，而是利用<strong>扩散模型中间层特征的语义对应能力</strong>来完成跨域 landmark 匹配。这使 FaceShot 成为一个 <strong>training-free</strong> 框架——不需要微调、不需要训练、不需要配对数据。它只需要三步：用扩散特征给任意角色找到精确 landmark；用坐标变换将驱动视频的运动迁移到这些 landmark 上；把得到的 landmark 序列喂给任意 landmark-driven 动画模型。</p>
+
+  <div class="photo">
+    <img src="media/images/faceshot-2025/teasers.webp" alt="FaceShot qualitative results on various characters" loading="lazy">
+    <div class="cap">图 1：FaceShot 能为 emoji、玩具、动物等非人类角色生成稳定动画（来源：arXiv source Figure 1）。</div>
+  </div>
+
+  <p>论文还构建了 <strong>CharacBench</strong>——一个包含 46 个多样化角色（动物、emoji、玩具、动漫角色）的评测基准——并证明 FaceShot 在所有指标上超越 SOTA 方法 #GaoJ-et-al.-2025#。更重要的是，FaceShot 可以作为<strong>插件</strong>接入任何 landmark-driven 动画模型（包括 LivePortrait、AniPortrait、MOFA-Video），显著提升它们在非人类角色上的表现。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">问题剖析：landmark 检测的跨域失败</div>
+
+  <h3 class="section-title">监督式 landmark 检测的根本局限</h3>
+
+  <p>当前肖像动画方法分为两类：一类直接用隐式关键点驱动（如 <a href="paper-liveportrait.html">LivePortrait</a> #Guo-et-al.-2024#、Face Vid2vid #Wang-et-al.-2021#），另一类用显式面部 landmark 作为运动接口（如 AniPortrait #Wei-et-al.-2024#、MOFA-Video #Niu-et-al.-2024#、Follow Your Emoji #Ma-et-al.-2024#）。后者依赖 landmark 检测器从源图像中提取面部关键点。</p>
+
+  <p>问题在于，主流 landmark 检测器——STAR #Zhou-et-al.-2023#、Uni-Pose #Yang-et-al.-2023#、FAN——都是在人类面部数据集上监督训练的。当输入是非人类角色时，这些模型的表现急剧退化。论文在 CharacBench 上测试了三种检测器的 NME（Normalized Mean Error）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>检测方法</th><th>NME↓</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>STAR</td><td>24.530</td><td>监督式，大量误检</td></tr>
+        <tr><td>Uni-Pose</td><td>13.731</td><td>监督式 SOTA，仍不理想</td></tr>
+        <tr><td>DIFT</td><td>11.448</td><td>无监督扩散特征匹配</td></tr>
+        <tr><td><strong>FaceShot</strong></td><td><strong>8.569</strong></td><td>外观引导扩散特征匹配</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>FaceShot 把 NME 从最好的监督方法的 13.731 降到 8.569，降幅达 37.6%。关键在于它利用了扩散模型在大量图像上学到的语义理解能力，而非依赖标注数据 #GaoJ-et-al.-2025#。</p>
+
+  <h3 class="section-title">3DMM 的跨域问题</h3>
+
+  <p>除了 landmark 检测，另一条路径用 3D Morphable Model（3DMM）生成 landmark 序列。但 3DMM 本质上是用人类 3D 面部数据训练的统计模型，对非人类角色同样无法泛化。论文展示了 Deep3D、DECA 和 3DDFAv2 三种 3DMM 方法在非人类角色上的建模结果，均无法正确对齐面部形状，也无法捕捉细微运动如闭眼 #GaoJ-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/faceshot-2025/intro.webp" alt="Previous methods generate human mouth on dog face vs FaceShot result" loading="lazy">
+    <div class="cap">图 2：现有方法在非人类角色上的失败案例。左侧方法在狗脸上生成了人类的嘴（来源：arXiv source Figure 2）。</div>
+  </div>
+
+  <div class="callout"><strong>核心矛盾</strong>：landmark-driven 动画模型本身（如 MOFA-Video）有不错的渲染能力，但它们的输入端被 landmark 检测器卡住了。FaceShot 的策略是不碰动画模型，只改善 landmark 的生成质量——这是一个优雅的解耦。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">模型结构：三组件 training-free 框架</div>
+
+  <p>FaceShot 的框架由三个组件构成，全部 training-free，无需任何微调或训练 #GaoJ-et-al.-2025#：</p>
+
+  <ol>
+    <li><strong>Appearance-guided Landmark Matching</strong>：利用扩散模型特征为任意角色匹配精确 landmark</li>
+    <li><strong>Coordinate-based Landmark Retargeting</strong>：将驱动视频的运动迁移到匹配的 landmark 上</li>
+    <li><strong>Character Animation Model</strong>：将 landmark 序列输入预训练动画模型生成视频</li>
+  </ol>
+
+  <div class="photo">
+    <img src="media/images/faceshot-2025/framework.webp" alt="FaceShot framework architecture" loading="lazy">
+    <div class="cap">图 3：FaceShot 框架。首先用外观引导的 landmark matching 为参考角色生成精确 landmark，然后通过坐标变换将驱动视频的运动迁移到这些 landmark 上，最后输入动画模型生成视频（来源：arXiv source Figure 3）。</div>
+  </div>
+
+  <h3 class="section-title">组件 1：Appearance-guided Landmark Matching</h3>
+
+  <p>这是 FaceShot 的核心创新。基本思路是利用 Stable Diffusion #Rombach-et-al.-2022# 的 U-Net 中间层特征来做语义点匹配——即 DIFT 方法 #Tang-et-al.-2023# 的思路。但原始 DIFT 在跨域时会产生误匹配：比如把左眼匹配到右耳。</p>
+
+  <p>FaceShot 的改进是注入<strong>外观先验</strong>。受 IP-Adapter #Ye-et-al.-2023# 启发，它把参考图像和目标图像都作为图像提示（image prompt）注入扩散模型，然后执行 DDIM inversion 得到确定性扩散特征 #GaoJ-et-al.-2025#：</p>
+
+  <p>\[ f_{tar} = F_l(\epsilon_\theta(z^{t-1}_{tar}, t-1, c, c'_{ref})), \quad f_{ref} = F_l(\epsilon_\theta(z^{t-1}_{ref}, t-1, c, c'_{tar})) \]</p>
+
+  <p>其中 $z^{t-1}$ 通过 DDIM inversion 迭代采样，$c$ 是文本提示 <em>"a photo of a face"</em>，$c'$ 是图像提示。$F_l$ 提取 U-Net 第 $l$ 层的特征。论文通过网格搜索确定最佳参数：$t=301$，$l=6$ #GaoJ-et-al.-2025#。</p>
+
+  <div class="def-box">
+    <h3>外观画廊（Appearance Gallery）</h3>
+    <p>为了进一步降低跨域外观差异，FaceShot 构建了一个外观画廊 $G = [G_e, G_m, G_n, G_{eb}, G_{fb}]$，包含五个面部部件（眼睛、嘴、鼻、眉、面部轮廓）在多个域（人类、动漫、写实等）的 $k$ 张参考图。对于输入参考图，用 CLIP 图像分数匹配最近的域，组合出目标图像 $I_{tar}$。这样扩散特征匹配就在域内进行，大幅减少误匹配。</p>
+  </div>
+
+  <p>具体地，对于第 $i$ 个 landmark 点 $p_{tar}^i$，FaceShot 用 $k$ 张目标图像的平均特征与参考图像特征做余弦距离最小化匹配 #GaoJ-et-al.-2025#：</p>
+
+  <p>\[ p^i_{ref} = \underset{p_{ref}}{\arg\min} \ d_{cos}\left(\frac{1}{k}\sum_{j=1}^k f'^j_{tar}(p_{tar}^{j,i}), f'_{ref}(p_{ref})\right) \]</p>
+
+  <p>论文实验表明 $k=10$ 是性能和时间的最佳平衡点——$k$ 从 1 增到 10 时 NME 从 12.801 降到 6.343，但继续增大收益递减 #GaoJ-et-al.-2025#。</p>
+
+  <h3 class="section-title">组件 2：Coordinate-based Landmark Retargeting</h3>
+
+  <p>有了参考角色的精确 landmark 后，下一步是将驱动视频的运动迁移过来。FaceShot 没有使用 3DMM 或学习式方法，而是提出了一个纯坐标变换的 retargeting 模块 #GaoJ-et-al.-2025#。</p>
+
+  <p>该模块分两个阶段：</p>
+
+  <p><strong>阶段一：全局运动</strong>。用面部轮廓的两个端点构建矩形坐标系 $(O, \theta)$，计算驱动视频从第 0 帧到第 $m$ 帧的平移 $\Delta O$ 和旋转 $\Delta\theta$，直接迁移到参考图像：</p>
+
+  <p>\[ O_{ref}^m = O_{ref}^0 + \Delta O_{dri}, \quad \theta_{ref}^m = \theta_{ref}^0 + \Delta \theta_{dri} \]</p>
+
+  <p><strong>阶段二：局部运动</strong>。对五个面部部件（眼、嘴、鼻、眉、轮廓）分别建立局部坐标系，计算相对运动和点运动。点运动用比例缩放来约束：</p>
+
+  <p>\[ p^{m,i}_{ref} = \left( \frac{p^{m,i}_{dri}[0]}{p^{0,i}_{dri}[0]} \cdot p^{0,i}_{ref}[0], \frac{p^{m,i}_{dri}[1]}{p^{0,i}_{dri}[1]} \cdot p^{0,i}_{ref}[1] \right) \]</p>
+
+  <p>这个设计简单但有效——它不需要任何训练参数，只需坐标运算，时间开销极低。论文实验显示 retargeting 50 帧只需 0.382 秒 #GaoJ-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/faceshot-2025/illustration.webp" alt="Coordinate-based landmark retargeting module illustration" loading="lazy">
+    <div class="cap">图 4：坐标变换 retargeting 模块。全局运动迁移整脸的平移和旋转，局部运动分别迁移五个面部部件的细微运动（来源：arXiv source Figure 14）。</div>
+  </div>
+
+  <h3 class="section-title">组件 3：Character Animation Model</h3>
+
+  <p>得到参考角色的 landmark 序列后，FaceShot 将其输入任意 landmark-driven 动画模型 #GaoJ-et-al.-2025#。论文默认使用 MOFA-Video #Niu-et-al.-2024#——一个基于 Stable Video Diffusion #Blattmann-et-al.-2023# 的 landmark-conditioned 动画模型。Landmark 序列通过 ControlNet-like 结构注入 U-Net。</p>
+
+  <p>关键在于，这个组件是<strong>可替换的</strong>。论文在实验中展示了 FaceShot 也可以作为 AniPortrait 的插件，显著提升后者在非人类角色上的表现 #GaoJ-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/faceshot-2025/plug.webp" alt="AniPortrait with and without FaceShot as plugin" loading="lazy">
+    <div class="cap">图 5：FaceShot 作为 AniPortrait 插件的效果对比。原始 AniPortrait 在非人类角色上产生扭曲，FaceShot 提供精确 landmark 后生成和谐结果（来源：arXiv source Figure 10）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">Training Pipeline：Training-free 的设计哲学</div>
+
+  <p>FaceShot 的一个核心卖点是 <strong>training-free</strong>——不需要微调扩散模型，不需要训练 retargeting 网络，不需要配对数据 #GaoJ-et-al.-2025#。这在当前肖像动画领域几乎是一个异类——绝大多数方法都需要某种形式的训练。</p>
+
+  <h3 class="section-title">为什么不训练？</h3>
+
+  <p>论文的逻辑是：问题的根源不在动画模型，而在 landmark 生成。如果用扩散模型的语义特征就能做跨域 landmark 匹配，那么训练一个专门的检测器就是多此一举。而且，training-free 带来了几个工程优势：</p>
+
+  <ul>
+    <li><strong>零数据需求</strong>：不需要非人类角色的标注数据（这类数据几乎不存在）</li>
+    <li><strong>即插即用</strong>：不需要为新角色准备训练集，推理时直接运行</li>
+    <li><strong>通用兼容</strong>：可以接入任意 landmark-driven 动画模型</li>
+  </ul>
+
+  <h3 class="section-title">Appearance Gallery 的构建</h3>
+
+  <p>虽然不需要训练，但 FaceShot 需要预先构建一个 Appearance Gallery——包含五个面部部件在多个域（人类、动漫、写实等）的 $k$ 张参考图。这个 gallery 的构建是离线的一次性操作，不增加推理时的训练负担 #GaoJ-et-al.-2025#。</p>
+
+  <p>每个部件的 landmark 数量分配如下：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>部件</th><th>眼睛</th><th>嘴</th><th>鼻</th><th>眉</th><th>面部轮廓</th><th>合计</th></tr></thead>
+      <tbody><tr><td>Landmark 数</td><td>12</td><td>20</td><td>9</td><td>10</td><td>17</td><td>68</td></tr></tbody>
+    </table>
+  </div>
+
+  <p>这 68 个 landmark 遵循 MOFA-Video 的约定 #Niu-et-al.-2024#，与 300W 数据集 #Sagonas-et-al.-2016# 的标准一致。</p>
+
+  <h3 class="section-title">与 LivePortrait 训练策略的对比</h3>
+
+  <p>作为对比，<a href="paper-liveportrait.html">LivePortrait</a> #Guo-et-al.-2024# 使用了两阶段训练：Stage I 在 8 块 A100 上训练 10 天，用 6900 万帧学习基础动画能力；Stage II 冻结基础模块，只训练 stitching / eyes / lip 三个小型 MLP。<a href="paper-ditto.html">Ditto</a> #Li-et-al.-2025# 更重——用 8 块 A100、batch 1024、500 epochs 训练 Conditional DiT。FaceShot 完全跳过了这些——它的「训练」就是预构建一个外观画廊和选择扩散模型的超参数。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">Inference Pipeline：从源图到动画视频</div>
+
+  <h3 class="section-title">推理流程</h3>
+
+  <p>FaceShot 的推理分为三个阶段 #GaoJ-et-al.-2025#：</p>
+
+  <p><strong>阶段 1：Driving Detection</strong>。用 FAN（facexlib 实现）从驱动视频中检测 landmark 序列。这是标准的监督式检测，因为驱动视频是人类面孔，检测器可以正常工作。50 帧耗时约 1.817 秒。</p>
+
+  <p><strong>阶段 2：Landmark Matching</strong>。这是 FaceShot 的核心步骤。对参考图像执行 DDIM inversion 获取扩散特征，然后在 Appearance Gallery 中匹配最近的域，最后用余弦距离最小化匹配每个 landmark 点。这一步与帧数无关（只需对参考图执行一次），50 帧耗时约 0.860 秒。</p>
+
+  <p><strong>阶段 3：Landmark Retargeting</strong>。用坐标变换将驱动视频的运动迁移到参考角色的 landmark 上。纯计算，无模型推理。50 帧耗时约 0.382 秒。</p>
+
+  <p>三个阶段合计，FaceShot 在 50 帧上额外开销约 3.059 秒。作为插件，它给 MOFA-Video 增加的额外时间仅 119ms（landmark 匹配仅需一次，可分摊到所有帧）#GaoJ-et-al.-2025#。</p>
+
+  <h3 class="section-title">推理配置表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>配置项</th><th>值</th><th>来源</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>推理硬件</td><td>单 NVIDIA H800 GPU</td><td>论文披露</td></tr>
+        <tr><td>扩散模型</td><td>Stable Diffusion v1.5</td><td>论文披露</td></tr>
+        <tr><td>图像提示注入</td><td>IP-Adapter 预训练权重</td><td>论文披露</td></tr>
+        <tr><td>DDIM inversion 时间步</td><td>$t = 301$</td><td>论文披露</td></tr>
+        <tr><td>U-Net 特征层</td><td>$l = 6$</td><td>论文披露</td></tr>
+        <tr><td>目标图像数</td><td>$k = 10$</td><td>论文披露</td></tr>
+        <tr><td>Landmark 数量</td><td>68（300W 标准）</td><td>论文披露</td></tr>
+        <tr><td>动画帧数</td><td>64</td><td>论文披露</td></tr>
+        <tr><td>输出分辨率</td><td>512 × 512</td><td>论文披露</td></tr>
+        <tr><td>基础动画模型</td><td>MOFA-Video（SVD-based）</td><td>论文披露</td></tr>
+        <tr><td>Landmark 检测器（驱动）</td><td>FAN（facexlib）</td><td>论文披露</td></tr>
+        <tr><td>训练参数</td><td>0（Training-free）</td><td>论文披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">推理时间对比</h3>
+
+  <p>论文提供了详细的推理时间分析。在 50 帧的设置下，各方法的总推理时间如下：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>推理时间（50帧）</th><th>类型</th></tr></thead>
+      <tbody>
+        <tr><td>LivePortrait*</td><td>4.321s</td><td>GAN-based</td></tr>
+        <tr><td>FaceVid2Vid*</td><td>4.308s</td><td>GAN-based</td></tr>
+        <tr><td>MOFA-Video</td><td>79.421s</td><td>Diffusion-based</td></tr>
+        <tr><td><strong>FaceShot</strong></td><td><strong>79.540s</strong></td><td>Diffusion-based（含 FaceShot 开销）</td></tr>
+        <tr><td>AniPortrait</td><td>99.977s</td><td>Diffusion-based</td></tr>
+        <tr><td>FADM</td><td>88.368s</td><td>Diffusion-based</td></tr>
+        <tr><td>X-Portrait</td><td>132.702s</td><td>Diffusion-based</td></tr>
+        <tr><td>Follow Your Emoji</td><td>112.830s</td><td>Diffusion-based</td></tr>
+        <tr><td>MegActor</td><td>174.189s</td><td>Diffusion-based</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>可以看到，FaceShot 相比基础模型 MOFA-Video 仅增加 119ms 开销，这在扩散模型动辄数十秒的推理时间面前几乎可以忽略 #GaoJ-et-al.-2025#。而 GAN-based 方法（LivePortrait、FaceVid2Vid）速度快得多，但在非人类角色上无法工作。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <h3 class="section-title">CharacBench 评测基准</h3>
+
+  <p>论文构建了 CharacBench——一个包含 46 个角色的评测基准，涵盖动物、emoji、玩具和动漫角色 #GaoJ-et-al.-2025#。选择标准是确保角色<strong>尽可能不像人类面部</strong>。驱动视频来自 RAVDESS #Livingstone-et-al.-2018# 的人类头部视频。</p>
+
+  <h3 class="section-title">定量对比</h3>
+
+  <p>FaceShot 在 CharacBench 上与 7 个 SOTA 方法对比 #GaoJ-et-al.-2025#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>方法</th><th>ArcFace↑</th><th>HyperIQA↑</th><th>Aesthetic↑</th><th>Point-Track↓</th><th>失败率</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>FaceVid2Vid</td><td>0.525</td><td>33.721</td><td>4.267</td><td>6.944</td><td>—</td></tr>
+        <tr><td>FADM</td><td>0.633</td><td>39.402</td><td>4.522</td><td>6.993</td><td>—</td></tr>
+        <tr><td>X-Portrait</td><td>0.490</td><td>52.357</td><td>4.754</td><td>7.301</td><td>—</td></tr>
+        <tr><td>Follow Your Emoji</td><td>0.612</td><td>52.056</td><td>4.906</td><td>6.960</td><td>—</td></tr>
+        <tr><td>AniPortrait*</td><td>0.634</td><td>55.951</td><td>4.928</td><td>6.367</td><td>39.13%</td></tr>
+        <tr><td>MegActor*</td><td>0.613</td><td>40.191</td><td>4.855</td><td>7.183</td><td>36.50%</td></tr>
+        <tr><td><a href="paper-liveportrait.html">LivePortrait</a>*</td><td>0.893</td><td>53.587</td><td>5.092</td><td>7.474</td><td>16.67%</td></tr>
+        <tr><td>MOFA-Video</td><td>0.695</td><td>52.272</td><td>4.952</td><td>14.985</td><td>—</td></tr>
+        <tr><td><strong>FaceShot</strong></td><td><strong>0.848</strong></td><td><strong>53.723</strong></td><td><strong>5.036</strong></td><td><strong>6.935</strong></td><td><strong>0%</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>注意 LivePortrait 的 ArcFace（0.893）高于 FaceShot（0.848），但 LivePortrait 有 16.67% 的失败率——它无法检测到部分非人类角色的面部，只能在成功检测的角色上计算指标 #GaoJ-et-al.-2025#。FaceShot 的 0% 失败率意味着它在所有 46 个角色上都能工作。</p>
+
+  <h3 class="section-title">消融实验</h3>
+
+  <p>论文进行了三组消融 #GaoJ-et-al.-2025#：</p>
+
+  <p><strong>(1) Landmark Matching 消融</strong>：FaceShot 的 NME（8.569）显著低于 DIFT（11.448）和监督方法 Uni-Pose（13.731）、STAR（24.530），证明外观引导的扩散特征匹配在跨域场景中明显优于纯 DIFT 和监督方法。</p>
+
+  <p><strong>(2) Landmark Retargeting 消融</strong>：FaceShot 的 Point-Tracking（6.935）低于 Deep3D（8.282）、Everything's Talking（8.382）和 FreeNet（8.272），证明坐标变换比 3DMM 和学习式方法更精确。</p>
+
+  <p><strong>(3) 作为插件的消融</strong>：将 FaceShot 的 landmark 输入 AniPortrait 的管线，原始 AniPortrait 因 landmark 不准导致角色扭曲，接入 FaceShot 后生成和谐结果 #GaoJ-et-al.-2025#。</p>
+
+  <h3 class="section-title">实验配置披露表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>配置项</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>数据集名称与规模</td><td>CharacBench（46 角色）+ RAVDESS 驱动视频，论文披露</td></tr>
+        <tr><td>训练/推理硬件</td><td>单 H800 GPU（推理），论文披露</td></tr>
+        <tr><td>优化器 / 学习率 / Schedule</td><td>不适用（Training-free）</td></tr>
+        <tr><td>Batch size / Epoch / 训练时长</td><td>不适用（Training-free）</td></tr>
+        <tr><td>Checkpoint 选择策略</td><td>不适用（Training-free）</td></tr>
+        <tr><td>扩散模型超参数</td><td>$t=301, l=6, k=10$，论文完整披露</td></tr>
+        <tr><td>基础动画模型</td><td>MOFA-Video（SVD-based），论文披露</td></tr>
+        <tr><td>Landmark 检测器</td><td>FAN（facexlib），论文披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">讨论与启发：与 LivePortrait / Ditto 的架构对比</div>
+
+  <h3 class="section-title">三个工作的技术路线差异</h3>
+
+  <p>LivePortrait、Ditto 和 FaceShot 都在做肖像动画，但解决的核心问题完全不同：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>LivePortrait</th><th>Ditto</th><th>FaceShot</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>核心问题</td><td>隐式关键点不够可控</td><td>扩散太慢且不可控</td><td>Landmark 检测跨域失败</td></tr>
+        <tr><td>技术路线</td><td>GAN + 隐式关键点 + stitching</td><td>扩散 DiT + LivePortrait motion space</td><td>扩散特征匹配 + 坐标变换</td></tr>
+        <tr><td>运动接口</td><td>隐式 3D 关键点（K≈21）</td><td>LivePortrait 运动表示（265D）</td><td>显式 2D landmark（68 点）</td></tr>
+        <tr><td>需要训练</td><td>是（两阶段，8×A100，12天）</td><td>是（8×A100，500 epochs）</td><td>否（Training-free）</td></tr>
+        <tr><td>推理速度</td><td>12.8ms/帧（RTX 4090）</td><td>RTF 0.895（A100）</td><td>~1.59s/帧（H800）</td></tr>
+        <tr><td>角色泛化</td><td>弱（landmark 检测受限）</td><td>弱（训练数据为人类）</td><td>强（任意角色）</td></tr>
+        <tr><td>可控性</td><td>stitching + eyes/lip retargeting</td><td>gaze + emotion + pose + regional</td><td>无（依赖下游模型）</td></tr>
+        <tr><td>驱动类型</td><td>视频驱动</td><td>音频驱动</td><td>视频驱动</td></tr>
+        <tr><td>开源</td><td>是（GitHub）</td><td>是（GitHub）</td><td>是（Project Page）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">架构对比：运动表示的三个层次</h3>
+
+  <p>三个工作代表了运动表示的三个层次：</p>
+
+  <p><strong>LivePortrait</strong>的架构是端到端的：源图和驱动视频各自通过 Motion Extractor $\mathcal{M}$ 提取隐式关键点，然后通过 warping 和 SPADE decoder 生成动画。整个流程在一个框架内完成，stitching 和 retargeting 作为可插拔模块附加在推理阶段。它的优势是速度快（12.8ms/帧）和可控性强，但运动表示是隐式的——当源图不是人类面孔时，Motion Extractor 无法正确提取关键点。</p>
+
+  <p><strong>Ditto</strong>的架构在 LivePortrait 之上加了一层扩散生成器：HuBERT 提取音频特征 → Conditional DiT 生成运动表示（$\delta, R, t$，共 265 维）→ LivePortrait 的 renderer（$\mathcal{F}$ + $\mathcal{G}$）渲染图像。Ditto 明确声明"We construct the motion space based on LivePortrait" #Li-et-al.-2025#——它复用了 LivePortrait 的 Motion Extractor 和 Face Renderer，但在中间插入了一个扩散模型来做音频到运动的映射。这解决了 LivePortrait 无法从音频驱动的问题，但同样无法处理非人类角色。</p>
+
+  <p><strong>FaceShot</strong>的架构则完全不同——它不在动画模型内部做改进，而是在动画模型的<strong>输入端</strong>做改进。它用扩散模型的语义特征为任意角色生成精确 landmark，然后用坐标变换迁移运动，最后把 landmark 序列交给任意动画模型。这意味着 FaceShot 可以与 LivePortrait 或 Ditto 叠加使用——FaceShot 负责解决「输入端跨域 landmark」问题，LivePortrait/Ditto 负责解决「模型端动画生成」问题。</p>
+
+  <div class="photo">
+    <img src="media/images/faceshot-2025/transfer.webp" alt="Landmark retargeting comparison between FaceShot and other methods" loading="lazy">
+    <div class="cap">图 6：Landmark retargeting 对比。FaceShot 的坐标变换精确捕捉了闭眼、张嘴等细微运动（来源：arXiv source Figure 9）。</div>
+  </div>
+
+  <h3 class="section-title">为什么 FaceShot 选择不训练？</h3>
+
+  <p>FaceShot 的 training-free 设计不是技术限制，而是<strong>问题定义的策略选择</strong>。如果目标是「让动画模型更强大」，那么应该像 Ditto 那样在模型内部引入扩散生成器。但如果目标是「让动画模型能接受任意角色的输入」，那么最有效的做法是改善输入接口——也就是 landmark 生成——而不是重新训练整个动画模型。</p>
+
+  <p>这种策略使得 FaceShot 具有独特的<strong>平台化特征</strong>：它可以作为任何 landmark-driven 动画模型的前置模块，包括 LivePortrait、AniPortrait、MOFA-Video，甚至未来的新模型。论文在实验中已经验证了与 AniPortrait 的兼容性 #GaoJ-et-al.-2025#。</p>
+
+  <h3 class="section-title">局限性</h3>
+
+  <ul>
+    <li><strong>推理速度慢</strong>：FaceShot 依赖 MOFA-Video 做动画生成，50 帧需要 79.540 秒，远慢于 LivePortrait 的 4.321 秒。如果对实时性有要求，FaceShot 目前不适合。</li>
+    <li><strong>依赖 DDIM inversion</strong>：Landmark matching 需要对参考图执行 DDIM inversion，这一步引入了扩散模型的计算开销（约 0.86 秒，但只需执行一次）。</li>
+    <li><strong>动画模型不可控</strong>：FaceShot 本身不提供 stitching、retargeting 等可控性模块——它依赖下游动画模型。如果用 MOFA-Video，则没有 LivePortrait 的精细控制能力。</li>
+    <li><strong>Landmark 数量固定</strong>：使用 68 个 2D landmark 作为运动接口，比 LivePortrait 的 21 个 3D 隐式关键点维度更低，可能在某些精细运动上表达力不足。</li>
+  </ul>
+
+  <div class="callout"><strong>最终判断</strong>：FaceShot 不是一个「更好的动画模型」，而是一个「更好的运动接口」。它的价值在于解耦了 landmark 生成和动画渲染——用扩散模型的语义理解解决跨域问题，用坐标变换解决运动迁移，把动画生成留给专门的模型。这种解耦策略使它成为 LivePortrait 和 Ditto 的<strong>互补</strong>而非替代。</div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ol>
+    <li data-cite-key="GaoJ-et-al.-2025">Gao, Junyao et al. (2025). <em>FaceShot: Bring Any Character into Life</em>. ICLR 2025. <a href="https://arxiv.org/abs/2503.00740" target="_blank">arXiv:2503.00740</a> · <a href="https://faceshot2024.github.io/faceshot/" target="_blank">Project Page</a></li>
+    <li data-cite-key="Guo-et-al.-2024">Guo, Jianzhu et al. (2024). <em>LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control</em>. arXiv:2407.03168. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv</a> · <a href="paper-liveportrait.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Li-et-al.-2025">Li, Tianqi et al. (2025). <em>Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis</em>. ACM MM 2025. <a href="https://arxiv.org/abs/2411.19509" target="_blank">arXiv:2411.19509</a> · <a href="paper-ditto.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Niu-et-al.-2024">Niu, Xianjie et al. (2024). <em>MOFA-Video: Controllable Image Animation via Generative Sparse Motion Fields</em>. <a href="https://arxiv.org/abs/2405.20222" target="_blank">arXiv:2405.20222</a></li>
+    <li data-cite-key="Rombach-et-al.-2022">Rombach, Robin et al. (2022). <em>High-Resolution Image Synthesis with Latent Diffusion Models</em>. CVPR 2022.</li>
+    <li data-cite-key="Ye-et-al.-2023">Ye, Hu et al. (2023). <em>IP-Adapter: Text Compatible Image Prompt Adapter for Text-to-Image Diffusion Models</em>. <a href="https://arxiv.org/abs/2308.06721" target="_blank">arXiv:2308.06721</a></li>
+    <li data-cite-key="Tang-et-al.-2023">Tang, Luming et al. (2023). <em>Emergent Correspondence from Image Diffusion</em>. NeurIPS 2023.</li>
+    <li data-cite-key="Wang-et-al.-2021">Wang, Ting-Chun et al. (2021). <em>One-Shot Free-View Neural Talking-Head Synthesis for Video Conferencing</em>. CVPR 2021.</li>
+    <li data-cite-key="Wei-et-al.-2024">Wei, Huawei et al. (2024). <em>AniPortrait: Audio-Driven Synthesis of Photorealistic Portrait Animation</em>. arXiv:2403.17694. · <a href="paper-aniportrait.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Ma-et-al.-2024">Ma, Zhen-Hou et al. (2024). <em>Follow Your Emoji: Real-Time Portrait Animation with Conditional Diffusion</em>. SIGGRAPH 2024.</li>
+    <li data-cite-key="Blattmann-et-al.-2023">Blattmann, Andreas et al. (2023). <em>Stable Video Diffusion: Scaling Latent Video Diffusion Models to Large Datasets</em>. <a href="https://arxiv.org/abs/2311.15127" target="_blank">arXiv:2311.15127</a></li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, Jiankang et al. (2019). <em>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</em>. CVPR 2019.</li>
+    <li data-cite-key="Zhou-et-al.-2023">Zhou, Yang et al. (2023). <em>STAR: A Benchmark for Skeletal Human Action Recognition in the Wild</em>.</li>
+    <li data-cite-key="Yang-et-al.-2023">Yang, Jingkang et al. (2023). <em>Uni-Pose: Improving Sparse-View Pose Estimation with Universal Pose Dictionary</em>.</li>
+    <li data-cite-key="Sagonas-et-al.-2016">Sagonas, Christos et al. (2016). <em>300 Faces In-The-Wild Challenge: Database and Results</em>. Image and Vision Computing.</li>
+    <li data-cite-key="Livingstone-et-al.-2018">Livingstone, Steven R. et al. (2018). <em>The Ryerson Audio-Visual Database of Emotional Speech and Song (RAVDESS)</em>. PLOS ONE.</li>
+  </ol>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="paper-liveact.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇论文精读</span><span class="nav-title">LiveAct</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列</span></a>
+</div>

@@ -3,7 +3,7 @@ title: "数字人论文精读（十三）：LivePortrait，用隐式关键点把
 description: "精读 LivePortrait：从 Face Vid2vid 到可控 stitching / retargeting 的工程化肖像动画框架"
 date: 2026-06-09T10:53:00
 created_at: 2026-06-09T10:53:00
-updated_at: 2026-07-07T17:30:00
+updated_at: 2026-07-07T18:30:00
 tags: [数字人, LivePortrait, Portrait Animation, 论文精读, Talking Head]
 aliases: ["categories/AI/数字人/数字人论文精读"]
 sub_id: 130
@@ -445,7 +445,45 @@ repos: ["https://github.com/KwaiVGI/LivePortrait"]
 
   <p>LivePortrait 发布后迅速获得社区关注——GitHub Star 数在发布数日内即突破 6500 #LivePortrait-GitHub#。社区涌现了多个衍生项目，包括 TensorRT 加速（推理速度进一步提升）、ComfyUI 集成、Gradio WebUI 等。快手自家的 Kling AI 和剪映产品也采用了该技术，抖音、微信视频号等平台也有基于 LivePortrait 的特效功能。</p>
 
-  <p>后续改进工作包括 FaceShot（用面部 landmark 替代隐式关键点提升跨身份鲁棒性）、RealPortrait（加入身份保持模块解决 CSIM 弱势）等，说明 LivePortrait 开创的「隐式关键点 + 可控性模块」路线具有持续的研究价值。</p>
+  <p>LivePortrait 发布后，社区沿不同方向做出了改进。其中两个最具代表性的直接后继工作是 <a href="paper-ditto.html">Ditto</a> #Li-et-al.-2025# 和 <a href="paper-faceshot.html">FaceShot</a> #GaoJ-et-al.-2025#，它们分别从「运动表示生成」和「跨域输入接口」两个维度扩展了 LivePortrait 的能力边界。</p>
+
+  <h4 class="ch-section">Ditto：把扩散生成器搬进 LivePortrait 的运动空间</h4>
+
+  <p>Ditto（蚂蚁集团，ACM MM 2025）#Li-et-al.-2025# 是最直接的后继——论文明确声明"We construct the motion space based on LivePortrait"。它复用了 LivePortrait 的 Motion Extractor $\mathcal{M}$（提取 $\boldsymbol{\delta}, \mathbf{R}, \mathbf{t}$）和 Face Renderer（$\mathcal{F} + \mathcal{G}$），但在中间插入了一个 <strong>Conditional Diffusion Transformer（DiT）</strong>来从音频特征生成运动表示 #Li-et-al.-2025#。换言之，LivePortrait 从驱动视频直接提取运动，而 Ditto 用扩散模型从音频「生成」运动——这使得 <a href="paper-ditto.html">Ditto</a> 能做音频驱动的 talking head，而非仅限视频驱动。</p>
+
+  <p>Ditto 训练用 8 块 A100、batch 1024、500 epochs，运动表示共 265 维（21 个 3D 关键点的 $\boldsymbol{\delta} \in \mathbb{R}^{63}$ + 头姿 $\mathbf{R} \in \mathbb{R}^{9}$ + 平移 $\mathbf{t} \in \mathbb{R}^{3}$，离散化后 265D）。推理时 DiT 去噪步数从 50 降到 10，配合 TensorRT 加速，实现 RTF 0.895 和首帧延迟 385ms #Li-et-al.-2025#。Ditto 还利用 LivePortrait 的 implicit blendshapes 发现建立了运动到面部语义的映射，实现了 gaze、emotion、pose 等细粒度控制——这正是 LivePortrait stitching/retargeting 控制思路的扩散化延伸。</p>
+
+  <h4 class="ch-section">FaceShot：用扩散特征解决 LivePortrait 的跨域输入问题</h4>
+
+  <p>FaceShot（同济大学 / 上海 AI Lab，ICLR 2025）#GaoJ-et-al.-2025# 走的是完全不同的路线——它不在动画模型内部做改进，而是改善<strong>输入端</strong>。LivePortrait 依赖 Motion Extractor 从源图和驱动视频中提取关键点，当源图是非人类角色（emoji、玩具、动物）时，关键点检测失败。FaceShot 用 Stable Diffusion 的中间层语义特征为任意角色匹配精确 landmark，再用坐标变换迁移运动，最后把 landmark 序列交给任意动画模型 #GaoJ-et-al.-2025#。</p>
+
+  <p>关键在于，FaceShot 是 <strong>training-free</strong> 的，并且可以作为<strong>插件</strong>接入 LivePortrait——用 FaceShot 生成 landmark，再交给 LivePortrait 渲染。论文构建了 CharacBench（46 个非人类角色），LivePortrait 在其上有 16.67% 的失败率（无法检测面部），而 FaceShot 达到 0% 失败率 #GaoJ-et-al.-2025#。这意味着 FaceShot 和 LivePortrait 是<strong>互补</strong>关系：FaceShot 解决「输入端跨域」，LivePortrait 解决「模型端可控性」。</p>
+
+  <h4 class="ch-section">三个工作的架构对比</h4>
+
+  <p>LivePortrait、Ditto 和 FaceShot 代表了肖像动画的三种改进策略：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>维度</th><th>LivePortrait</th><th>Ditto</th><th>FaceShot</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>改进位置</td><td>模型内部（stitching + retargeting）</td><td>模型内部（扩散运动生成器）</td><td>模型输入端（landmark 生成）</td></tr>
+        <tr><td>运动接口</td><td>隐式 3D 关键点（K≈21）</td><td>LivePortrait 运动表示（265D）</td><td>显式 2D landmark（68 点）</td></tr>
+        <tr><td>驱动类型</td><td>视频驱动</td><td>音频驱动</td><td>视频驱动</td></tr>
+        <tr><td>需要训练</td><td>是（2 阶段，12天）</td><td>是（500 epochs）</td><td>否（Training-free）</td></tr>
+        <tr><td>推理速度</td><td>12.8ms/帧（RTX 4090）</td><td>RTF 0.895（A100）</td><td>~1.59s/帧（H800）</td></tr>
+        <tr><td>非人类角色</td><td>失败（16.67%）</td><td>不支持</td><td>支持（0% 失败率）</td></tr>
+        <tr><td>可控性</td><td>stitching + eyes/lip</td><td>gaze + emotion + pose</td><td>依赖下游模型</td></tr>
+        <tr><td>与本文关系</td><td>—</td><td>复用 LivePortrait 运动空间</td><td>可作为 LivePortrait 插件</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>从架构图角度看，三个工作的信息流截然不同。LivePortrait 是<strong>端到端</strong>的：源图 + 驱动视频 → Motion Extractor → 隐式关键点 → Warping + SPADE Decoder → 动画。Ditto 在 LivePortrait 的渲染后端前插入了一个扩散前端：音频 → HuBERT → Conditional DiT → 生成运动表示 → LivePortrait Renderer → 动画。FaceShot 则在动画模型的输入端前插入了一个 landmark 生成器：源图 + 驱动视频 → 扩散特征匹配 + 坐标变换 → landmark 序列 → 任意动画模型 → 动画。</p>
+
+  <p>RealPortrait（加入身份保持模块解决 CSIM 弱势）等其他工作也在沿着各自方向推进。总体而言，LivePortrait 开创的「隐式关键点 + 可控性模块」路线已经催生了从音频驱动、跨域角色到实时流式推理等多个方向的后继工作，说明这条路线具有持续的研究价值。</p>
 
   <h3 class="section-title">为什么它值得放进数字人系列？</h3>
 
@@ -474,6 +512,8 @@ repos: ["https://github.com/KwaiVGI/LivePortrait"]
     <li data-cite-key="LivePortrait-Project">LivePortrait Official Project Page. <a href="https://liveportrait.github.io/" target="_blank">liveportrait.github.io</a></li>
     <li data-cite-key="LivePortrait-GitHub">KwaiVGI / LivePortrait official PyTorch implementation. <a href="https://github.com/KwaiVGI/LivePortrait" target="_blank">GitHub</a></li>
     <li data-cite-key="LivePortrait-Code">LivePortrait official inference implementation: <code>src/live_portrait_pipeline.py</code> and <code>src/config/inference_config.py</code>, downloaded from the official GitHub repository on 2026-06-09.</li>
+    <li data-cite-key="Li-et-al.-2025">Li, Tianqi et al. (2025). <em>Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis</em>. ACM MM 2025. <a href="https://arxiv.org/abs/2411.19509" target="_blank">arXiv:2411.19509</a> · <a href="paper-ditto.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="GaoJ-et-al.-2025">Gao, Junyao et al. (2025). <em>FaceShot: Bring Any Character into Life</em>. ICLR 2025. <a href="https://arxiv.org/abs/2503.00740" target="_blank">arXiv:2503.00740</a> · <a href="paper-faceshot.html" class="paper-link">精读 →</a></li>
   </ol>
 </div>
 
