@@ -30,7 +30,10 @@ description: |
 # 按 tag
 ~/.venv/bin/python scripts/blog-search.py --tag diffusion
 
-# 按 category + subcategory
+# 按分类路径（推荐）
+~/.venv/bin/python scripts/blog-search.py --category-path "AI/数字人"
+
+# 旧用法仍兼容（从 categoryPath 派生）
 ~/.venv/bin/python scripts/blog-search.py --category AI --subcategory 数字人
 
 # 关键词模糊搜索（标题/描述/标签/子分类）
@@ -72,11 +75,8 @@ grep -r "title:" src/pages/ | grep "关键词"
 # 搜索特定标签
 grep -r "tags:.*关键词" src/pages/
 
-# 搜索特定分类
-grep -r "categories:.*关键词" src/pages/
-
-# 搜索特定子分类
-grep -r "subcategory:.*关键词" src/pages/
+# 搜索特定分类（通过 aliases 路径）
+grep -r "aliases:.*categories/.*关键词" src/pages/
 
 # 查看某篇文章的完整 frontmatter（前 15 行）
 head -15 src/pages/<slug>.html
@@ -135,7 +135,7 @@ head -80 src/pages/<candidate>.html
 
 ```bash
 # 方法 A：grep frontmatter
-grep -rl "categories:.*课程" src/pages/ | xargs -I{} head -8 {} | grep "title:"
+grep -rl "aliases:.*categories/.*课程" src/pages/ | xargs -I{} head -8 {} | grep "title:"
 
 # 方法 B：search-index.json（更完整）
 cat public/search-index.json | ~/.venv/bin/python -c "
@@ -144,8 +144,9 @@ data = json.load(sys.stdin)
 cat = '课程'
 grouped = {}
 for p in data:
-    if cat in p.get('categories', []):
-        sub = p.get('subcategory', '未分类')
+    path = p.get('categoryPath', [])
+    if cat in path:
+        sub = path[1] if len(path) > 1 else '未分类'
         grouped.setdefault(sub, []).append(p)
 for sub, posts in sorted(grouped.items()):
     print(f'\n=== {sub} ({len(posts)} 篇) ===')
@@ -172,7 +173,7 @@ done
 head -20 src/pages/<slug>.html
 ```
 
-Frontmatter 字段说明：title, description, created_at, updated_at, tags, categories, subcategory, mathjax, hero_title, hero_sub, hero_tagline, notify, draft, toc。
+Frontmatter 字段说明：title, description, created_at, updated_at, tags, aliases（含 categories/ 路径）, sub_id, mathjax, hero_title, hero_sub, hero_tagline, notify, draft, toc。
 
 ### 场景 5：统计博客内容概况
 
@@ -181,7 +182,7 @@ Frontmatter 字段说明：title, description, created_at, updated_at, tags, cat
 ls src/pages/*.html src/pages/*.md 2>/dev/null | wc -l
 
 # 分类统计
-grep -h "^categories:" src/pages/*.html | sort | uniq -c | sort -rn
+grep -h "aliases:.*categories/" src/pages/*.html | grep -oP "categories/[^/"]+" | sort | uniq -c | sort -rn
 
 # 标签统计（前 20）
 grep -h "tags:" src/pages/*.html | sed 's/.*tags: *//' | tr ',' '\n' | sed 's/[][]//g; s/"//g; s/^ *//; s/ *$//' | sort | uniq -c | sort -rn | head -20

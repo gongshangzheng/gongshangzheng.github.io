@@ -5,7 +5,8 @@
 数据源：public/search-index.json（构建产物，包含所有文章元数据）
 用法：
     ~/.venv/bin/python scripts/blog-search.py --tag diffusion
-    ~/.venv/bin/python scripts/blog-search.py --category AI --subcategory 数字人
+    ~/.venv/bin/python scripts/blog-search.py --category AI --subcategory 数字人  # 旧用法，已弃用
+    ~/.venv/bin/python scripts/blog-search.py --category-path "AI/数字人"
     ~/.venv/bin/python scripts/blog-search.py --keyword "视觉分词器"
     ~/.venv/bin/python scripts/blog-search.py --alias TiTok
     ~/.venv/bin/python scripts/blog-search.py --list-categories
@@ -34,18 +35,28 @@ def load_index(repo_root: Path) -> list[dict]:
 
 def match(post: dict, args) -> bool:
     """根据命令行参数判断文章是否匹配。所有指定条件取交集。"""
+    if args.category_path:
+        target = [s.strip() for s in args.category_path.split("/")]
+        path = post.get("categoryPath", [])
+        if len(path) < len(target):
+            return False
+        for i, t in enumerate(target):
+            if path[i].lower() != t.lower():
+                return False
+
     if args.tag:
         tags_lower = [t.lower() for t in post.get("tags", [])]
         if args.tag.lower() not in tags_lower:
             return False
 
     if args.category:
-        cats_lower = [c.lower() for c in post.get("categories", [])]
+        cats_lower = [c.lower() for c in post.get("categoryPath", [])]
         if args.category.lower() not in cats_lower:
             return False
 
     if args.subcategory:
-        sub = (post.get("subcategory") or "").lower()
+        path = post.get("categoryPath", [])
+        sub = (path[1] if len(path) > 1 else "").lower() if path else ""
         if sub != args.subcategory.lower():
             return False
 
@@ -55,7 +66,7 @@ def match(post: dict, args) -> bool:
             post.get("title", ""),
             post.get("description", ""),
             " ".join(post.get("tags", [])),
-            post.get("subcategory", ""),
+            " ".join(post.get("categoryPath", [])),
         ]).lower()
         if kw not in haystack:
             return False
@@ -92,8 +103,9 @@ def print_table(posts: list[dict], max_rows: int | None = None):
         date = (p.get("created_at") or "")[:10]
         sid = p.get("sub_id")
         sid_display = str(sid) if sid is not None else ""
-        cat = "/".join(p.get("categories", []))
-        sub = p.get("subcategory", "")
+        path = p.get("categoryPath", [])
+        cat = path[0] if path else ""
+        sub = path[1] if len(path) > 1 else ""
         cat_display = f"{cat}/{sub}" if sub else cat
         tags = ", ".join(p.get("tags", []))
         print(f"{title:<{title_w}}  {date:<{date_w}}  {sid_display:>{sub_id_w}}  {cat_display:<20}  {tags}")
@@ -108,8 +120,9 @@ def list_categories(posts: list[dict]):
     """列出所有 category → subcategory 结构及文章数。"""
     tree: dict[str, Counter] = {}
     for p in posts:
-        for cat in p.get("categories", []):
-            sub = p.get("subcategory") or "(无子分类)"
+        path = p.get("categoryPath", [])
+        for i, cat in enumerate(path):
+            sub = path[i+1] if i+1 < len(path) else "(叶子)"
             tree.setdefault(cat, Counter())[sub] += 1
 
     for cat in sorted(tree):
@@ -136,7 +149,8 @@ def main():
     parser = argparse.ArgumentParser(description="博客统一检索")
     parser.add_argument("--tag", help="按标签精确匹配（大小写不敏感）")
     parser.add_argument("--category", help="按分类精确匹配")
-    parser.add_argument("--subcategory", help="按子分类精确匹配")
+    parser.add_argument("--subcategory", help="按子分类精确匹配（从 categoryPath[1] 派生）")
+    parser.add_argument("--category-path", help="按分类路径精确匹配（如 AI/数字人）")
     parser.add_argument("--keyword", help="在标题/描述/标签/子分类中模糊搜索")
     parser.add_argument("--alias", help="按别名精确匹配")
     parser.add_argument("--list-categories", action="store_true", help="列出完整分类体系及文章数")
@@ -159,7 +173,7 @@ def main():
         return
 
     # 至少需要一个检索条件
-    has_filter = any([args.tag, args.category, args.subcategory, args.keyword, args.alias])
+    has_filter = any([args.tag, args.category, args.subcategory, args.category_path, args.keyword, args.alias])
     if not has_filter:
         parser.print_help()
         print("\n请至少指定一个检索条件（--tag / --category / --subcategory / --keyword / --alias）")
