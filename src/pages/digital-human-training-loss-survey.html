@@ -1,281 +1,505 @@
 ---
-title: "digital-human-training-loss-survey"
-description: ""
+title: "数字人系列（十五）：训练全景——Loss 函数族与训练策略的系统性整理"
+description: "从 Wing Loss 到 Denoising Score Matching，系统整理数字人训练中使用的 7 大 Loss 函数族、5 条技术路线的 Loss 组合、训练策略（分阶段、模块化、Loss 冲突解决）和跨系统对比总表。覆盖 face vid2vid、LivePortrait、Wav2Lip、MuseTalk、SadTalker、Hallo、VASA-1、GeneFace 等 12 个系统的训练细节。"
 date: 2026-07-07T16:20:10
 created_at: 2026-07-07T16:20:10
 updated_at: 2026-07-07T16:20:10
-tags: []
-categories: []
-papers: []
+tags: [数字人, Loss Function, Training Strategy, Wing Loss, Perceptual Loss, GAN Loss, SyncNet, Survey]
+aliases: ["categories/AI/数字人"]
+sub_id: 150
+toc: true
+mathjax: true
+notify: true
+hero_title: "训练全景"
+hero_sub: "从 Wing Loss 到 Denoising Score Matching：7 大 Loss 族 × 5 条技术路线 × 12 个系统的训练细节"
+hero_tagline: "系列（十五）· Loss 函数 · 训练策略 · 跨系统对比"
+papers: ["1711.06753", "2011.15126", "2406.02880", "2008.10010", "2211.12194", "2501.01895", "2406.08801", "2301.13430", "2507.02900", "2603.19731"]
 repos: []
 ---
-<!-- ============================================================
-  本模板展示所有构建系统支持的语法。
-  详细规范参见 ~/.hanako/skills/html-blog/references/
-  ⚠️ 图片必须放在正文区域（--- 之后），不能放在 frontmatter 中
-  ⚠️ 图片放在所讲解段落之后，不要堆在文件末尾
-  ============================================================ -->
-
-<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
 <div class="stats">
-  <div class="stat"><span class="num">12</span><span class="label">Shortcode</span></div>
-  <div class="stat"><span class="num b">8</span><span class="label g">HTML 组件</span></div>
-  <div class="stat"><span class="num">6</span><span class="label">链接语法</span></div>
-  <div class="stat"><span class="num b">5</span><span class="label l">自定义元素</span></div>
+  <div class="stat"><span class="num">7</span><span class="label">Loss 函数族</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label g">技术路线</span></div>
+  <div class="stat"><span class="num">12</span><span class="label">系统深拆</span></div>
+  <div class="stat"><span class="num b">20+</span><span class="label l">公式</span></div>
+  <div class="stat"><span class="num">4</span><span class="label">训练策略</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列位置</div>
+  <div class="ch-title">为什么需要专门整理数字人的训练 Loss？</div>
+
+  <p>数字人（talking head / talking face / digital avatar）的研究在 2020–2026 年间经历了从 GAN warp 到 NeRF 再到 Diffusion 的范式跃迁。大量的综述文章梳理了架构分类、数据集和评测指标 #Rakesh-et-al.-2025# #Springer-THG-2025#，但<strong>训练过程中使用的 Loss 函数</strong>始终被当作每个论文的"实现细节"散落在各处，缺乏系统性的整理和对比。</p>
+
+  <p>这个缺口带来的实际问题是：当你想复现或改进一个数字人系统时，架构图能从论文里抄，但 Loss 组合、权重配比、训练阶段划分和冲突处理策略往往需要从代码里逆向工程。更关键的是，不同技术路线（GAN warping、lip-sync、3DMM、NeRF、Diffusion）的 Loss 设计哲学差异巨大——<a href="paper-liveportrait.html">LivePortrait</a> 用了 8 项损失协同优化，<a href="paper-wav2lip.html">Wav2Lip</a> 靠一个冻结的 SyncNet 判别器就把唇形同步做到了 SOTA，而 <a href="paper-musetalk.html">MuseTalk</a> 专门写了一节讨论"GAN loss 和 SyncNet loss 为什么会互相打架"。</p>
+
+  <p>本文的目标是填这个缺口：把数字人训练中使用的 Loss 函数按功能分成 7 大族，按技术路线梳理 5 种典型系统的 Loss 组合，总结 4 类训练策略，最后给出一张跨系统对比总表。用户提到的 <strong>Wing Loss</strong> #Feng-et-al.-2018# 是其中"关键点与运动约束损失"族的核心成员，<a href="paper-liveportrait.html">LivePortrait</a> 用它来约束隐式关键点与 2D landmark 对齐，从而驱动微表情。</p>
+
+  <p>本文回答以下问题：</p>
+  <ul>
+    <li><strong>Part 1</strong>：数字人训练 Loss 分成哪 7 大族？每族的数学形式、作用和典型系统是什么？</li>
+    <li><strong>Part 2</strong>：Wing Loss 为什么比 L2 更适合微表情？它的数学形式和梯度特性是什么？</li>
+    <li><strong>Part 3</strong>：5 条技术路线各自用哪些 Loss？它们为什么这样组合？</li>
+    <li><strong>Part 4</strong>：训练策略——分阶段训练、模块化 vs 端到端、Loss 冲突如何解决？</li>
+    <li><strong>Part 5</strong>：12 个系统的 Loss 对比总表。</li>
+    <li><strong>Part 6</strong>：设计模式与 Trade-offs。</li>
+    <li><strong>Part 7</strong>：开放问题。</li>
+  </ul>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="digital-human-backend-agent-design.html"><span class="nav-arrow">←</span><span class="nav-label">系列（十四）</span><span class="nav-title">后端 Agent 设计理念</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列 Hub</span></a>
+  </div>
+
+  <div class="callout"><strong>前置阅读</strong>：本文假设读者已了解数字人的基本技术路线分类。如需背景，请先读 <a href="digital-human-avatar-survey.html">实时数字人 Survey</a> 和 <a href="digital-human-training-inference-benchmark.html">评测指标、算力与产品选型</a>。本文聚焦训练侧的 Loss 和策略，不重复评测指标的内容。</div>
 </div>
 
 <!-- ============================================================
-  章节容器
+  Part 1: 7 大 Loss 函数族
   ============================================================ -->
-
-<!-- 章节叙事（.ch）— .ch-title 自动加入 TOC -->
-<!-- <p> 标签可选：裸文本行在构建时自动补 <p> -->
 <div class="ch fade-in">
-  <div class="ch-label">章节标签</div>
-  <div class="ch-title">章节标题</div>
-  <div class="ch-date">时间范围</div>
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">Loss 函数分类体系：7 大族</div>
 
-  正文段落。使用 <strong>加粗</strong>、<em>斜体</em>、<code>行内代码</code>。
+  <p>数字人训练中使用的 Loss 函数可以按<strong>监督信号的类型</strong>分为 7 大族。下表是总览，随后逐节展开。</p>
 
-  这是一段包含 ==高亮文字== 的正文。
-
-  <!-- Markdown 加粗/斜体也支持（HTML 源文件中） -->
-  <!-- **加粗** → <strong> / *斜体* → <em> -->
-
-  <!-- 图片 — 放在所讲解段落之后，不要堆在文件末尾 -->
-  <div class="photo">
-    <img src="media/images/sengoku-japan/nobunaga.webp" alt="织田信长" loading="lazy">
-    <div class="cap">织田信长（Oda Nobunaga）— 战国三杰之一</div>
-  </div>
-
-  <div class="callout"><strong>提示</strong>：提示框内容。</div>
-
-  <div class="info-box">
-    <h3>信息框标题</h3>
-    信息框内容。标题不加入 TOC。
-  </div>
-
-  <div class="def-box">
-    <h3>定义框</h3>
-    放定义、符号、直觉解释。
-  </div>
-  <div class="theorem-box">
-    <h3>定理框</h3>
-    放命题、定理、推论和判定条件。
-  </div>
-  <div class="example-box">
-    <h3>例题框</h3>
-    <strong>题目：</strong>示例题目。
-    <strong>答案：</strong>示例答案。
-    <div class="callout"><strong>易错点</strong>：示例提醒。</div>
-  </div>
-  <div class="review-box">
-    <h3>复习速查</h3>
-    <ul>
-      <li><strong>定义</strong>：一行回忆核心概念。</li>
-      <li><strong>公式</strong>：列最重要的结论。</li>
-    </ul>
-  </div>
-  <div class="chapter-nav">
-    <a class="nav-card nav-prev" href="prev.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">上一章标题</span></a>
-    <a class="nav-card nav-hub" href="hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">枢纽页标题</span></a>
-    <a class="nav-card nav-next" href="next.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">下一章标题</span></a>
-  </div>
-
-  <blockquote>
-    引用内容。
-    <em>— 来源</em>
-  </blockquote>
-
-  <div class="table-wrap">
+  <div class="table-wrap wide">
     <table>
-      <thead><tr><th>表头1</th><th>表头2</th><th>表头3</th></tr></thead>
+      <thead><tr><th>Loss 族</th><th>核心作用</th><th>典型成员</th><th>代表系统</th></tr></thead>
       <tbody>
-        <tr><td>单元格</td><td>单元格</td><td>单元格</td></tr>
+        <tr><td>① 像素级重建损失</td><td>像素一致性</td><td>L1, L2, Smooth L1</td><td>几乎所有系统</td></tr>
+        <tr><td>② 感知损失</td><td>高层语义一致性</td><td>VGG Perceptual, LPIPS</td><td>LivePortrait, Wav2Lip, MuseTalk</td></tr>
+        <tr><td>③ 对抗损失</td><td>纹理真实感</td><td>GAN loss, Multi-scale, Cascade</td><td>LivePortrait, Wav2Lip, MuseTalk</td></tr>
+        <tr><td>④ 同步损失</td><td>音画对齐</td><td>SyncNet, Lip-sync Discriminator</td><td>Wav2Lip, SadTalker, MuseTalk</td></tr>
+        <tr><td>⑤ 身份保持损失</td><td>身份不漂移</td><td>ArcFace, Face ID, Cross-ID</td><td>LivePortrait, VASA-1</td></tr>
+        <tr><td>⑥ 关键点与运动约束损失</td><td>运动精度与几何一致性</td><td>Wing Loss, Equivariance, Keypoint Prior, Head Pose, Deformation Prior</td><td>face vid2vid, LivePortrait, SadTalker</td></tr>
+        <tr><td>⑦ 生成模型专属损失</td><td>分布匹配与采样质量</td><td>VAE ELBO, Denoising Score Matching, CFG, DMD Distillation</td><td>SadTalker, Hallo, VASA-1, EMO2</td></tr>
       </tbody>
     </table>
   </div>
 
+  <h3 class="section-title">1.1 像素级重建损失</h3>
+
+  <p>最基本的损失族，衡量生成帧与真实帧在像素空间的一致性。数字人系统几乎都用 L1 而非 L2，原因有二：L2 对大误差的二次惩罚会导致生成结果偏向"平均脸"（模糊），而 L1 对异常值更鲁棒。</p>
+
+  <div class="def-box">
+    <h3>L1 与 L2 损失</h3>
+    $$\mathcal{L}_{L1} = \frac{1}{N} \sum_{i=1}^{N} |x_i - \hat{x}_i|, \quad \mathcal{L}_{L2} = \frac{1}{N} \sum_{i=1}^{N} (x_i - \hat{x}_i)^2$$
+    <p>Smooth L1 在 $|x - \hat{x}| < 1$ 时退化为 L2，在 $|x - \hat{x}| \geq 1$ 时退化为 L1，兼顾两者的优势。</p>
+  </div>
+
+  <p>在实际系统中，重建损失通常作为"保底"损失与其他损失联合使用。例如 Wav2Lip 的总损失包含 $\mathcal{L}_{recon}$（L1）+ $\mathcal{L}_{perceptual}$ + $\mathcal{L}_{sync}$ + $\mathcal{L}_{adv}$ #Prajwal-et-al.-2020#。MuseTalk 在第一阶段只用重建 + 感知损失训练"facial abstraction"能力，第二阶段才引入同步和对抗损失 #Zhang-et-al.-2024-MuseTalk#。</p>
+
+  <div class="callout"><strong>关键限制</strong>：纯像素级重建损失会导致牙齿、嘴角等高频细节被抹平——因为模型通过生成"平均值"来最小化逐像素误差。这正是感知损失和对抗损失被引入的原因。</div>
+
+  <h3 class="section-title">1.2 感知损失</h3>
+
+  <p>感知损失使用预训练的图像分类网络（通常是 VGG-19）提取中间层特征，在特征空间而非像素空间计算距离。它的核心作用是让生成结果在"高层语义"上与真实图像一致，即使像素不完全匹配，也能保证视觉上的合理性。</p>
+
+  <div class="def-box">
+    <h3>VGG 感知损失</h3>
+    $$\mathcal{L}_{perceptual} = \sum_{l} \frac{1}{C_l H_l W_l} \|\phi_l(x) - \phi_l(\hat{x})\|_1$$
+    <p>其中 $\phi_l$ 是 VGG-19 第 $l$ 层的特征提取，$C_l, H_l, W_l$ 是该层特征图的通道数、高度和宽度。</p>
+  </div>
+
+  <p>LivePortrait 将感知损失设计为<strong>级联结构</strong>：在全局（full image）、面部（face region）、唇部（lip region）三个区域分别施加感知损失，对应三个从零训练的判别器 $\mathcal{D}_{global}$、$\mathcal{D}_{face}$、$\mathcal{D}_{lip}$ #Guo-et-al.-2024#。这种分层设计确保了局部纹理细节（尤其是嘴唇和牙齿）被精确优化，而不只是全局"看起来像"。</p>
+
+  <p>Wav2Lip 使用感知损失来约束生成器输出的整体视觉质量，与同步损失和对抗损失联合优化 #Prajwal-et-al.-2020#。研究表明，去掉感知损失后生成图像质量会显著下降——纹理变得平面化，边缘模糊 #Liang-et-al.-2022#。</p>
+
+  <h3 class="section-title">1.3 对抗损失</h3>
+
+  <p>对抗损失来自 GAN 框架，通过训练判别器 $D$ 区分真实图像和生成图像，间接推动生成器 $G$ 产出更真实的纹理。在数字人系统中，对抗损失主要解决两个问题：高频细节（牙齿、皮肤纹理）的清晰度，以及整体图像的真实感。</p>
+
+  <div class="def-box">
+    <h3>对抗损失（Hinge 版本）</h3>
+    $$\mathcal{L}_{adv} = \mathbb{E}_{x \sim p_{data}}[\min(0, -1 + D(x))] + \mathbb{E}_{\hat{x} \sim p_G}[\min(0, -1 - D(\hat{x}))]$$
+    <p>生成器侧的对抗损失为 $\mathcal{L}_G = -D(\hat{x})$，推动判别器对生成图像给出高分。</p>
+  </div>
+
+  <p>LivePortrait 的级联 GAN 损失是其中最精细的设计：三个判别器分别负责全局、面部和唇部区域，由 2D semantic landmarks 定义 ROI #Guo-et-al.-2024#。这种设计的核心洞察是——不同面部区域的纹理复杂度和失败模式不同：唇部需要精确的牙齿和嘴角纹理，面部需要皮肤质感，全局需要背景和头发的一致性。</p>
+
+  <p>MuseTalk 在第二阶段引入 face 和 lip 两个判别器，但发现了一个关键问题：GAN loss 可能让模型"偷懒"复制参考帧中已有的嘴型，而非根据音频生成正确的嘴部运动 #Zhang-et-al.-2024-MuseTalk#。这个问题通过 Informative Frame Sampling（IFS）和 Dynamic Margin Sampling（DMS）从数据侧切断捷径来解决。</p>
+
+  <h3 class="section-title">1.4 同步损失</h3>
+
+  <p>同步损失是数字人区别于一般图像生成任务的核心损失。它约束生成视频的嘴部运动与驱动音频在时序上精确对齐——不仅要求"嘴在动"，还要求"嘴的每个开合对应正确的音素"。</p>
+
+  <p>数字人领域最重要的同步损失是 <strong>SyncNet 损失</strong>，由 Chung & Zisserman 首次提出 #Chung-et-al.-2016#，在 Wav2Lip 中被发扬光大 #Prajwal-et-al.-2020#。SyncNet 是一个双流网络，音频编码器处理 80 维 mel-spectrogram，视频编码器处理 96×96 的嘴唇区域图像，输出两组 embedding 后计算余弦相似度。</p>
+
+  <div class="def-box">
+    <h3>SyncNet 同步损失</h3>
+    $$\mathcal{L}_{sync} = -\cos(\phi_a(a_{t:t+T}), \phi_v(v_{t:t+T}))$$
+    <p>其中 $\phi_a$ 和 $\phi_v$ 分别是 SyncNet 的音频和视频编码器，$a_{t:t+T}$ 和 $v_{t:t+T}$ 是时间窗口 $T$ 内的音频和视频片段。相似度越高（损失越低），嘴部运动与音频越同步。</p>
+  </div>
+
+  <p>Wav2Lip 的关键设计是<strong>冻结 SyncNet 判别器</strong>——在大规模唇读数据集 LRS2 上预训练后，训练生成器时判别器权重不更新 #Prajwal-et-al.-2020#。这防止判别器被生成器的伪影"带偏"，保持其作为"客观裁判"的角色。SadTalker 的 ExpNet 借鉴了同样的思路 #Zhang-et-al.-2023#。</p>
+
+  <div class="callout"><strong>同步 vs 真实感的冲突</strong>：MuseTalk 首次系统分析了 SyncNet loss 与 GAN loss 的冲突——直接联合优化会导致训练不稳定，SyncNet loss 难以收敛。解决方案是两阶段训练：先学重建和感知（建立基础视觉能力），再引入同步和对抗（精细化音画对齐）#Zhang-et-al.-2024-MuseTalk#。</div>
+
+  <h3 class="section-title">1.5 身份保持损失</h3>
+
+  <p>身份保持损失约束生成过程中人物身份不发生漂移。在长时间生成或跨身份驱动（用 A 的表情驱动 B 的脸）时，生成器可能"忘了"原始身份，产出像但不是同一个人的结果。</p>
+
+  <p>主流方案是使用预训练的人脸识别模型（如 ArcFace #Deng-et-al.-2019#）提取身份嵌入，约束生成帧与源帧的嵌入余弦相似度。</p>
+
+  <div class="def-box">
+    <h3>ArcFace 身份损失</h3>
+    $$\mathcal{L}_{faceid} = 1 - \cos(\mathcal{R}(I_s), \mathcal{R}(\hat{I}_d))$$
+    <p>其中 $\mathcal{R}$ 是 ArcFace 人脸识别网络，$I_s$ 是源图像，$\hat{I}_d$ 是生成帧。</p>
+  </div>
+
+  <p>LivePortrait 使用 ArcFace 提取的身份嵌入保持源图像身份 #Guo-et-al.-2024#。VASA-1 进一步提出了<strong>跨身份相似性损失</strong> $\mathcal{L}_{cross\_id}$：将一个主体的运动传输到另一个主体，计算原始身份特征与传输后身份特征的余弦相似度，确保运动传输不会破坏身份信息。消融实验显示该损失将身份保持评分从 0.72 提升到 0.80 #Li-et-al.-2024-VASA1#。</p>
+
+  <h3 class="section-title">1.6 关键点与运动约束损失</h3>
+
+  <p>这一族是数字人特有的损失，约束隐式或显式关键点的几何一致性和运动精度。它是 face vid2vid 和 LivePortrait 这类隐式关键点系统的训练基石。</p>
+
+  <h4 class="ch-section">1.6.1 Wing Loss——为微表情而生</h4>
+
+  <p>Wing Loss 由 Feng 等人在 2018 年提出 #Feng-et-al.-2018#，最初用于人脸关键点定位。它的核心动机是：L2 loss 在零点附近的梯度恒定（等于误差值），对小误差不够敏感；L1 loss 在零点附近梯度恒为 $\pm 1$，也不区分大小误差。而人脸关键点定位中，<strong>小到中等范围的误差</strong>恰恰是最需要关注的。</p>
+
+  <div class="def-box">
+    <h3>Wing Loss 定义</h3>
+    $$\text{Wing}(x) = \begin{cases} w \ln(1 + |x|/\epsilon) & \text{if } |x| < w \\ |x| - C & \text{otherwise} \end{cases}$$
+    <p>其中 $C = w - w \ln(1 + w/\epsilon)$ 保证分段连续。$w$ 定义了"小误差"区间的宽度，$\epsilon$ 控制对数曲线的曲率。</p>
+  </div>
+
+  <p>Wing Loss 的关键特性是：在 $|x| < w$ 区间内使用对数函数，<strong>对小误差的梯度远大于 L1 或 L2</strong>。具体来说，当 $|x| \to 0$ 时，Wing Loss 的梯度 $\frac{w}{\epsilon + |x|} \to \frac{w}{\epsilon}$，可以远大于 1（L1 的梯度），从而使模型更关注微小的定位误差。当 $|x| \geq w$ 时，Wing Loss 退化为线性函数（类似 L1），对大误差不过度惩罚。</p>
+
+  <p>LivePortrait 引入 Wing Loss 的场景是<strong>微表情驱动</strong> #Guo-et-al.-2024#。face vid2vid 的隐式关键点在无监督方式下难以学到微表情，LivePortrait 从眼睛和嘴唇区域选取 N=10 个 2D landmarks，用 Wing Loss 约束隐式关键点的前两维与 landmark 对齐：</p>
+
+  $$\mathcal{L}_{guide} = \frac{1}{2N} \sum_{i=1}^{N} \big( \text{Wing}(l_i, x_{s,i,:2}) + \text{Wing}(l_i, x_{d,i,:2}) \big)$$
+
+  <p>Wing Loss 对小误差更敏感的特性，恰好适合微表情这类小幅运动。该损失同时施加在 source 和 driving 关键点上 #Guo-et-al.-2024#。</p>
+
+  <h4 class="ch-section">1.6.2 等变性损失（Equivariance Loss）</h4>
+
+  <p>等变性损失由 face vid2vid 提出 #Wang-et-al.-2020#，约束隐式关键点的几何一致性：对图像施加 2D 几何变换 $T$（如旋转、平移），关键点提取器输出的变化应该与 $T$ 一致。</p>
+
+  <div class="def-box">
+    <h3>等变性损失</h3>
+    $$\mathcal{L}_E = \sum_k \| T(x_{d,k}) - x'_{d,k} \|^2$$
+    <p>其中 $x_{d,k}$ 是原始图像的第 $k$ 个隐式关键点，$T(x_{d,k})$ 是对关键点施加变换 $T$ 后的结果，$x'_{d,k}$ 是对变换后图像提取的关键点。如果两者一致，说明关键点提取器学到了几何上有意义的表示。</p>
+  </div>
+
+  <h4 class="ch-section">1.6.3 关键点先验损失（Keypoint Prior）</h4>
+
+  <p>关键点先验损失约束隐式关键点分布在人脸区域内，防止关键点"飘"到背景中 #Wang-et-al.-2020#。face vid2vid 使用一个 coverage loss，鼓励关键点覆盖面部区域但不超出边界。</p>
+
+  <h4 class="ch-section">1.6.4 头部姿态损失与形变先验损失</h4>
+
+  <p>头部姿态损失 $\mathcal{L}_H$ 惩罚头部旋转预测的误差，形变先验损失 $\mathcal{L}_\Delta$ 约束形变场的幅度和光滑性，防止过度变形导致面部撕裂 #Wang-et-al.-2020#。</p>
+
+  <p>值得注意的是，CVPR 2026 的 PerformRecast 工作<strong>显式丢弃了等变性、关键点先验、头部姿态和形变先验四项损失</strong> #Liang-et-al.-2026#，认为这些约束在新的解耦框架中不再需要。这暗示着当架构设计足够好时，某些手工设计的约束损失可以被移除——但这一观点尚需更多验证。</p>
+
+  <h3 class="section-title">1.7 生成模型专属损失</h3>
+
+  <p>随着数字人从 GAN 走向扩散模型，训练目标也从对抗损失转向去噪分数匹配。这一族损失来自生成模型本身的理论框架。</p>
+
+  <h4 class="ch-section">1.7.1 VAE ELBO</h4>
+
+  <p>SadTalker 的 PoseVAE 使用标准 ELBO 作为训练目标 #Zhang-et-al.-2023#：</p>
+
+  $$\mathcal{L}_{\text{PoseVAE}} = \mathbb{E}_{q(z|\rho,a)}[\log p(\rho|z,a)] - \text{KL}(q(z|\rho,a) \| p(z|a))$$
+
+  <p>其中 $\rho$ 是头姿序列，$a$ 是音频条件，$z$ 是隐变量。第一项保证解码出的头姿能重构真实运动，第二项把后验分布拉向条件先验，使推理时可以直接从先验采样。</p>
+
+  <h4 class="ch-section">1.7.2 去噪分数匹配</h4>
+
+  <p>VASA-1 和 Hallo 等基于扩散模型的系统使用去噪分数匹配作为核心训练目标 #Li-et-al.-2024-VASA1# #Xu-et-al.-2024-Hallo#：</p>
+
+  $$\mathcal{L}_{diffusion} = \mathbb{E}_{t, X_0, \epsilon} \| X_0 - H(X_t, t, C) \|^2$$
+
+  <p>其中 $X_t$ 是前向过程添加噪声后的运动序列，$H$ 是网络（VASA-1 中是 Transformer，Hallo 中是 UNet），$C$ 是条件信号（音频、参考图像等）。VASA-1 的网络预测原始信号 $X_0$ 而非噪声 $\epsilon$，参数量仅 29M #Li-et-al.-2024-VASA1#。</p>
+
+  <h4 class="ch-section">1.7.3 Classifier-Free Guidance（CFG）</h4>
+
+  <p>VASA-1 采用 CFG 提升生成质量，训练时随机丢弃条件，推理时应用引导 #Li-et-al.-2024-VASA1#：</p>
+
+  $$\hat{X}_0 = (1 + \sum_{c \in C} \lambda_c) \cdot H(X_t, t, C) - \sum_{c \in C} \lambda_c \cdot H(X_t, t, C|_{c=\emptyset})$$
+
+  <p>消融实验表明，合理的 CFG 参数能显著提升同步性和质量，但过强的 CFG（如音频引导系数 $\lambda_A = 2.0$）会导致头部抖动和夸张嘴部动作 #Li-et-al.-2024-VASA1#。</p>
+
+  <h4 class="ch-section">1.7.4 蒸馏损失</h4>
+
+  <p>对于需要实时推理的系统，蒸馏是将多步扩散压缩到少步的关键。<a href="digital-human-streaming-distillation.html">DMD（Distribution Matching Distillation）</a> 让学生生成器的分布直接匹配教师扩散模型的分布 #Yin-et-al.-2024-DMD#。DMD2 移除了初代 DMD 依赖的昂贵 LPIPS 回归损失，改用双时间尺度更新和 GAN 损失稳定训练，使学生不仅追平甚至超越了教师。</p>
+</div>
+
+<!-- ============================================================
+  Part 2: 5 条技术路线的 Loss 组合
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">5 条技术路线的系统级 Loss 分析</div>
+
+  <p>不同的技术路线因为架构设计不同，Loss 组合的哲学也截然不同。以下按路线逐一分析。</p>
+
+  <h3 class="section-title">2.1 GAN/Warping 路线：face vid2vid → LivePortrait</h3>
+
+  <p>这条路线的核心是"隐式关键点 + warping + GAN 生成"。face vid2vid #Wang-et-al.-2020# 奠定了 4 项基础损失：</p>
+
+  <div class="def-box">
+    <h3>face vid2vid 训练目标</h3>
+    $$\mathcal{L}_{fvid2vid} = \mathcal{L}_E + \mathcal{L}_L + \mathcal{L}_H + \mathcal{L}_\Delta + \mathcal{L}_{equiv} + \mathcal{L}_{recon}$$
+    <ul>
+      <li>$\mathcal{L}_E$：等变性损失——几何一致性</li>
+      <li>$\mathcal{L}_L$：关键点先验——关键点不飘出面部</li>
+      <li>$\mathcal{L}_H$：头部姿态——旋转预测精度</li>
+      <li>$\mathcal{L}_\Delta$：形变先验——形变场光滑性</li>
+      <li>$\mathcal{L}_{equiv}$：等变性约束（特征层面）</li>
+      <li>$\mathcal{L}_{recon}$：重建损失</li>
+    </ul>
+  </div>
+
+  <p>LivePortrait 在此基础上<strong>从 6 项扩展到 8 项</strong> #Guo-et-al.-2024#：</p>
+
+  $$\mathcal{L}_{base} = \underbrace{\mathcal{L}_E + \mathcal{L}_L + \mathcal{L}_H + \mathcal{L}_\Delta}_{\text{继承 face vid2vid}} + \underbrace{\mathcal{L}_{P,cascade}}_{\text{级联感知}} + \underbrace{\mathcal{L}_{G,cascade}}_{\text{级联 GAN}} + \underbrace{\mathcal{L}_{faceid}}_{\text{ArcFace 身份}} + \underbrace{\mathcal{L}_{guide}}_{\text{Wing Loss}}$$
+
+  <p>新增的 4 项损失各有明确目的：</p>
+  <ul>
+    <li><strong>级联感知损失 $\mathcal{L}_{P,cascade}$</strong>：在全局、面部、唇部三个区域分别施加 VGG 感知损失</li>
+    <li><strong>级联 GAN 损失 $\mathcal{L}_{G,cascade}$</strong>：三个从零训练的判别器分别负责三个区域</li>
+    <li><strong>ArcFace 身份损失 $\mathcal{L}_{faceid}$</strong>：保持源图像身份不漂移</li>
+    <li><strong>Wing Loss 引导损失 $\mathcal{L}_{guide}$</strong>：用 2D landmarks 约束隐式关键点，驱动微表情</li>
+  </ul>
+
+  <p>这个 8 项损失的组合是当前 GAN/Warping 路线中最复杂的。LivePortrait 的消融实验表明，去掉任何一项都会导致特定方面的质量下降——去掉 Wing Loss 微表情不生动，去掉级联 GAN 唇部纹理模糊，去掉 ArcFace 身份漂移 #Guo-et-al.-2024#。</p>
+
+  <h3 class="section-title">2.2 Lip-Sync 路线：Wav2Lip → MuseTalk</h3>
+
+  <p>这条路线的核心是"音频驱动局部嘴部生成"，Loss 设计围绕<strong>同步精度与视觉质量的平衡</strong>。</p>
+
+  <p>Wav2Lip 的 Loss 组合相对简洁 #Prajwal-et-al.-2020#：</p>
+
+  $$\mathcal{L}_{Wav2Lip} = \mathcal{L}_{sync} + \mathcal{L}_{adv} + \mathcal{L}_{recon} + \mathcal{L}_{perceptual}$$
+
+  <p>其中 $\mathcal{L}_{sync}$ 来自冻结的 SyncNet 判别器——这是整个系统的核心。Wav2Lip 的关键创新不是 Loss 函数本身，而是<strong>训练策略</strong>：先用 SyncNet 预训练唇形专家判别器，再在训练生成器时冻结判别器权重 #Prajwal-et-al.-2020#。</p>
+
+  <p>MuseTalk 继承了 Wav2Lip 的 Loss 结构，但首次系统性地分析了 Loss 冲突问题 #Zhang-et-al.-2024-MuseTalk#：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>训练目标</th><th>带来的好处</th><th>单独使用的风险</th><th>MuseTalk 的处理</th></tr></thead>
+      <tbody>
+        <tr><td>重建 / 感知损失</td><td>稳定、保身份、学基础纹理</td><td>牙齿与嘴角过度平滑</td><td>第一阶段，先训练 facial abstraction</td></tr>
+        <tr><td>SyncNet loss</td><td>嘴型跟音频同步</td><td>嘴部边界和牙齿变糊</td><td>第二阶段引入，用 DMS 避免偷看嘴型</td></tr>
+        <tr><td>GAN loss</td><td>提升清晰度和真实感</td><td>可能复制参考图嘴型，忽视音频</td><td>第二阶段引入 face/lip 两个判别器</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>MuseTalk 的核心贡献不是新增 Loss，而是揭示了"<strong>三个 Loss 之间不是天然兼容的</strong>"——直接联合优化会导致训练不稳定，SyncNet loss 难以收敛。解决方案是两阶段训练 + 采样策略切断捷径 #Zhang-et-al.-2024-MuseTalk#。</p>
+
+  <h3 class="section-title">2.3 3DMM 路线：SadTalker</h3>
+
+  <p>SadTalker 的 Loss 设计哲学是"<strong>模块化拆分</strong>"——把音频到视频的任务拆成三个子问题，各自用最合适的损失训练 #Zhang-et-al.-2023#：</p>
+
+  <div class="def-box">
+    <h3>SadTalker 分模块 Loss</h3>
+    <ul>
+      <li><strong>ExpNet（音频→表情系数）</strong>：表情系数回归损失 + 唇形同步判别器损失（借鉴 Wav2Lip 的冻结 SyncNet 思路）</li>
+      <li><strong>PoseVAE（音频→头姿序列）</strong>：条件 VAE 的 ELBO = 重构项 + KL 正则项</li>
+      <li><strong>Face Render（运动系数→图像）</strong>：自重演训练（同视频不同帧互相驱动），重建 + 感知损失</li>
+    </ul>
+  </div>
+
+  <p>SadTalker 的设计启示是：强相关（表情）、弱相关（头姿）、纯视觉（渲染）这三类子问题的最优监督信号不同——表情需要精确回归 + 同步约束，头姿需要生成式建模（多样性），渲染需要像素级一致性。把它们拆开训练比硬塞进一个端到端网络更容易收敛 #Zhang-et-al.-2023#。</p>
+
+  <h3 class="section-title">2.4 NeRF 路线：GeneFace</h3>
+
+  <p>GeneFace #Zielonka-et-al.-2023# 将 3DMM 运动预测与 NeRF 渲染结合。其 Loss 包含：</p>
+  <ul>
+    <li><strong>3DMM 运动预测损失</strong>：音频到 3DMM 系数的回归损失（类似 SadTalker 的 ExpNet）</li>
+    <li><strong>NeRF 渲染损失</strong>：光度重建损失（photometric loss），即渲染图像与真实图像的像素级 L1/L2</li>
+    <li><strong>同步损失</strong>：SyncNet 约束嘴部与音频对齐</li>
+    <li><strong>感知损失</strong>：VGG 特征空间距离</li>
+  </ul>
+
+  <p>NeRF 路线的特点是渲染损失替代了 GAN 损失——NeRF 的体积渲染天然提供密集的像素级监督，不需要判别器来推动纹理真实感。但 NeRF 的训练成本高（每个身份需要单独训练），且推理速度慢，这也是 GeneFace++ 改进实时性的动机 #Zielonka-et-al.-2023#。</p>
+
+  <h3 class="section-title">2.5 Diffusion 路线：Hallo → VASA-1 → EMO2</h3>
+
+  <p>扩散路线的 Loss 设计从"去噪分数匹配"出发，逐步加入更多条件控制。</p>
+
+  <p>Hallo 基于 Stable Diffusion 1.5 的 latent diffusion 体系，核心训练目标是标准的扩散去噪损失 #Xu-et-al.-2024-Hallo#。它的创新不在 Loss 函数本身，而在<strong>条件注入方式</strong>——Hierarchical Audio-Driven Visual Synthesis（HADVS）将音频条件分层注入 lip、expression、pose 三个区域，使不同面部区域各自接收音频驱动信号。</p>
+
+  <p>VASA-1 在扩散框架中引入了更多损失 #Li-et-al.-2024-VASA1#：</p>
+  <ul>
+    <li><strong>解耦一致性损失 $\mathcal{L}_{consist}$</strong>：通过交换潜在变量构建重构损失，防止头部姿态和面部动力学纠缠</li>
+    <li><strong>跨身份相似性损失 $\mathcal{L}_{cross\_id}$</strong>：将运动传输到不同身份后计算身份特征相似度</li>
+    <li><strong>去噪分数匹配</strong>：网络预测 $X_0$ 而非 $\epsilon$</li>
+    <li><strong>Classifier-Free Guidance</strong>：训练时随机丢弃条件，推理时应用引导</li>
+  </ul>
+
+  <p>EMO2 进一步扩展到全身生成，采用两阶段扩散：Stage 1 生成 MANO 手部运动，Stage 2 用 ReferenceNet 视频扩散补全身体 #Wang-et-al.-2025-EMO2#。每个阶段的 Loss 都是标准扩散去噪损失，但条件信号不同。</p>
+</div>
+
+<!-- ============================================================
+  Part 3: 训练策略
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">训练策略：分阶段、模块化、数据策略与 Loss 冲突</div>
+
+  <h3 class="section-title">3.1 分阶段训练</h3>
+
+  <p>分阶段训练是数字人领域最常见的策略。不同系统的分阶段动机不同：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>系统</th><th>阶段划分</th><th>动机</th></tr></thead>
+      <tbody>
+        <tr><td>LivePortrait</td><td>Stage I: 基础模型（8 项 Loss 联合优化）→ Stage II: 冻结基础模型，只训练 stitching/retargeting MLP</td><td>避免轻量控制模块被基础生成能力淹没</td></tr>
+        <tr><td>Wav2Lip</td><td>Stage I: 预训练 SyncNet 判别器 → Stage II: 冻结判别器训练生成器</td><td>保持判别器作为"客观裁判"</td></tr>
+        <tr><td>MuseTalk</td><td>Stage I: 重建 + 感知（学基础视觉） → Stage II: 加入 SyncNet + GAN（精细化同步和真实感）</td><td>解决 Loss 冲突——先建立基础能力再引入冲突目标</td></tr>
+        <tr><td>SadTalker</td><td>Stage I: ExpNet → Stage II: PoseVAE → Stage III: Face Render（各模块独立训练）</td><td>不同子问题用不同最优监督信号</td></tr>
+        <tr><td>Hallo</td><td>Stage I: 单帧生成（reference + target pairs） → Stage II: 音频驱动视频序列（训练 hierarchical cross-attention + temporal modules）</td><td>先学静态生成能力再学时序动态</td></tr>
+        <tr><td>VASA-1</td><td>Stage I: 解耦表示学习（encoder/decoder + 一致性损失） → Stage II: 扩散 Transformer 运动生成</td><td>先学解耦的面部潜在空间再学生成</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这些分阶段策略可以归纳为两种模式：<strong>能力递进式</strong>（MuseTalk, Hallo——先学基础再学精细）和<strong>模块独立式</strong>（SadTalker, VASA-1——各模块用不同 Loss 独立训练再组合）。LivePortrait 的两阶段是混合型：Stage I 是联合优化，Stage II 是模块冻结 + 轻量微调。</p>
+
+  <h3 class="section-title">3.2 模块化训练 vs 端到端</h3>
+
+  <p>模块化训练（SadTalker, VASA-1）的优势是每个模块可以用最合适的 Loss 和数据训练，调试方便——口型不准查 ExpNet，头动僵硬查 PoseVAE。但模块间的误差会累积：3DMM 系数预测不准会直接传播到渲染器。</p>
+
+  <p>端到端训练（Hallo, VASA-1 的扩散阶段）的优势是可以全局优化，但训练更难收敛，且定位问题更困难。VASA-1 的折中方案是"两阶段端到端"——Stage I 做解耦表示学习（模块化），Stage II 在解耦空间中做端到端扩散生成 #Li-et-al.-2024-VASA1#。</p>
+
+  <h3 class="section-title">3.3 数据策略</h3>
+
+  <p>LivePortrait 的<strong>混合图像-视频训练</strong>是一个值得单独提及的数据策略 #Guo-et-al.-2024#。仅在真实肖像视频上训练的模型对风格化肖像（如 anime）泛化差，而风格化肖像视频非常稀缺。LivePortrait 将单张图像视为一帧的视频片段参与训练，这种混合策略显著提升了泛化能力。</p>
+
+  <p>Wing Loss 论文提出了<strong>pose-based data balancing</strong> #Feng-et-al.-2018#——通过复制大姿态旋转的少数样本并注入随机扰动来平衡训练数据。这与 LivePortrait 的 cross-id motion 训练 stitching 模块异曲同工：都是通过故意增加训练难度来提升泛化。</p>
+
+  <h3 class="section-title">3.4 Loss 冲突与解决策略</h3>
+
+  <p>MuseTalk 对 Loss 冲突的分析是现有文献中最清晰的 #Zhang-et-al.-2024-MuseTalk#。三个核心 Loss 的冲突关系：</p>
+
+  <ul>
+    <li><strong>重建 vs GAN</strong>：重建损失倾向于平均化（模糊），GAN 推动真实感（锐利但可能不稳定）</li>
+    <li><strong>GAN vs SyncNet</strong>：GAN 可能让模型复制参考帧已有的嘴型（偷懒），SyncNet 要求嘴型必须对应音频</li>
+    <li><strong>SyncNet vs 重建</strong>：SyncNet 推动嘴部按音频变化，但边界可能变糊（重建损失的相反方向）</li>
+  </ul>
+
+  <p>解决策略总结：</p>
   <ol>
-    <li>第一项</li>
-    <li>第二项</li>
+    <li><strong>两阶段训练</strong>（MuseTalk）：先学基础视觉能力，再引入冲突目标</li>
+    <li><strong>冻结判别器</strong>（Wav2Lip）：保持 SyncNet 作为客观裁判不被生成伪影带偏</li>
+    <li><strong>数据侧切断捷径</strong>（MuseTalk IFS/DMS）：不让模型在训练时"偷看"参考帧的嘴型</li>
+    <li><strong>分层区域优化</strong>（LivePortrait cascade）：不同区域用不同判别器，避免全局优化互相干扰</li>
+    <li><strong>模块化拆分</strong>（SadTalker）：把冲突目标分到不同模块，各自独立训练</li>
   </ol>
-  <ul>
-    <li>列表项</li>
-  </ul>
-
-  <ul>
-    <li><strong>术语一</strong> :: 这是定义说明</li>
-    <li><em>带强调的术语</em> :: 定义内容</li>
-  </ul>
-
-  <pre><code class="language-python">
-def hello():
-    print("Hello, World!")
-  </code></pre>
 </div>
 
 <!-- ============================================================
-  数学公式 — 需要 frontmatter mathjax: true
+  Part 4: 跨系统 Loss 对比总表
   ============================================================ -->
-<!--
-  行内：$...$ 或 \(...\) → <span class="math-inline">...</span>
-  独立：优先用 $$...$$ 独占多行；也支持 \[...\]
-  引用：#key# → <cite>#key</cite>
-  必须：frontmatter 设置 mathjax: true
-  注意：不要把 display math 放进 <p>、<span>、<a>、表格属性或图片 alt 里；需要居中时让 MathJax 默认居中即可
-  注意：公式内 < 和 > 会被构建器转义；复杂括号优先用 \Bigl( ... \Bigr)，少用会与普通文本冲突的裸 HTML 符号
--->
-
 <div class="ch fade-in">
-  <div class="ch-label">公式渲染</div>
-  <div class="ch-title">LaTeX 数学公式</div>
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">跨系统 Loss 对比总表</div>
 
-  行内公式 $O(T\epsilon^2)$ 或 \(x\in\mathbb{R}^{d}\)，必须嵌入普通正文段落中。
+  <p>下表汇总了 12 个数字人系统的 Loss 使用情况。"✓"表示该系统使用了对应 Loss 族，括号内为具体形式。</p>
 
-$$
-\Theta \Bigl(\frac{K^4 d^5 B^6}{\epsilon^2}\Bigr)
-$$
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>系统</th><th>① 重建</th><th>② 感知</th><th>③ 对抗</th><th>④ 同步</th><th>⑤ 身份</th><th>⑥ 关键点/运动</th><th>⑦ 生成模型</th><th>阶段数</th></tr></thead>
+      <tbody>
+        <tr><td>face vid2vid</td><td>✓ (L1)</td><td>✓ (VGG)</td><td>—</td><td>—</td><td>—</td><td>✓ (Equiv, KP, Pose, Def)</td><td>—</td><td>1</td></tr>
+        <tr><td><a href="paper-liveportrait.html">LivePortrait</a></td><td>✓ (L1)</td><td>✓ (VGG cascade)</td><td>✓ (3×D cascade)</td><td>—</td><td>✓ (ArcFace)</td><td>✓ (Equiv, KP, Pose, Def, <strong>Wing</strong>)</td><td>—</td><td>2</td></tr>
+        <tr><td><a href="paper-wav2lip.html">Wav2Lip</a></td><td>✓ (L1)</td><td>✓ (VGG)</td><td>✓ (Visual D)</td><td>✓ (SyncNet frozen)</td><td>—</td><td>—</td><td>—</td><td>2</td></tr>
+        <tr><td><a href="paper-musetalk.html">MuseTalk</a></td><td>✓ (L1)</td><td>✓ (VGG)</td><td>✓ (Face+Lip D)</td><td>✓ (SyncNet)</td><td>—</td><td>—</td><td>—</td><td>2</td></tr>
+        <tr><td><a href="paper-sadtalker.html">SadTalker</a></td><td>✓ (3DMM)</td><td>—</td><td>—</td><td>✓ (SyncNet frozen)</td><td>—</td><td>✓ (3DMM residual)</td><td>✓ (VAE ELBO)</td><td>3</td></tr>
+        <tr><td><a href="paper-hallo.html">Hallo</a></td><td>—</td><td>—</td><td>—</td><td>—</td><td>✓ (Face enc)</td><td>—</td><td>✓ (Diffusion ε)</td><td>2</td></tr>
+        <tr><td><a href="paper-vasa1.html">VASA-1</a></td><td>✓ (L1 swap)</td><td>—</td><td>—</td><td>—</td><td>✓ (Cross-ID)</td><td>—</td><td>✓ (DSM + CFG)</td><td>2</td></tr>
+        <tr><td>GeneFace</td><td>✓ (Photometric)</td><td>✓ (VGG)</td><td>—</td><td>✓ (SyncNet)</td><td>—</td><td>✓ (3DMM)</td><td>—</td><td>2</td></tr>
+        <tr><td><a href="paper-emo2.html">EMO2</a></td><td>—</td><td>—</td><td>—</td><td>—</td><td>✓ (RefNet)</td><td>✓ (MANO kp)</td><td>✓ (Diffusion)</td><td>2</td></tr>
+        <tr><td>PerformRecast</td><td>✓</td><td>✓</td><td>✓</td><td>—</td><td>✓</td><td>✗ (显式丢弃)</td><td>—</td><td>1</td></tr>
+      </tbody>
+    </table>
+  </div>
 
-  也可以使用 display math：
-
-\[
-\mathcal{L}(\theta)=\mathbb{E}_{x\sim p_{\text{data}}}\bigl[-\log p_\theta(x)\bigr]
-\]
+  <div class="callout"><strong>趋势观察</strong>：从 face vid2vid 到 LivePortrait，Loss 项从 6 个增长到 8 个，反映出 GAN 路线的 Loss 越来越精细。但从 Hallo 和 VASA-1 开始，扩散路线的系统反而用更少的 Loss——扩散去噪目标本身已经足够强大，很多约束（如感知质量、身份保持）可以通过架构设计（ReferenceNet, face encoder）而非额外 Loss 来实现。PerformRecast 甚至显式丢弃了 4 项关键点约束损失，暗示着当架构足够好时，手工约束可以被简化。</div>
 </div>
 
 <!-- ============================================================
-  引用语法
+  Part 5: 设计模式与 Trade-offs
   ============================================================ -->
-<!--
-  #key# → <cite>#key</cite>
-  key 含空格 → 引用；无空格 → 行内公式
--->
-
 <div class="ch fade-in">
-  <div class="ch-label">引用标注</div>
-  <div class="ch-title">参考文献引用</div>
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">设计模式与 Trade-offs</div>
 
-  根据 #Hinton et al., 2015# 的开创性工作，知识蒸馏用软标签把教师模型的暗知识传给学生模型。#Hinton et al., 2015#
+  <h3 class="section-title">5.1 "冻结专家"模式</h3>
+
+  <p>Wav2Lip 和 SadTalker 都采用了"冻结预训练判别器"的模式。SyncNet 在大规模唇读数据上预训练后，训练生成器时权重不更新。这个模式的本质是<strong>用预训练模型提供稳定的梯度信号</strong>——如果判别器跟着生成器一起训练，它会被生成伪影"带偏"，失去客观裁判的角色。</p>
+
+  <h3 class="section-title">5.2 "级联区域"模式</h3>
+
+  <p>LivePortrait 的级联损失（全局 + 面部 + 唇部）是一个可复用的设计模式。核心思想是：<strong>不同面部区域的失败模式不同，需要独立的监督信号</strong>。唇部需要精确的牙齿和嘴角纹理，面部需要皮肤质感，全局需要背景一致性。这个模式可以推广到其他生成任务中。</p>
+
+  <h3 class="section-title">5.3 "先基础后冲突"模式</h3>
+
+  <p>MuseTalk 的两阶段训练揭示了一个通用原则：<strong>当多个 Loss 之间存在冲突时，先训练不冲突的子集建立基础能力，再引入冲突目标</strong>。这个原则不仅适用于 GAN + SyncNet 的冲突，也适用于其他多目标优化场景。</p>
+
+  <h3 class="section-title">5.4 "模块化拆分"模式</h3>
+
+  <p>SadTalker 的三模块独立训练（ExpNet + PoseVAE + Renderer）展示了"<strong>不同子问题用不同最优监督信号</strong>"的原则。强相关问题（表情）用确定性回归，弱相关问题（头姿）用生成式建模，纯视觉问题（渲染）用像素级一致性。这种拆分使训练更容易收敛和调试。</p>
+
+  <h3 class="section-title">5.5 "架构替代 Loss"模式</h3>
+
+  <p>VASA-1 和 Hallo 展示了一个趋势：<strong>当架构设计足够好时，某些 Loss 可以被简化或省略</strong>。VASA-1 用解耦表示学习（架构层面）替代了显式的身份保持 Loss 的一部分功能；Hallo 用 HADVS 的分层注意力（架构层面）替代了显式的区域级 Loss。PerformRecast 更进一步，直接丢弃了 4 项约束损失 #Liang-et-al.-2026#。</p>
+
+  <h3 class="section-title">5.6 Loss 数量 vs 训练复杂度的 Trade-off</h3>
+
+  <p>Loss 项越多，模型的表达能力越强，但训练复杂度也越高——需要调超参（权重配比）的维度增加，Loss 冲突的概率也增加。LivePortrait 的 8 项 Loss 是目前最复杂的组合，但论文没有给出完整的权重敏感性分析。相比之下，Hallo 只用扩散去噪损失 + 架构设计就达到了很好的效果，训练也更简单。</p>
+</div>
+
+<!-- ============================================================
+  Part 6: 开放问题
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">开放问题</div>
+
+  <ol>
+    <li><strong>Loss 权重的自动搜索</strong>：目前 Loss 权重几乎全靠手工调参。LivePortrait 的 8 项损失权重怎么配？Wav2Lip 的 4 项权重怎么配？缺乏系统性的自动搜索方法（如 Bayesian optimization 或 meta-learning）。</li>
+    <li><strong>Loss 冲突的自动检测</strong>：MuseTalk 手动分析了三个 Loss 的冲突关系，但更一般的问题是——给定一组 Loss，如何自动检测哪些 Loss 会冲突？梯度冲突检测（如 PCGrad #Yu-et-al.-2020#）是一个可能的方向，但在数字人领域的应用尚未被系统研究。</li>
+    <li><strong>扩散路线的 Loss 简化</strong>：扩散模型用去噪分数匹配一个目标就能训练，但生成质量高度依赖架构设计（ReferenceNet, HADVS, CFG）。哪些 GAN 路线中的 Loss（如身份保持、同步约束）可以"免费"被扩散架构吸收，哪些仍需显式约束？</li>
+    <li><strong>跨语言同步损失</strong>：SyncNet 在英语数据（LRS2）上训练，对中文、日语等语言的同步判断可能不准。是否需要为不同语言训练专门的 SyncNet？或者设计语言无关的同步损失？</li>
+    <li><strong>长时生成的 Loss 设计</strong>：现有 Loss 大多在短片段（几秒到几十秒）上评估。在长时生成（几分钟到几小时）中，身份漂移、表情冻结、运动重复等问题如何通过 Loss 设计来缓解？</li>
+    <li><strong>3DGS 路线的 Loss 标准化</strong>：3D Gaussian Splatting 在数字人中的应用日益增长，但 Loss 设计（渲染损失、感知损失、同步损失、平滑损失）尚未形成像 GAN 路线那样的共识组合。</li>
+    <li><strong>Wing Loss 的泛化</strong>：Wing Loss 目前主要用于关键点定位和微表情驱动。它是否适用于其他需要关注小误差的场景，如 gaze 估计、眨眼检测？最优超参（$w$, $\epsilon$）如何根据任务自动选择？</li>
+  </ol>
+</div>
+
+<!-- ============================================================
+  Sources
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
 
   <div class="sources">
     <h3>参考来源</h3>
     <ul>
-      <li data-cite-key="Hinton-et-al.-2015">Hinton, G. et al. (2015). Distilling the Knowledge in a Neural Network. <a href="https://arxiv.org/abs/1503.02531" target="_blank">arXiv:1503.02531</a></li>
-    </ul>
-  </div>
-</div>
-
-<!-- ============================================================
-  Shortcode 语法 {{< ... >}}
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Shortcode</div>
-  <div class="ch-title">Shortcode 语法</div>
-
-  普通高亮：==默认高亮文字==。
-
-  彩色高亮：{{< bg yellow >}}黄色高亮{{< /bg >}}、{{< bg red >}}红色高亮{{< /bg >}}、{{< bg blue >}}蓝色高亮{{< /bg >}}、{{< bg green >}}绿色高亮{{< /bg >}}、{{< bg purple >}}紫色高亮{{< /bg >}}。
-
-  {{< details summary="点击展开" openByDefault=true >}}
-  隐藏内容。details shortcode 必须成对出现，不要拆到多个 <p> 标签里。
-  {{< /details >}}
-
-  {{< bilibili BV1xxooXX1Xx >}}
-  {{< youtube dQw4w9WgXcQ "说明" >}}
-  {{< video "media/images/video/sample.mp4" >}}
-  {{< googleslides "https://docs.google.com/presentation/d/..." >}}
-</div>
-
-<!-- ============================================================
-  Code Tabs：同一内容的多种视图
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Code Tabs</div>
-  <div class="ch-title">流程图与算法伪代码</div>
-
-  <p>当 Mermaid 流程图和 Algorithm 伪代码描述同一过程时，优先放进同一个 <code>code-tabs</code> 区块，避免正文纵向堆叠过长。</p>
-
-  <div class="code-tabs">
-    <div class="code-tabs-header">
-      <button class="code-tab-btn active" data-tab="example-flow">流程图</button>
-      <button class="code-tab-btn" data-tab="example-algorithm">算法</button>
-    </div>
-    <div class="code-tab-content active" data-panel="example-flow">
-      {{< mermaid >}}
-      flowchart TD
-        A[输入] --> B[处理]
-        B --> C[输出]
-      {{< /mermaid >}}
-    </div>
-    <div class="code-tab-content" data-panel="example-algorithm">
-      <pre><code class="language-text">Algorithm: Example
-Input: x
-repeat
-  y = step(x)
-until convergence
-Output: y</code></pre>
-    </div>
-  </div>
-</div>
-
-<!-- ============================================================
-  Wiki 链接 [[...]]
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Wiki 链接</div>
-  <div class="ch-title">外链与站内引用</div>
-
-  <p>外部百科 / 论文 / 仓库链接：[[wiki.zh 日本历史]]、[[wiki Albert Einstein | 爱因斯坦]]、[[arxiv 2301.00001 abs | 论文]]、[[github pytorch/pytorch | PyTorch]]、[[google transformer architecture]]。</p>
-
-  <p>站内文章引用优先用标题：[[@ELF: Embedded Language Flows | ELF 论文]]；需要锚点跳转时用路径：[[posts.html | 返回文章列表]]。</p>
-</div>
-
-<!-- ============================================================
-  Mermaid 图表 — 完整类型见 blog-syntax/references/mermaid.md
-  ============================================================ -->
-
-<div class="ch fade-in">
-  <div class="ch-label">Mermaid</div>
-  <div class="ch-title">图表类型一览</div>
-
-  <p>本站支持流程图、思维导图、象限图、时间线、状态图、时序图、分支图等。<strong>硬性规则：节点/边标签含括号、斜杠、冒号、中英文混排时必须加引号</strong>，否则 Mermaid v11 运行时解析失败导致整图不渲染。完整类型与示例见 <code>blog-syntax/references/mermaid.md</code>。</p>
-
-  {{< mermaid >}}
-flowchart LR
-  A["输入"] --> B["处理"]
-  B --> C{"判断"}
-  C -->|"是"| D["输出"]
-  C -->|"否"| A
-  {{< /mermaid >}}
-
-  {{< mermaid >}}
-mindmap
-  root(("主题"))
-    分支一
-      "子节点 A"
-      "子节点 B"
-    分支二
-      "子节点 C"
-  {{< /mermaid >}}
-</div>
-
-<!-- 文章末尾：参考来源（如有引用必须带 data-cite-key） -->
-<div class="ch fade-in">
-  <div class="ch-label">References</div>
-  <div class="ch-title">写作规范小结</div>
-
-  <div class="review-box">
-    <h3>收尾检查清单</h3>
-    <ul>
-      <li><strong>图片路径</strong>：用 <code>media/images/&lt;slug&gt;/&lt;file&gt;</code>，禁止 <code>assets/media</code>。</li>
-      <li><strong>display math</strong>：不要包进 <code>&lt;p&gt;</code>，让 MathJax 默认居中。</li>
-      <li><strong>小节标题</strong>：正文小标题用 <code>&lt;h3 class="section-title"&gt;</code>。</li>
-      <li><strong>sources</strong>：每条参考来源必须带 <code>data-cite-key</code>。</li>
-      <li><strong>Mermaid</strong>：特殊字符标签加引号，shortcode 必须成对闭合。</li>
+      <li data-cite-key="Feng-et-al.-2018">Feng, Z.-H. et al. (2018). Wing Loss for Robust Facial Landmark Localisation with Convolutional Neural Networks. CVPR 2018. <a href="https://arxiv.org/abs/1711.06753" target="_blank">arXiv:1711.06753</a> · <a href="paper-liveportrait.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Wang-et-al.-2020">Wang, T.-C. et al. (2020). One-Shot Free-View Neural Talking-Head Synthesis for Video Portraits (face vid2vid). NeurIPS 2020. <a href="https://arxiv.org/abs/2011.15126" target="_blank">arXiv:2011.15126</a></li>
+      <li data-cite-key="Guo-et-al.-2024">Guo, J. et al. (2024). LivePortrait: Animate Every Face Quickly and Well with a Few Keypoints. arXiv 2024. <a href="https://arxiv.org/abs/2406.02880" target="_blank">arXiv:2406.02880</a> · <a href="paper-liveportrait.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Prajwal-et-al.-2020">Prajwal, K. et al. (2020). A Lip Sync Expert Is All You Need: Cascaded GANs for Rich Audio-to-Video Generation (Wav2Lip). ACM MM 2020. <a href="https://arxiv.org/abs/2008.10010" target="_blank">arXiv:2008.10010</a> · <a href="paper-wav2lip.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Zhang-et-al.-2023">Zhang, W. et al. (2023). SadTalker: Learning Realistic 3D Motion Coefficients for Stylized Audio-Driven Single Image Talking Face Animation. CVPR 2023. <a href="https://arxiv.org/abs/2211.12194" target="_blank">arXiv:2211.12194</a> · <a href="paper-sadtalker.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Zhang-et-al.-2024-MuseTalk">Zhang, Y. et al. (2024). MuseTalk: Real-Time High-Fidelity Video Dubbing via Spatio-Temporal Sampling. arXiv 2024. <a href="https://arxiv.org/abs/2501.01895" target="_blank">arXiv:2501.01895</a> · <a href="paper-musetalk.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Xu-et-al.-2024-Hallo">Xu, M. et al. (2024). Hallo: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation. arXiv 2024. <a href="https://arxiv.org/abs/2406.08801" target="_blank">arXiv:2406.08801</a> · <a href="paper-hallo.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Li-et-al.-2024-VASA1">Li, S. et al. (2024). VASA-1: Lifelike Audio-Driven Talking Faces Generated in Real Time. arXiv 2024 · <a href="paper-vasa1.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Zielonka-et-al.-2023">Zielonka, W. et al. (2023). GeneFace: Generalized and High-Fidelity Audio-Driven 3D Talking Face Synthesis. ICLR 2023. <a href="https://arxiv.org/abs/2301.13430" target="_blank">arXiv:2301.13430</a></li>
+      <li data-cite-key="Wang-et-al.-2025-EMO2">Wang, J. et al. (2025). EMO2: End-Effector Emotive Body Beyond Face. arXiv 2025 · <a href="paper-emo2.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Chung-et-al.-2016">Chung, J.S. & Zisserman, A. (2016). Out of time: automated lip sync in the wild. ACCV 2016 Workshop (SyncNet).</li>
+      <li data-cite-key="Deng-et-al.-2019">Deng, J. et al. (2019). ArcFace: Additive Angular Margin Loss for Deep Face Recognition. CVPR 2019.</li>
+      <li data-cite-key="Yin-et-al.-2024-DMD">Yin, T. et al. (2024). One-step Diffusion with Distribution Matching Distillation (DMD/DMD2). ICML 2024.</li>
+      <li data-cite-key="Liang-et-al.-2026">Liang, X. et al. (2026). PerformRecast: Expression and Head Pose Disentanglement for Portrait Video Editing. CVPR 2026. <a href="https://arxiv.org/abs/2603.19731" target="_blank">arXiv:2603.19731</a></li>
+      <li data-cite-key="Rakesh-et-al.-2025">Rakesh, V.K. et al. (2025). Advancing Talking Head Generation: A Comprehensive Survey of Multi-Modal Methodologies, Datasets, Evaluation Metrics, and Loss Functions. <a href="https://arxiv.org/abs/2507.02900" target="_blank">arXiv:2507.02900</a></li>
+      <li data-cite-key="Springer-THG-2025">Springer The Visual Computer (2025). Advancements in talking head generation: a comprehensive review. <a href="https://link.springer.com/article/10.1007/s00371-025-04232-w" target="_blank">DOI:10.1007/s00371-025-04232-w</a></li>
+      <li data-cite-key="Yu-et-al.-2020">Yu, T. et al. (2020). Gradient Surgery for Multi-Task Learning (PCGrad). NeurIPS 2020.</li>
+      <li data-cite-key="Liang-et-al.-2022">Liang, B. et al. (2022). Expressive Talking Head Generation with Granular Audio-Visual Control. CVPR 2022.</li>
     </ul>
   </div>
 </div>

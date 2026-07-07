@@ -3,7 +3,7 @@ title: "数字人论文精读（十三）：LivePortrait，用隐式关键点把
 description: "精读 LivePortrait：从 Face Vid2vid 到可控 stitching / retargeting 的工程化肖像动画框架"
 date: 2026-06-09T10:53:00
 created_at: 2026-06-09T10:53:00
-updated_at: 2026-07-07T09:55:00
+updated_at: 2026-07-07T17:30:00
 tags: [数字人, LivePortrait, Portrait Animation, 论文精读, Talking Head]
 aliases: ["categories/AI/数字人/数字人论文精读"]
 sub_id: 130
@@ -177,25 +177,49 @@ repos: ["https://github.com/KwaiVGI/LivePortrait"]
   <div class="ch-label">第四章</div>
   <div class="ch-title">Training Pipeline：两阶段训练，而不是端到端一次解决</div>
 
-  <p>LivePortrait 采用两阶段训练策略。Stage I 从零训练完整基础模型，Stage II 冻结基础参数只训练三个小 MLP。这种设计的动机是：<strong>基础模型负责「会动」，小 MLP 负责「贴得稳、眼嘴可控」</strong>——解耦后可以独立迭代控制能力而不重训基础模型。</p>
+  <p>LivePortrait 采用两阶段训练策略。Stage I 从零训练完整基础模型——appearance extractor $\mathcal{F}$、motion extractor $\mathcal{M}$、warping module $\mathcal{W}$、decoder $\mathcal{G}$ 全部可训练；Stage II 冻结这四个模块的所有参数，只训练 stitching 和两个 retargeting 的小 MLP。这种设计的动机是：<strong>基础模型负责「会动」，小 MLP 负责「贴得稳、眼嘴可控」</strong>——解耦后可以独立迭代控制能力而不重训基础模型 #Guo-et-al.-2024#。</p>
 
-  <h3 class="section-title">训练数据与处理</h3>
+  <h3 class="section-title">训练数据策展</h3>
 
-  <p>数据处理流程非常工程化：长视频切成 30 秒以内 clip → face tracking / recognition 保证单人 → KVQ 质量过滤 → 最终 69M 帧（18.9K 身份）+ 60K 风格化图像。混合图像-视频训练解决了风格化肖像视频稀缺的问题——将每张静态图视为一帧视频参与训练 #Guo-et-al.-2024#。</p>
+  <p>训练数据来源分为公开数据集和私有数据两部分。公开数据包括 VoxCeleb、MEAD、RAVDESS 以及风格化图像数据集 AAHQ。私有数据包括：4K 分辨率肖像视频（覆盖各种姿态和表情）、200 小时 talking head 视频、LightStage 数据集，以及若干风格化肖像视频和图像 #Guo-et-al.-2024#。</p>
 
-  <h3 class="section-title">Stage II 训练策略</h3>
+  <p>数据处理流程高度工程化，分为四个步骤：(1) 将长视频切分为不超过 30 秒的 clip；(2) 使用 face tracking 和 face recognition 确保每个 clip 只包含一个人；(3) 使用 KVQ 质量评估工具过滤低质量片段；(4) 最终从 <strong>92M 原始帧</strong>过滤到 <strong>69M 帧</strong>，来自约 <strong>18.9K 个身份</strong>和 <strong>60K 张静态风格化肖像</strong> #Guo-et-al.-2024#。这个过滤比例（92M→69M，淘汰约 25%）说明团队对数据质量的控制非常严格。</p>
 
-  <p>Stitching 模块训练时使用 cross-id motion 而非 same-id，故意增加训练难度。Stitching 的损失函数由一致性像素损失和 L1 正则组成：</p>
+  <p>混合图像-视频训练是数据策略的关键创新。仅在真实肖像视频上训练的模型对风格化肖像（如 anime）泛化差，而风格化肖像视频非常稀缺（仅约 1.3K clips，来自不到 100 个身份），但高质量风格化肖像<strong>图像</strong>较为丰富（约 60K 张，每张代表一个独特身份，提供多样化的身份信息）。论文将单张图像视为一帧的视频片段参与训练——这种「以图补视频」的策略显著提升了模型对风格化肖像的泛化能力 #Guo-et-al.-2024#。</p>
+
+  <h3 class="section-title">Stage I：基础模型从零训练</h3>
+
+  <p>第一阶段训练时，$\mathcal{F}$（appearance extractor，2D CNN + 金字塔池化）、$\mathcal{M}$（motion extractor，ConvNeXt-V2-Tiny 骨干）、$\mathcal{W}$（warping module）和 $\mathcal{G}$（SPADE decoder）全部从零开始训练 #Guo-et-al.-2024#。训练目标是 8 项级联损失的加权和：</p>
+
+  <div class="def-box">
+    <h3>Stage I 总训练目标</h3>
+    $$\mathcal{L}_{base} = \mathcal{L}_E + \mathcal{L}_L + \mathcal{L}_H + \mathcal{L}_\Delta + \mathcal{L}_{P,cascade} + \mathcal{L}_{G,cascade} + \mathcal{L}_{faceid} + \mathcal{L}_{guide}$$
+    <p>其中前四项继承自 face vid2vid：$\mathcal{L}_E$（关键点等变性）、$\mathcal{L}_L$（关键点先验）、$\mathcal{L}_H$（头部姿态）、$\mathcal{L}_\Delta$（形变先验）。后四项是 LivePortrait 新增的关键增强：</p>
+    <ul>
+      <li><strong>$\mathcal{L}_{P,cascade}$</strong>：在全局、面部、唇部三个区域分别施加的感知损失</li>
+      <li><strong>$\mathcal{L}_{G,cascade}$</strong>：由三个从零训练的判别器 $\mathcal{D}_{global}$、$\mathcal{D}_{face}$、$\mathcal{D}_{lip}$ 组成的级联 GAN 损失，face 和 lip 区域由 2D semantic landmarks 定义</li>
+      <li><strong>$\mathcal{L}_{faceid}$</strong>：使用 ArcFace #Deng-et-al.-2019# 提取身份嵌入，保持源图像身份</li>
+      <li><strong>$\mathcal{L}_{guide}$</strong>：landmark-guided 损失，用 N=10 个眼睛和嘴唇区域 2D landmarks + Wing loss 约束微表情</li>
+    </ul>
+  </div>
+
+  <p>这个级联设计——全局 + 面部 + 唇部三层判别——是 LivePortrait 表情和口型质量的关键。三层区域不是随意划分的：face 和 lip 的边界由 2D semantic landmarks 精确定义，确保局部纹理细节被对应的判别器精确优化。Stage I 在 8 块 NVIDIA A100 GPU 上训练约 10 天，batch size 设为 104，使用 Adam 优化器（lr=2×10⁻⁴, β₁=0.5, β₂=0.999），输入为 256×256 对齐裁剪，输出为 512×512 #Guo-et-al.-2024#。</p>
+
+  <h3 class="section-title">Stage II：冻结基础，训练控制模块</h3>
+
+  <p>第二阶段冻结 $\mathcal{F}$、$\mathcal{M}$、$\mathcal{W}$ 和 $\mathcal{G}$ 的所有参数，只训练三个轻量 MLP。论文的核心经验发现是：<strong>紧凑隐式关键点可以有效表示一种 implicit blendshapes</strong>——不像 3DMM blendshape 那样有显式语义维度，但可以通过小型 MLP 学到「眼睛更开一点」「嘴巴闭合一点」「肩部贴回源图」这样的局部 deformation offset #Guo-et-al.-2024#。Stage II 仅需约 2 天即可完成。</p>
+
+  <p>三个模块的训练各有巧思。<strong>Stitching 模块</strong>训练时故意使用 cross-id motion（而非 same-id motion），增加训练难度以提升跨身份 stitching 泛化——模型必须学会在「驱动运动来自另一个人」的情况下仍将肩部对齐到源图。Stitching 的损失函数由肩部一致性像素损失和 L1 正则组成：</p>
 
   $$\mathcal{L}_{st} = \underbrace{\Vert (I_{p,st} - I_{p,recon}) \odot (1 - M^{st}(I_s)) \Vert_1}_{\text{肩部一致性}} + w_{reg}^{st} \Vert \Delta_{st} \Vert_1$$
 
-  <p>其中 $M^{st}$ 是 mask 掉非肩部区域的算子，$I_{p,recon}$ 是自重建图像作为锚点。Eyes 和 lip retargeting 的损失结构类似，额外加入条件损失确保预测的 eyes-open / lip-open 与目标值一致 #Guo-et-al.-2024#：</p>
+  <p>其中 $M^{st}$ 是 mask 掉非肩部区域的算子，$I_{p,recon}$ 是自重建图像作为锚点——这确保 stitching 只修改肩部区域的 deformation，不影响面部表情和外观。<strong>Eyes 和 lip retargeting</strong> 的损失结构类似，额外加入条件损失确保预测的 eyes-open / lip-open 与目标值一致 #Guo-et-al.-2024#：</p>
 
   $$\mathcal{L}_{eyes} = \mathcal{L}_{eyes,const} + w_{cond}^{eyes} \Vert c^p_{s,eyes} - c_{d,eyes} \Vert_1 + w_{reg}^{eyes} \Vert \Delta_{eyes} \Vert_1$$
 
   $$\mathcal{L}_{lip} = \mathcal{L}_{lip,const} + w_{cond}^{lip} \Vert c^p_{s,lip} - c_{d,lip} \Vert_1 + w_{reg}^{lip} \Vert \Delta_{lip} \Vert_1$$
 
-  <p>其中 $c^p$ 是网络预测的 eyes-open / lip-open scalar，$c_d$ 是目标值，$w_{cond}$ 和 $w_{reg}$ 分别是条件损失和正则项的权重。</p>
+  <p>其中 $c^p$ 是网络预测的 eyes-open / lip-open scalar，$c_d$ 是目标值，$w_{cond}$ 和 $w_{reg}$ 分别是条件损失和正则项的权重。Eyes retargeting 的训练输入是源隐式关键点 $x_s$、源 eyes-open 条件元组 $c_{s,eyes}$ 和随机驱动 eyes-open scalar $c_{d,eyes} \in [0, 0.8]$；Lip retargeting 类似 #Guo-et-al.-2024#。</p>
 
   <div class="table-wrap wide">
     <table>
@@ -205,7 +229,10 @@ repos: ["https://github.com/KwaiVGI/LivePortrait"]
       <tbody>
         <tr><td>Stage I 硬件</td><td>已披露</td><td>8 NVIDIA A100 GPUs</td></tr>
         <tr><td>Stage I 时间</td><td>已披露</td><td>约 10 天，从零训练</td></tr>
+        <tr><td>Stage II 硬件</td><td>已披露</td><td>8 NVIDIA A100 GPUs（推测与 Stage I 一致）</td></tr>
         <tr><td>Stage II 时间</td><td>已披露</td><td>约 2 天，参数冻结仅训 MLP</td></tr>
+        <tr><td>Stage I 可训练模块</td><td>已披露</td><td>$\mathcal{F}$, $\mathcal{M}$, $\mathcal{W}$, $\mathcal{G}$（全部从零训练）</td></tr>
+        <tr><td>Stage II 冻结模块</td><td>已披露</td><td>$\mathcal{F}$, $\mathcal{M}$, $\mathcal{W}$, $\mathcal{G}$（全部冻结）</td></tr>
         <tr><td>输入 crop</td><td>已披露</td><td>256×256 aligned crop</td></tr>
         <tr><td>输出分辨率</td><td>已披露</td><td>512×512（PixelShuffle 上采样）</td></tr>
         <tr><td>Batch size</td><td>已披露</td><td>104（全局）</td></tr>
@@ -214,7 +241,11 @@ repos: ["https://github.com/KwaiVGI/LivePortrait"]
         <tr><td>Eyes retargeting MLP</td><td>已披露</td><td>6 层 [66, 256, 256, 128, 128, 64, 63]</td></tr>
         <tr><td>Lip retargeting MLP</td><td>已披露</td><td>4 层 [65, 128, 128, 64, 63]</td></tr>
         <tr><td>Landmark N</td><td>已披露</td><td>10（眼睛和嘴唇区域）</td></tr>
-        <tr><td>训练数据</td><td>部分披露</td><td>69M 帧 / 18.9K 身份，含私有 LightStage</td></tr>
+        <tr><td>判别器</td><td>已披露</td><td>3 个从零训练：$\mathcal{D}_{global}$, $\mathcal{D}_{face}$, $\mathcal{D}_{lip}$</td></tr>
+        <tr><td>训练数据</td><td>部分披露</td><td>69M 帧（92M 过滤后）/ 18.9K 身份，含私有 LightStage</td></tr>
+        <tr><td>训练数据来源</td><td>部分披露</td><td>公开：VoxCeleb, MEAD, RAVDESS, AAHQ；私有：4K 视频, 200h talking head, LightStage</td></tr>
+        <tr><td>Stitching 训练数据</td><td>已披露</td><td>cross-id motion（非 same-id），增加训练难度</td></tr>
+        <tr><td>Eyes 训练条件范围</td><td>已披露</td><td>$c_{d,eyes} \in [0, 0.8]$</td></tr>
         <tr><td>完整 loss 权重</td><td>未披露</td><td>$w_{reg}^{st}$ 等超参数未给出具体值</td></tr>
         <tr><td>学习率调度</td><td>未披露</td><td>原文未明确给出 schedule 类型及 warmup</td></tr>
         <tr><td>训练代码</td><td>未披露</td><td>官方 GitHub 仅提供推理代码和预训练权重</td></tr>
@@ -227,23 +258,80 @@ repos: ["https://github.com/KwaiVGI/LivePortrait"]
   <div class="ch-label">第五章</div>
   <div class="ch-title">Inference Pipeline：相对运动变换与模块组合</div>
 
-  <p>推理阶段，首先从源图像提取特征体 $f_s = \mathcal{F}(I_s)$ 和 canonical keypoints $x_{c,s} = \mathcal{M}(I_s)$。给定驱动视频，逐帧提取 motion 参数。核心是<strong>相对运动变换</strong>——以驱动视频第一帧为锚点，将绝对运动转为相对运动 #Guo-et-al.-2024#：</p>
+  <p>推理阶段，首先从源图像提取特征体 $f_s = \mathcal{F}(I_s)$ 和 canonical keypoints $x_{c,s} = \mathcal{M}(I_s)$。给定驱动视频序列 $\{I_{d,i} | i=0, \ldots, N-1\}$，逐帧提取 motion 参数 $s_{d,i}, \delta_{d,i}, t_{d,i}, R_{d,i} = \mathcal{M}(I_{d,i})$ 以及条件 $c_{d,eyes,i}$ 和 $c_{d,lip,i}$ #Guo-et-al.-2024#。核心是<strong>相对运动变换</strong>——以驱动视频第一帧为锚点，将绝对运动转为相对运动：</p>
 
   <div class="def-box">
     <h3>推理时的相对运动变换</h3>
     $$x_{d,i} = s_s \cdot \frac{s_{d,i}}{s_{d,0}} \cdot \big( x_{c,s}(R_{d,i}R_{d,0}^{-1}R_s) + (\delta_s + \delta_{d,i} - \delta_{d,0}) \big) + (t_s + t_{d,i} - t_{d,0})$$
-    <p>这个公式的关键设计：(a) 尺度部分 $s_s \cdot s_{d,i}/s_{d,0}$ 将驱动尺度归一化到源尺度；(b) 旋转部分 $R_{d,i}R_{d,0}^{-1}R_s$ 先消除驱动首帧的旋转偏移，再叠加源旋转；(c) 表情部分 $\delta_s + \delta_{d,i} - \delta_{d,0}$ 保留源表情基准，叠加驱动相对变化；(d) 平移部分 $t_s + t_{d,i} - t_{d,0}$ 同理。</p>
+    <p>这个公式的关键设计：(a) 尺度部分 $s_s \cdot s_{d,i}/s_{d,0}$ 将驱动尺度归一化到源尺度；(b) 旋转部分 $R_{d,i}R_{d,0}^{-1}R_s$ 先消除驱动首帧的旋转偏移，再叠加源旋转；(c) 表情部分 $\delta_s + \delta_{d,i} - \delta_{d,0}$ 保留源表情基准，叠加驱动相对变化；(d) 平移部分 $t_s + t_{d,i} - t_{d,0}$ 同理。注意官方代码中 $t_z$ 被强制置零（`t_new[..., 2].fill_(0)`），因为肖像动画在正交投影假设下运行，深度方向平移无意义 #LivePortrait-Code#。</p>
   </div>
 
-  <p>然后根据三个控制开关 $\alpha_{st}$、$\alpha_{eyes}$、$\alpha_{lip}$ 决定是否应用 stitching 和 retargeting 模块。最终预测图像 $I_{p,i} = \mathcal{D}(\mathcal{W}(f_s; x_s, x'_{d,i}))$。</p>
+  <h3 class="section-title">推理算法：三分支控制逻辑</h3>
 
-  <h3 class="section-title">官方代码的实际推理流程</h3>
+  <p>计算完相对运动变换后，根据三个控制开关 $\alpha_{st}$、$\alpha_{eyes}$、$\alpha_{lip}$（取值 0 或 1）决定如何组合 stitching 和 retargeting 模块。论文给出了 Algorithm 1 的三分支逻辑 #Guo-et-al.-2024#：</p>
 
-  <p>官方 GitHub README 声明仓库是论文的 official PyTorch implementation #LivePortrait-GitHub#。在推理代码中，默认配置为：`flag_relative_motion=True`、`flag_stitching=True`、`flag_pasteback=True`、`flag_normalize_lip=True`，而 `flag_eye_retargeting` 和 `flag_lip_retargeting` 默认关闭，可按需开启 #LivePortrait-Code#。</p>
+  <div class="def-box">
+    <h3>Algorithm 1：推理时的关键点更新</h3>
+    <p><strong>分支一</strong>（$\alpha_{st}=0, \alpha_{eyes}=0, \alpha_{lip}=0$）：不使用任何控制模块，$x'_{d,i} = x_{d,i}$。这是最简单的纯运动迁移模式。</p>
+    <p><strong>分支二</strong>（$\alpha_{st}=1, \alpha_{eyes}=0, \alpha_{lip}=0$）：仅启用 stitching，$\Delta_{st,i} = \mathcal{S}(x_s, x_{d,i})$，$x'_{d,i} = x_{d,i} + \Delta_{st,i}$。肩部被对齐到源图裁剪空间。</p>
+    <p><strong>分支三</strong>（$\alpha_{eyes}=1$ 或 $\alpha_{lip}=1$）：启用 retargeting，$\Delta_{eyes,i} = \mathcal{R}_{eyes}(x_s; c_{s,eyes}, c_{d,eyes,i})$，$\Delta_{lip,i} = \mathcal{R}_{lip}(x_s; c_{s,lip}, c_{d,lip,i})$，$x'_{d,i} = x_s + \alpha_{eyes} \Delta_{eyes,i} + \alpha_{lip} \Delta_{lip,i}$。注意此时以 $x_s$ 为基准而非 $x_{d,i}$。若同时 $\alpha_{st}=1$，再叠加 stitching：$x'_{d,i} \mathrel{+}= \Delta_{st,i}$。</p>
+  </div>
 
-  <p>官方代码还支持将驱动运动预提取为 <strong>.pkl motion template</strong>，可以缓存和复用——同一个 driving motion 可以重复用于不同源图，同时保护隐私（不需要传输驱动视频本身）#LivePortrait-GitHub#。</p>
+  <p>最终预测图像 $I_{p,i} = \mathcal{D}(\mathcal{W}(f_s; x_s, x'_{d,i}))$。关键点是 eyes 和 lip 的 deformation offsets 彼此解耦，可以线性叠加——即使两个 retargeting 模块独立训练 #Guo-et-al.-2024#。</p>
 
-  <div class="callout"><strong>工程启发</strong>：LivePortrait 的推理接口把「驱动运动」抽象成可缓存 template，同时把 crop、paste-back、stitching 放进默认路径——说明论文非常重视真实产品场景里的边界错位问题。</div>
+  <h3 class="section-title">推理硬件与性能</h3>
+
+  <p>论文报告的推理速度为 <strong>12.8 ms/帧</strong>（约 78 FPS），测试硬件为 <strong>单块 NVIDIA RTX 4090 GPU</strong>，使用<strong>原生 PyTorch 推理</strong>（无需 TensorRT 加速）#Guo-et-al.-2024#。官方推理代码默认启用 <strong>FP16 半精度</strong>（`flag_use_half_precision=True`），在保持生成质量的同时进一步降低显存占用和推理延迟 #LivePortrait-Code#。</p>
+
+  <p>输入分辨率为 256×256 的对齐裁剪（aligned crop），输出分辨率为 512×512（通过 PixelShuffle 上采样）。源图像最大边长限制为 1280 像素（`source_max_dim=1280`），确保 paste-back 到原始图像空间时不因分辨率过大而内存溢出 #LivePortrait-Code#。官方代码还支持 macOS Apple Silicon（MPS 后端），但速度约为 RTX 4090 的 1/20 #LivePortrait-GitHub#。</p>
+
+  <h3 class="section-title">官方代码的完整推理流程</h3>
+
+  <p>官方 GitHub 仓库是论文的 official PyTorch implementation #LivePortrait-GitHub#。通过分析 `live_portrait_pipeline.py` 的 `execute` 方法，完整的推理流程可分为五个阶段 #LivePortrait-Code#：</p>
+
+  <p><strong>(1) 加载源输入</strong>：支持源图像和源视频两种输入。源图像经过 face detection → crop → resize 到 256×256；源视频则逐帧处理。同时提取 source landmarks 用于后续的 eyes-open / lip-open 条件计算。</p>
+
+  <p><strong>(2) 处理驱动信息</strong>：驱动输入可以是视频文件或预提取的 motion template（.pkl 文件）。若是视频，先 crop 到 256×256，逐帧提取 motion 参数（scale、R、exp、t）和 eyes-open / lip-open 条件，序列化为 motion template 并缓存为 .pkl。这一步的工程价值在于：同一个 driving motion 可以<strong>缓存复用</strong>于不同源图，同时<strong>保护隐私</strong>——不需要传输驱动视频本身，只需传递抽象化的运动参数 #LivePortrait-GitHub#。</p>
+
+  <p><strong>(3) 准备 paste-back</strong>：当 `flag_pasteback=True` 且 `flag_stitching=True` 时，预先计算 paste-back 所需的 mask——将裁剪空间的生成结果映射回原始图像空间，用 mask 做边界融合，消除裁剪边界的硬切痕迹 #LivePortrait-Code#。</p>
+
+  <p><strong>(4) 逐帧动画</strong>：推理的核心循环。对每一帧驱动帧 $i$：(a) 缓存第一帧的 $R_{d,0}$ 和 motion 作为相对运动锚点；(b) 根据 `flag_relative_motion` 计算相对运动变换；(c) 根据 `driving_option` 选择驱动模式——`pose-friendly`（默认）以姿态为主，`expression-friendly` 以表情为主，后者通过 `motion_multiplier` 动态调整不同区域运动强度；(d) 根据 stitching / retargeting 开关执行 Algorithm 1 的三分支逻辑；(e) 调用 warping module $\mathcal{W}$ 和 decoder $\mathcal{G}$ 生成预测帧；(f) 若启用 paste-back，将生成结果映射回原始图像空间 #LivePortrait-Code#。</p>
+
+  <p><strong>(5) 后处理与输出</strong>：将生成帧序列编码为视频（默认 mp4，CRF=15，FPS=25），支持从源视频或驱动视频自动提取音频并合成到输出视频。最终输出两个文件：纯动画结果和「驱动帧 | 源帧 | 生成结果」三栏对比视频 #LivePortrait-Code#。</p>
+
+  <p>此外，代码还提供 <strong>`animation_region`</strong> 控制动画作用区域——`all`（全部）、`exp`（仅表情）、`pose`（仅姿态）、`lip`（仅嘴唇关键点）、`eyes`（仅眼部关键点），实现比论文更精细的区域控制。当源输入是视频时（v2v 模式），还支持 <strong>Kalman 平滑</strong>（`driving_smooth_observation_variance=3e-7`）减少逐帧 jitter #LivePortrait-Code#。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead>
+        <tr><th>推理配置项</th><th>默认值</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>推理硬件</td><td>RTX 4090</td><td>单 GPU，原生 PyTorch（无 TensorRT）</td></tr>
+        <tr><td>推理速度</td><td>12.8 ms/帧</td><td>约 78 FPS</td></tr>
+        <tr><td>半精度</td><td>FP16</td><td>flag_use_half_precision=True</td></tr>
+        <tr><td>输入分辨率</td><td>256×256</td><td>对齐裁剪（aligned crop）</td></tr>
+        <tr><td>输出分辨率</td><td>512×512</td><td>PixelShuffle 上采样</td></tr>
+        <tr><td>源图最大边长</td><td>1280 px</td><td>source_max_dim</td></tr>
+        <tr><td>相对运动</td><td>开启</td><td>flag_relative_motion=True</td></tr>
+        <tr><td>Stitching</td><td>开启</td><td>flag_stitching=True</td></tr>
+        <tr><td>Paste-back</td><td>开启</td><td>flag_pasteback=True</td></tr>
+        <tr><td>Lip 归一化</td><td>开启</td><td>flag_normalize_lip=True</td></tr>
+        <tr><td>Eyes retargeting</td><td>关闭</td><td>flag_eye_retargeting=False</td></tr>
+        <tr><td>Lip retargeting</td><td>关闭</td><td>flag_lip_retargeting=False</td></tr>
+        <tr><td>Driving option</td><td>pose-friendly</td><td>可选 expression-friendly</td></tr>
+        <tr><td>Animation region</td><td>all</td><td>可选 exp / pose / lip / eyes</td></tr>
+        <tr><td>Driving multiplier</td><td>1.0</td><td>运动强度缩放因子</td></tr>
+        <tr><td>平滑强度</td><td>3e-7</td><td>driving_smooth_observation_variance（v2v 模式）</td></tr>
+        <tr><td>输出 FPS</td><td>25</td><td>output_fps</td></tr>
+        <tr><td>视频 CRF</td><td>15</td><td>输出视频质量</td></tr>
+        <tr><td>Motion template</td><td>支持</td><td>.pkl 缓存，保护隐私</td></tr>
+        <tr><td>macOS Apple Silicon</td><td>支持</td><td>MPS 后端，约 RTX 4090 的 1/20</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>工程启发</strong>：LivePortrait 的推理接口把「驱动运动」抽象成可缓存 template，同时把 crop、paste-back、stitching 放进默认路径——说明论文非常重视真实产品场景里的边界错位问题。`driving_option` 和 `animation_region` 的设计则让推理接口具备「只动嘴不动头」「只动表情不动姿态」等精细控制能力，远超论文正文描述的简单 0/1 开关。</div>
 
   <h3 class="section-title">扩展应用</h3>
 

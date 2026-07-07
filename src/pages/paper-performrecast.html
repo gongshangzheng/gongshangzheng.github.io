@@ -1,0 +1,397 @@
+---
+title: "数字人论文精读（三十九）：PerformRecast，用 3DMM 解耦表情与头部姿态的肖像视频编辑"
+description: "PerformRecast 通过修改关键点变换公式使其一致于 FLAME 3DMM，实现表情与头部姿态的真正解耦，并引入边界对齐模块解决面部区域错位问题。"
+created_at: 2026-07-07T17:08:17
+updated_at: 2026-07-07T17:08:17
+tags: ["数字人", "肖像动画", "表情编辑", "3DMM", "FLAME"]
+aliases: ["categories/AI/数字人"]
+sub_id: 390
+hub: "digital-human-hub"
+papers: ["https://arxiv.org/abs/2603.19731"]
+repos: ["https://github.com/youku-aigc/PerformRecast"]
+notify: true
+mathjax: true
+hero_title: "PerformRecast"
+hero_sub: "CVPR 2026 · 虎鲸文娱"
+hero_tagline: "用 3DMM 解耦表情与头部姿态，让肖像视频编辑只动表情不动头"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">49</span><span class="label">显式 3D 关键点</span></div>
+  <div class="stat"><span class="num b">128</span><span class="label g">H20 GPU</span></div>
+  <div class="stat"><span class="num">597K</span><span class="label">训练视频</span></div>
+  <div class="stat"><span class="num b">6</span><span class="label l">FPS 推理</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：表情编辑——一个比肖像动画更难的问题</div>
+
+  在影视和动画工业中，一个常见的后期需求是：==只修改演员的面部表情，同时严格保持头部姿态、镜头运动、背景和身份不变==。这就是 PerformRecast 所定义的"表情-only 视频表演编辑"（expression-only portrait video performance editing）任务 #Liang et al., 2026#。
+
+  这个任务看似简单——不就是换张脸的表情吗？但它和主流的"肖像动画"（portrait animation）有着本质区别。肖像动画的目标是用一段驾驶视频驱动一张静态照片，生成新的动画视频；而表情编辑的目标是修改一段==已有视频==中演员的表情，保持其他一切不变。前者是"从静到动"，后者是"从动到动"——难度完全不同。
+
+  <div class="callout"><strong>核心矛盾</strong>：大多数现有方法（无论是 GAN 还是 Diffusion）都无法将"面部表情"和"头部姿态"真正解耦。当你想只改表情时，头部也跟着动了；当你想保持头部不动时，表情也跟着僵了。</div>
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/teaser.webp" alt="PerformRecast 效果展示" loading="lazy">
+    <div class="cap">图 1：PerformRecast 可以编辑源视频中演员的面部表情（上），也可以用驾驶视频动画化静态肖像（下）。（来源：PerformRecast, Fig. 1）</div>
+  </div>
+
+  PerformRecast 的核心洞察来自 3D Morphable Face Model（3DMM）：3DMM 天然地用独立参数分别表示身份（identity）、表情（expression）和头部姿态（head pose），实现了自然解耦 #Blanz and Vetter, 1999#。如果能让肖像动画模型的关键点变换与 3DMM 的前向过程一致，就能继承这种解耦能力。
+
+  为此，PerformRecast 做了三件事：①修改 LivePortrait 的关键点变换公式，使其与 FLAME 模型一致 #Li et al., 2017#；②用 Pixel3DMM 跟踪的显式 3D 关键点直接监督运动提取器 #Giebenhain et al., 2025#；③设计边界对齐模块（BAM）解决面部与非面部区域的错位问题。论文还构建了基于 MetaHuman 的测试 benchmark，并开源了全部代码和数据。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：LivePortrait 的解耦困境与 3DMM 的启示</div>
+
+  <h3 class="section-title">2.1 LivePortrait 的关键点变换公式</h3>
+
+  要理解 PerformRecast 的改进，我们需要先回到 LivePortrait #Guo et al., 2024# 的关键点变换公式。LivePortrait 的运动提取器从源帧和驾驶帧中预测以下参数：规范关键点 $x_c \in \mathbb{R}^{K \times 3}$、头部姿态 $R \in \mathbb{R}^{3 \times 3}$、表情形变 $\delta \in \mathbb{R}^{K \times 3}$、缩放因子 $s \in \mathbb{R}^3$ 和平移 $t \in \mathbb{R}^3$。源帧和驾驶帧的 3D 关键点通过以下公式变换：
+
+  $$
+  \left\{
+  \begin{array}{lr}
+  x_{s} = s_s \cdot (x_{c,s} R_{s} + \delta_{s}) + t_{s}, & \\
+  x_{d} = s_d \cdot (x_{c,s} R_{d} + \delta_{d}) + t_{d}. &
+  \end{array}
+  \right.
+  $$
+
+  注意这里的运算顺序：==先乘 $R$，再加 $\delta$==。这意味着表情形变 $\delta$ 是在头部姿态旋转之后才叠加的——$\delta$ 中不可避免地会混入头部姿态的信息，因为旋转操作会改变表情形变在 3D 空间中的基准方向。
+
+  <h3 class="section-title">2.2 FLAME 模型的前向过程</h3>
+
+  作为对比，我们来看 FLAME #Li et al., 2017#——一个广泛使用的 3DMM 模型——的前向过程：
+
+  $$
+  \begin{split}
+  & M(\beta, \theta, \psi) = W(T_P(\beta, \theta, \psi), \mathbf{J}(\beta), \theta, \mathcal{W}), \\
+  & T_P(\beta, \theta, \psi) = \mathbf{T} + B_S(\beta;\mathcal{S}) + B_P(\theta; \mathcal{P}) + B_E(\psi;\mathcal{E}).
+  \end{split}
+  $$
+
+  在 FLAME 中，模板网格 $\mathbf{T}$ 先加上身份形变 $B_S(\beta)$ 和表情混合形状 $B_E(\psi)$，==然后==再施加头部姿态旋转 $\theta$。也就是说，表情参数 $\psi$ 和姿态参数 $\theta$ 在数学上是完全独立的——先塑形再旋转。
+
+  <div class="callout"><strong>关键差异</strong>：LivePortrait 是"先旋转再加表情"（$x_c \cdot R + \delta$），FLAME 是"先加表情再旋转"（$(T + B_E) \cdot \theta$）。运算顺序的差异导致 LivePortrait 的表情参数无法与头部姿态真正解耦。</div>
+
+  <h3 class="section-title">2.3 问题的本质</h3>
+
+  这不仅仅是一个数学细节。在实际效果上，当 LivePortrait 尝试只替换表情而保持头部姿态时（即表情编辑任务），由于 $\delta$ 中混入了姿态信息，模型无法精确控制表情变化——生成的视频中头部会跟着表情一起动。此外，LivePortrait 的隐式关键点缺乏明确的物理意义和直接监督，运动提取器的精度受限。
+
+  PerformRecast 的思路非常清晰：如果关键点变换公式和 3DMM 一致，那么 3DMM 的自然解耦能力就能被继承到 warping-based 肖像动画框架中。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：从公式修改到边界对齐</div>
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/ljd_method.webp" alt="PerformRecast 框架总览" loading="lazy">
+    <div class="cap">图 2：PerformRecast 框架总览。运动提取器提取规范关键点、头部姿态、表情形变等参数，通过改进的关键点变换公式与 Pixel3DMM 跟踪结果计算 FLAME Loss，最终通过 warping 模块和解码器重建驾驶帧。（来源：PerformRecast, Fig. 2）</div>
+  </div>
+
+  PerformRecast 建立在 LivePortrait 的框架之上，包含外观特征提取器 $\mathcal{F}$（基于 DINOv2 #Oquab et al., 2023# backbone）、运动提取器 $\mathcal{M}$（ConvNeXt-V2-Tiny #Woo et al., 2023#）、warping 模块 $\mathcal{W}$ 和 SPADE 解码器 $\mathcal{G}$ #Park et al., 2019#。核心改动在三个方面。
+
+  <h3 class="section-title">3.1 FLAME 一致的关键点变换公式</h3>
+
+  PerformRecast 将关键点变换公式修改为：
+
+  $$
+  \left\{
+  \begin{array}{lr}
+  x_{s} = s_s \cdot \big((x_{c,s} + \delta_{s}) R_s \big) + t_{s}, & \\
+  x_{d} = s_d \cdot \big((x_{c,s} + \delta_{d}) R_d \big) + t_{d}. &
+  \end{array}
+  \right.
+  $$
+
+  ==现在是先加 $\delta$ 再乘 $R$==，与 FLAME 的前向过程一致。这样修改后，表情形变 $\delta$ 在规范空间中定义，不包含头部姿态的信息——旋转操作统一施加在已经塑形完毕的关键点上，实现了表情和姿态的数学解耦。
+
+  <h3 class="section-title">3.2 FLAME Loss：三组显式 3D 关键点</h3>
+
+  修改公式只是第一步。为了让运动提取器学到准确的、有物理意义的关键点，PerformRecast 使用 Pixel3DMM #Giebenhain et al., 2025# 从输入视频中提取 FLAME 参数，然后在 FLAME 网格顶点上选取 $K=49$ 个显式 3D 关键点直接监督。
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/keypoints.webp" alt="49 个显式关键点位置" loading="lazy">
+    <div class="cap">图 3：49 个显式 3D 关键点在 FLAME 网格上的位置，覆盖前额、眉毛、眼眶、眼球、鼻子、嘴唇和下颌等关键区域。（来源：PerformRecast, Fig. 4）</div>
+  </div>
+
+  关键的设计在于三组关键点的构造：
+
+  <ul>
+    <li><strong>$V_c$（规范关键点）</strong> :: 从规范 FLAME 网格 $T_c$ 提取，只含身份形变，姿态和表情都设为零。用于监督 $x_c$。</li>
+    <li><strong>$V_{\text{exp}}$（表情关键点）</strong> :: 从 $T_{\text{exp}}$ 提取，在 $T_c$ 基础上加入表情混合形状和下颌/眼球关节旋转，但颈部和全局头部姿态保持为零。用于监督 $x_c + \delta$。</li>
+    <li><strong>$V_{\text{kp}}$（完整关键点）</strong> :: 从所有 FLAME 参数启用的完整网格 $T_{\text{kp}}$ 提取。用于监督 $x_s$ / $x_d$。</li>
+  </ul>
+
+  FLAME Loss 使用 Wing Loss #Feng et al., 2018# 计算三组关键点与对应变换结果的距离：
+
+  $$
+  \begin{align}
+  \mathcal{L}_{\text{FLAME}} = {} &
+  \text{Wing}(x_{c,s}, V_{c,s}) + \text{Wing}(x_{c,d}, V_{c,d}) \notag \\
+  + & ~ \text{Wing}(x_{c,s} + \delta, V_{\text{exp}, s}) + \text{Wing}(x_{c,d} + \delta, V_{\text{exp}, d})
+  \notag \\
+  + & ~ \text{Wing}(x_s, V_{\text{kp}, s}) + \text{Wing}(x_{d, \text{self}}, V_{\text{kp}, d}).
+  \end{align}
+  $$
+
+  <div class="callout"><strong>设计直觉</strong>：$V_c$ 监督"这个人的脸长什么样"，$V_{\text{exp}}$ 监督"加上表情后脸变成什么样"，$V_{\text{kp}}$ 监督"加上表情和姿态后关键点在哪里"。三层递进，每一层只引入一个新的变量，避免多变量混叠。</div>
+
+  <h3 class="section-title">3.3 丢弃四项辅助损失</h3>
+
+  FLAME Loss 提供了远比 LivePortrait 原有损失更强的监督信号。因此，PerformRecast ==丢弃了 LivePortrait 的四项辅助损失==：隐式关键点等变性损失（equivariance loss）、关键点先验损失（keypoint prior loss）、形变先验损失（deformation prior loss）和头部姿态损失（head pose loss）。
+
+  这是一个大胆的设计——LivePortrait 依赖这些损失来约束隐式关键点的学习，而 PerformRecast 用显式 3D 关键点监督替代了它们。此外，由于更好的解耦，PerformRecast ==不需要 LivePortrait 的第二阶段训练==（stitching 和 retargeting 模块），简化了训练流程。
+
+  <h3 class="section-title">3.4 边界对齐模块（BAM）</h3>
+
+  表情编辑任务有一个独特的问题：当只替换表情而保持头部姿态时，warping 模块生成的关键点运动场会影响面部边界以外的区域，导致面部与非面部区域之间出现错位（misalignment）。
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/teacher-student.webp" alt="边界对齐模块" loading="lazy">
+    <div class="cap">图 4：上：边界对齐模块通过 Teacher-Student 架构分离面部/非面部区域监督。下：有无 BAM 的对比，红色虚线圈标出了错位区域。（来源：PerformRecast, Fig. 3）</div>
+  </div>
+
+  BAM 采用 Teacher-Student 架构解决这一问题。==Teacher 模型== $M_t$ 用完整的动画损失训练，虽然全局结果有错位，但面部区域的表情合成是精确的。==Student 模型== $M_s$ 同时学习两个任务：①用 Teacher 的面部替换结果 $\hat{I}_s^t$ 监督面部区域；②用原始动画损失监督驾驶帧重建。
+
+  对于面部区域，计算感知损失 $\mathcal{L}_{P, \text{facial}}$ 和 $L_1$ 损失 $\mathcal{L}_{1,\text{facial}}$（Student vs Teacher）；对于非面部区域，计算 $\mathcal{L}_{P, \text{non-facial}}$ 和 $\mathcal{L}_{1,\text{non-facial}}$（Student vs 源帧 ground truth）。这种分区监督确保面部区域的表情编辑精度和非面部区域的稳定性都能得到保证。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：Teacher-Student 两阶段训练</div>
+
+  <h3 class="section-title">4.1 训练损失</h3>
+
+  PerformRecast 的整体训练损失为：
+
+  $$
+  \mathcal{L}_\text{animate} = \mathcal{L}_\text{FLAME} + \mathcal{L}_{P,\text{cascade}} + \mathcal{L}_{1,\text{cascade}} + \mathcal{L}_{G, \text{cascade}} + \mathcal{L}_\text{faceid}.
+  $$
+
+  其中级联感知损失 $\mathcal{L}_{P,\text{cascade}}$、级联 $L_1$ 损失 $\mathcal{L}_{1,\text{cascade}}$ 和级联 GAN 损失 $\mathcal{L}_{G,\text{cascade}}$ 分别在全局、面部和嘴唇三个区域上计算。GAN 损失使用三个从零训练的判别器：全局判别器 $\mathcal{D}_\text{global}$、面部判别器 $\mathcal{D}_\text{face}$ 和嘴唇判别器 $\mathcal{D}_\text{lip}$。Face-ID 损失使用 ArcFace #Deng et al., 2019# 提取的身份特征保持源帧身份。
+
+  Teacher 模型直接用 $\mathcal{L}_\text{animate}$ 训练。Student 模型在 $\mathcal{L}_\text{animate}$ 之外，额外加入 BAM 的分区损失 $\mathcal{L}_\text{facial}$ 和 $\mathcal{L}_\text{non-facial}$。
+
+  <h3 class="section-title">4.2 训练配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>值</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>训练硬件</td><td>128 × NVIDIA H20 GPU</td><td>论文披露</td></tr>
+        <tr><td>训练时长</td><td>约 1 周</td><td>论文披露</td></tr>
+        <tr><td>Batch size</td><td>8 per GPU</td><td>论文披露</td></tr>
+        <tr><td>优化器</td><td>Adam</td><td>论文披露</td></tr>
+        <tr><td>外观提取器学习率</td><td>$5 \times 10^{-5}$</td><td>论文披露</td></tr>
+        <tr><td>运动提取器/Warping/Decoder 学习率</td><td>$1.2 \times 10^{-4}$</td><td>论文披露</td></tr>
+        <tr><td>全局判别器学习率</td><td>$1 \times 10^{-4}$</td><td>论文披露</td></tr>
+        <tr><td>面部判别器学习率</td><td>$2.5 \times 10^{-5}$</td><td>论文披露</td></tr>
+        <tr><td>嘴唇判别器学习率</td><td>$1.5 \times 10^{-5}$</td><td>论文披露</td></tr>
+        <tr><td>学习率调度</td><td>—</td><td>未披露</td></tr>
+        <tr><td>Checkpoint 选择策略</td><td>—</td><td>未披露</td></tr>
+        <tr><td>训练数据</td><td>VFHQ + MEAD + Nersemble + FEED + ETH-XGaze + 网络视频，共 597,331 clips</td><td>论文披露</td></tr>
+        <tr><td>输入/输出分辨率</td><td>$512 \times 512$</td><td>论文披露</td></tr>
+        <tr><td>关键点数 $K$</td><td>49</td><td>论文披露</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      训练鲁棒性技巧
+    </div>
+    <div class="admonition-content"><p>作者在训练时对提取的关键点 $x_s$ 和 $x_d$ 添加小方差高斯噪声，以提高模型对关键点波动的鲁棒性。推理时不加噪声。此外，还额外计算 $x_{d,\text{self}} = s_d \cdot ((x_{c,d} + \delta_d) R_d) + t_d$ 加速训练——这个额外的自驱动关键点用 FLAME Loss 的第三项监督，让运动提取器同时从 source 和 driving 两个方向学习。</p></div>
+  </div>
+
+  <h3 class="section-title">4.3 面部/非面部区域 mask 计算</h3>
+
+  BAM 需要面部区域的 mask 来分区计算损失。PerformRecast 使用 LivePortrait 中预训练的 2D 面部 landmark 检测器提取每帧的 203 个 landmark，然后将源帧的 landmark 向外扩展并计算凸包作为面部区域，其余区域为非面部区域。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：Replacement 与 Enhancement 双模式</div>
+
+  PerformRecast 提供两种推理模式，分别适用于不同的后期制作场景。
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/two_infer_modes.webp" alt="两种推理模式的使用场景" loading="lazy">
+    <div class="cap">图 5：Replacement 模式（上）直接用驾驶视频替换源视频的表情；Enhancement 模式（下）在源视频已有表情上叠加驾驶视频的表情增量。（来源：PerformRecast, Fig. 5）</div>
+  </div>
+
+  <h3 class="section-title">5.1 Replacement 模式</h3>
+
+  Replacement 模式直接用驾驶视频第 $i$ 帧的表情替换源视频第 $i$ 帧的表情，保持源帧的其他所有参数不变：
+
+  $$
+  \left\{
+  \begin{array}{lr}
+  x_{s} = s_s \cdot \big((x_{c,s} + \delta_{s}) R_s \big) + t_{s}, & \\
+  x_{d} = s_s \cdot \big((x_{c,s} + \delta_{d}) R_s \big) + t_{s}. &
+  \end{array}
+  \right.
+  $$
+
+  注意第二行：缩放 $s_s$、姿态 $R_s$ 和平移 $t_s$ 都来自源帧，==只有表情形变 $\delta_d$ 来自驾驶帧==。这实现了纯粹的"只换表情"。适用场景：演员整体表演到位，但某个镜头的表情不够到位，需要替换为另一段表演。
+
+  <h3 class="section-title">5.2 Enhancement 模式</h3>
+
+  Enhancement 模式在源视频已有表情的基础上叠加驾驶视频的表情增量：
+
+  $$
+  \left\{
+  \begin{array}{lr}
+  x_{s,i} = s_{s,i} \cdot \big((x_{c,s} + \delta_{s,i}) R_{s,i} \big) + t_{s,i}, & \\
+  x_{d,i} = s_{s,i} \cdot \big((x_{c,s} + \delta_{s,i} + \delta_{d,i} - \delta_{d,0}) R_{s,i} \big) + t_{s,i}. &
+  \end{array}
+  \right.
+  $$
+
+  关键在于 $\delta_{s,i} + \delta_{d,i} - \delta_{d,0}$：用驾驶视频第 $i$ 帧相对于第 0 帧的表情变化量 $\delta_{d,i} - \delta_{d,0}$，叠加到源视频第 $i$ 帧的原始表情 $\delta_{s,i}$ 上。适用场景：源视频的表演基本可用，只需在某些时刻增强表情强度。
+
+  <h3 class="section-title">5.3 Portrait Animation 推理</h3>
+
+  对于传统的肖像动画任务（同时迁移表情和姿态），推理时使用与训练相同的关键点变换公式——驾驶帧的 $s_d$、$R_d$、$\delta_d$ 和 $t_d$ 全部来自驾驶帧，外观特征 $f_s = \mathcal{F}(I_s)$ 来自源帧。
+
+  <div class="callout"><strong>推理效率</strong>：PerformRecast 在消费级 GPU 上达到 6 FPS，显著降低了实际部署的复杂度。对比之下，扩散方法通常需要多步去噪，推理时间要长得多。</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <h3 class="section-title">6.1 MetaHuman 测试 Benchmark</h3>
+
+  为了精确评估表情编辑能力，PerformRecast 构建了一个基于 MetaHuman 的测试 benchmark。具体流程：从 18 段专业面部动作演员的表演视频中提取表情参数，选取 20 个 MetaHuman 数字人，每个数字人渲染 19 段视频（18 段带表情 + 1 段无表情），所有视频添加预定义的头部姿态旋转。原始分辨率 $2560 \times 1440$，裁剪并缩放到 $512 \times 512$，每段 150 帧，30 FPS。
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/benchmark.webp" alt="Benchmark 构建流程" loading="lazy">
+    <div class="cap">图 6：MetaHuman 测试 benchmark 的构建流程。从输入视频提取表情和姿态参数，组合后驱动数字人生成测试视频。（来源：PerformRecast, Fig. 7）</div>
+  </div>
+
+  <h3 class="section-title">6.2 表情编辑主实验</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR↑</th><th>SSIM↑</th><th>LPIPS↓</th><th>CSIM↑</th><th>MAE(°)↓</th><th>AED↓</th><th>APD↓</th><th>FID↓</th><th>FVD↓</th></tr></thead>
+      <tbody>
+        <tr><td>SkyReels-A1</td><td>24.91</td><td>0.859</td><td>0.162</td><td>0.716</td><td>13.08</td><td>0.716</td><td>0.016</td><td>50.20</td><td>1249.70</td></tr>
+        <tr><td>Hunyuan-Portrait</td><td>22.43</td><td>0.792</td><td>0.169</td><td>0.736</td><td>10.40</td><td>0.661</td><td>0.035</td><td>38.60</td><td>1925.07</td></tr>
+        <tr><td>FantasyPortrait</td><td>23.95</td><td>0.820</td><td>0.188</td><td>0.734</td><td>16.78</td><td>0.795</td><td>0.017</td><td>60.44</td><td>606.63</td></tr>
+        <tr><td>Wan-Animate</td><td>22.82</td><td>0.802</td><td>0.132</td><td>0.614</td><td>11.97</td><td>0.700</td><td>0.024</td><td>28.10</td><td>849.22</td></tr>
+        <tr><td>Act-Two</td><td>20.83</td><td>0.791</td><td>0.163</td><td>0.682</td><td>15.96</td><td>0.790</td><td>0.072</td><td>36.19</td><td>322.07</td></tr>
+        <tr><td>LivePortrait</td><td>27.73</td><td>0.899</td><td>0.059</td><td>0.749</td><td>10.47</td><td>0.610</td><td>0.016</td><td>14.36</td><td>165.10</td></tr>
+        <tr><td><strong>PerformRecast</strong></td><td><strong>29.27</strong></td><td><strong>0.914</strong></td><td><strong>0.047</strong></td><td><strong>0.761</strong></td><td><strong>9.12</strong></td><td><strong>0.499</strong></td><td><strong>0.012</strong></td><td><strong>12.01</strong></td><td><strong>102.99</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>（Replacement 模式，数据来自论文 Table 1）</p>
+
+  <div class="callout"><strong>关键发现</strong>：PerformRecast 在表情编辑的==所有指标==上全面领先。PSNR 达到 29.27（比 LivePortrait 高 1.54），FID 降至 12.01（比 LivePortrait 低 2.35），FVD 降至 102.99（比 LivePortrait 低 62.11）。扩散方法即使经过修改也无法有效完成表情编辑——它们的 FID 普遍在 28-60 之间，远高于 GAN 方法。</div>
+
+  <h3 class="section-title">6.3 Portrait Animation 主实验</h3>
+
+  在传统肖像动画任务上，PerformRecast 同样表现出色。在 VFHQ 测试集的 self-reenactment 上，PerformRecast 在 SSIM（0.790）、LPIPS（0.159）、CSIM（0.843）、MAE（5.00°）、AED（0.261）等指标上取得最优，仅在 PSNR 上略低于 LivePortrait（22.71 vs 22.88）。在 MEAD 数据集上更是全面领先，PSNR 达到 33.72（LivePortrait 为 32.91）。
+
+  <h3 class="section-title">6.4 消融实验</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>PSNR↑</th><th>FID↓</th><th>FVD↓</th><th>关键发现</th></tr></thead>
+      <tbody>
+        <tr><td>完整模型</td><td>29.27</td><td>12.01</td><td>102.99</td><td>—</td></tr>
+        <tr><td>w/ LP 关键点变换</td><td>27.06</td><td>27.68</td><td>288.84</td><td>PSNR -2.21，FID 翻倍</td></tr>
+        <tr><td>w/o FLAME Loss</td><td>24.99</td><td>18.40</td><td>188.11</td><td>PSNR -4.29，==掉点最多==</td></tr>
+        <tr><td>w/o BAM</td><td>27.73</td><td>14.41</td><td>136.41</td><td>PSNR -1.54，FID +2.40</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>消融发现</strong>：FLAME Loss 是最重要的组件——去掉后 PSNR 下降 4.29，FID 从 12.01 飙升到 18.40。关键点变换公式的修改也很关键——用回 LivePortrait 的公式后 FID 翻倍。BAM 的贡献主要体现在像素级指标和视觉质量上。</div>
+
+  <h3 class="section-title">6.5 失败案例</h3>
+
+  <div class="photo">
+    <img src="media/images/paper-performrecast/limitation.webp" alt="失败案例：闭嘴时生成牙齿" loading="lazy">
+    <div class="cap">图 7：典型失败案例。当源视频闭嘴但驾驶视频张嘴时，生成的牙齿区域模糊。（来源：PerformRecast, Fig. 10）</div>
+  </div>
+
+  当源视频中嘴巴闭合而驾驶视频需要张嘴时，PerformRecast 在牙齿区域产生模糊结果。这是因为 GAN 模型的生成能力有限——它无法像扩散模型那样"想象"并合成训练分布外的未见内容。作者表示未来计划将 3DMM 的解耦能力与扩散模型的生成能力结合。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：GAN warping 路线的解耦新范式</div>
+
+  <h3 class="section-title">7.1 技术定位</h3>
+
+  PerformRecast 的核心贡献不在于提出新的网络架构，而在于==用 3DMM 的数学结构约束 warping-based 方法的运动表示==。这是一个重要的范式转变：此前 warping-based 方法（Face Vid2vid、LivePortrait）依赖隐式关键点和各种辅助损失来约束运动学习，而 PerformRecast 证明了——如果关键点变换公式与 3DMM 一致，并用显式 3D 关键点监督，就可以丢弃大部分辅助损失，同时获得更好的解耦能力。
+
+  <h3 class="section-title">7.2 与扩散方法的对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>PerformRecast (GAN warping)</th><th>Diffusion 方法</th></tr></thead>
+      <tbody>
+        <tr><td>表情/姿态解耦</td><td>3DMM 一致公式，天然解耦</td><td>难以解耦，需额外模块</td></tr>
+        <tr><td>推理速度</td><td>6 FPS（消费级 GPU）</td><td>多步去噪，秒级</td></tr>
+        <tr><td>训练成本</td><td>128 × H20，约 1 周</td><td>通常更高</td></tr>
+        <tr><td>生成质量</td><td>已知区域清晰，未见区域模糊</td><td>可以"想象"未见内容</td></tr>
+        <tr><td>时序一致性</td><td>逐帧独立推理，天然一致</td><td>需要额外时序模块</td></tr>
+        <tr><td>训练流程</td><td>单阶段（不需 LP 的第二阶段）</td><td>通常需多阶段</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">7.3 可操作启发</h3>
+
+  <ul>
+    <li><strong>公式一致性 > 损失堆叠</strong>：PerformRecast 证明了让数学公式与物理模型一致，比堆叠更多损失函数更有效。对于其他需要解耦的任务（如姿态/表情/身份分离），可以考虑类似的"让变换公式与 3DMM 一致"策略。</li>
+    <li><strong>显式监督 > 隐式学习</strong>：用 Pixel3DMM 跟踪的显式 3D 关键点替代隐式关键点的自监督学习，是 PerformRecast 能丢弃四项辅助损失的关键。当有可靠的外部工具可以提供监督信号时，直接监督通常比间接约束更有效。</li>
+    <li><strong>Teacher-Student 分区监督</strong>：BAM 的 Teacher-Student 设计是一种通用的"分区监督"模式——当全局损失导致某些区域质量下降时，可以训练一个 Teacher 提供该区域的局部监督信号。</li>
+    <li><strong>GAN 的生成上限</strong>：PerformRecast 的失败案例（牙齿模糊）揭示了 GAN warping 方法的固有局限——它本质上是"搬移"而非"生成"。对于需要合成未见内容的场景，扩散模型仍有不可替代的优势。</li>
+  </ul>
+
+  <h3 class="section-title">7.4 局限性与未来方向</h3>
+
+  PerformRecast 的主要局限在于 GAN 的生成能力上限——无法合成源视频中不可见的区域（如闭嘴时的牙齿）。作者在结论中提到，未来计划将 3DMM 的解耦能力与大规模预训练扩散模型的生成能力结合 #Liang et al., 2026#。这暗示了一个有趣的研究方向：用 3DMM 提供解耦的运动控制，用扩散模型提供高质量的图像生成——两者的互补可能催生新一代肖像动画系统。
+
+  另一个值得关注的点是，PerformRecast 的 49 个显式关键点选取策略是手工设计的。能否自动学习最优的关键点配置？这是一个有待探索的问题。
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Liang-et-al.-2026">Liang, J. et al. (2026). PerformRecast: Expression and Head Pose Disentanglement for Portrait Video Editing. <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2603.19731" target="_blank">arXiv:2603.19731</a> · <a href="https://github.com/youku-aigc/PerformRecast" target="_blank">GitHub</a></li>
+    <li data-cite-key="Guo-et-al.-2024">Guo, K. et al. (2024). LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv:2407.03168</a> · <a href="paper-liveportrait.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Li-et-al.-2017">Li, T. et al. (2017). Learning a Model of Facial Shape and Expression from 4D Scans (FLAME). <em>SIGGRAPH Asia 2017</em>. <a href="https://flame.is.tue.mpg.de/" target="_blank">Project Page</a></li>
+    <li data-cite-key="Giebenhain-et-al.-2025">Giebenhain, O. et al. (2025). Pixel3DMM: A Large-Scale Dataset of 3D Face Annotations for Digital Humans. <a href="https://arxiv.org/abs/2505.00615" target="_blank">arXiv:2505.00615</a></li>
+    <li data-cite-key="Blanz-and-Vetter-1999">Blanz, V. & Vetter, T. (1999). A Morphable Model for the Synthesis of 3D Faces. <em>SIGGRAPH 1999</em>.</li>
+    <li data-cite-key="Wang-et-al.-2021">Wang, T. et al. (2021). One-Shot Free-View Neural Talking-Head Synthesis for Video Portraits (Face Vid2vid). <em>CVPR 2021 Oral</em>. <a href="https://arxiv.org/abs/2011.15126" target="_blank">arXiv:2011.15126</a></li>
+    <li data-cite-key="Feng-et-al.-2018">Feng, Z. et al. (2018). Wing Loss for Robust Facial Landmark Localisation with Convolutional Neural Networks. <em>CVPR 2018</em>. <a href="https://arxiv.org/abs/1711.06753" target="_blank">arXiv:1711.06753</a></li>
+    <li data-cite-key="Oquab-et-al.-2023">Oquab, M. et al. (2023). DINOv2: Learning Robust Visual Features without Supervision. <a href="https://arxiv.org/abs/2304.07193" target="_blank">arXiv:2304.07193</a></li>
+    <li data-cite-key="Woo-et-al.-2023">Woo, S. et al. (2023). ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders. <a href="https://arxiv.org/abs/2301.00808" target="_blank">arXiv:2301.00808</a></li>
+    <li data-cite-key="Park-et-al.-2019">Park, T. et al. (2019). Semantic Image Synthesis with Spatially-Adaptive Normalization (SPADE). <em>CVPR 2019</em>.</li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, J. et al. (2019). ArcFace: Additive Angular Margin Loss for Deep Face Recognition. <em>CVPR 2019</em>.</li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="paper-liveact.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（三十八）：SoulX-LiveAct</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <a class="nav-card nav-next" href="digital-human-training-loss-survey.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">训练全景：Loss 函数族与训练策略</span></a>
+</div>
