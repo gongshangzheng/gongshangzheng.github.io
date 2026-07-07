@@ -40,14 +40,31 @@
   function loadIndex() {
     if (index || indexLoading) return;
     indexLoading = true;
-    fetch('/search-index.json').then(function(r) { return r.json(); }).then(function(data) {
-      index = data;
-      indexLoading = false;
-      runSearch();
-    }).catch(function() {
+    var url = '/search-index.json';
+    // Use XMLHttpRequest for broader browser compatibility (Safari quirks with fetch + <base>)
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status >= 200 && xhr.status < 400) {
+        try {
+          index = JSON.parse(xhr.responseText);
+          indexLoading = false;
+          runSearch();
+        } catch (e) {
+          indexLoading = false;
+          results.innerHTML = '<div class="search-hint">索引解析失败，请刷新重试</div>';
+        }
+      } else {
+        indexLoading = false;
+        results.innerHTML = '<div class="search-hint">索引加载失败，请刷新重试</div>';
+      }
+    };
+    xhr.onerror = function() {
       indexLoading = false;
       results.innerHTML = '<div class="search-hint">索引加载失败，请刷新重试</div>';
-    });
+    };
+    xhr.send();
   }
 
   function fmtDate(val) {
@@ -59,7 +76,8 @@
     dropdown.classList.add('is-open');
     overlay.classList.add('is-open');
     document.body.style.overflow = 'hidden';
-    input.focus();
+    // Safari needs a tick for opacity transition before focus works
+    setTimeout(function() { input.focus(); }, 50);
     if (!index && !indexLoading) loadIndex();
   }
 
