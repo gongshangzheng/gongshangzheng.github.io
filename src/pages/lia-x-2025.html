@@ -1,0 +1,385 @@
+---
+title: "数字人论文精读（四十二）：LIA-X，用稀疏运动字典让肖像动画可解释可编辑"
+description: "LIA-X 在 LIA 线性导航框架上引入 Sparse Motion Dictionary 和 edit-warp-render 策略，实现可解释、可编辑的大规模肖像动画。"
+date: 2026-07-08T09:37:22
+created_at: 2026-07-08T09:37:22
+updated_at: 2026-07-08T09:37:22
+tags: [数字人, LIA-X, Portrait Animation, Sparse Dictionary, Edit-Warp-Render, 论文精读]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 410
+mathjax: true
+notify: true
+hero_title: "LIA-X"
+hero_sub: "ICCV 2025 · Shanghai AI Lab / Inria"
+hero_tagline: "Sparse Motion Dictionary · Edit-Warp-Render · 1B 参数规模化"
+papers: ["https://arxiv.org/abs/2508.09959"]
+repos: ["https://github.com/wyhsirius/LIA-X"]
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">~1B</span><span class="label">参数量</span></div>
+  <div class="stat"><span class="num b">0.206</span><span class="label g">ID Sim.↓</span></div>
+  <div class="stat"><span class="num">58.74</span><span class="label">Img Quality↑</span></div>
+  <div class="stat"><span class="num b">8</span><span class="label l">A100 GPU</span></div>
+</div>
+
+<div class="callout"><strong>系列说明</strong>：本文属于数字人系列论文精读。LIA-X 是 <a href="paper-liveportrait.html">LivePortrait</a> #Guo-et-al.-2024# 同期的 autoencoder 路线作品，但它走的是另一条路——不是改进关键点或 stitching，而是用稀疏约束让运动字典变得可解释，从而支持"先编辑源肖像，再做运动传递"的全新 <em>edit-warp-render</em> 策略。</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">引言：当运动字典变得可解释</div>
+
+  <p>肖像动画的核心任务是将驱动视频中的面部动态（头部姿态、表情）迁移到一张静态肖像图像上。当前主流方法遵循 <strong>warp-render</strong> 范式：先估计运动（关键点、光流或隐式运动码），再用 warp 操作变形源图像，最后通过渲染网络生成结果。FOMM #Siarohin-et-al.-2019#、face vid2vid #Wang-TC-et-al.-2021#、<a href="paper-liveportrait.html">LivePortrait</a> #Guo-et-al.-2024# 和 LIA #WangY-et-al.-2024# 都属于这一路线。</p>
+
+  <p>这些方法有一个共同的瓶颈：当源肖像和驱动视频的初始姿态、表情差异较大时，动画质量急剧下降。原因在于 warp-render 范式没有"对齐源和驱动初始帧"的机制——源图像是什么样就是什么样，模型只能被动地从源出发做运动迁移 #WangY-et-al.-2025#。</p>
+
+  <p>LIA-X 来自上海 AI Lab 和法国 Inria 的联合团队，一作 Yaohui Wang（王耀晖）正是前作 LIA 的作者。论文的核心洞察是：如果运动字典的每个向量都有明确的语义含义（如"张嘴"、"转头"），那么我们就可以在动画前先用这些向量编辑源肖像，让它尽量接近驱动视频的第一帧，再做运动传递。这就是 LIA-X 提出的 <strong>edit-warp-render</strong> 策略 #WangY-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/animation_new2.webp" alt="LIA-X portrait animation results" loading="lazy">
+    <div class="cap">图 1：LIA-X 肖像动画示例。第一列为源肖像，第二列为经过编辑对齐的肖像，后续列为动画序列（来源：LIA-X, Fig.1）。</div>
+  </div>
+
+  <p>实现这一目标的关键技术是 <strong>Sparse Motion Dictionary</strong>——在 LIA 的运动字典上施加 $L_1$ 稀疏约束，迫使模型用最少数量的运动向量重建每帧图像。这个看似简单的改进带来了深刻的变化：稀疏约束使运动向量自然解耦，不同向量编码不同语义，几乎所有被激活的向量都对应人类可理解的含义（如 yaw、pitch、roll、张/闭嘴、皱/挑眉等）。</p>
+
+  <p>此外，LIA-X 还验证了该架构的可扩展性，成功训练了约 10 亿参数的大规模模型，在多个基准测试上超越了 SOTA 方法 #WangY-et-al.-2025#。论文已被 ICCV 2025 接收（Paper ID: 3057）。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">问题剖析：语义纠缠与规模化瓶颈</div>
+
+  <h3 class="section-title">运动字典的语义纠缠</h3>
+
+  <p>LIA（Latent Image Animator）是 LIA-X 的直接前身，首次将肖像动画建模为潜空间中的线性导航 #WangY-et-al.-2024#。LIA 的运动字典 $D_m$ 包含一组正交运动向量 $\{\mathbf{d}_1, ..., \mathbf{d}_M\}$，任意运动可表示为这些向量的线性组合。虽然 LIA 的运动字典已含有一定的语义信息，但作者发现一个关键问题：多个语义纠缠在同一个向量中，难以独立控制单个因素如嘴部运动、眉毛表情等。</p>
+
+  <p>具体来说，当运动字典没有稀疏约束时，模型在重建每帧图像时会激活几乎所有运动向量。这意味着每个向量都需要同时编码多种语义，不同语义之间高度耦合。用户无法单独操纵某个向量来实现特定的面部编辑——调一个向量可能同时改变嘴巴、眼睛和头部姿态。</p>
+
+  <div class="callout"><strong>核心矛盾</strong>：warp-render 范式缺乏对齐源与驱动初始帧的机制。如果运动字典的语义纠缠不清，就无法在动画前对源肖像做精确编辑来缩小初始差异。这两个问题——语义纠缠和缺乏对齐——是同一个链条上的连锁瓶颈。</div>
+
+  <h3 class="section-title">规模化的天花板</h3>
+
+  <p>另一个问题是架构可扩展性。此前基于隐式关键点的方法（FOMM、face vid2vid、LivePortrait）通常使用简单且小规模的网络架构，模型容量受限。LIA 的原始实现同样如此。要提升生成质量和泛化能力，需要更大的模型和更多的训练数据，但简单堆叠网络层会导致训练不稳定 #WangY-et-al.-2025#。</p>
+
+  <p>同时，diffusion-based 方法（如 X-Portrait #WangD-et-al.-2024#）凭借大规模预训练的强大泛化能力正在崛起，但推理速度慢是其固有劣势。autoencoder 路线如果能在规模化后达到与 diffusion 方法相当的质量，同时保持推理速度优势，将是更有工程价值的方向。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>范式</th><th>运动表示</th><th>可编辑</th><th>推理速度</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>FOMM #Siarohin-et-al.-2019#</td><td>warp-render</td><td>一阶关键点</td><td>否</td><td>快</td></tr>
+        <tr><td>LIA #WangY-et-al.-2024#</td><td>warp-render</td><td>稠密运动字典</td><td>困难（语义纠缠）</td><td>快</td></tr>
+        <tr><td>LivePortrait #Guo-et-al.-2024#</td><td>warp-render</td><td>隐式关键点 + stitching</td><td>否</td><td>快</td></tr>
+        <tr><td>X-Portrait #WangD-et-al.-2024#</td><td>warp-render</td><td>SD 分层运动注意力</td><td>否</td><td>慢（多步去噪）</td></tr>
+        <tr><td><strong>LIA-X</strong></td><td><strong>edit-warp-render</strong></td><td><strong>稀疏运动字典</strong></td><td><strong>是（细粒度）</strong></td><td>快</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">方法核心：从线性导航到稀疏字典</div>
+
+  <h3 class="section-title">LIA 的线性导航框架</h3>
+
+  <p>要理解 LIA-X 的创新，需要先理解 LIA 的数学基础。LIA 将肖像动画建模为潜空间中的"线性导航"：对于源图像 $x_s$ 和驱动图像 $x_d$ 之间的变换 $x_s \to x_d$，LIA 证明存在一个"隐式参考图像" $x_r$，使得变换可以分解为 $x_s \to x_r \to x_d$。在隐空间中，运动码 $z_{s \to d}$ 可表示为：</p>
+
+  <div class="def-box">
+    <h3>线性导航公式（LIA 核心）</h3>
+    $$z_{s \to d} = z_{s \to r} + \sum_{i=1}^{M} a_i \mathbf{d}_i$$
+    <p>其中 $z_{s \to r} = E(x_s)$ 是编码器从源图像提取的变换码，$\{\mathbf{d}_1, ..., \mathbf{d}_M\}$ 是运动字典 $D_m$ 中的 $M$ 个正交运动向量，$\mathcal{A}_{r \to d} = \{a_1, ..., a_M\}$ 是由 FC 层从驱动图像编码获得的运动系数。运动路径 $w_{r \to d} = \sum a_i \mathbf{d}_i$ 表示从参考到驱动的运动方向。</p>
+  </div>
+
+  <p>获得 $z_{s \to d}$ 后，光流生成器 $G_f$ 生成多尺度光流 $\phi_{s \to d}$，warp 操作 $\mathcal{T}$ 变形源图像特征，渲染网络 $G_r$ 生成最终图像：</p>
+
+  $$x_{s \to d} = G_r\bigl(\mathcal{T}(\phi_{s \to d}, x_s)\bigr)$$
+
+  <p>LIA 的训练使用自监督学习，目标函数包含 $L_1$ 重建损失、VGG 感知损失和对抗损失：</p>
+
+  $$\mathcal{L} = \mathcal{L}_{recon} + \lambda \mathcal{L}_{vgg} + \mathcal{L}_{adv}$$
+
+  <p>一个自然的疑问是：既然 LIA 已经有了运动字典，为什么语义还会纠缠？答案在于 LIA 的字典没有稀疏约束——训练时模型可以自由地激活所有向量来最小化重建误差，没有动力让不同向量编码不同语义。</p>
+
+  <h3 class="section-title">Sparse Motion Dictionary：一个简单但深刻的改进</h3>
+
+  <p>LIA-X 的核心创新是受稀疏字典编码（Sparse Dictionary Coding）#Aharon-et-al.-2006# 启发，在运动系数 $\mathcal{A}_{r \to d}$ 上施加 $L_1$ 稀疏惩罚。改进后的损失函数为：</p>
+
+  <div class="def-box">
+    <h3>LIA-X 损失函数</h3>
+    $$\mathcal{L} = \mathcal{L}_{recon} + \lambda_1 \mathcal{L}_{vgg} + \mathcal{L}_{adv} + \lambda_2 S(\mathcal{A}_{r \to d})$$
+    <p>其中 $S(\cdot)$ 实现为 $L_1$ 范数：$S(\mathcal{A}) = \|\mathcal{A}\|_1 = \sum_{i=1}^{M} |a_i|$。$\lambda_1$ 和 $\lambda_2$ 是平衡系数。与 LIA 相比，唯一的区别是多了最后一项稀疏惩罚。</p>
+  </div>
+
+  <p>$L_1$ 范数促使运动系数稀疏化——大部分 $a_i$ 趋近于零，仅少数被显著激活。这迫使模型用最少数量的运动向量重建每帧图像。不同帧激活不同的向量子集，自然引导不同向量编码不同语义。</p>
+
+  <p>论文的可视化（Figure 3）清晰地展示了这一效果：无稀疏约束时，几乎全部向量被激活；有稀疏约束时，仅少数向量被激活，且激活模式对不同输入具有选择性。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/sparsity_new.webp" alt="Sparsity analysis comparison" loading="lazy">
+    <div class="cap">图 2：稀疏性分析。上行为无稀疏约束的模型（几乎所有向量被激活），下行为有稀疏约束的模型（仅少数向量被激活）（来源：LIA-X, Fig.3）。</div>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：稀疏约束不仅让运动向量变得可解释，还几乎自动实现了语义解耦。论文发现被激活的向量几乎都对应人类可理解的含义——如 yaw、pitch、roll、张/闭嘴、皱/挑眉、张/闭眼、嘟嘴、微笑等。这些语义全部通过自监督学习自动涌现，无需任何标注。</div>
+
+  <h3 class="section-title">Edit-Warp-Render：从被动迁移到主动对齐</h3>
+
+  <p>有了可解释的运动字典，LIA-X 提出了 edit-warp-render 策略。传统 warp-render 的推理公式为：</p>
+
+  $$z_{s \to t} = \underbrace{z_{s \to s}}_{\text{自重建}} + \underbrace{(w_{r \to t} - w_{r \to 1})}_{\text{运动差异}}$$
+
+  <p>即在源图像自重建的基础上叠加驱动的相对运动。LIA-X 将自重建项 $z_{s \to s}$ 替换为编辑后的运动码 $z_{s \to \mathcal{E}(s)}$：</p>
+
+  <div class="def-box">
+    <h3>Edit-Warp-Render 推理公式</h3>
+    $$z_{s \to t} = \underbrace{z_{s \to \mathcal{E}(s)}}_{\text{编辑}} + \underbrace{(w_{r \to t} - w_{r \to 1})}_{\text{运动差异}}, \quad t \in \{1, ..., T\}$$
+    <p>其中 $\mathcal{E}(\cdot)$ 表示对源图像的编辑操作。不编辑时 $\mathcal{E}(s) = s$，公式退化为 LIA 的原始形式。编辑操作通过线性操纵运动向量实现：$z_{s \to \mathcal{E}(s)} = z_{s \to s} + a_i \mathbf{d}_i$。</p>
+  </div>
+
+  <p>核心思路是：先用可解释运动向量编辑源肖像，使其头部姿态和表情尽量接近驱动视频第一帧，再做运动传递。编辑操作缩小了源与驱动初始帧的差异，使后续运动传递在更小的偏差上进行，从而显著提升大姿态/表情差异场景下的动画质量。</p>
+
+  <p>以下是 LIA-X 完整 pipeline 的流程图：</p>
+
+  {{< mermaid >}}
+  graph TD
+    S["源图像 xs"] --> E["编码器 E"]
+    E --> ZSR["z_s→r"]
+    D["驱动图像 xd"] --> E2["编码器 E"]
+    E2 --> FC["FC 层"]
+    FC --> A["运动系数 A"]
+    A --> SPARSE["L1 稀疏约束"]
+    DM["运动字典 Dm"] --> W["w_r→d = Σ ai·di"]
+    A --> W
+    ZSR --> ZSD["z_s→d = z_s→r + w_r→d"]
+    W --> ZSD
+    ZSD --> GF["光流生成器 Gf"]
+    GF --> PHI["多尺度光流 φ"]
+    S --> WARP["Warp 操作 T"]
+    PHI --> WARP
+    WARP --> GR["渲染网络 Gr"]
+    GR --> OUT["生成图像 x_s→d"]
+    SPARSE -.->|训练时约束| A
+  {{< /mermaid >}}
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">架构设计与规模化</div>
+
+  <h3 class="section-title">可扩展架构</h3>
+
+  <p>LIA-X 沿用 LIA 的整体架构（编码器 $E$ + 光流生成器 $G_f$ + 渲染网络 $G_r$），但在编码器和生成器中引入了受 StyleGAN-T #Sauer-et-al.-2023# 启发的残差块。为防止大规模模型训练不稳定，作者为 $G_f$ 和 $G_r$ 设计了新型残差块。规模化策略聚焦于三个维度：增加通道数、增加残差块深度、增大运动字典大小。三个维度同时扩展，最大模型达到约 10 亿参数。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/general.webp" alt="LIA-X architecture overview" loading="lazy">
+    <div class="cap">图 3：LIA-X 整体架构。编码器 E 提取运动码，FC 层分解为运动系数，运动字典 Dm 通过线性组合生成运动路径，光流生成器 Gf 和渲染网络 Gr 完成动画生成（来源：LIA-X, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">训练配置</h3>
+
+  <p>训练数据混合了 4 个公开数据集（VoxCelebHQ、TalkingHead-1KH、HDTF、MEAD）和 1 个内部数据集，共约 50 万 talking head 序列、9400 万帧、5.5 万身份。训练使用 8 张 A100 GPU，大规模模型训练时使用梯度累积（gradient accumulation）增加有效 batch size。训练分辨率为 256×256 和 512×512 两个版本。</p>
+
+  <p>以下是按 10 项标准字段整理的训练配置披露表：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>VoxCelebHQ + TalkingHead-1KH + HDTF + MEAD + 1 内部集；共 0.5M 序列 / 94M 帧 / 55K 身份</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>8× A100 GPU（显存规格未说明）</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>原文未明确给出（推测 Adam/AdamW，基于 GAN 训练惯例）</td></tr>
+        <tr><td>学习率</td><td>未披露</td><td>原文未明确给出初始值、schedule 和 warmup</td></tr>
+        <tr><td>Batch size</td><td>部分披露</td><td>使用 gradient accumulation 增加 effective batch size，具体累积步数未给出</td></tr>
+        <tr><td>训练步数 / 轮数</td><td>未披露</td><td>原文未明确给出 iterations 或 epochs</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未明确给出训练总时长</td></tr>
+        <tr><td>模型参数量</td><td>已披露</td><td>三个规模：Base 0.05B、Middle 0.3B、Large 0.9B（~1B）</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未明确给出 FP32/FP16/BF16/混合精度</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未明确给出模型选择标准</td></tr>
+        <tr><td>损失函数参数</td><td>部分披露</td><td>$\lambda_1$（感知损失权重）和 $\lambda_2$（稀疏惩罚权重）具体数值未给出</td></tr>
+        <tr><td>编辑扰动范围</td><td>已披露</td><td>推理编辑时 $a_i \in [-0.5, 0.5]$，步长 0.1</td></tr>
+        <tr><td>训练分辨率</td><td>已披露</td><td>256×256 和 512×512 两个版本分别训练</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>信息缺失提示</strong>：LIA-X 在训练配置披露上有明显不足——优化器、学习率、训练步数、训练时长、精度格式、checkpoint 策略 6 项基础信息均未给出。这对复现工作构成了显著障碍。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">可解释性应用：从图像编辑到 3D 操控</div>
+
+  <p>有了 Sparse Motion Dictionary，LIA-X 展现出多种传统 warp-render 方法无法实现的应用能力。这些应用都基于同一个操作：线性操纵单个运动向量 $z_{s \to \mathcal{E}(s)} = z_{s \to s} + a_i \mathbf{d}_i$。</p>
+
+  <h3 class="section-title">3D-aware 肖像操控</h3>
+
+  <p>无需任何显式 3D 表征（3DMM、深度图等），LIA-X 的运动向量中自然涌现了三维旋转语义。通过操纵对应向量，可以实现 yaw（偏航）、pitch（俯仰）和 roll（翻滚）三个维度的头部旋转控制 #WangY-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/3d1.webp" alt="3D-aware yaw manipulation" loading="lazy">
+    <div class="cap">图 4(a)：通过操纵运动向量实现 yaw（偏航）旋转控制，无需任何 3D 表征（来源：LIA-X, Fig.4）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/3d2.webp" alt="3D-aware pitch manipulation" loading="lazy">
+    <div class="cap">图 4(b)：pitch（俯仰）旋转控制（来源：LIA-X, Fig.4）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/3d3.webp" alt="3D-aware roll manipulation" loading="lazy">
+    <div class="cap">图 4(c)：roll（翻滚）旋转控制（来源：LIA-X, Fig.4）。</div>
+  </div>
+
+  <h3 class="section-title">细粒度图像编辑</h3>
+
+  <p>除了 3D 旋转，LIA-X 还能控制更细粒度的面部属性：张/闭嘴、皱/挑眉、张/闭眼、嘟嘴、微笑等。所有这些语义都是通过自监督学习自动解耦的，无需任何标注。用户可以线性组合不同语义操作来实现复杂编辑 #WangY-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/editing_new.webp" alt="Image editing capabilities" loading="lazy">
+    <div class="cap">图 5：细粒度图像编辑。通过操纵对应运动向量，可控制张/闭嘴、皱/挑眉、张/闭眼、嘟嘴、微笑等属性（来源：LIA-X, Fig.6）。</div>
+  </div>
+
+  <h3 class="section-title">视频编辑</h3>
+
+  <p>将图像编辑扩展到视频层面：对真实视频的首帧应用编辑操作，然后用 edit-warp-render 公式传递运动。下图展示了用 LIA-X 旋转真实视频中人物头部姿态的效果，身份保持良好 #WangY-et-al.-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/3dvideo1.webp" alt="Original video for 3D manipulation" loading="lazy">
+    <div class="cap">图 6(a)：原始视频帧（来源：LIA-X, Fig.5）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/3dvideo2.webp" alt="Video left rotation" loading="lazy">
+    <div class="cap">图 6(b)：向左旋转后的视频帧，身份保持良好（来源：LIA-X, Fig.5）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/3dvideo3.webp" alt="Video right rotation" loading="lazy">
+    <div class="cap">图 6(c)：向右旋转后的视频帧，身份保持良好（来源：LIA-X, Fig.5）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">实验分析</div>
+
+  <h3 class="section-title">自重演（Self-Reenactment）</h3>
+
+  <p>在 VoxCelebHQ 和 TalkingHead-1KH 验证集上，LIA-X 在 256×256 和 512×512 两个分辨率下与 GAN-based 和 diffusion-based 方法对比。L1、LPIPS、SSIM、PSNR、FID 五个指标上的结果如下（节选 512×512 分辨率）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>L1 ↓</th><th>LPIPS ↓</th><th>SSIM ↑</th><th>PSNR ↑</th><th>FID ↓</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>X-Portrait #WangD-et-al.-2024#</td><td>0.110</td><td>0.302</td><td>0.56</td><td>16.99</td><td>19.92</td></tr>
+        <tr><td>LivePortrait #Guo-et-al.-2024#</td><td>0.087</td><td>0.264</td><td>0.67</td><td>17.45</td><td>12.90</td></tr>
+        <tr><td>LIA #WangY-et-al.-2024#</td><td>0.052</td><td>0.211</td><td>0.68</td><td>22.14</td><td>21.86</td></tr>
+        <tr><td><strong>LIA-X</strong></td><td><strong>0.040</strong></td><td><strong>0.160</strong></td><td><strong>0.75</strong></td><td><strong>24.39</strong></td><td><strong>12.50</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>以上为 VoxCelebHQ 512×512 分辨率结果。LIA-X 在所有指标上全面超越所有方法。与直接前身 LIA 相比，L1 从 0.052 降至 0.040（↓23%），PSNR 从 22.14 升至 24.39（↑2.25 dB），提升幅度显著。</p>
+
+  <div class="callout"><strong>关键发现</strong>：LIA-X 作为 autoencoder 方法，在所有指标上全面超越 diffusion-based 的 X-Portrait 和当前工业界主流的 LivePortrait。以 PSNR 为例，LIA-X（24.39）比 X-Portrait（16.99）高出 7.4 dB，比 LivePortrait（17.45）高出 6.94 dB——这是巨大的质量差距。</div>
+
+  <h3 class="section-title">跨重演（Cross-Reenactment）</h3>
+
+  <p>跨重演是更 challenging 的任务——源和驱动来自不同身份。在 HDTF + AAHQ 构建的 140 个测试视频上，用 Identity Similarity 和 Image Quality 两个指标评估：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>方法</th><th>ID Similarity ↓</th><th>Image Quality ↑</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>FOMM #Siarohin-et-al.-2019#</td><td>0.262</td><td>37.08</td></tr>
+        <tr><td>DaGAN</td><td>0.272</td><td>39.30</td></tr>
+        <tr><td>TPS</td><td>0.216</td><td>38.27</td></tr>
+        <tr><td>MCNet</td><td>0.252</td><td>37.88</td></tr>
+        <tr><td>X-Portrait #WangD-et-al.-2024#</td><td>0.217</td><td>55.41</td></tr>
+        <tr><td>LivePortrait #Guo-et-al.-2024#</td><td>0.243</td><td>51.41</td></tr>
+        <tr><td><strong>LIA-X</strong></td><td><strong>0.206</strong></td><td><strong>58.74</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>LIA-X 在两个指标上均取得最优。Identity Similarity 越低越好（0.206），说明生成图像更好地保持了源身份。Image Quality 越高越好（58.74），说明生成质量最优。这正是 edit-warp-render 策略的价值——通过先编辑源肖像对齐驱动初始帧，大幅减少了跨身份场景下的初始偏差。</p>
+
+  <div class="photo">
+    <img src="media/images/lia-x-2025/cross_new_new.webp" alt="Qualitative comparison on cross-reenactment" loading="lazy">
+    <div class="cap">图 7：跨重演定性对比。LIA-X 通过编辑阶段对齐源肖像与驱动初始帧，显著优于其他方法（来源：LIA-X, Fig.7）。</div>
+  </div>
+
+  <h3 class="section-title">规模化消融实验</h3>
+
+  <p>论文训练了三个规模的模型（0.05B、0.3B、0.9B），保持其他训练配置不变，仅改变残差块数量、通道数和运动字典大小：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>模型</th><th>VoxCelebHQ L1 ↓</th><th>VoxCelebHQ PSNR ↑</th><th>TalkingHead L1 ↓</th><th>TalkingHead PSNR ↑</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Base (0.05B)</td><td>0.043</td><td>23.62</td><td>0.042</td><td>24.98</td></tr>
+        <tr><td>Middle (0.3B)</td><td>0.040</td><td>24.31</td><td>0.035</td><td>25.84</td></tr>
+        <tr><td>Large (0.9B)</td><td>0.040</td><td>24.39</td><td>0.035</td><td>26.07</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>消融发现</strong>：从 0.05B → 0.3B 有显著提升（VoxCelebHQ PSNR +0.69 dB），但从 0.3B → 0.9B 提升趋于饱和（PSNR 仅 +0.08 dB）。作者推测当前数据集规模不足以充分支撑 10 亿参数模型的训练——这是规模化研究中一个经典的"数据-模型不平衡"信号。</div>
+
+  <p>值得注意的是，在 TalkingHead-1KH 上 0.3B → 0.9B 的 PSNR 提升为 0.23 dB，比 VoxCelebHQ 上的 0.08 dB 更大。这可能说明不同数据集的数据分布对模型规模扩展的响应不同。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第七章</div>
+  <div class="ch-title">讨论与启发</div>
+
+  <h3 class="section-title">论文承认的局限性</h3>
+
+  <p>作者明确指出了两个局限：（1）<strong>固定分辨率</strong>——当前模型只能在训练分辨率下运行，不支持动态分辨率，限制了实际部署灵活性；（2）<strong>CNN 架构天花板</strong>——基于卷积网络，进一步扩展到更大规模受限，作者建议未来探索 DiT-based #Peebles-et-al.-2023# 架构 #WangY-et-al.-2025#。</p>
+
+  <p>此外，从消融实验看，第三个隐性局限是<strong>数据规模不足</strong>。0.3B→0.9B 的收益递减表明，10 亿参数模型可能需要远超 9400 万帧的训练数据才能充分发挥潜力。</p>
+
+  <h3 class="section-title">技术启发</h3>
+
+  <p><strong>稀疏约束作为解耦工具</strong>：LIA-X 最深刻的启发不是某个具体技术，而是"$L_1$ 约束 → 自动解耦"这一范式。在自监督学习中，当模型有多个可用组件时，施加稀疏约束可以迫使不同组件编码不同语义。这个思路可以迁移到任何涉及"字典学习"或"多分量表示"的场景。</p>
+
+  <p><strong>edit-warp-render 的设计哲学</strong>：传统方法把"源图像"视为不可改变的输入，LIA-X 把它视为可编辑的起点。这个思路提示我们：在 animation/generation 任务中，允许模型先"预处理"输入再生成，可能比直接端到端生成更可控。</p>
+
+  <p><strong>autoencoder vs diffusion 的竞争</strong>：LIA-X 证明了规模化 autoencoder 在质量上可以超越 diffusion 方法，同时保持推理速度优势。这暗示着 autoencoder 路线在肖像动画这一特定任务上可能仍有竞争力——关键在于找到正确的架构设计（稀疏约束 + 可扩展残差块）。</p>
+
+  <div class="callout"><strong>工程提示</strong>：LIA-X 代码已开源（GitHub），提供完整的 Gradio UI（Image Animation / Image Editing / Video Editing 三个标签页）和预训练模型。HuggingFace Space 提供在线体验。训练需要 8× A100，但推理可在单卡上运行，部署门槛相对较低。</div>
+
+  <h3 class="section-title">后续方向</h3>
+
+  <p>论文提到的 Future Work 方向包括：设计支持动态分辨率的技术、探索 DiT-based 架构。从领域发展看，DeX-Portrait（CVPR 2026）已在 diffusion 框架下实现了姿态/表情解耦，可视为 LIA-X 解耦思路在 diffusion 方向的后续探索。如何在 diffusion 框架中实现类似的稀疏运动字典，是一个值得关注的方向。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ol>
+    <li data-cite-key="WangY-et-al.-2025">Wang, Yaohui et al. (2025). <em>LIA-X: Interpretable Latent Portrait Animator</em>. ICCV 2025. <a href="https://arxiv.org/abs/2508.09959" target="_blank">arXiv:2508.09959</a> · <a href="https://wyhsirius.github.io/LIA-X-project/" target="_blank">Project Page</a> · <a href="https://github.com/wyhsirius/LIA-X" target="_blank">GitHub</a></li>
+    <li data-cite-key="WangY-et-al.-2024">Wang, Yaohui et al. (2024). <em>Latent Image Animator: Learning to Extract Smooth Motion Representations from Videos</em>. TPAMI 2024. <a href="https://arxiv.org/abs/2203.09043" target="_blank">arXiv:2203.09043</a></li>
+    <li data-cite-key="Siarohin-et-al.-2019">Siarohin, Aliaksandr et al. (2019). <em>First Order Motion Model for Image Animation</em>. NeurIPS 2019. <a href="https://arxiv.org/abs/2003.00196" target="_blank">arXiv:2003.00196</a></li>
+    <li data-cite-key="Guo-et-al.-2024">Guo, Jianzhu et al. (2024). <em>LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control</em>. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv:2407.03168</a> · <a href="paper-liveportrait.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="WangD-et-al.-2024">Wang, Dingchun et al. (2024). <em>X-Portrait: Expressive Portrait Animation with Hierarchical Motion Attention</em>. SIGGRAPH 2024. <a href="https://arxiv.org/abs/2403.15931" target="_blank">arXiv:2403.15931</a></li>
+    <li data-cite-key="Wang-TC-et-al.-2021">Wang, Ting-Chun et al. (2021). <em>One-Shot Free-View Neural Talking-Head Synthesis for Video Conferencing</em>. CVPR 2021.</li>
+    <li data-cite-key="Sauer-et-al.-2023">Sauer, Axel et al. (2023). <em>StyleGAN-T: Unlocking the Power of GANs for Fast Large-Scale Text-to-Image Synthesis</em>. ICML 2023.</li>
+    <li data-cite-key="Aharon-et-al.-2006">Aharon, Michal et al. (2006). <em>K-SVD: An Algorithm for Designing Overcomplete Dictionaries for Sparse Representation</em>. IEEE TSP.</li>
+    <li data-cite-key="Peebles-et-al.-2023">Peebles, William et al. (2023). <em>Scalable Diffusion Models with Transformers</em>. ICCV 2023.</li>
+  </ol>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="paper-faceshot.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇论文精读</span><span class="nav-title">FaceShot</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列</span></a>
+</div>
