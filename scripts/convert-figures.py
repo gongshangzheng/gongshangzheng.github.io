@@ -42,31 +42,83 @@ except ImportError:
 SUPPORTED_INPUT = {'.pdf', '.eps', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif'}
 
 
-def convert_pdf_to_webp(pdf_path, out_path, dpi=300, quality=90):
-    """用 PyMuPDF 渲染 PDF 第一页，直接保存为 WebP（无需中间 PNG）"""
+def crop_whitespace(img, padding_pct=0.02, threshold=250):
+    """自动裁剪图片四周的留白
+
+    Args:
+        img: PIL Image (RGB)
+        padding_pct: 裁剪后保留的边距百分比（相对于短边），默认 2%
+        threshold: 灰度值 >= threshold 视为背景（白），< threshold 视为内容。默认 250（近白也算背景）
+    Returns:
+        裁剪后的 PIL Image
+    """
+    gray = img.convert('L')
+    # 将灰度图二值化：< threshold 的像素标记为内容（255），>= threshold 标记为背景（0）
+    mask = gray.point(lambda x: 255 if x < threshold else 0, mode='L')
+    bbox = mask.getbbox()
+
+    if not bbox:
+        # 整张图都是背景（纯白图），不裁剪
+        return img
+
+    # 计算边距：短边的 padding_pct，最小 10px
+    min_dim = min(img.size)
+    pad = max(10, int(min_dim * padding_pct))
+
+    # 扩展 bbox，但不超过图片边界
+    left = max(0, bbox[0] - pad)
+    top = max(0, bbox[1] - pad)
+    right = min(img.size[0], bbox[2] + pad)
+    bottom = min(img.size[1], bbox[3] + pad)
+
+    cropped = img.crop((left, top, right, bottom))
+
+    # 记录裁剪信息
+    orig_w, orig_h = img.size
+    crop_w, crop_h = cropped.size
+    removed_w = orig_w - crop_w
+    removed_h = orig_h - crop_h
+    if removed_w > 5 or removed_h > 5:
+        pct_w = removed_w / orig_w * 100
+        pct_h = removed_h / orig_h * 100
+        print(f"     裁剪留白: {orig_w}x{orig_h} → {crop_w}x{crop_h} (去除 {pct_w:.0f}% W, {pct_h:.0f}% H)")
+
+    return cropped
+
+
+def convert_pdf_to_webp(pdf_path, out_path, dpi=300, quality=90, crop=True, padding_pct=0.02):
+    """用 PyMuPDF 渲染 PDF 第一页，裁剪留白，直接保存为 WebP"""
     doc = fitz.open(str(pdf_path))
     page = doc[0]
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=mat)
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    img.save(str(out_path), "WEBP", quality=quality)
     doc.close()
+
+    if crop:
+        img = crop_whitespace(img, padding_pct)
+
+    img.save(str(out_path), "WEBP", quality=quality)
     return img.size
 
 
-def convert_image_to_webp(img_path, out_path, dpi=300, quality=90):
-    """将 PNG/JPG 等光栅图直接转 WebP"""
+def convert_image_to_webp(img_path, out_path, dpi=300, quality=90, crop=True, padding_pct=0.02):
+    """将 PNG/JPG 等光栅图裁剪留白并转 WebP"""
     img = Image.open(str(img_path))
     if img.mode in ('RGBA', 'LA', 'P'):
         img = img.convert('RGB')
     elif img.mode != 'RGB':
         img = img.convert('RGB')
+
+    if crop:
+        img = crop_whitespace(img, padding_pct)
+
     img.save(str(out_path), "WEBP", quality=quality)
     return img.size
 
 
-def convert_one(input_path, output_path, dpi=300, quality=90):
+def convert_one(input_path, output_path, dpi=300, quality=90, crop=True, padding_pct=0.02):
     """转换单个文件"""
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -78,16 +130,16 @@ def convert_one(input_path, output_path, dpi=300, quality=90):
     ext = input_path.suffix.lower()
 
     if ext == '.pdf':
-        w, h = convert_pdf_to_webp(input_path, output_path, dpi, quality)
+        w, h = convert_pdf_to_webp(input_path, output_path, dpi, quality, crop, padding_pct)
     elif ext == '.eps':
         # EPS 需要 Ghostscript；尝试用 fitz 打开，失败则跳过
         try:
-            w, h = convert_pdf_to_webp(input_path, output_path, dpi, quality)
+            w, h = convert_pdf_to_webp(input_path, output_path, dpi, quality, crop, padding_pct)
         except Exception:
             print(f"  ⚠️ EPS 转换失败（需 Ghostscript）: {input_path}", file=sys.stderr)
             return False
     elif ext in ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif'):
-        w, h = convert_image_to_webp(input_path, output_path, dpi, quality)
+        w, h = convert_image_to_webp(input_path, output_path, dpi, quality, crop, padding_pct)
     else:
         print(f"  ⚠️ 不支持的格式: {ext} ({input_path})", file=sys.stderr)
         return False
@@ -107,7 +159,7 @@ def convert_one(input_path, output_path, dpi=300, quality=90):
     return True
 
 
-def convert_directory(input_dir, output_dir, dpi=300, quality=90):
+def convert_directory(input_dir, output_dir, dpi=300, quality=90, crop=True, padding_pct=0.02):
     """批量转换目录下所有图片
 
     优先级：PDF > EPS > PNG/JPG（同名时优先用矢量格式）
@@ -144,12 +196,13 @@ def convert_directory(input_dir, output_dir, dpi=300, quality=90):
             print(f"  ℹ️ {stem}: 优先使用 {chosen.name}（跳过 {', '.join(skipped)}）")
         files.append(chosen)
 
-    print(f"\n转换 {len(files)} 个文件 (DPI={dpi}, Quality={quality})...")
+    crop_status = "开" if crop else "关"
+    print(f"\n转换 {len(files)} 个文件 (DPI={dpi}, Quality={quality}, 留白裁剪={crop_status})...")
     success = 0
     for f in files:
         out_name = f.stem + '.webp'
         out_path = output_dir / out_name
-        if convert_one(f, out_path, dpi, quality):
+        if convert_one(f, out_path, dpi, quality, crop, padding_pct):
             success += 1
 
     print(f"\n完成: {success}/{len(files)} 成功转换")
@@ -176,17 +229,22 @@ def main():
     parser.add_argument('-o', '--output', required=True, help='输出文件或目录路径')
     parser.add_argument('--dpi', type=int, default=300, help='渲染 DPI（默认 300）')
     parser.add_argument('--quality', type=int, default=90, help='WebP 质量 1-100（默认 90）')
+    parser.add_argument('--no-crop', action='store_true', help='禁用自动留白裁剪')
+    parser.add_argument('--padding', type=float, default=0.02,
+                        help='裁剪后保留的边距比例（默认 0.02=短边的 2%%）')
 
     args = parser.parse_args()
 
     input_path = Path(args.input)
     output_path = Path(args.output)
+    crop = not args.no_crop
+    padding_pct = args.padding
 
     if input_path.is_dir():
-        convert_directory(input_path, output_path, args.dpi, args.quality)
+        convert_directory(input_path, output_path, args.dpi, args.quality, crop, padding_pct)
     elif input_path.is_file():
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        convert_one(input_path, output_path, args.dpi, args.quality)
+        convert_one(input_path, output_path, args.dpi, args.quality, crop, padding_pct)
     else:
         print(f"错误: 输入路径不存在: {input_path}", file=sys.stderr)
         sys.exit(1)
