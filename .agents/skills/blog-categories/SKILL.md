@@ -359,7 +359,7 @@ sub_id: 0
 
 按目标分类的系列规范填写 `title`、`sub_id` 和 `tags`。
 
-> 注意：本站历史上有两套编号体系（旧体系跨系列分段、新体系同级编号），目前共存。详见 `references/subcategory-organization.md` 编号总则。
+> 编号体系已统一为同级编号（每个深层路径从 10 开始，步长 10）。旧分段编号（1000-1999 等）已全部废弃。详见 `references/subcategory-organization.md` 编号总则。
 
 若目标分类尚未在 `references/subcategory-organization.md` 中登记，按"无系列组织"处理：不填 `sub_id`，标题不加编号前缀。
 
