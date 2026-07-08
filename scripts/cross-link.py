@@ -92,9 +92,15 @@ def build_mappings(files):
     return cite_to_paper, name_to_paper
 
 
-def clean_existing_links(files):
-    """清理已有的精读链接"""
+def clean_existing_links(files, reading_article_files):
+    """清理已有的精读链接
+    
+    清理两类链接：
+    1. .sources 中的 class="paper-link" 链接
+    2. 正文中指向精读文章的 <a> 标签（unwrap 为纯文本）
+    """
     cleaned = 0
+    
     for filepath in files:
         if filepath.name.startswith('arxiv-digest'):
             continue
@@ -102,9 +108,33 @@ def clean_existing_links(files):
         content = filepath.read_text(errors='ignore')
         original = content
         
-        # Remove " · <a href="..." class="paper-link">精读 →</a>" from .sources
+        # 1. Remove " · <a href="..." class="paper-link">精读 →</a>" from .sources
         content = re.sub(r'\s*·\s*<a\s+href="[^"]*"\s+class="paper-link">精读 →</a>', '', content)
         content = re.sub(r'\s*<a\s+href="[^"]*"\s+class="paper-link">精读 →</a>', '', content)
+        
+        # 2. Unwrap body text links pointing to reading articles
+        # e.g., <a href="paper-hallo.html">Hallo</a> → Hallo
+        # Only in body (after frontmatter, before .sources)
+        fm_match = re.match(r'^(---\n.*?\n---\n)', content, re.DOTALL)
+        if fm_match:
+            fm = fm_match.group(1)
+            rest = content[len(fm):]
+            
+            sources_start = rest.find('<div class="sources">')
+            if sources_start >= 0:
+                body = rest[:sources_start]
+                sources_and_after = rest[sources_start:]
+            else:
+                body = rest
+                sources_and_after = ''
+            
+            # Unwrap <a href="reading-article.html">text</a> → text
+            for target_file in reading_article_files:
+                # Match <a href="target">text</a> and replace with just text
+                pattern = r'<a\s+href="' + re.escape(target_file) + r'"[^>]*>(.*?)</a>'
+                body = re.sub(pattern, r'\1', body, flags=re.DOTALL)
+            
+            content = fm + body + sources_and_after
         
         if content != original:
             filepath.write_text(content)
@@ -147,22 +177,26 @@ def add_sources_links(files, cite_to_paper):
 
 
 def add_body_links(files, name_to_paper, cite_to_paper):
-    """在正文中补全论文名的首次出现链接"""
+    """在正文中补全论文名的首次出现链接
+    
+    关键规则：
+    - 按名称长度降序处理，避免 "Hallo" 匹配到 "Hallo2" 中的子串
+    - 使用词边界 \b 匹配，避免部分匹配
+    - 每篇文章中每个论文名只链接首次出现
+    """
     modified = 0
+    
+    # 按名称长度降序排序，避免短名称子串匹配
+    sorted_names = sorted(name_to_paper.items(), key=lambda x: -len(x[0]))
     
     for filepath in files:
         if filepath.name.startswith('arxiv-digest'):
             continue
-        if filepath.name in name_to_paper.values():
-            # Don't link within the reading article itself
-            pass
         
         content = filepath.read_text(errors='ignore')
         original = content
         
         # Split into frontmatter + body + sources
-        fm_end = content.find('-->', content.find('<!--')) if '<!--' in content else 0
-        # Better: find the second --- that ends frontmatter
         fm_match = re.match(r'^(---\n.*?\n---\n)', content, re.DOTALL)
         if not fm_match:
             continue
@@ -179,23 +213,49 @@ def add_body_links(files, name_to_paper, cite_to_paper):
             body = rest
             sources = ''
         
-        for name, target_file in name_to_paper.items():
+        # Track which target files already linked in this body
+        linked_targets = set()
+        
+        for name, target_file in sorted_names:
             if target_file == filepath.name:
                 continue
-            if target_file in body:
-                continue  # Already linked somewhere
-            if name not in body:
+            if target_file in linked_targets:
+                continue  # Already linked this target
+            
+            # Use word boundary to avoid substring matches (e.g., "Hallo" in "Hallo2")
+            # \b matches between word and non-word chars; digits are word chars
+            # So \bHallo\b won't match "Hallo2" — we need a separate pattern for sequels
+            
+            # Pattern 1: exact name with word boundaries
+            name_pattern = r'\b' + re.escape(name) + r'\b'
+            # Pattern 2: name + optional digits (for sequels like Hallo2, EMO2, VASA-1)
+            name_pattern_sequel = r'\b' + re.escape(name) + r'(?:\d+)?\b'
+            
+            # Try sequel pattern first (matches more text, e.g., "Hallo2" over "Hallo")
+            sequel_matches = list(re.finditer(name_pattern_sequel, body))
+            
+            # Filter to only keep sequel matches (where actual text is longer than base name)
+            # This avoids matching plain "Hallo" with the sequel pattern
+            positions = []
+            for m in sequel_matches:
+                matched_text = m.group()
+                if matched_text == name:
+                    # Exact match - use it
+                    positions.append(m.start())
+                elif matched_text.startswith(name) and matched_text[len(name):].isdigit():
+                    # Sequel match (e.g., "Hallo2") - use it with full matched text
+                    positions.append((m.start(), matched_text))
+            
+            if not positions:
                 continue
             
-            # Skip if already wrapped in <a>
-            # Find first occurrence not inside an <a> tag
-            # Simple approach: replace first occurrence that's not inside a tag
-            
-            # Find all positions
-            positions = [m.start() for m in re.finditer(re.escape(name), body)]
-            linked = False
-            
-            for pos in positions:
+            for item in positions:
+                # Handle both int (exact match) and tuple (sequel match) positions
+                if isinstance(item, tuple):
+                    pos, matched_text = item
+                else:
+                    pos = item
+                    matched_text = name
                 # Check if inside an <a> tag
                 before = body[:pos]
                 last_open_a = before.rfind('<a ')
@@ -204,8 +264,7 @@ def add_body_links(files, name_to_paper, cite_to_paper):
                 if last_open_a > last_close_a:
                     continue  # Inside an <a> tag
                 
-                # Check if in a table cell (short text)
-                # Find the current line
+                # Check if in a table header or short cell
                 line_start = body.rfind('\n', 0, pos) + 1
                 line_end = body.find('\n', pos)
                 if line_end < 0:
@@ -216,18 +275,11 @@ def add_body_links(files, name_to_paper, cite_to_paper):
                 if re.search(r'<t[hd][^>]*>\s*$', before) and len(line.strip()) < 50:
                     continue
                 
-                # Check if already has a link to this file in body
-                if f'href="{target_file}"' in body:
-                    break
-                
-                # Safe to add link
-                replacement = f'<a href="{target_file}">{name}</a>'
-                body = body[:pos] + replacement + body[pos + len(name):]
-                linked = True
-                break  # Only first occurrence
-        
-        if body != rest[:len(body) if sources_start >= 0 else len(rest)]:
-            pass  # Will be caught by content != original below
+                # Safe to add link (use matched_text which may include sequel digits)
+                replacement = f'<a href="{target_file}">{matched_text}</a>'
+                body = body[:pos] + replacement + body[pos + len(matched_text):]
+                linked_targets.add(target_file)
+                break  # Only first occurrence per name
         
         # Reassemble
         new_content = fm + body + sources
@@ -278,7 +330,8 @@ def main():
     if not args.dry_run:
         # Step 2: Clean existing links
         if not args.no_clean:
-            cleaned = clean_existing_links(files)
+            reading_article_files = set(cite_to_paper.values())
+            cleaned = clean_existing_links(files, reading_article_files)
             print(f"\n🧹 清理已有链接: {cleaned} 个文件")
         
         # Step 3: Add .sources links
