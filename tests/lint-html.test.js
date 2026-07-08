@@ -242,7 +242,7 @@ title: Test
     const html = `---
 title: "数字人总报告"
 description: "AI 论文综述"
-categories: [AI]
+aliases: ["categories/AI/test"]
 tags: [数字人, 论文综述]
 ---
 <div class="ch fade-in"><p>Survey content.</p></div>`;
@@ -257,17 +257,215 @@ tags: [数字人, 论文综述]
     const html = `---
 title: "数字人总报告"
 description: "AI 论文综述"
-categories: [AI]
+aliases: ["categories/AI/test"]
 tags: [数字人, 论文综述]
 ---
 <div class="ch fade-in">
-  <div class="photo"><img src="media/images/a/1.png"></div>
-  <div class="photo"><img src="media/images/a/2.png"></div>
-  <div class="photo"><img src="media/images/a/3.png"></div>
+  <div class="photo"><img src="media/images/a/1.webp"></div>
+  <div class="photo"><img src="media/images/a/2.webp"></div>
+  <div class="photo"><img src="media/images/a/3.webp"></div>
 </div>`;
     const f = writeTmp('survey_with_images.html', html);
     const result = runLint(f);
-    assert.equal(result.exitCode, 0, 'AI survey with three images should pass');
+    assert.equal(result.exitCode, 0, 'AI survey with three WebP images should pass');
+    cleanTmp();
+  },
+
+  // ===== Image Format =====
+
+  'image: <figure> tag is rejected': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <figure class="paper-figure">
+    <img src="media/images/a/test.webp" alt="test" loading="lazy">
+  </figure>
+</div>
+</div>`;
+    const f = writeTmp('figure_tag.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, '<figure> should fail');
+    assert(result.output.includes('Use <div class="photo"> instead of <figure>'), 'Should report <figure> error');
+    cleanTmp();
+  },
+
+  'image: .png src is rejected': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <div class="photo">
+    <img src="media/images/a/test.png" alt="test" loading="lazy">
+  </div>
+</div>
+</div>`;
+    const f = writeTmp('png_img.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, '.png image should fail');
+    assert(result.output.includes('Image must be WebP format'), 'Should report WebP requirement');
+    cleanTmp();
+  },
+
+  'image: .jpg src is rejected': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <div class="photo">
+    <img src="media/images/a/test.jpg" alt="test" loading="lazy">
+  </div>
+</div>
+</div>`;
+    const f = writeTmp('jpg_img.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, '.jpg image should fail');
+    assert(result.output.includes('Image must be WebP format'), 'Should report WebP requirement');
+    cleanTmp();
+  },
+
+  'image: leading slash in img src is warned': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <div class="photo">
+    <img src="/media/images/a/test.webp" alt="test" loading="lazy">
+  </div>
+</div>
+</div>`;
+    const f = writeTmp('leading_slash.html', html);
+    const result = runLint(f);
+    assert(result.output.includes('should not start with'), 'Should warn about leading slash');
+    cleanTmp();
+  },
+
+  'image: hotlink http URL is rejected': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <div class="photo">
+    <img src="http://example.com/img.webp" alt="test" loading="lazy">
+  </div>
+</div>
+</div>`;
+    const f = writeTmp('hotlink.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, 'Hotlink should fail');
+    assert(result.output.includes('Hotlink not allowed'), 'Should report hotlink error');
+    cleanTmp();
+  },
+
+  'image: correct <div class="photo"> + .webp passes': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <div class="photo">
+    <img src="media/images/a/test.webp" alt="test" loading="lazy">
+    <div class="cap">图 1：测试图片</div>
+  </div>
+</div>
+</div>`;
+    const f = writeTmp('correct_image.html', html);
+    const result = runLint(f);
+    assert.equal(result.exitCode, 0, 'Correct image format should pass');
+    cleanTmp();
+  },
+
+  // ===== Frontmatter Fields =====
+
+  'frontmatter: deprecated hub field is error': () => {
+    const html = `---
+title: Test
+hub: some-hub
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap"></div>`;
+    const f = writeTmp('hub_field.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, 'Deprecated hub field should fail');
+    assert(result.output.includes("Deprecated frontmatter field 'hub'"), 'Should report deprecated hub field');
+    cleanTmp();
+  },
+
+  'frontmatter: deprecated categories field is error': () => {
+    const html = `---
+title: Test
+categories: [AI]
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap"></div>`;
+    const f = writeTmp('cat_field.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, 'Deprecated categories field should fail');
+    assert(result.output.includes("Deprecated frontmatter field 'categories'"), 'Should report deprecated categories field');
+    cleanTmp();
+  },
+
+  'frontmatter: missing title is error': () => {
+    const html = `---
+aliases: ["categories/AI/test"]
+tags: [test]
+---
+<div class="wrap"></div>`;
+    const f = writeTmp('no_title.html', html);
+    const result = runLint(f);
+    assert.notEqual(result.exitCode, 0, 'Missing title should fail');
+    assert(result.output.includes('Missing required frontmatter field: title'), 'Should report missing title');
+    cleanTmp();
+  },
+
+  'frontmatter: tags > 5 is warning': () => {
+    const html = `---
+title: Test
+aliases: ["categories/AI/test"]
+tags: [a, b, c, d, e, f]
+---
+<div class="wrap"></div>`;
+    const f = writeTmp('too_many_tags.html', html);
+    const result = runLint(f);
+    assert(result.output.includes('Tags count 6 exceeds max 5'), 'Should warn about too many tags');
+    cleanTmp();
+  },
+
+  'frontmatter: valid frontmatter passes': () => {
+    const html = `---
+title: "Test Article"
+aliases: ["categories/AI/test"]
+tags: [test, example]
+mathjax: true
+---
+<div class="wrap">
+<div class="ch fade-in">
+  <div class="ch-title">Hello</div>
+  <p>Content</p>
+</div>
+</div>`;
+    const f = writeTmp('valid_fm.html', html);
+    const result = runLint(f);
+    assert.equal(result.exitCode, 0, 'Valid frontmatter should pass');
     cleanTmp();
   },
 

@@ -146,7 +146,7 @@ for (var n = -500; n <= 500; n++) {
 {{< /jsxgraph >}}
 ```
 
-functionplot 为旧语法兼容，新建图表统一用 JSXGraph。详细语法和踩坑记录见 `~/.hanako/skills/html-blog/references/plots.md`。
+functionplot 为旧语法兼容，新建图表统一用 JSXGraph。详细语法和踩坑记录见 `~/gongshangzheng.github.io/.agents/skills/html-blog/references/plots.md`。
 
 ### 方案 F：架构图/流程图/时序图（Mermaid）
 
@@ -173,7 +173,7 @@ sequenceDiagram
 {{< /mermaid >}}
 ```
 
-Mermaid.js 运行时渲染为 SVG，自动匹配博客 dark 模式，按需加载。详细语法见 `~/.hanako/skills/html-blog/references/mermaid.md`。
+Mermaid.js 运行时渲染为 SVG，自动匹配博客 dark 模式，按需加载。详细语法见 `~/gongshangzheng.github.io/.agents/skills/html-blog/references/mermaid.md`。
 
 ### 方案 G：精确 SVG 图示 / SVG 动画（svg-animations）
 
