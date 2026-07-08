@@ -226,9 +226,25 @@
     if (!list || !backBtn || !breadcrumb) return;
 
     var tree = [];
-    var currentPath = [];
+    var initialPath = [];
     try { tree = JSON.parse(nav.getAttribute('data-tree') || '[]'); } catch (e) { tree = []; }
-    try { currentPath = JSON.parse(nav.getAttribute('data-initial-path') || '[]'); } catch (e) { currentPath = []; }
+    try { initialPath = JSON.parse(nav.getAttribute('data-initial-path') || '[]'); } catch (e) { initialPath = []; }
+
+    // Restore sidebar navigation from sessionStorage so that refreshing the page
+    // keeps the user at the same category level they were browsing.
+    // Key by the page's initial path so cross-category navigation doesn't carry over.
+    var storageKey = 'toc-cat-path:' + JSON.stringify(initialPath);
+    var currentPath = initialPath;
+    try {
+      var saved = sessionStorage.getItem(storageKey);
+      if (saved) {
+        var savedPath = JSON.parse(saved);
+        // Only restore if the saved path is still valid in the current tree
+        if (findCategoryNode(tree, savedPath)) {
+          currentPath = savedPath;
+        }
+      }
+    } catch (e) {}
 
     function render() {
       var currentNode = findCategoryNode(tree, currentPath);
@@ -236,6 +252,8 @@
       list.innerHTML = renderCategoryBrowserList(nodes, currentPath);
       breadcrumb.innerHTML = renderBreadcrumb(tree, currentPath);
       backBtn.disabled = currentPath.length === 0;
+      // Persist current navigation path for page refresh
+      try { sessionStorage.setItem(storageKey, JSON.stringify(currentPath)); } catch (e) {}
     }
 
     backBtn.addEventListener('click', function(e) {
