@@ -3,7 +3,7 @@ title: "数字人论文精读（三十三）：ToonTalker，首个跨域卡通-�
 description: "深读 ICCV 2023 论文 ToonTalker：拆解基于 Transformer 的跨域重演三阶段 Pipeline（特征提取→规范空间变换→图像生成），分析类比约束如何解决无配对训练数据问题，汇总自建 Disney 卡通数据集（344 视频/47K 帧）和 Real↔Cartoon 双向实验数据，解读 20 人 User Study 设计。"
 date: 2026-07-06T19:00:00
 created_at: 2026-07-06T19:00:00
-updated_at: 2026-07-06T19:00:00
+updated_at: 2026-07-08T09:40:00
 tags: [数字人, ToonTalker, 卡通, Cross-Domain, Face Reenactment, ICCV 2023, 论文精读, Cartoon, Transformer]
 aliases: ["categories/AI/数字人/数字人论文精读"]
 sub_id: 330
@@ -181,6 +181,33 @@ repos: []
   </div>
 
   <p>关键超参数：<strong>\(\lambda_{per} = 10\)</strong>（感知损失权重），<strong>\(\lambda_m = 20\)</strong>（类比约束权重）。后者的权衡效应将在 §5.4 消融实验中详细分析。</p>
+
+  <h3 class="section-title">3.3 训练配置披露表</h3>
+
+  <p>按照可复现性标准，下表逐项列出论文的训练配置披露情况。未披露的项明确标注"未披露"，不臆测。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>Stage 1: VoxCeleb 训练集（171K 视频）；Stage 2: Disney 卡通（289 训练视频）+ VoxCeleb 子集</td></tr>
+        <tr><td>训练硬件</td><td>未披露</td><td>原文未给出 GPU 型号与数量</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>Adam（β1/β2/ε/weight decay 原文未给出）</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>Stage 1: 5×10⁻⁴；Stage 2: 1×10⁻⁴；无 schedule 与 warmup 描述</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>Stage 1: 64；Stage 2: 8</td></tr>
+        <tr><td>训练步数 / 轮数</td><td>已披露</td><td>Stage 1: 450,000 iterations；Stage 2: 10,000 iterations</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出训练总耗时</td></tr>
+        <tr><td>模型参数量</td><td>未披露</td><td>原文未给出总参数量或可训练参数量</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未提及 FP32/FP16/BF16 等</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出模型选择标准</td></tr>
+        <tr><td>初始化来源</td><td>已披露</td><td>Stage 2 将 Stage 1 真实域组件复制为卡通域初始组件</td></tr>
+        <tr><td>Motion Code Base 维度</td><td>已披露</td><td>\(K=20\) 个可学习嵌入，每个 \(p^k \in \mathbb{R}^{512}\)</td></tr>
+        <tr><td>损失权重</td><td>已披露</td><td>\(\lambda_{per}=10\)，\(\lambda_m=20\)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>可复现性评估</strong>：ToonTalker 的训练超参数（iterations、batch size、学习率、损失权重）披露较为充分，但<strong>训练硬件、训练时长、模型参数量、精度格式和 Checkpoint 策略均未披露</strong>。Disney 卡通数据集虽计划公开发布，但代码和预训练模型截至发文时未开源，这些因素增加了完全复现的难度。</div>
 </div>
 
 <!-- ============================================================
@@ -188,24 +215,31 @@ repos: []
   ============================================================ -->
 <div class="ch fade-in">
   <div class="ch-label">Part 4</div>
-  <div class="ch-title">推理 Pipeline：双向跨域推理流程</div>
+  <div class="ch-title">推理 Pipeline：双向跨域推理的完整链路</div>
 
-  <h3 class="section-title">4.1 Real→Cartoon（真实驱动卡通）</h3>
+  <h3 class="section-title">4.1 推理输入准备</h3>
 
-  <ol>
-    <li>真实驱动视频帧 \(x_d^R\) → \(E_m^R\) → 动作描述符 \(F_d^R\)</li>
-    <li>卡通源图像 \(x_s^C\) → \(E_a^C\) → 外观特征 \(S^C\)，\(E_m^C\) → \(F_s^C\)</li>
-    <li>\(T_{s \to r}(F_s^C, p^C) = w_{s \to r}\)，\(T_{r \to d}(F_d^R, p^R) = w_{r \to d}\)</li>
-    <li>规范空间向量加法：\(w_{s \to d} = w_{s \to r} + w_{r \to d}\)</li>
-    <li>\(T_B^C(w_{s \to d})\) → 条件特征</li>
-    <li>\(G^C(\text{条件特征}, S^C)\) → 输出动画卡通图像</li>
-  </ol>
+  <p>ToonTalker 的推理需要两个输入：<strong>源图像</strong>（被驱动的肖像，可以是卡通或真实）和<strong>驱动视频</strong>（提供运动信号的序列，来自另一个域）。在 Real→Cartoon 方向，源图像是一张卡通角色图，驱动视频是一段真实人脸视频；在 Cartoon→Real 方向，角色互换。源图像和驱动帧的分辨率均为 \(256 \times 256\)。</p>
 
-  <h3 class="section-title">4.2 Cartoon→Real（卡通驱动真实）</h3>
+  <p>论文未提及推理时是否需要对输入做特殊预处理（如人脸检测、对齐或裁剪），也未提及是否需要指定参考帧。从训练流程推断，推理时直接使用原始裁剪后的图像即可，无需额外对齐步骤——因为规范空间变换由 Query Transformer 自动完成域间对齐。</p>
 
-  <p>角色互换，流程对称。卡通视频帧经 \(E_m^C\) 提取动作描述符，经 \(T_{r \to d}\) 投射到规范空间；真实源图像经 \(E_a^R\) 提取外观特征，经 \(T_{s \to r}\) 投射到规范空间。向量加法后，\(T_B^R\) 投射回真实域，\(G^R\) 生成动画真实图像。</p>
+  <h3 class="section-title">4.2 Real→Cartoon 推理流程</h3>
 
-  <p>双向推理的一个关键特点是：<strong>规范空间充当了"通用翻译中间层"</strong>——任何域的动作都先"翻译"到规范空间，再"翻译"回目标域。这使得方法在理论上可以扩展到更多域，而无需重新训练。</p>
+  <p>以真实驱动卡通为例，推理链路分为三个阶段。<strong>第一阶段是特征提取</strong>：卡通源图像 \(x_s^C\) 分别送入外观编码器 \(E_a^C\) 和动作编码器 \(E_m^C\)，前者提取多尺度空间特征 \(S^C = \{S^i\}_{i=1}^N\)（从 \(8 \times 8\) 到 \(256 \times 256\) 共 6 个尺度），后者输出 512 维动作描述符 \(F_s^C\)。同时，真实驱动视频的每一帧 \(x_d^R\) 送入真实域动作编码器 \(E_m^R\)，得到驱动动作描述符 \(F_d^R\)。</p>
+
+  <p><strong>第二阶段是规范空间变换</strong>：源动作描述符 \(F_s^C\) 和卡通域 Motion Code Base \(p^C\)（20 个可学习嵌入向量）送入 Source Query Transformer \(T_{s \to r}\)，输出规范空间运动码 \(w_{s \to r}\)。驱动动作描述符 \(F_d^R\) 和真实域 Motion Code Base \(p^R\) 送入 Driving Query Transformer \(T_{r \to d}\)，输出 \(w_{r \to d}\)。由于两个 Query Transformer 共享参数，不同域的动作描述符被投射到同一个规范空间中，使运动码可以直接相加：\(w_{s \to d} = w_{s \to r} + w_{r \to d}\)。</p>
+
+  <p><strong>第三阶段是图像生成</strong>：规范空间运动码 \(w_{s \to d}\) 送入卡通域 Backward Transformer \(T_B^C\)（3 层 Transformer），投射回卡通域生成多尺度条件特征。这些条件特征与外观编码器提取的空间特征 \(S^C\) 一起送入渐进式生成器 \(G^C\)。生成器包含 6 个 StyleConv 块：前 3 个块对低分辨率特征图进行条件扭曲和上采样，后 3 个块不仅扭曲特征图，还通过 Spatial Feature Transformation (SFT) 对高分辨率特征进行逐像素调制（\(o^i = \alpha^i \odot f_w^i + \beta^i\)），有效减轻扭曲伪影，最终输出 \(256 \times 256\) 的动画卡通图像。</p>
+
+  <h3 class="section-title">4.3 Cartoon→Real 推理流程</h3>
+
+  <p>Cartoon→Real 方向的推理流程与 Real→Cartoon 完全对称：卡通视频帧经 \(E_m^C\) 提取动作描述符，经 \(T_{r \to d}\) 投射到规范空间；真实源图像经 \(E_a^R\) 提取外观特征，经 \(T_{s \to r}\) 投射到规范空间。向量加法后，\(T_B^R\) 投射回真实域，\(G^R\) 生成动画真实图像。整个推理过程不需要任何域特异的预处理或后处理——规范空间充当了"通用翻译中间层"，任何域的动作都先"翻译"到规范空间，再"翻译"回目标域。这使得方法在理论上可以扩展到更多域，而无需重新训练。</p>
+
+  <h3 class="section-title">4.4 推理硬件与效率</h3>
+
+  <p>论文<strong>未披露推理所使用的 GPU 型号、推理速度（FPS）、延迟或显存占用</strong>。从模型架构推断，推理时需要前向传播外观编码器（6 层 ResBlock）、动作编码器（7 层 ResBlock）、两个 Query Transformer、Backward Transformer（3 层）和生成器（6 层 StyleConv + SFT），计算量中等。但由于论文未公开代码和预训练模型，无法直接测量推理性能。</p>
+
+  <div class="callout"><strong>推理流程总结</strong>：ToonTalker 的推理是一个纯前向过程——源图像和驱动帧分别经域特异编码器提取特征，通过域共享的 Query Transformer 投射到规范空间，向量加法合成运动码，再经 Backward Transformer 和渐进式生成器输出动画帧。整个流程无需迭代优化、无需 3DMM 拟合、无需关键点检测，理论推理效率优于需要迭代的扩散模型方法。</div>
 </div>
 
 <!-- ============================================================
@@ -251,6 +285,34 @@ repos: []
   </div>
 
   <p>所有对比方法（FOMM #Siarohin-et-al.-2020#、LIA #Wang-et-al.-2022#、DaGAN #Wang-et-al.-2023#）均使用相同卡通训练数据微调，保证公平比较。</p>
+
+  <h3 class="section-title">5.2b 训练与推理实验配置表</h3>
+
+  <p>下表汇总论文中涉及的全部训练与推理环境信息，逐项标注披露状态。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据集</td><td>已披露</td><td>VoxCeleb（171K 视频）+ Disney 卡通（289 训练视频）</td></tr>
+        <tr><td>数据规模</td><td>已披露</td><td>真实域 171K 视频，卡通域 ~47K 帧（344 视频）</td></tr>
+        <tr><td>训练硬件</td><td>未披露</td><td>原文未给出 GPU 型号与数量</td></tr>
+        <tr><td>推理硬件</td><td>未披露</td><td>原文未给出推理 GPU 型号</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>Adam</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>Stage 1: 5×10⁻⁴，Stage 2: 1×10⁻⁴</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>Stage 1: 64，Stage 2: 8</td></tr>
+        <tr><td>训练 iterations</td><td>已披露</td><td>Stage 1: 450K，Stage 2: 10K</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>推理速度 / FPS</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>推理延迟</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>分辨率</td><td>已披露</td><td>训练和推理均为 256×256</td></tr>
+        <tr><td>代码开源</td><td>未开源</td><td>截至发文时代码和预训练模型未公开</td></tr>
+        <tr><td>数据集开源</td><td>计划开源</td><td>Disney 卡通数据集计划公开发布</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键缺失</strong>：论文未披露训练和推理的 GPU 型号、数量、训练时长、推理速度等工程信息。这显著影响可复现性评估——读者无法判断训练成本和推理效率，也无法与后续工作进行公平的计算资源对比。</div>
 
   <h3 class="section-title">5.3 Real→Cartoon 跨域重演</h3>
 
