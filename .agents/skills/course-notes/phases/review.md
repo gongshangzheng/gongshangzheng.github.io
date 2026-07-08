@@ -91,7 +91,7 @@ git push
 由 html-blog 统一控制邮件发送。在调用 capture.js 创建文章时加 `--notify`：
 
 ```bash
-node ~/.hanako/skills/html-blog/capture.js <slug> --notify
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --notify
 ```
 
 html-blog 发布流程会自动检查 frontmatter 中的 `notify` 字段并发送通知。

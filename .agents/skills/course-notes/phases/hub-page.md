@@ -22,14 +22,14 @@
 
 ```bash
 cd ~/gongshangzheng.github.io
-node ~/.hanako/skills/html-blog/capture.js <course>-hub --hub
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <course>-hub --hub
 ```
 
 `<course>` 命名规范：课程缩写，如 `dsp`、`info-theory`、`ml`。
 
 ### 3. 填充 Hub 页内容
 
-读取 `~/.hanako/skills/html-blog/templates/hub-template.html`，使用 `chapter-list` 布局：
+读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/templates/hub-template.html`，使用 `chapter-list` 布局：
 
 #### Frontmatter
 

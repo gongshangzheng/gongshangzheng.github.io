@@ -497,7 +497,12 @@ function build() {
   // Post-build lint: check page files for HTML structure errors
   try {
     const { execSync } = require('child_process');
-    const out = execSync('node lib/lint-html.js src/pages/*.html 2>&1 || true', { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    let out;
+    try {
+      out = execSync('node lib/lint-html.js src/pages/*.html 2>&1', { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    } catch(e) {
+      out = e.stdout || '';
+    }
     const lines = out.split('\n');
     let errCount = 0, errNames = [], pendingFile = '';
     lines.forEach(l => {
@@ -507,9 +512,11 @@ function build() {
         errNames.push(pendingFile);
       }
     });
-    if (errCount > 0 && errCount < 5) {
-      console.log(`  ⚠ Lint: ${errCount} file(s) with errors`);
+    if (errCount > 0) {
+      console.log(`  ⚠ Lint: ${errCount} file(s) with errors (build succeeded but lint issues exist)`);
       errNames.forEach(n => console.log('    ' + n));
+      console.log('  Run: node lib/lint-html.js <file> for details');
+      console.log('  Auto-fix: ~/.venv/bin/python3 scripts/fix-article.py <file> --dry-run\n');
     }
   } catch(e) {}
 }

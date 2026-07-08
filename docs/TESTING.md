@@ -38,7 +38,7 @@ module.exports = { tests, name: 'mymodule' };
 | File | Tests |
 |------|-------|
 | generator | 85 |
-| lint-html | 14 |
+| lint-html | 25 |
 | parser | 28 |
 | post-graph-db | 4 |
 | replace | 47 |
@@ -47,6 +47,6 @@ module.exports = { tests, name: 'mymodule' };
 
 ## Coverage
 
-**Total:** 209 tests across 7 modules.
+**Total:** 220 tests across 7 modules.
 
 See `docs/coverage.md` for per-module breakdown.

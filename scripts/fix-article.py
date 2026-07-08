@@ -1,0 +1,1 @@
+../.agents/skills/blog-syntax/scripts/fix-article.py

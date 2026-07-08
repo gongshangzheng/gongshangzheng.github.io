@@ -26,7 +26,7 @@ tags: [course, notes, ppt, homework, web-research, html-blog, template, docling,
 3. 每进入一个阶段：标记 `in_progress` → `read` 对应的 `phases/` 文件 → 按文件执行。
 4. 每完成一个阶段：标记 `completed` → 检查该 phase 文件末尾的 **Gate** 条件。
 5. Gate 未通过 → 禁止进入下一阶段，修正后重新检查。
-6. **所有课程笔记必须直接发布到博客（HTML）**，禁止生成中间的 org 或 Markdown 文件。必须调用 `html-blog` 作为唯一发布入口：先读取 `~/.hanako/skills/html-blog/SKILL.md`，按其模板、组件、frontmatter、图片和构建规则落盘；course-notes 只负责课程内容组织、质量门和素材合成。
+6. **所有课程笔记必须直接发布到博客（HTML）**，禁止生成中间的 org 或 Markdown 文件。必须调用 `html-blog` 作为唯一发布入口：先读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`，按其模板、组件、frontmatter、图片和构建规则落盘；course-notes 只负责课程内容组织、质量门和素材合成。
 7. 内容分析调用 `docling` skill 提取文本/公式。纯图片 PDF（docling 无文本输出）需要先把关键页渲染成图片，再用可用的图片理解能力分析截图。
    - **当前工作机专属**：在 tangwen 的当前工作机上，可以使用 `~/.venv` 安装/调用 `PyMuPDF`，将 PDF 指定页渲染为 PNG，再用 `read_file` 读取图片进行视觉确认。不要把这当作通用环境假设；在其他机器上应先检查工具是否存在。
    - 通用兜底：用 `read` 工具读取图片（内置视觉模型，首选），备选 `pdftoppm` 或 GLM 视觉 MCP，可按可用工具分析关键页截图。
@@ -83,7 +83,7 @@ Phase 5 · REVIEW + PUBLISH ─ 三路并行审查 + 修复 + 发布
 2. **创建 Hub 页**：
    ```bash
    cd ~/gongshangzheng.github.io
-   node ~/.hanako/skills/html-blog/capture.js <course>-hub --hub
+   node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <course>-hub --hub
    ```
 3. **填充 Hub 页**：使用 `chapter-list` 布局，按章节顺序列出每篇文章
 4. **Frontmatter**：`aliases` 分类路径与章节文章一致，含 `categories/课程/<课程名>`

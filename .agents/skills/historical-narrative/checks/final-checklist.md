@@ -1,0 +1,21 @@
+# 最终检查清单
+
+- [ ] 至少 3 个 subagent 按时间段分工搜集故事素材。
+- [ ] Subagent 使用 MiniMax M2.7。
+- [ ] Subagent 完成后主动轮询 `check_pending_tasks`。
+- [ ] Org 笔记已创建在 `note/` 目录，结构为编年体。
+- [ ] HTML 正文已完成，不含图片生成步骤混入。
+- [ ] 素材完整性检查通过。
+- [ ] 配图顺序：真实图片 > 参考文章图片 > AI 生成（AI 最多 2 张）。
+- [ ] 如用户提供参考文章，该文章已列入参考来源列表。
+- [ ] 图片保存到 `~/gongshangzheng.github.io/media/images/<slug>/`。
+- [ ] 音频保存到 `~/gongshangzheng.github.io/media/audio/`，如有。
+- [ ] HTML 中无 `<!-- IMAGE_PLACEHOLDER -->`。
+- [ ] frontmatter 有 `notify: true`（邮件通知，必填项，不可省略）
+- [ ] frontmatter 有 `audio_src`，如有音频。
+- [ ] HTML 使用 `.ch` 章节组件。
+- [ ] HTML 为 frontmatter + 裸正文，无 HTML 外壳标签。
+- [ ] 本地 build 预览正常。
+- [ ] 已发布 `node build.js && git push`。
+- [ ] 邮件仅发送 URL。
+- [ ] 相关索引文件已更新，如需要。
