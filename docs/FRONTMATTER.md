@@ -60,6 +60,28 @@ tags = [AI, History]
 | `hero_sub` | string | Hero subtitle |
 | `hero_tagline` | string | Hero tagline |
 | `audio_src` | string | Background music URL |
+| `paper_title` | string | (Optional) Original paper title, rendered in the “论文信息” info-box |
+| `paper_authors` | string | (Optional) Authors. Plain string rendered as-is; `[A, B, C]` joined with `, ` |
+| `paper_affiliation` | string | (Optional) Affiliation(s). Plain string as-is; `[A, B]` joined with `；` |
+| `paper_venue` | string | (Optional) Journal / conference + year (e.g. `Animals (MDPI), 2026, 16(11)`) |
+| `paper_doi` | string | (Optional) DOI. Bare DOI auto-linked to `https://doi.org/<doi>` |
+| `paper_url` | string | (Optional) Canonical paper link; when set, wraps `paper_title` as a link |
+| `paper_code` | string | (Optional) Code/repo status or URL (URLs auto-linked) |
+
+## Paper info block (paper_* fields)
+
+All `paper_*` fields are **optional**. When any one is present, the build renders a
+“论文信息” `.info-box.paper-info` at the top of the article body (right after the
+article meta). If none are present, nothing is rendered — fully backward compatible.
+
+```yaml
+paper_title: "PMTNet: A Part-Centric Missing-Aware Temporal Network ..."
+paper_authors: "Chunxi Tu, Jiatao Wu, Zeguang Huang, Jiaxing Xie"
+paper_affiliation: "华南农业大学人工智能学院；广东省农业信息监测工程技术研究中心"
+paper_venue: "Animals (MDPI), 2026, Vol. 16, No. 11"
+paper_doi: "10.3390/ani16111589"
+paper_code: "未开源（截至 2026.06 未找到官方仓库）"
+```
 
 ## Arrays (tags, categories)
 

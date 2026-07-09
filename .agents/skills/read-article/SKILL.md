@@ -283,6 +283,28 @@ synthesis.md 仅作为导航索引（"去哪里找什么"），不作为内容�
 
 **`tags` 字段**：3-5 个，硬性上限 5 个。超过 5 个标记为 P1 问题。
 
+**论文信息字段（`paper_*`，全部可选）**：论文精读文章应在 frontmatter 中填写论文元信息，由构建系统渲染为正文顶部的“论文信息” `.info-box.paper-info`。不再手写正文内的论文信息 info-box（避免重复）。全部字段可选，一个都不填则不渲染，向后兼容旧文章。
+
+| 字段 | 说明 |
+|------|------|
+| `paper_title` | 论文原标题；若同时填 `paper_url` 会自动加链接 |
+| `paper_authors` | 作者。纯字符串原样渲染；`[A, B, C]` 形式用 `, ` 连接 |
+| `paper_affiliation` | 作者单位。纯字符串原样渲染；`[A, B]` 形式用 `；` 连接 |
+| `paper_venue` | 发表信息（期刊/会议 + 年份/卷期） |
+| `paper_doi` | DOI；裸 DOI 自动链接到 `https://doi.org/<doi>` |
+| `paper_url` | 论文规范链接（arXiv/DOI 页），用于包裹标题 |
+| `paper_code` | 开源状态或仓库 URL（URL 自动加链接） |
+
+示例：
+```yaml
+paper_title: "PMTNet: A Part-Centric Missing-Aware Temporal Network for Cat Behavior Recognition in Unconstrained Videos"
+paper_authors: "Chunxi Tu, Jiatao Wu, Zeguang Huang, Jiaxing Xie"
+paper_affiliation: "华南农业大学人工智能学院；广东省农业信息监测工程技术研究中心"
+paper_venue: "Animals (MDPI), 2026, Vol. 16, No. 11"
+paper_doi: "10.3390/ani16111589"
+paper_code: "未开源（截至 2026.06 未找到官方仓库）"
+```
+
 **sub_id** 必须遵循编号规则（见 `~/.agents/skills/blog-aliases/SKILL.md` §5 + `~/gongshangzheng.github.io/.agents/skills/blog-categories/references/subcategory-organization.md`）：
 
 1. 分配前**必须运行检查命令**：

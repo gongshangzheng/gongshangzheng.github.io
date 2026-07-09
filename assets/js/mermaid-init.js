@@ -34,9 +34,13 @@
 
     mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
 
-    /* Save sources */
+    /* Save sources: preserve <br> line breaks before stripping tags */
     var sources = [];
-    pres.forEach(function (pre) { sources.push(pre.textContent); });
+    pres.forEach(function (pre) {
+      var tmp = document.createElement('div');
+      tmp.innerHTML = pre.innerHTML.replace(/<br\s*\/?>/gi, '\n');
+      sources.push(tmp.textContent);
+    });
 
     /* Render light + dark for each diagram */
     for (var i = 0; i < pres.length; i++) {
