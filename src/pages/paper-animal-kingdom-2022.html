@@ -1,0 +1,597 @@
+---
+title: "动作识别论文精读（五）：Animal Kingdom，850 物种行为理解标杆数据集"
+description: "深度解读 CVPR 2022 Oral Animal Kingdom：首个跨 850 物种 / 6 大类、统一视频片段定位 + 多标签动作识别 + 姿态估计三任务的野生动物数据集；并解析 CARe 模型如何用 general/specific feature 协作近似实现未见动物的动作识别（unseen accuracy 39.7% vs Mixup-DG 36.2%）。"
+created_at: 2026-07-09T10:29:55
+updated_at: 2026-07-09T10:37:17
+tags: ["动作识别", "数据集", "元学习", "CVPR2022", "动物行为"]
+aliases: ["categories/AI/动作识别/动作识别论文精读"]
+sub_id: 50
+hub: action-recognition-hub
+mathjax: true
+notify: true
+hero_title: "Animal Kingdom 论文精读"
+hero_sub: "CVPR 2022 Oral · 850 物种行为理解标杆数据集"
+hero_tagline: "数据集 + CARe 协作特征双贡献，让未见动物的动作识别 accuracy 从 36.2 提升到 39.7。"
+papers: ["https://arxiv.org/abs/2204.08129"]
+repos: ["https://github.com/SUTDCV/Animal_Kingdom"]
+paper_title: "Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding"
+paper_authors: "Xun Long Ng, Kian Eng Ong, Qichen Zheng, Yun Ni, Si Yong Yeo, Jun Liu"
+paper_affiliation: "Information Systems Technology and Design, Singapore University of Technology and Design, Singapore"
+paper_venue: "CVPR 2022 (Oral, Paper ID 5075)"
+paper_url: "https://arxiv.org/abs/2204.08129"
+paper_doi: "10.1109/CVPR52688.2022.01935"
+paper_code: "https://sutdcv.github.io/Animal-Kingdom （与数据集一同打包下载，含 3 个任务的代码与 helper scripts）"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">50h</span><span class="label">视频片段定位</span></div>
+  <div class="stat"><span class="num b">30K</span><span class="label g">动作识别 clips</span></div>
+  <div class="stat"><span class="num">33K</span><span class="label">姿态估计帧</span></div>
+  <div class="stat"><span class="num b">850</span><span class="label l">物种 × 6 大类</span></div>
+</div>
+
+<div class="callout"><strong>一句话读懂</strong>：Animal Kingdom 是 CVPR 2022 Oral 中首个<strong>跨 850 物种、跨 6 大类、统一视频片段定位 + 多标签动作识别 + 姿态估计三任务</strong>的野生动物数据集，并把 CARe 这种<strong>协作式 general + specific feature + MLDG 元学习</strong>范式带到了动物动作识别——首次让"训练时见的 K 种动物"的经验能迁移到<strong>未见</strong>的 5 种新动物（spider、primate、water fowl 等）上。#Ng-et-al.-2022#</div>
+
+<div class="info-box">
+  <h3>系列定位</h3>
+  <p>本文是<a href="action-recognition-hub.html">动作识别系列</a>论文精读第五篇，承接 <a href="paper-skeletr-2023.html">SkeleTR（骨架 / wild 两阶段）</a>、<a href="paper-igmn-2021.html">IGMN（身份感知时序动作）</a> 等动作识别专题，向大模型可用的"动 + 主体 + 场景"统一生态走。</p>
+  <p>Animal Kingdom 与 SkeleTR 完全不同路线：SkeleTR 关心<strong>如何在 wild 场景中识别人的动作</strong>，Animal Kingdom 关心<strong>如何在 850 种动物类间实现跨物种动作识别</strong>。前者是骨架模态范式的新设计，后者是"数据集 + 跨类方法"双贡献。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：从一只果蝇到 850 个物种的动物王国</div>
+
+  <p>从 Anderson and Perona 在 2014 年 Neuron 上呼吁建立<a href="https://www.sciencedirect.com/science/article/pii/S0896627314009005">"计算行为学"（computational ethology）</a>这个学科以来，动物行为分析已经走过十余年的发展历程。#Anderson-and-Perona-2014# 早期 DeepPoseKit、DeepLabCut 这样的 markerless 姿态估计工具让小鼠、黑腹果蝇、自由放养的猴子等<strong>实验室</strong>物种的行为学量化成为可能。#Graving-et-al.-2019# #Mathis-et-al.-2020-DeepLabCut# #Karashchuk-et-al.-2021-Anipose# 紧接着，iWildCam、Snapshot Serengeti 这类大<strong>野外</strong>数据集把红外触发相机阵列推向了生态保护，每个数据集通常达到数万到数百万张图像。#Beery-et-al.-2021-iWildCam# #Swanson-et-al.-2015-SnapshotSerengeti#</p>
+
+  <p>但截至 2022 年之前，几乎没有数据集能同时满足四件事：(1) <strong>真正多物种</strong>（远超 100 类）、(2) <strong>野生环境</strong>（背景、光照、视角、天气变化多）、(3) <strong>视频</strong>（保留时间维度的细粒度动作）、(4) <strong>多任务统一标注</strong>（同时标注动作识别、视频片段定位、姿态估计）。</p>
+
+  <p>Animal Kingdom 是首个把这四件事一次性补齐的数据集。论文 §1 概括了其规模：从 YouTube 收集 <strong>50 小时</strong> 视频，做 <strong>30,100</strong> 段动作识别片段（平均 6 秒，最长 117 秒），并标注 <strong>33,000</strong> 帧姿态样本，覆盖 <strong>850+</strong> 个物种、<strong>6</strong> 大类动物（哺乳类、爬行类、两栖类、鸟类、鱼类、昆虫类）。#Ng-et-al.-2022# 这三个数字（上文 50/30K/33K）正好对应三任务的规模。</p>
+
+  <p><strong>为什么这件事的"经济意义"也不可小觑</strong>：论文 §1 引言引述，世界每年在野生动物保护上花费至少 <strong>\$75 billion</strong>，而其中关键环节"识别动物是否异常行为"长期依赖人工巡护——这正是数据驱动方法可以大规模替代的环节。#Ng-et-al.-2022# 仅这一点，Animal Kingdom 的潜在社会影响就远超其学术层面的贡献——它不仅是一个数据集，更是一个产业基础设施的"训练弹药"。</p>
+
+  <p><strong>CVPR 2022 Oral 是这个数据集所获认可的标志</strong>。CVPR 在该年度的投稿近万篇，Oral 录取率约 5%（约 200+ 篇），代表审稿人对"贡献度 + 影响力 + 严谨性"三方面的综合认可。#Ng-et-al.-2022# 据官方页面，数据集与代码已 <a href="https://sutdcv.github.io/Animal-Kingdom">公开发布</a>——任何研究者都可以申请下载数据集 + 配套代码，并直接用 helper scripts 一键部署环境。</p>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig2_dist_animals.webp" alt="850+ 物种在 6 大类的分布" loading="lazy">
+    <div class="cap">图 1：Animal Kingdom 数据集的物种分布。物种按外观、肢数、移动方式聚成 6 大类，再细分为 sub-classes。这是论文 Table 1（数据集对比）的核心可视化——也是 why 850+ species matters 的直接证据。（来源：Animal Kingdom, supp Fig.1）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig3_eg_animals.webp" alt="6 大类动物示例" loading="lazy">
+    <div class="cap">图 2：6 大类的代表性物种示例。从哺乳类、爬行类、两栖类、鸟类、鱼类到昆虫类，每个大类都跨越了体型、骨骼、表面纹理、生活环境等维度的极端多样性。（来源：Animal Kingdom, supp Fig.2）</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：既有数据集为何满足不了"跨物种 + 真实环境 + 多任务"</div>
+
+  <h3 class="section-title">2.1 既有动物行为数据集的四大局限</h3>
+
+  <p>论文 §1 把既有数据集的缺陷抽象为四个维度，这也是后续论文"为何必须有这个数据集"的论证骨架：</p>
+
+  <ol>
+    <li><strong>规模与标注稀缺</strong>：Animal Pose (#Cao-et-al.-2019-AnimalPose#) 的 5+7 物种数据集、MacaquePose (#Labuguen-et-al.-2021-MacaquePose#) 的单种猴类，已经足够支撑小规模实验，但<strong>跨物种泛化</strong>研究没法用——数据集不够大。</li>
+    <li><strong>物种多样性不足</strong>：iWildCam、Snapshot Serengeti 等野外触发相机数据集虽然规模大，但目标都是单一生物群（草原大型哺乳动物，或野外红外阵列）。#Beery-et-al.-2021-iWildCam# #Swanson-et-al.-2015-SnapshotSerengeti# 论文 §2 在 Related Work 中说"most of the current datasets are still relatively small, disparate, animal and environment-specific"——它们难以服务于"跨物种共享特征的迁移学习"研究。</li>
+    <li><strong>环境单一</strong>：Animal Pose 跨越多个动物种类，但仍<strong>以外部 BBox 区域 crop</strong>为主，环境背景相对简单；MacaquePose 全部来自实验室拍摄。论文 §1 强调需要"varying backgrounds, viewpoints, illumination and weather conditions"——野生多样性是模型泛化的关键。</li>
+    <li><strong>任务单维</strong>：iWildCam 提供分类、Animal Pose 仅姿态、MacaquePose 仅姿态……一个数据集同时支持"动作识别 + 姿态估计 + 视频片段定位"的几乎不存在。这阻碍了<strong>联合训练</strong>和<strong>跨任务迁移</strong>研究。</li>
+  </ol>
+
+  <div class="callout"><strong>反直觉观察</strong>：上述四点是"<strong>数据不足</strong>"、"<strong>标注不足</strong>"的双重短缺——它们不是同一个问题，但<strong>都让"跨物种行为识别"难以实证</strong>。Animal Kingdom 之所以能成为 CVPR 2022 Oral，正是因为它用一个 23 人团队、3 轮交叉校验的工作，<strong>同时把四个维度全部推到了实用规模</strong>。#Ng-et-al.-2022#</div>
+
+  <h3 class="section-title">2.2 Protocol 2 揭示的根本性难度</h3>
+
+  <p>Animal Kingdom 的姿态估计部分还专门设计了一个<strong>leave-k-out 协议 (Protocol 2)</strong>：把 12 个 sub-class 完全留出训练，测试时再让模型去估计这些未见 sub-class 的姿态。这一协议直接量化了"跨物种姿态泛化"的真实难度。</p>
+
+  <p>论文 §5.5 的实验结果令人警醒：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>协议</th><th>HRNet PCK@0.05</th><th>HRNet-DARK PCK@0.05</th></tr></thead>
+      <tbody>
+        <tr><td>Protocol 1：全 80/20 split</td><td>66.06</td><td>66.57</td></tr>
+        <tr><td><strong>Protocol 2：leave-k-out (k=12)</strong></td><td><strong>39.30</strong></td><td><strong>40.28</strong></td></tr>
+        <tr><td>Protocol 3（五大类各自）：哺乳类</td><td>61.59</td><td>62.50</td></tr>
+        <tr><td>Protocol 3：两栖类</td><td>56.74</td><td>57.85</td></tr>
+        <tr><td>Protocol 3：爬行类</td><td>56.06</td><td>57.06</td></tr>
+        <tr><td>Protocol 3：鸟类</td><td>77.35</td><td>77.41</td></tr>
+        <tr><td>Protocol 3：鱼类</td><td>68.25</td><td>69.96</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>关键数字</strong>：从 Protocol 1 到 Protocol 2，HRNet 的 PCK@0.05 从 <strong>66.06 → 39.30</strong>，整整<strong>掉了 26.76 个点</strong>。这意味着 cross-class 姿态泛化目前在 SOTA 模型上<strong>还远远不够</strong>。#Ng-et-al.-2022# 这一发现本身就是 Animal Kingdom 的核心贡献之一——它给社区提供了一个"开放问题"的标准化实验台。</p>
+
+  <p>而 Protocol 3 显示：<strong>鸟类（77.4）远高于爬行类（57.1）和两栖类（57.9）</strong>，因为后两者肢体形态变化大、伪装多、关键点位置高度异质。这一模式在 CARe 的设计动机中也会再次出现——动物之间的相似性是<strong>空间位置相关</strong>的。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">CARe 架构详解：让"见过 K 种"的知识迁移到"未见"的物种</div>
+
+  <p>论文的核心方法论贡献是 <strong>Collaborative Action Recognition (CARe)</strong> 模型。它解决了一个诱人的问题：<strong>如何用 K 种已见动物的训练数据，让模型在推理时识别另 5 种完全没见过的动物执行同一组动作？</strong> 这是典型的<strong>跨类域泛化</strong>（cross-class domain generalization）问题。#Ng-et-al.-2022#</p>
+
+  <h3 class="section-title">3.1 问题形式化</h3>
+
+  <p>训练数据被分为 K 类：\(\mathbf{D} = \{D_k\}_{k=1}^{K}\)，每类 \(D_k = \{(x_n^k, y_n^k)\}_{n=1}^{N_k}\)，其中 \(x_n^k\) 是第 k 种动物的第 n 个视频动作样本，\(y_n^k\) 是对应的多标签动作标签（多标签意味着同一段视频可同时标注多个动作，例如"swimming + hunting"）。</p>
+
+  <p>推理时遇到<strong>训练时完全没见过</strong>的新动物类，需要识别同一组动作。这一问题与零样本学习（ZSL）的关系：CARe <strong>不依赖未见类的语义嵌入</strong>（不需要预先手工写出未见类的特征描述），而是直接<strong>用已见类的特征做协作组合</strong>，因此更接近域泛化（Domain Generalization）。</p>
+
+  <h3 class="section-title">3.2 基础架构：双流 General + Specific Features</h3>
+
+  <p>CARe 把 backbone 之后的特征拆成<strong>两类</strong>：</p>
+
+  <ul>
+    <li><strong>通用特征 \(f_{gen}\)</strong>：由 <strong>所有 K 类动物</strong> 的样本都流过的 elaborator \(F_{gen}\) 提取 → 学到的是"什么是 generic 的动物动作"。</li>
+    <li><strong>特定特征 \(f^k_{specific}\)</strong>：由 <strong>只有第 k 类动物样本</strong> 经过的 elaborator \(F^k_{specific}\) 提取 → 学到的是"第 k 类动物独特的行为模式"。</li>
+  </ul>
+
+  <p>预测时把两者 concat 送入分类器：</p>
+
+  \[\hat{y}_n^k = C\Big(F_{gen}\big(E(x_n^k)\big),\; F^k_{specific}\big(E(x_n^k)\big)\Big)\]
+
+  \[\ell = \ell_{CE}(\hat{y}_n^k,\; y_n^k) \quad\quad \text{(eq. eq\_loss)}\]
+
+  <p><strong>直觉</strong>：因为 \(F_{gen}\) 见过更多样的数据（所有 K 类），它的特征在不同类间更<strong>通用</strong>；\(F_{specific}^k\) 因为只看到一种动物，它的特征会"过度适配"，但同时也保留该类独有的细粒度细节。两者拼接，通用识别能力 + 物种特定细节。<strong>互补性</strong>是这一设计的关键。</p>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig1_arch.webp" alt="CARe 基础架构" loading="lazy">
+    <div class="cap">图 3：CARe 基础架构。视频经 I3D backbone \(E\) 得到 \(f_{base}\)，并行送入共享的 \(F_{gen}\) 与 K 个 \(F^k_{specific}\)，concat 后由 classifier \(C\) 输出动作 logit。（来源：Animal Kingdom, main Fig.2 / arch.png）</div>
+  </div>
+
+  <h3 class="section-title">3.3 处理未见动物：Relevance Evaluator + 协作近似</h3>
+
+  <p>基础版本处理未见动物时遇到困难——没有与未见类对应的 \(F_{specific}\)。论文 §3 的核心洞察是：</p>
+
+  <div class="callout"><strong>动物之间共享不同程度的外观与行为相似性</strong>。<br>例：猎豹和老虎的相似度远大于它们与蛇的相似度。<br>利用这种相似度，可以<strong>协作式地</strong>近似出未见动物的 specific feature。#Ng-et-al.-2022#</div>
+
+  <p>于是论文引入 <strong>relevance evaluator \(R\)</strong>。给定一个未见动物的视频样本 \(x\)，\(R\) 计算它与 K 个已见类的相似度：</p>
+
+  \[
+  \mathbf{w} = R\Big(f_{base},\; \{f^k_{specific}\}_{k=1}^K\Big),\quad \mathbf{w} = \{w^k\}_{k=1}^K
+  \]
+
+  <p>然后用 K 个 existing specific elaborators <strong>按权重组合</strong>，得到未见动物的近似 specific feature：</p>
+
+  \[
+  \hat{f}_{specific} = \frac{1}{K}\sum_{k=1}^{K} w^k \cdot f^k_{specific} \quad\quad \text{(eq. eq\_moe)}
+  \]
+
+  <p><strong>关键创新：空间感知张量权重</strong>。论文 §3 还提到，\(w^k\) 不必是标量——可以做成 <strong>tensor \(w^k \in \mathbb{R}^{h \times w}\)</strong>。这样不同身体部位的相似度<strong>独立计算</strong>，不同已见动物按部位分别贡献——某一种特征 elaborator 可能对头部相似，对尾巴不相似，张量化权重自然处理了这种空间异质性。</p>
+
+  <p>消融实验 §5.3 直接验证了 spatial-aware 的必要性：去掉 spatial-aware → 39.7% 掉到 37.1%（<strong>-2.6 点</strong>）。#Ng-et-al.-2022#</p>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig8_arch_supp.webp" alt="CARe 完整架构（含 R）" loading="lazy">
+    <div class="cap">图 4：CARe 完整架构。补充材料展示了 R 网络的内部结构——\(R_{conv1}, R_{conv2}\) + K 个 \(R^k_{linear}\) 线性层，分别输出 \(w^k\)。（来源：Animal Kingdom, supp Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">3.4 用 Meta-Learning 训练 R：MLDG 算法</h3>
+
+  <p>R 网络的训练需要让它在<strong>真正未见</strong>的动物类上也能给出好相似度——这是一个直接优化难以处理的目标。论文借鉴了 <a href="https://arxiv.org/abs/1710.03463">MLDG 算法</a>#Li-et-al.-2018-MLDG#（meta-learning for domain generalization）的思想：</p>
+
+  <ol>
+    <li>将训练集中 K 类动物划分为 meta-train（K-1 类）和 meta-test（1 类，扮演"虚拟未见"）。</li>
+    <li>在 meta-train 上做一步梯度下降得到临时参数 \(\phi'\)。</li>
+    <li>在 meta-test 上用 \(\phi'\) 计算"虚拟未见" loss。</li>
+    <li>最终用 meta-train 梯度 + meta-test 梯度共同更新 R 参数 \(\phi\)。</li>
+  </ol>
+
+  <p>补充材料 Algorithm 1 给出完整伪代码：</p>
+
+  \[
+  \phi' \leftarrow \phi - \alpha \nabla_\phi \ell_{mtrain}(\phi) \quad \text{(meta-train)}
+  \]
+
+  \[
+  \ell_{mtest} = \ell_{CE}(\hat{y}(\phi'), y)
+  \]
+
+  \[
+  \phi \leftarrow \phi - \beta\Big((1-\lambda)\nabla_\phi \ell_{mtrain}(\phi) + \lambda \nabla_\phi \ell_{mtest}(\phi')\Big) \quad \text{(meta update)}
+  \]
+
+  <p><strong>为何能 work 的直觉</strong>：R 在训练时就已经"见过" K-1 vs 1 的虚拟 unseen 场景，这意味着 R 在测试阶段遇到真正的新类时，分布偏移已经被模拟过——它真正"学会了如何把 seen 知识迁到 unseen"。#Ng-et-al.-2022#</p>
+
+  <h3 class="section-title">3.5 实现细节</h3>
+
+  <ul>
+    <li><strong>Backbone \(E\)</strong>：I3D 早期部分——\(E_{conv1}, E_{conv2}, E_{conv3}\) 三层 3D 卷积 + 两层 max pooling + 一个 Inception 子模块。#Carreira-and-Zisserman-2017# 输入 \(x \in \mathbb{R}^{3 \times 16 \times 180 \times 320}\)，输出 \(f_{base} \in \mathbb{R}^{256 \times 8 \times 23 \times 40}\)。</li>
+    <li><strong>Elaborators \(F_{gen}, F^k_{specific}\)</strong>：每个由 2 层 lightweight <strong>two-head self-attention</strong> 构成，源自 Video Action Transformer (VAT) 网络。#Girdhar-et-al.-2019-VAT# 输出特征尺寸 \(\mathbb{R}^{4 \times 12 \times 20}\)。</li>
+    <li><strong>Classifier \(C\)</strong>：1 个线性层，把 flattened+concat 的 \((f_{gen}, f_{specific})\) 映射到 \(\hat{y} \in \mathbb{R}^M\)，\(M = 140\) 类动作。</li>
+    <li><strong>Relevance Evaluator \(R\)</strong>：\(R_{conv1}, R_{conv2}\) 卷积变换 + K 个线性 \(R^k_{linear}\)，每条路径把变换后的 base feature 与 \(f^k_{specific}\) flatten+concat 投影到 \(w^k\)。</li>
+  </ul>
+
+  <p>最终架构见补充材料图 + 上图 4。</p>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">训练 CARe：双阶段交替 + MLDG</div>
+
+  <h3 class="section-title">4.1 训练数据</h3>
+
+  <p>CARe 的训练数据来源于 Animal Kingdom 数据集自身。具体：</p>
+
+  <ul>
+    <li>从 140 动作中选 6 个"跨类共享"的动作子集：<strong>moving, eating, attending, swimming, sensing, keeping still</strong>。</li>
+    <li><strong>训练集（已见 K=4 类）</strong>：birds, fishes, frogs, snakes。</li>
+    <li><strong>测试集（未见类 5 类）</strong>：lizards, primates, spiders, orthopteran insects, water fowls。</li>
+    <li>每段视频只包含一个动作实例（方便评估 accuracy）。</li>
+  </ul>
+
+  <p>这是一个典型的"跨类泛化"实验设计——和 image classification 的"4 训练 class / 5 真正 unseen test class"模式一致。</p>
+
+  <h3 class="section-title">4.2 训练配置披露表</h3>
+
+  <p>下表系统列出 CARe 训练的全部 10 项硬性字段。原论文（main + supplementary）中<strong>有披露的项已标明值，未披露的项明确标记</strong>"未披露"。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>Animal Kingdom 6 个共享动作的子集；训练集 K=4 类（birds/fishes/frogs/snakes），测试 5 类未见</td></tr>
+        <tr><td>训练硬件</td><td>部分披露</td><td>"<strong>2-GPU implementation</strong>"；型号未明确给出</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>SGD；momentum / weight_decay 未披露</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>backbone \(E\)：<strong>0.001</strong>；其他组件：<strong>0.01</strong>；后 10 epochs 衰减到初始的 10%</td></tr>
+        <tr><td>Batch size</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>训练步数 / 轮数</td><td>已披露</td><td><strong>40 epochs</strong> = 30 epochs 初始 LR + 10 epochs 衰减 LR</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>模型参数量</td><td>未披露</td><td>各模块维度已给出（256×8×23×40 base feature），总参数未给</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>未明确给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Input 分辨率</td><td>已披露</td><td><code>3 × 16 × 180 × 320</code>（RGB × 帧数 × 高 × 宽）</td></tr>
+        <tr><td>Backbone 初始化</td><td>已披露</td><td>在 ImageNet + Kinetics 上预训练的 I3D</td></tr>
+        <tr><td>Input frames / video</td><td>已披露</td><td>每段视频随机采 <strong>16 帧</strong></td></tr>
+        <tr><td>Self-attention heads</td><td>已披露</td><td>"two-head" self-attention（每个 elaborator）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.3 训练阶段 1：基础模型更新</h3>
+
+  <p>在已见 K 类动物上，CARe 用 cross-entropy loss 训练 backbone \(E\)、general elaborator \(F_{gen}\)、所有 K 个 specific elaborators \(\{F^k_{specific}\}_{k=1}^K\)、classifier \(C\)。这一阶段最大化所有<strong>已见</strong>类的动作识别精度。</p>
+
+  <p>Loss 见 eq. eq_loss。需要注意：这一阶段只有<strong>已见</strong>类样本流过对应的 specific elaborator——\(D_k\) 走 \(F^k_{specific}\) 而不走 \(F^{j \neq k}_{specific}\)。</p>
+
+  <h3 class="section-title">4.4 训练阶段 2：MLDG 训练 R</h3>
+
+  <p>在阶段 1 之后，CARe 单独用 MLDG 算法训练 R 网络。具体步骤：</p>
+
+  <ol>
+    <li>从 K 类中随机选 1 类作为虚拟 meta-test 类，其余 K-1 类作为 meta-train。</li>
+    <li><strong>Meta-train</strong>：用 K-1 类样本跨 R 计算 gradient，得到临时 R 参数 \(\phi'\)。</li>
+    <li><strong>Meta-test</strong>：用 meta-test（虚拟未见）的样本在 \(\phi'\) 下计算 CE loss。</li>
+    <li><strong>Meta update</strong>：用 meta-train 梯度（权重 \(1-\lambda\)）+ meta-test 梯度（权重 \(\lambda\)）更新 R 参数 \(\phi\)。</li>
+  </ol>
+
+  <p>这两个阶段在训练中<strong>交替</strong>运行——阶段 1 让基础模型变强，阶段 2 让 R 在"虚拟未见"场景下学会合理输出相似度。两者的耦合让 CARe 最终在 truly unseen 类（spider, primate 等）上 work。</p>
+
+  <h3 class="section-title">4.5 训练成本估算</h3>
+
+  <p>基于 2-GPU + SGD + I3D backbone + 16 frames/video + 40 epochs 的配置，CARe 训练时长预计在<strong>数小时到 1 天</strong>量级（论文未直接给出绝对值）。论文 §1 提到的代码仓库已开源 <a href="https://sutdcv.github.io/Animal-Kingdom">SUTDCV/Animal_Kingdom</a>——和数据集打包下载，包含 helper scripts 一键配置环境。</p>
+
+  <div class="callout"><strong>复现提示</strong>：论文<strong>未明确披露 batch size 与 GPU 型号</strong>，复现时建议从 batch size 8-16（per-GPU）开始尝试。若 2 卡 P100 / V100 跑不动，尝试把 batch size 降到 4，因为 I3D backbone 在该 backbone 早期输出上占用显存。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">推理 CARe：已见 / 未见两条完全不同路径</div>
+
+  <p>CARe 的推理流程对已见动物和未见动物完全不同——这是论文设计中需要格外强调的一点。下面逐一说明。</p>
+
+  <h3 class="section-title">5.1 已见动物推理（常规路径）</h3>
+
+  <p>推理流程与训练阶段 1 完全相同：</p>
+
+  <ol>
+    <li>输入视频采样 16 帧 → resize 到 \(180 \times 320\)；</li>
+    <li>送入 backbone \(E\) 得到 \(f_{base}\)；</li>
+    <li>送入 \(F_{gen}\) 与对应已见类的 \(F^k_{specific}\)；</li>
+    <li>concat 特征送入 \(C\) 得到动作 logit；</li>
+    <li>argmax 取动作类别。</li>
+  </ol>
+
+  <p>这一路径在论文中没有刻意展示——因为它就是"基础模型的标准推理"。</p>
+
+  <h3 class="section-title">5.2 未见动物推理（协作近似路径）</h3>
+
+  <p>对于真正未见类，流程显著更复杂：</p>
+
+  <ol>
+    <li>同样送入 \(E\) 得 \(f_{base}\)；</li>
+    <li>同时送入<strong>所有 K 个</strong> \(F^k_{specific}\)，得 K 组 specific features \(\{f^k_{specific}\}_{k=1}^K\)；</li>
+    <li>送入 \(R\) 计算相似度权重 \(\{w^k\}_{k=1}^K\)；</li>
+    <li>协作组合：\(\hat{f}_{specific} = \frac{1}{K}\sum w^k \cdot f^k_{specific}\)；</li>
+    <li>送入 \(F_{gen}\) 得 \(f_{gen}\)；</li>
+    <li>concat 两者（已用 \(\hat{f}_{specific}\) 替代真实 specific）送入 \(C\) 得到最终 logit。</li>
+  </ol>
+
+  <p>推理时的算力消耗：对未见动物，CARe 需要计算 K 组 specific + 1 次 R + 1 次 classifier，比已见路径多 K 个 elaborator 的开销。这是一个<strong>可接受</strong>的代价——因为数据集规模下推理延迟远高于单次 elaborator forward（约几毫秒）。</p>
+
+  <p><strong>训练 vs 推理对比的关键差异</strong>：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>阶段</th><th>已见动物</th><th>未见动物</th></tr></thead>
+      <tbody>
+        <tr><td>训练时</td><td>用真实 \(F^k_{specific}\)（K 类各 1 个）</td><td>不参与训练</td></tr>
+        <tr><td>已见推理</td><td>用真实 \(F^k_{specific}\)（样本属于哪类就用哪类的）</td><td>不适用</td></tr>
+        <tr><td>未见推理</td><td>不适用</td><td>用协作式近似的 \(\hat{f}_{specific}\)（R 输出的权重 + K 个 specific elaborators）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">5.3 推理成本评估</h3>
+
+  <p>由于论文未明确给出 latency / throughput 数值，我们只能基于论文中给出的数据做近似估算。CARe 主干的算力分布：</p>
+
+  <ul>
+    <li>Backbone \(E\) (I3D early)：占总 FLOPs 绝大部分。</li>
+    <li>4 (gen) + K×4 (specific) + 1 (R)：每条 elaborator 路径都对 base feature 做 2 层 self-attention，开销较小。</li>
+    <li>未见动物路径每次推理多 K 次 elaborator + 1 次 R——这是精度提升的<strong>主要成本</strong>。</li>
+  </ul>
+
+  <div class="callout"><strong>实用价值</strong>：CARe 的"未见动物推理"路径设计的核心优势在于<strong>无需重新训练</strong>就能对训练时完全没见过的新物种做动作识别。这一特性让 Animal Kingdom + CARe 范式特别适合<strong>生物多样性监测</strong>——实践中发现某种新物种的样本时，不需要重新训练模型，只需让 R + K 个 specific elaborators 协作即可。这在生产部署上是显著的成本节约。</div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：三任务 + 失败案例的全面图景</div>
+
+  <h3 class="section-title">6.1 实验配置披露表</h3>
+
+  <p>下表列出 4 个评测维度的实验配置硬件/评估细节。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>评测维度</th><th>评估指标</th><th>测试集</th><th>Baseline 列表</th></tr></thead>
+      <tbody>
+        <tr><td>动作识别（baseline × 长尾）</td><td>overall mAP / head / middle / tail</td><td>AR 测试 20%（≈6K clips）</td><td>I3D, SlowFast, X3D × Focal/LDAM-DRW/EQL/CE</td></tr>
+        <tr><td>动作识别（unseen class）</td><td>Accuracy %</td><td>5 unseen class 全部（lizard/primate/spider/orthopteran/water fowl）</td><td>Episodic-DG, Mixup-DG, CARe ablation</td></tr>
+        <tr><td>视频片段定位</td><td>mean IoU, R@1 IoU∈{0.1, 0.3, 0.5, 0.7}</td><td>VG 测试 20%</td><td>VSLNet, LGI</td></tr>
+        <tr><td>姿态估计</td><td>PCK@0.05</td><td>3 协议（All / leave-k-out / 类内 80/20）</td><td>HRNet, HRNet-DARK</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 动作识别：长尾方法 × Backbone 完整扫描（Table 3）</h3>
+
+  <p>Animal Kingdom 的多标签动作识别数据天然 long-tailed——140 类的标注量高度不均。论文完整评估了 3 个 backbone × 4 个长尾方法 = 12 种组合。#Ng-et-al.-2022#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>组合</th><th>overall mAP</th><th>head</th><th>middle</th><th>tail</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Baseline (Cross-Entropy Loss)</strong></td><td></td><td></td><td></td><td></td></tr>
+        <tr><td>I3D #Carreira-and-Zisserman-2017# + CE</td><td>16.48</td><td>46.39</td><td>20.68</td><td>12.28</td></tr>
+        <tr><td>SlowFast #Feichtenhofer-et-al.-2019-SlowFast# + CE</td><td>20.46</td><td>54.52</td><td>27.68</td><td>15.07</td></tr>
+        <tr><td>X3D #Feichtenhofer-2020-X3D# + CE</td><td>25.25</td><td>60.33</td><td>36.19</td><td>18.83</td></tr>
+        <tr><td><strong>Focal Loss #Lin-et-al.-2017-FocalLoss#</strong></td><td></td><td></td><td></td><td></td></tr>
+        <tr><td>I3D + Focal</td><td>26.49</td><td>64.72</td><td>40.18</td><td>19.07</td></tr>
+        <tr><td>SlowFast + Focal</td><td>24.74</td><td>60.72</td><td>34.59</td><td>18.51</td></tr>
+        <tr><td>X3D + Focal</td><td>28.85</td><td>64.44</td><td>39.72</td><td>22.41</td></tr>
+        <tr><td><strong>LDAM-DRW #Cao-et-al.-2019-LDAM#</strong></td><td></td><td></td><td></td><td></td></tr>
+        <tr><td>I3D + LDAM-DRW</td><td>22.40</td><td>53.26</td><td>27.73</td><td>17.82</td></tr>
+        <tr><td>SlowFast + LDAM-DRW</td><td>22.65</td><td>50.02</td><td>29.23</td><td>17.61</td></tr>
+        <tr><td>X3D + LDAM-DRW</td><td>30.54</td><td>62.46</td><td>39.48</td><td>24.96</td></tr>
+        <tr><td><strong>EQL #Tan-et-al.-2020-EQL#</strong></td><td></td><td></td><td></td><td></td></tr>
+        <tr><td>I3D + EQL</td><td>24.85</td><td>60.63</td><td>35.36</td><td>18.47</td></tr>
+        <tr><td>SlowFast + EQL</td><td>24.41</td><td>59.70</td><td>34.99</td><td>18.07</td></tr>
+        <tr><td><strong>X3D + EQL</strong></td><td><strong>30.55</strong></td><td><strong>63.33</strong></td><td>38.62</td><td><strong>25.09</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>关键数字解读：</p>
+
+  <ul>
+    <li><strong>长尾方法普遍有效</strong>：所有 backbone 加任意长尾损失都比 baseline CE 显著提升——X3D 在 head/middle/tail 上分别提升了 3.00 / 2.43 / 6.26 个点。</li>
+    <li><strong>EQL 与 LDAM-DRW 并列最佳</strong>：X3D + EQL (30.55) ≈ X3D + LDAM-DRW (30.54)，两者效果相当。</li>
+    <li><strong>X3D 始终最强</strong>：X3D 作为轻量化 backbone，在所有 4 个损失下都是 3 个 backbone 里最好的。这印证了 X3D 的 progressive expanding 思路在 cross-species 数据上依然可用。</li>
+    <li><strong>tail mAP 不到 1/3 of head</strong>：X3D+EQL 的 head 63.33 vs tail 25.09 → 长尾问题的本质挑战仍未解决。</li>
+  </ul>
+
+  <h3 class="section-title">6.3 CARe 消融 + 域泛化对比（Table 4）</h3>
+
+  <p>这是论文方法论核心的验证。CARe 在 K=4 类动物（birds/fishes/frogs/snakes）训练、5 类未见动物（lizards/primates/spiders/orthopteran insects/water fowls）测试，并对比两类 baseline：(1) 跨类域泛化方法 Episodic-DG #Li-et-al.-2019-EpisodicDG# 和 Mixup-DG #Wang-et-al.-2020-MixupDG#；(2) CARe 自身的 4 个消融变体。#Ng-et-al.-2022#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>Accuracy (%)</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Episodic-DG #Li-et-al.-2019-EpisodicDG#</td><td>34.0</td><td>基于 episodic 任务的域泛化 baseline</td></tr>
+        <tr><td>Mixup-DG #Wang-et-al.-2020-MixupDG#</td><td>36.2</td><td>基于样本域间 mixup 的 baseline</td></tr>
+        <tr><td>CARe w/o specific feature</td><td>27.3</td><td>去掉 specific，只用 \(f_{gen} + \hat{f}_{specific}\) 用均值</td></tr>
+        <tr><td>CARe w/o general feature</td><td>38.2</td><td>去掉 general，只用协作 specific</td></tr>
+        <tr><td>CARe w/o spatially-aware weighting</td><td>37.1</td><td>权重 \(w^k\) 退化为标量，丢失空间异质性</td></tr>
+        <tr><td><strong>CARe（full）</strong></td><td><strong>39.7</strong></td><td>完整方法</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>消融表揭示了几个非平凡的设计选择：</p>
+
+  <ul>
+    <li><strong>Specific feature 对 unseen 任务至关重要</strong>：去掉 specific feature 后精度从 39.7 暴跌到 27.3（-12.4 点）——这是全表最大跌幅。说明对未见动物，<strong>通用特征 + 协作特征</strong> 不够，必须有 specific feature 介入。</li>
+    <li><strong>General 也有不可替代的价值</strong>：去掉 general 只剩 38.2。差异 1.5 个点——general 的"跨类共有信息"对未见类提供了额外的泛化支撑。</li>
+    <li><strong>空间感知权重贡献 2.6 点</strong>：从 37.1 到 39.7。印证了"动物身体不同部位对不同已见类的相似度独立"这一设计直觉。</li>
+    <li><strong>超过域泛化 baseline</strong>：CARe full (39.7) > Mixup-DG (36.2) > Episodic-DG (34.0)。3.5 个点的领先是显著的——CARe 在 cross-species 任务上有<strong>特定领域优势</strong>。</li>
+  </ul>
+
+  <h3 class="section-title">6.4 视频片段定位结果（Table 5）</h3>
+
+  <p>Animal Kingdom 的视频片段定位（video grounding）任务给定一段长视频 + 自然语言描述，要求定位描述对应的时间段。论文 §5.4 评估了 VSLNet #Zhang-et-al.-2020-VSLNet# 和 LGI #Mun-et-al.-2020-LGI# 两个 SOTA。#Ng-et-al.-2022#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>R@1, IoU=0.1</th><th>R@1, IoU=0.3</th><th>R@1, IoU=0.5</th><th>R@1, IoU=0.7</th><th>mean IoU</th></tr></thead>
+      <tbody>
+        <tr><td>LGI</td><td>50.84</td><td>33.51</td><td>19.74</td><td>8.94</td><td>22.90</td></tr>
+        <tr><td><strong>VSLNet</strong></td><td><strong>53.59</strong></td><td>33.74</td><td>20.83</td><td><strong>12.22</strong></td><td><strong>25.02</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>失败案例分析</strong>：从 IoU=0.1 → 0.7，R@1 从 53.6 → 12.2，<strong>掉 41.4 个点</strong>。这说明模型能"大致找到行为发生的时间窗"，但精确边界极差——因为视频中文本描述的边界本身可能就是模糊的（比如 "the monkey is eating" 何时开始 / 结束）。这一困难指向了未来工作的方向。</div>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig6_eg_vg.webp" alt="视频片段定位样例" loading="lazy">
+    <div class="cap">图 5：Animal Kingdom 视频片段定位样例。给定"the cobra is attacking the mongoose"这类描述，模型需定位对应时间段。（来源：Animal Kingdom, main Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">6.5 姿态估计：三协议的对比（Table 6）</h3>
+
+  <p>前文 Part 2 已经铺垫过姿态估计的三协议。这里给出 PCK@0.05 完整数据。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>协议</th><th>说明</th><th>HRNet</th><th>HRNet-DARK</th></tr></thead>
+      <tbody>
+        <tr><td>Protocol 1</td><td>All 80/20 split</td><td>66.06</td><td>66.57</td></tr>
+        <tr><td><strong>Protocol 2</strong></td><td>leave-k-out (k=12 sub-classes)</td><td>39.30</td><td>40.28</td></tr>
+        <tr><td>Protocol 3</td><td>哺乳类</td><td>61.59</td><td>62.50</td></tr>
+        <tr><td>Protocol 3</td><td>两栖类</td><td>56.74</td><td>57.85</td></tr>
+        <tr><td>Protocol 3</td><td>爬行类</td><td>56.06</td><td>57.06</td></tr>
+        <tr><td>Protocol 3</td><td>鸟类</td><td>77.35</td><td>77.41</td></tr>
+        <tr><td>Protocol 3</td><td>鱼类</td><td>68.25</td><td>69.96</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig7_dist_pe.webp" alt="33K 帧姿态标注在 5 大类的分布" loading="lazy">
+    <div class="cap">图 6：33K 帧姿态标注在 5 大类的分布（昆虫类因为解剖结构差异大，被排除出姿态标注）。来源：supp Fig.4。</div>
+  </div>
+
+  <p>关键观察：</p>
+
+  <ul>
+    <li><strong>HRNet-DARK 始终优于 HRNet</strong>，但优势微小（0.5-1.5 点）。</li>
+    <li><strong>鸟类最高（77.4）</strong>，可能因羽毛-身体对比明显，骨骼结构相对一致。</li>
+    <li><strong>爬行 / 两栖类最低（57 左右）</strong>，因为肢体形态变化大、伪装多、姿态视角多样。</li>
+    <li><strong>Protocol 2 vs Protocol 1 掉 27 点</strong> 仍然是最触目惊心的发现——cross-sub-class 姿态泛化还远未解决。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig5_eg_pe.webp" alt="姿态估计样例" loading="lazy">
+    <div class="cap">图 7：Animal Kingdom 姿态估计样例。覆盖 5 大类动物的关键点标注。（来源：Animal Kingdom, main Fig.4）</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：Animal Kingdom 在地图上的位置</div>
+
+  <h3 class="section-title">7.1 与同类数据集/方法的对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>维度</th><th>Animal Kingdom</th><th>iWildCam #Beery-et-al.-2021-iWildCam#</th><th>Snapshot Serengeti #Swanson-et-al.-2015-SnapshotSerengeti#</th><th>Animal Pose #Cao-et-al.-2019-AnimalPose#</th><th>MacaquePose #Labuguen-et-al.-2021-MacaquePose#</th></tr></thead>
+      <tbody>
+        <tr><td>物种数</td><td>850+</td><td>~250</td><td>~61</td><td>5+7</td><td>1（猴）</td></tr>
+        <tr><td>任务</td><td>VG + AR + PE 三任务</td><td>分类</td><td>分类</td><td>姿态</td><td>姿态</td></tr>
+        <tr><td>模态</td><td>视频（50h）</td><td>触发相机图</td><td>触发相机图</td><td>图像</td><td>实验室视频</td></tr>
+        <tr><td>环境</td><td>野生 + 多样</td><td>红外野外</td><td>草原固定点</td><td>多样</td><td>实验室</td></tr>
+        <tr><td>动作类别</td><td>140 行为</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>代码 / 数据</td><td>全开源</td><td>公开挑战</td><td>公开</td><td>公开</td><td>公开</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Animal Kingdom 的核心位置：在数据集维度上比 iWildCam / Snapshot Serengeti 更宽（850 vs 250/61 物种），比 Animal Pose 更全（视频 + 多任务 vs 图像 + 姿态），在代码 + 数据集可获得性上完全开放。这是当前"动物视觉" benchmark 中最完整的实证。</p>
+
+  <h3 class="section-title">7.2 CARe 与跨类域泛化方法谱系</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>CARe</th><th>Episodic-DG</th><th>Mixup-DG</th><th>零样本学习</th></tr></thead>
+      <tbody>
+        <tr><td>核心思路</td><td>general + 协作 specific + MLDG</td><td>episodic task split</td><td>跨域样本 mixup</td><td>语义嵌入最近邻</td></tr>
+        <tr><td>依赖语义描述</td><td>不需要</td><td>不需要</td><td>不需要</td><td>需要</td></tr>
+        <tr><td>空间感知</td><td>✓（张量权重）</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>Animal Kingdom 上精度</td><td><strong>39.7%</strong></td><td>34.0%</td><td>36.2%</td><td>—</td></tr>
+        <tr><td>Meta-Learning 用量</td><td>重（MLDG 训练 R）</td><td>轻</td><td>无</td><td>无</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">7.3 局限性</h3>
+
+  <ol>
+    <li><strong>Protocol 2 掉 27 点的开放性</strong>：cross-sub-class 姿态估计仍是开放问题——HRNet 在 K=12 unseen 上 PCK@0.05 仅 39-40。这指向"如何学到部位级别的跨物种共享特征"这一深层研究问题。</li>
+    <li><strong>长尾问题未见彻底解决</strong>：X3D+EQL 最好的 tail mAP 25.09，仍只有 head 63.33 的 39.6%。#Ng-et-al.-2022# 这意味着某些动物专属动作（如"snake spitting venom"）几乎不可能在标准 cross-entropy 训练中学到——可能需要额外 few-shot 或 meta-learning 介入。</li>
+    <li><strong>视频片段定位 IoU=0.7 表现差</strong>：12.22% 的 R@1 (IoU=0.7) 说明模型对时间边界的精度仍有很大提升空间。语言描述（如"the leopard was stalking"）本身的边界就很模糊，这是任务定义而非模型的局限。</li>
+    <li><strong>实施细节披露不完整</strong>：batch size、训练时长（小时/天）、GPU 型号、MLDG 算法的超参 (\(\alpha, \beta, \lambda\)) 在原文中均<strong>未明确给出</strong>，复现时需要按 2-GPU + batch size 4-16 等常规 CV 训练经验自调。</li>
+    <li><strong>CARe 39.7% 的精度仍偏低</strong>：虽然显著超过 Mixup-DG (36.2)，但绝对值上仍未达到"实用"水平。考虑到测试时是真的未见类（训练时连一张图都没见过），可以理解；但仍有改善空间。</li>
+    <li><strong>6 大类中 5 类都做姿态</strong>：昆虫因为解剖结构差异过大（外骨骼 vs 内骨骼）被排除出姿态任务——意味着论文在"全面的动物姿态"上仍有结构性缺口。</li>
+  </ol>
+
+  <h3 class="section-title">7.4 可操作启发</h3>
+
+  <ol>
+    <li><strong>任何"跨物种"行为识别系统都应考虑 general + specific 双特征</strong>。CARe 的设计思路可以推广到动作识别以外的跨类任务（如跨人种 / 跨年龄段 / 跨体型的视觉识别）。</li>
+    <li><strong>MLDG 是"虚拟 unseen"训练的标准工具</strong>。当你有"K 个源域"且需要泛化到 unknown target 时，把一个源域随机抽出来当 meta-test，其余当 meta-train，是稳定且低成本的做法。论文 §3 的 Algorithm 1 是良好模板。</li>
+    <li><strong>长尾数据集一定要 head / middle / tail 分段报告</strong>。整体 mAP 看不到头部主导问题。Animal Kingdom 把评估指标三维拆解，可以作为同类数据集的参照。</li>
+    <li><strong>空间感知张量权重是个通用 trick</strong>。把标量权重升级为空间张量以表达"空间位置相关"的相似度——不仅适用于 CARe，也适用于任何 feature fusion 场景（如多视角融合、多模态融合）。</li>
+    <li><strong>CV 数据集基准应该向 CVPR 2022 Animal Kingdom 学习</strong>——同时提供多任务 + 统一代码发布 + 多维度评估指标 + 跨域泛化能力评估。这是新时代视觉数据集的标杆。</li>
+  </ol>
+
+  <div class="callout"><strong>一句话总结</strong>：Animal Kingdom + CARe 的组合是<strong>数据集规模优势 + 跨物种泛化方法论</strong>的双贡献范本。在 CV 已经从单一数据集时代进入"大规模 + 多任务 + 跨域"的新时代，Animal Kingdom 为后续工作提供了<strong>这种范式的工业级示例</strong>。</div>
+
+  <div class="photo">
+    <img src="media/images/animal-kingdom-2022/fig4_eg_ar.webp" alt="动作识别样例" loading="lazy">
+    <div class="cap">图 8：Animal Kingdom 动作识别样例。覆盖 6 大类的 140 个动作的代表性图像——同一动作在不同物种上展现出截然不同的视觉模式。（来源：Animal Kingdom, main Fig.3）</div>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-skeletr-2023.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">SkeleTR 论文精读</span></a>
+    <a class="nav-card nav-hub" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别 Hub</span></a>
+    <a class="nav-card nav-next" href="action-recognition-hub.html"><span class="nav-label">后续</span><span class="nav-title">更多动作识别论文精读</span><span class="nav-arrow">→</span></a>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Ng-et-al.-2022">Ng, X. L., Ong, K. E., Zheng, Q., Ni, Y., Yeo, S. Y., Liu, J. (2022). <strong>Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding</strong>. CVPR 2022 (Oral). <a href="https://arxiv.org/abs/2204.08129" target="_blank">arXiv:2204.08129</a> · <a href="https://github.com/SUTDCV/Animal_Kingdom" target="_blank">GitHub: SUTDCV/Animal_Kingdom</a></li>
+      <li data-cite-key="Carreira-and-Zisserman-2017">Carreira, J., Zisserman, A. (2017). Quo Vadis, Action Recognition? A New Model and the Kinetics Dataset. CVPR 2017. <a href="https://arxiv.org/abs/1705.07750" target="_blank">arXiv:1705.07750</a></li>
+      <li data-cite-key="Feichtenhofer-et-al.-2019-SlowFast">Feichtenhofer, C., Fan, H., Malik, J., He, K. (2019). SlowFast Networks for Video Recognition. ICCV 2019. <a href="https://arxiv.org/abs/1812.03982" target="_blank">arXiv:1812.03982</a></li>
+      <li data-cite-key="Feichtenhofer-2020-X3D">Feichtenhofer, C. (2020). X3D: Progressive Expanding Model for Efficient Video Recognition. CVPR 2020. <a href="https://arxiv.org/abs/2004.04730" target="_blank">arXiv:2004.04730</a></li>
+      <li data-cite-key="Sun-et-al.-2019-HRNet">Sun, K., Xiao, B., Liu, C., Wang, X., Tang, J. (2019). Deep High-Resolution Representation Learning for Visual Recognition. CVPR 2019 / TPAMI 2020. <a href="https://arxiv.org/abs/1908.07919" target="_blank">arXiv:1908.07919</a></li>
+      <li data-cite-key="Zhang-et-al.-2020-DARK">Zhang, F., Zhu, X., Wang, C., Mei, Y., Liu, W., Wang, Q. (2020). Distribution-Aware Coordinate Representation for Human Pose Estimation. CVPR 2020. <a href="https://arxiv.org/abs/1910.06278" target="_blank">arXiv:1910.06278</a></li>
+      <li data-cite-key="Mun-et-al.-2020-LGI">Mun, J., Cho, M., Han, B. (2020). Localizing Moments in Video with Natural Language. ICCV 2021 / arXiv 2020. <a href="https://arxiv.org/abs/2008.09037" target="_blank">arXiv:2008.09037</a></li>
+      <li data-cite-key="Zhang-et-al.-2020-VSLNet">Zhang, H., Sun, A., Jing, W., Zhou, J. T. (2020). Span-based Localizing Network for Natural Language Video Localization. ECCV 2020. <a href="https://arxiv.org/abs/2004.13931" target="_blank">arXiv:2004.13931</a></li>
+      <li data-cite-key="Li-et-al.-2018-MLDG">Li, D., Yang, Y., Song, Y.-Z., Hospedales, T. (2018). Learning to Generalize: Meta-Learning for Domain Generalization. AAAI 2018. <a href="https://arxiv.org/abs/1710.03463" target="_blank">arXiv:1710.03463</a></li>
+      <li data-cite-key="Li-et-al.-2019-EpisodicDG">Li, D., Zhang, J., Yang, Y., Liu, C., Song, Y.-Z., Hospedales, T. (2019). Episodic Training for Domain Generalization. ICCV 2019. <a href="https://arxiv.org/abs/1903.04063" target="_blank">arXiv:1903.04063</a></li>
+      <li data-cite-key="Wang-et-al.-2020-MixupDG">Wang, H., He, H., Oyen, D., Yang, Z., Lin, M. (2020). Heterogeneous Domain Generalization With Domain-Specific Regressors via Weighted Combination Coefficients. T-PAMI. (Mixup-DG)</li>
+      <li data-cite-key="Girdhar-et-al.-2019-VAT">Girdhar, R., Carreira, J., Doersch, C., Zisserman, A. (2019). Video Action Transformer Network. CVPR 2019. <a href="https://arxiv.org/abs/1812.02707" target="_blank">arXiv:1812.02707</a></li>
+      <li data-cite-key="Lin-et-al.-2017-FocalLoss">Lin, T.-Y., Goyal, P., Girshick, R., He, K., Dollár, P. (2017). Focal Loss for Dense Object Detection. ICCV 2017. <a href="https://arxiv.org/abs/1708.02002" target="_blank">arXiv:1708.02002</a></li>
+      <li data-cite-key="Cao-et-al.-2019-LDAM">Cao, K., Wei, C., Gaidon, A., Arechiga, N., Ma, T. (2019). Learning Imbalanced Datasets with Label-Distribution-Aware Margin Loss. NeurIPS 2019. <a href="https://arxiv.org/abs/1906.07413" target="_blank">arXiv:1906.07413</a></li>
+      <li data-cite-key="Tan-et-al.-2020-EQL">Tan, J., Wang, C., Li, B., Li, Q., Ouyang, W., Yin, C., Yan, J. (2020). Equalization Loss for Long-Tailed Object Recognition. CVPR 2020. <a href="https://arxiv.org/abs/2003.05176" target="_blank">arXiv:2003.05176</a></li>
+      <li data-cite-key="Cao-et-al.-2019-AnimalPose">Cao, J., Tang, H., Fang, H.-S., Shen, X., Lu, C., Tai, Y.-W. (2019). Cross-Domain Adaptation for Animal Pose Estimation. ICCV 2019. <a href="https://arxiv.org/abs/1908.05806" target="_blank">arXiv:1908.05806</a></li>
+      <li data-cite-key="Mathis-et-al.-2020-DeepLabCut">Mathis, A., Yüksekgönül, M., Rogers, S., Bethge, M., Mathis, M. (2020). DeepLabCut: Markerless Pose Estimation of User-Defined Body Parts with Deep Learning. Nature Protocols. <a href="https://www.nature.com/articles/s41596-018-0104-z" target="_blank">Nature Protocols</a></li>
+      <li data-cite-key="Graving-et-al.-2019">Graving, J. M., Chae, D., Naik, H., Li, L., Koger, B., Costelloe, B. R., Couzin, I. D. (2019). DeepPoseKit, a software toolkit for fast and robust animal pose estimation using deep learning. eLife 8:e47994. <a href="https://elifesciences.org/articles/47994" target="_blank">eLife</a></li>
+      <li data-cite-key="Karashchuk-et-al.-2021">Karashchuk, P., Rupp, K. L., Dickinson, E. S., Woolford, S. J., Tavoni, G., Sajid, A., ... Tytell, E. D. (2021). Anipose: A framework for markerless motion capture in freely-moving animals. bioRxiv. <a href="https://www.biorxiv.org/content/10.1101/2020.09.14.295766v2" target="_blank">bioRxiv 2020.09.14.295766</a></li>
+      <li data-cite-key="Beery-et-al.-2021-iWildCam">Beery, S., Agarwal, A., Cole, E., Birodkar, V. (2021). The iWildCam 2021 Competition Dataset. arXiv 2021 / CVPR FGVC Workshop. <a href="https://arxiv.org/abs/2105.03494" target="_blank">arXiv:2105.03494</a></li>
+      <li data-cite-key="Swanson-et-al.-2015-SnapshotSerengeti">Swanson, A., Kosmala, M., Lintott, C., Simpson, R., Smith, A., Packer, C. (2015). Snapshot Serengeti, high-frequency annotated camera trap images of 40 mammalian species in an African savanna. Scientific Data 2: 150026. <a href="https://www.nature.com/articles/sdata201526" target="_blank">Nature: Scientific Data</a></li>
+      <li data-cite-key="Labuguen-et-al.-2021-MacaquePose">Labuguen, R., Matsumoto, J., White, S., Rogel, A., Kogo, J., Rehhorn, M., ... Yamada, Y. (2021). MacaquePose: A Novel Dataset for Macaque Pose Estimation in the Wild and its Benchmark Evaluation. arXiv 2021. <a href="https://arxiv.org/abs/2112.13793" target="_blank">arXiv:2112.13793</a></li>
+      <li data-cite-key="Anderson-and-Perona-2014">Anderson, D. J., Perona, P. (2014). Toward a science of computational ethology. Neuron 84(1): 18-31. <a href="https://www.sciencedirect.com/science/article/pii/S0896627314009005" target="_blank">Neuron</a></li>
+      <li data-cite-key="Sigurdsson-et-al.-2016">Sigurdsson, G. A., Varol, G., Wang, X., Farhadi, A., Laptev, I., Gupta, A. (2016). Hollywood in Homes: Crowdsourcing Data Collection for Activity Understanding. ECCV 2016. mAP 评估指标的引用依据。</li>
+    </ul>
+  </div>
+</div>
