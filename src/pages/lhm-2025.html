@@ -1,0 +1,452 @@
+---
+title: "数字人论文精读（四十五）：LHM，前馈 Transformer 秒级生成可动画 3D 人体"
+description: "深读 ICCV 2025 LHM：用前馈 Multimodal Body-Head Transformer 直接从单图预测可动画 3D Gaussian Splatting 人体，Head Feature Pyramid Encoding 保留面部细节，2 秒推理替代 15 分钟优化。"
+date: 2026-07-09T15:49:18
+created_at: 2026-07-09T15:49:18
+updated_at: 2026-07-09T15:49:18
+tags: ["数字人", "LHM", "3D Gaussian Splatting", "前馈重建", "ICCV 2025"]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 440
+toc: true
+mathjax: true
+notify: true
+papers: ["https://arxiv.org/abs/2503.10625"]
+repos: ["https://github.com/aigc3d/LHM"]
+hero_title: "LHM：秒级可动画人体重建"
+hero_sub: "ICCV 2025 · 阿里巴巴通义实验室"
+hero_tagline: "论文精读（四十五）· 前馈 Transformer · 3DGS 直接回归 · 2 秒推理"
+paper_title: "LHM: Large Animatable Human Reconstruction Model from a Single Image in Seconds"
+paper_authors: "Lingteng Qiu, Xiaodong Gu, Peihao Li, Qi Zuo, Weichao Shen, Junfei Zhang, Kejie Qiu, Weihao Yuan, Guanying Chen, Zilong Dong, Liefeng Bo"
+paper_affiliation: "Tongyi Lab, Alibaba Group"
+paper_venue: "ICCV 2025"
+paper_url: "https://arxiv.org/abs/2503.10625"
+paper_code: "https://github.com/aigc3d/LHM"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2.01</span><span class="label">秒推理 ↓</span></div>
+  <div class="stat"><span class="num b">22.0</span><span class="label g">Anim PSNR ↑</span></div>
+  <div class="stat"><span class="num">1B</span><span class="label">模型参数</span></div>
+  <div class="stat"><span class="num b">301K</span><span class="label l">训练视频</span></div>
+</div>
+
+<!-- ======================== Part 1 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：从 15 分钟优化到 2 秒前馈</div>
+
+  上一篇我们精读了 <a href="anigs-2024.html">AniGS</a>——同一个团队（阿里通义实验室邱陵腾等）用 CogVideo 生成多视角 canonical 图像，再用 4D Gaussian Splatting 做不一致重建，从单图得到可动画 3D Avatar。AniGS 的效果很好，但有一个痛点：==4DGS 优化需要约 15 分钟==，距离"实时"还有不小距离。
+
+  LHM（Large Animatable Human Reconstruction Model）是同一团队的后续工作，被 ICCV 2025 收录。#Qiu et al., 2025# 它的核心思路是：==跳过多视角生成和优化两步，用一个大 Transformer 直接从前馈通路预测 3D Gaussian Splatting 参数==。结果是推理时间从 15 分钟降到 2.01 秒（LHM-0.5B 模型），PSNR 还提升了 3.322 dB（LHM-1B 模型）。
+
+  <div class="callout"><strong>关键数据</strong>：LHM-1B 在动画重建任务上达到 PSNR 22.003、SSIM 0.930、LPIPS 0.040，而 AniGS 为 18.681/0.871/0.103。推理仅需 6.57 秒（1B 模型）或 2.01 秒（0.5B 模型），显存 18–24 GB，可在单张消费级 GPU 上运行。#Qiu et al., 2025#</div>
+
+  这个跃迁的背后是"大重建模型"（Large Reconstruction Model, LRM）范式的延伸——LRM 证明了 Transformer 可以从单图前馈重建 3D 物体，LHM 把这个思路扩展到了可动画人体。但扩展并不简单：人体有复杂的铰接结构、面部细节、衣物褶皱，还需要大规模训练数据。LHM 通过三个关键设计解决了这些挑战：Multimodal Body-Head Transformer（MBHT）、Head Feature Pyramid Encoding（HFPE）、以及基于视频数据的自监督训练策略。
+
+</div>
+
+<!-- ======================== Part 2 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：为什么现有方法都不够好</div>
+
+  单图可动画 3D 人体重建面临的核心矛盾是：==高质量和泛化能力不可兼得==。我们可以把现有方法分为三类，每类都有结构性缺陷：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法类型</th><th>代表工作</th><th>优势</th><th>核心缺陷</th></tr></thead>
+      <tbody>
+        <tr><td>参数化模型</td><td>SMPL/ARCH</td><td>强结构先验</td><td>无法表示宽松衣物和面部细节</td></tr>
+        <tr><td>优化式方法</td><td>AniGS、DreamGaussian</td><td>高保真</td><td>数分钟到十分钟优化，需受控采集</td></tr>
+        <tr><td>合成数据训练</td><td>PSHuman、CharacterGen</td><td>训练可控</td><td>合成→真实域差距大，泛化能力有限</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <strong>优化式方法的瓶颈</strong>在于：AniGS 虽然能从单图重建，但需要先用视频扩散模型生成多视角 canonical 图像（约 30 秒），再用 4DGS 优化处理视角间不一致性（约 15 分钟）。DreamGaussian 用 SDS 优化也需约 2 分钟。这些方法无法做到"输入一张图，秒级出结果"。
+
+  <strong>合成数据训练的瓶颈</strong>在于：3D 扫描数据稀缺且昂贵，但只用合成数据训练的模型在真实图像上泛化能力很差。LHM 的消融实验直接证实了这一点：仅用合成数据训练，PSNR 只有 19.753；加入 300K 真实视频后提升到 21.648，提升了近 2 dB。#Qiu et al., 2025#
+
+  <strong>表示方法的瓶颈</strong>在于：IDOL 用 UV 空间参数化 3D Gaussian，但 UV 映射对复杂衣物几何的表达受限；隐式表面方法（PiFU/PIFuHD）无法做到实时渲染。LHM 选择了 3D Gaussian Splatting 作为输出表示——它既支持实时光栅化渲染，又不需要 UV 参数化。
+
+  LHM 的 Insight 是：==用大模型的前馈能力替代优化过程，用大规模视频数据替代稀缺的 3D 扫描数据==。这正是 LRM 范式在可动画人体领域的具体实现。
+
+</div>
+
+<!-- ======================== Part 3 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：Multimodal Body-Head Transformer</div>
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_pipeline.webp" alt="LHM 整体流程" loading="lazy">
+    <div class="cap">图 1：LHM 整体流程。输入单张图像，提取 Body 和 Head 两种图像 Token，与 SMPL-X 表面采样的 3D 几何 Token 通过 MBHT 融合，最终回归 3D Gaussian 参数。来源：LHM, Fig. 2</div>
+  </div>
+
+  LHM 的架构可以概括为"三类 Token + 多层 MBHT Block + MLP 回归"。我们从输入到输出逐层拆解。
+
+  <h3 class="section-title">三类 Token 编码</h3>
+
+  LHM 将输入信息编码为三类 Token，送入 Transformer 进行注意力交互：
+
+  <strong>1. 几何 Token（$\mathbf{T}_{\text{3D}}$）</strong>：从 SMPL-X 模板的 A-pose mean mesh 上采样 $N_{\text{points}}$ 个表面点，每个点 $\mathbf{x}_i \in \mathbb{R}^3$ 经过 $L$ 频率正弦位置编码 $\gamma(\cdot)$ 和 MLP 投影：
+
+  \[ \mathbf{T}_{\text{3D}} = \text{MLP}_{\text{proj}}\left(\gamma(\mathbf{X})\right) \in \mathbb{R}^{N_{\text{points}} \times C} \]
+
+  这些 Token 携带人体几何结构的先验信息，是后续预测 3D Gaussian 参数的"查询点"。
+
+  <strong>2. Body 图像 Token（$\mathbf{T}_{\text{body}}$）</strong>：使用在 1000 万张人体图像上预训练的 Sapiens-1B 编码器 #Khirodkar et al., 2024# 提取语义级身体特征。编码器冻结不训练，只通过 MLP 对齐维度：
+
+  \[ \mathbf{T}_{\text{body}} = \text{MLP}_{\text{proj}}\left(\mathcal{E}_{\text{Sapiens}}(I)\right) \in \mathbb{R}^{N_{\text{body}} \times C} \]
+
+  <strong>3. Head 图像 Token（$\mathbf{T}_{\text{head}}$）</strong>：这是 LHM 的核心创新之一。由于人脸在整张图中占比很小，经过编码器下采样后细节严重丢失。LHM 提出 Head Feature Pyramid Encoding（HFPE），从 DINOv2 #Oquab et al., 2023# 的第 4、11、17、23 层提取多尺度特征：
+
+  \[ \mathbf{T}_{\text{head}} = \mathcal{F}_{\text{fusion}}\left( \mathcal{E}_{\text{dino}}^4, \mathcal{E}_{\text{dino}}^{11}, \mathcal{E}_{\text{dino}}^{17}, \mathcal{E}_{\text{dino}}^{23} \right) \in \mathbb{R}^{N_{\text{head}} \times C} \]
+
+  浅层保留高频纹理细节，深层编码语义级头部几何先验。$\mathcal{F}_{\text{fusion}}$ 通过深度级联和 $1 \times 1$ 卷积融合四层特征。
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_PFHE.webp" alt="HFPE 架构" loading="lazy">
+    <div class="cap">图 2：Head Feature Pyramid Encoding 架构。从 DINOv2 的第 4/11/17/23 层提取多尺度特征，通过融合模块生成头部 Token。来源：LHM, Suppl. Fig.</div>
+  </div>
+
+  <h3 class="section-title">MBHT Block：Body-Head 分离注意力</h3>
+
+  LHM 的核心架构创新是 Multimodal Body-Head Transformer Block（MBHT-block），改编自 SD3 的 MM-Transformer #Esser et al., 2024#。关键设计是==先让头部 Token 交互，再拼回身体 Token 做整体交互==：
+
+  \[ \begin{aligned} \mathbf{T}^{\text{head}}_{\text{3D}}, \mathbf{T}_{\text{head}} &\coloneqq \text{MM-T}\left(\mathbf{T}^{\text{head}}_{\text{3D}}, \mathbf{T}_{\text{head}}; \mathbf{F}_{\text{global}}\right) \\ \mathbf{T}_{\text{3D}} &\coloneqq \text{Norm}(\mathbf{T}^{\text{head}}_{\text{3D}}) ~\Vert~ \text{Norm}(\mathbf{T}^{\text{body}}_{\text{3D}}) \\ \mathbf{T}_{\text{3D}}, \mathbf{T}_{\text{body}} &\coloneqq \text{MM-T}\left(\mathbf{T}_{\text{3D}}, \mathbf{T}_{\text{body}}; \mathbf{F}_{\text{global}}\right) \end{aligned} \]
+
+  其中 $\mathbf{F}_{\text{global}}$ 是从 body Token 经 max pooling 和 MLP 提取的全局上下文特征，用于 Adaptive Layer Normalization（adaLN）调制。
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_BHTransformer.webp" alt="MBHT Block 架构" loading="lazy">
+    <div class="cap">图 3：MBHT-block 架构。头部 3D Token 先与头部图像 Token 做 MM-T 交互，然后与身体 3D Token 拼接，再与身体图像 Token 做第二次 MM-T 交互。来源：LHM, Fig. 3</div>
+  </div>
+
+  为什么要做 Body-Head 分离？论文实验发现，如果直接用标准 MM-Transformer 让所有 Token 一起做注意力，模型会过度依赖头部特征，导致身体部分的表达能力下降。MBHT 的两阶段设计让头部先获得充分的信息融合，再与身体进行全局交互，取得了更好的平衡。
+
+  <h3 class="section-title">Head Token Shrinkage Regularization</h3>
+
+  尽管有了 MBHT 的分离设计，模型在训练中仍然倾向于过度关注头部 Token。LHM 借鉴 MAE #He et al., 2022# 的思路，在训练时随机 mask 掉 0–50% 的头部输入区域，迫使模型增强对身体上下文的利用。消融实验显示这一正则化提升了整体性能，但 Face Consistency 指标略有下降——这是预期的权衡。
+
+  <h3 class="section-title">3DGS 参数预测</h3>
+
+  经过 $N_{\text{layer}}$ 个 MBHT-block 后，MLP 回归每个查询点的 3D Gaussian 参数：
+
+  \[ \{\Delta\mathbf{p}_i, \mathbf{r}_i, \mathbf{f}_i, \rho_i, \sigma_i\} = \text{MLP}_{\text{regress}}(\mathbf{T}_{\text{points}}^{(i)}) \]
+  \[ \mathbf{p}_i = \mathbf{x}_i + \Delta\mathbf{p}_i \]
+
+  其中 $\Delta\mathbf{p}_i$ 是相对于 SMPL-X 初始化位置的==残差偏移==，这种参数化方式让网络只需学习微调而非从零预测，训练更稳定。
+
+  <h3 class="section-title">与 AniGS 的架构对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>AniGS</th><th>LHM</th></tr></thead>
+      <tbody>
+        <tr><td>范式</td><td>两阶段：生成 + 优化</td><td>单阶段：前馈预测</td></tr>
+        <tr><td>推理时间</td><td>~15 分钟</td><td>2–7 秒</td></tr>
+        <tr><td>核心架构</td><td>CogVideo-2B + 4DGS</td><td>MBHT Transformer + MLP</td></tr>
+        <tr><td>训练数据</td><td>合成 3D 扫描</td><td>301K 真实视频 + 5.7K 合成</td></tr>
+        <tr><td>监督方式</td><td>多视角图像重建</td><td>自监督（视频帧渲染损失）</td></tr>
+        <tr><td>动画 PSNR</td><td>18.681</td><td>22.003（+3.322）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- ======================== Part 4 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：自监督视频训练与 Canonical 正则化</div>
+
+  <h3 class="section-title">训练数据</h3>
+
+  LHM 的训练数据由两部分组成：
+
+  <strong>真实视频数据</strong>：从 50 万条初始人类运动视频素材中，经过多阶段筛选（去除多人互动、遮挡面部、低质量帧），最终获得 301,733 条单人视频序列。这些视频提供了丰富的真实世界外观和运动模式。
+
+  <strong>合成数据增强</strong>：为弥补自然视频中的视角偏差（正面居多），补充了 5,724 个合成 3D 人体扫描，来自三个来源：2K2K 数据集（1,000 个模型）、Human4DiT（4,324 个角色）、RenderPeople（400 个商业资产）。沿用 AniGS 的渲染策略，每个模型从 30 个均匀分布的方位角（12° 间隔）渲染，使用 HDRI 环境光照。#Qiu et al., 2025#
+
+  <strong>预处理</strong>：使用 SAMURAI #Yang et al., 2024# 提取前景 mask，Multi-HMR #Baradel et al., 2024# 估计 SMPL-X 参数。每次训练迭代从一条视频中随机采样 1 张源视图图像和 4 张目标视图图像。
+
+  <h3 class="section-title">损失函数</h3>
+
+  LHM 的训练是==完全自监督的==——不需要 3D 扫描标注，只用视频帧的渲染损失。预测的 canonical 3DGS 通过 Linear Blend Skinning（LBS）转换到目标视角，经可微分光栅化渲染后与真实视频帧对比。
+
+  损失函数分为两部分：
+
+  <strong>视角空间监督</strong>（渲染损失）：
+
+  \[ \mathcal{L}_{\text{photometric}} = \lambda_{\text{rgb}} \mathcal{L}_{\text{color}} + \lambda_{\text{mask}} \mathcal{L}_{\text{mask}} + \lambda_{\text{per}} \mathcal{L}_{\text{lpips}} \]
+
+  权重为 $\lambda_{\text{rgb}} = 1.0$, $\lambda_{\text{mask}} = 0.5$, $\lambda_{\text{per}} = 1.0$。
+
+  <strong>Canonical 空间正则化</strong>：由于单目重建是病态问题，canonical 空间缺少约束会导致新姿态下的形变伪影。LHM 设计了两个互补的正则项：
+
+  \[ \mathcal{L}_{\text{reg}} = 50\mathcal{L}_{\text{ASAP}} + 10\mathcal{L}_{\text{ACAP}} \]
+
+  - <strong>ASAP（As Spherical As Possible）</strong>：惩罚高斯各向异性，防止针状椭球体：
+    \[ \mathcal{L}_{\text{ASAP}} = \frac{1}{N}\sum_{i=1}^N \| \mathbf{S}_i - \text{diag}(1) \|_F^2 \]
+  - <strong>ACAP（As Close As Possible）</strong>：位置锚定，防止高斯位置漂移过远：
+    \[ \mathcal{L}_{\text{ACAP}} = \frac{1}{N_{\text{points}}}\sum_{i=1}^{N_{\text{points}}} \max\left(\|\Delta\mathbf{p}_i\|_2 - d, 0\right) \]
+    其中 $d = 5.25\text{cm}$，允许局部微调但防止灾难性漂移。
+
+  <div class="callout"><strong>设计要点</strong>：ASAP 权重（50）远大于 ACAP（10），说明形状约束比位置约束更关键。消融实验证实：去掉 ASAP 会出现半透明边界伪影，去掉 ACAP 会出现人体周围的浮点。#Qiu et al., 2025#</div>
+
+  <h3 class="section-title">训练配置披露</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>301,733 真实视频 + 5,724 合成 3D 扫描</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>NVIDIA A100 80GB × (32/32/64)</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>AdamW</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>4×10⁻⁴</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>500M/700M: 16/GPU × 32 = 512; 1B: 8/GPU × 64 = 512</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>40K iterations</td></tr>
+        <tr><td>训练时长</td><td>已披露</td><td>500M: 78h, 700M: 112h, 1B: 189h</td></tr>
+        <tr><td>模型参数量</td><td>已披露</td><td>500M / 700M / 1B 三个变体</td></tr>
+        <tr><td>精度格式</td><td>已披露</td><td>混合精度训练 + dynamic loss scaling</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未明确给出</td></tr>
+        <tr><td>权重衰减</td><td>已披露</td><td>5×10⁻⁴</td></tr>
+        <tr><td>梯度裁剪</td><td>已披露</td><td>‖∇‖₂ = 0.1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <strong>训练成本估算</strong>：1B 模型训练 189 小时 × 64 张 A100 = 12,096 GPU·小时。按 A100 云租约 $2/小时计算，约 $24,192。
+
+</div>
+
+<!-- ======================== Part 5 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：秒级前馈推理</div>
+
+  <h3 class="section-title">推理流程</h3>
+
+  LHM 的推理极其简洁——单次前馈传播，无需任何后处理：
+
+  <strong>Step 1：图像预处理。</strong> 输入单张 RGB 图像，经前景分割（SAMURAI）和 SMPL-X 参数估计（Multi-HMR），获得人体区域裁剪和姿态参数。
+
+  <strong>Step 2：特征提取。</strong> 冻结的 Sapiens-1B 提取 Body Token，DINOv2 多尺度提取 Head Token，SMPL-X 表面采样点编码为几何 Token。
+
+  <strong>Step 3：Transformer 前馈。</strong> 三类 Token 经过 $N_{\text{layer}}$ 个 MBHT-block，每层通过 Body-Head 分离注意力完成信息融合。
+
+  <strong>Step 4：3DGS 回归。</strong> MLP 从几何 Token 回归每个查询点的 3D Gaussian 参数（位置偏移、旋转、SH 特征、不透明度、尺度）。
+
+  <strong>Step 5：动画渲染。</strong> 得到的 canonical 3DGS 可直接用任意 SMPL-X 姿态参数驱动，通过 LBS 转换到目标姿态后做 3DGS 光栅化渲染。
+
+  <div class="mermaid">
+graph LR
+    A["单张 RGB 图像"] --> B["SAMURAI 前景分割"]
+    B --> C["Multi-HMR SMPL-X 估计"]
+    C --> D["Sapiens-1B Body Token"]
+    C --> E["DINOv2 HFPE Head Token"]
+    C --> F["SMPL-X 几何 Token"]
+    D --> G["MBHT Transformer × N layers"]
+    E --> G
+    F --> G
+    G --> H["MLP 回归 3DGS 参数"]
+    H --> I["Canonical 3DGS"]
+    I --> J["LBS 姿态驱动"]
+    J --> K["3DGS 光栅化渲染"]
+  </div>
+
+  <h3 class="section-title">推理效率对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>推理时间</th><th>显存</th><th>范式</th></tr></thead>
+      <tbody>
+        <tr><td>En3D</td><td>5 分钟</td><td>32 GB</td><td>优化式</td></tr>
+        <tr><td>AniGS</td><td>15 分钟</td><td>24 GB</td><td>生成+优化</td></tr>
+        <tr><td><strong>LHM-0.5B</strong></td><td><strong>2.01 秒</strong></td><td><strong>18 GB</strong></td><td>前馈</td></tr>
+        <tr><td><strong>LHM-0.7B</strong></td><td>4.13 秒</td><td>21 GB</td><td>前馈</td></tr>
+        <tr><td><strong>LHM-1B</strong></td><td>6.57 秒</td><td>24 GB</td><td>前馈</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>速度跃迁</strong>：LHM-0.5B 相比 AniGS 加速 ==447 倍==（2.01s vs 15min），同时 PSNR 从 18.681 提升到 21.648。这意味着从"离线工具"到"交互式应用"的质变。#Qiu et al., 2025#</div>
+
+  <h3 class="section-title">前馈推理 vs 优化推理</h3>
+
+  AniGS 的推理链路是"生成多视角图像 → 4DGS 优化"，每一步都是耗时瓶颈。LHM 的前馈推理将两步合并为一个 Transformer 前向传播，推理时间仅取决于模型规模和输入分辨率，不受视角数量或优化迭代次数影响。
+
+  值得注意的是，LHM-0.5B 虽然推理最快（2.01s），但性能已全面超越 AniGS。更大的模型（0.7B、1B）进一步提升质量，但推理时间也相应增加。这种==可伸缩的模型规模设计==让用户可以根据算力预算选择合适的变体。
+
+  在实际部署中，LHM-0.5B 的 18 GB 显存需求意味着可以在 RTX 4090（24 GB）等消费级显卡上运行，而 LHM-1B 的 24 GB 则刚好触及 RTX 4090 的显存上限。所有变体的推理时间都在 7 秒以内，满足交互式应用的响应时间要求。不过需要注意的是，这里的推理时间仅包含模型前馈部分，前置的 SMPL-X 估计和后置的 3DGS 光栅化渲染还会额外消耗时间，完整 pipeline 的端到端延迟会更高。#Qiu et al., 2025#
+
+</div>
+
+<!-- ======================== Part 6 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>200 合成场景（静态重建）; 200 in-the-wild 视频（动画重建）</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>PSNR↑ / SSIM↑ / LPIPS↓ / FC↓（Face Consistency, ArcFace L2）</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>静态: GTA, SIFU, PSHuman, DreamGaussian; 动画: En3D, AniGS</td></tr>
+        <tr><td>推理硬件</td><td>部分披露</td><td>训练用 A100 80GB；推理仅报告显存需求 18–24 GB，未明确推理 GPU 型号</td></tr>
+        <tr><td>推理分辨率</td><td>未披露</td><td>原文未明确给出评测分辨率</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未给出框架/版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">静态重建：定量对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>FC ↓</th></tr></thead>
+      <tbody>
+        <tr><td>GTA</td><td>17.025</td><td>0.919</td><td>0.087</td><td>0.051</td></tr>
+        <tr><td>SIFU</td><td>16.681</td><td>0.917</td><td>0.093</td><td>0.060</td></tr>
+        <tr><td>PSHuman</td><td>17.556</td><td>0.921</td><td>0.076</td><td>0.037</td></tr>
+        <tr><td>DreamGaussian</td><td>18.544</td><td>0.917</td><td>0.075</td><td>0.056</td></tr>
+        <tr><td><strong>LHM-0.5B*</strong></td><td><strong>25.183</strong></td><td><strong>0.951</strong></td><td><strong>0.029</strong></td><td><strong>0.035</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：LHM 在静态重建上 PSNR 达到 25.183，比最强 baseline DreamGaussian 高出 ==6.6 dB==。LPIPS 从 0.075 降到 0.029，降幅 61%。* 表示该模型仅用合成数据训练，与 baseline 公平对比。#Qiu et al., 2025#</div>
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_qualitative.webp" alt="静态重建定性对比" loading="lazy">
+    <div class="cap">图 4：单视角重建的定性对比。LHM 在面部细节和衣物褶皱上保持最佳的外观保真度和纹理清晰度。来源：LHM, Fig. 4</div>
+  </div>
+
+  <h3 class="section-title">动画重建：定量对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>FC ↓</th><th>Time ↓</th><th>Memory ↓</th></tr></thead>
+      <tbody>
+        <tr><td>En3D</td><td>15.231</td><td>0.734</td><td>0.172</td><td>0.058</td><td>5 min</td><td>32 GB</td></tr>
+        <tr><td>AniGS</td><td>18.681</td><td>0.871</td><td>0.103</td><td>0.053</td><td>15 min</td><td>24 GB</td></tr>
+        <tr><td><strong>LHM-0.5B</strong></td><td>21.648</td><td>0.924</td><td>0.044</td><td>0.042</td><td><strong>2.01s</strong></td><td><strong>18 GB</strong></td></tr>
+        <tr><td><strong>LHM-0.7B</strong></td><td>21.879</td><td>0.930</td><td>0.039</td><td>0.039</td><td>4.13s</td><td>21 GB</td></tr>
+        <tr><td><strong>LHM-1B</strong></td><td><strong>22.003</strong></td><td><strong>0.930</strong></td><td>0.040</td><td><strong>0.035</strong></td><td>6.57s</td><td>24 GB</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>核心结论</strong>：LHM-1B 相比 AniGS 在 PSNR 上提升 3.322、SSIM 提升 0.059、LPIPS 降低 0.063、FC 降低 0.018。同时推理时间从 15 分钟降到 6.57 秒，显存持平。#Qiu et al., 2025#</div>
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_adjust_animatable.webp" alt="动画重建对比" loading="lazy">
+    <div class="cap">图 5：动画重建定性对比。LHM 生成更准确、更逼真的动画结果，而 AniGS 的结果在忠实于输入图像方面存在不足。来源：LHM, Fig. 5</div>
+  </div>
+
+  <h3 class="section-title">消融实验</h3>
+
+  <strong>1. 模型参数规模</strong>：从 0.5B → 0.7B → 1B，PSNR 从 21.648 → 21.879 → 22.003，逐步提升。但推理时间也从 2.01s 增至 6.57s，存在速度-质量权衡。
+
+  <strong>2. 数据规模</strong>：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>训练数据</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>FC ↓</th></tr></thead>
+      <tbody>
+        <tr><td>仅合成数据</td><td>19.753</td><td>0.904</td><td>0.060</td><td>0.057</td></tr>
+        <tr><td>+ 10K 视频</td><td>20.692</td><td>0.911</td><td>0.052</td><td>0.048</td></tr>
+        <tr><td>+ 50K 视频</td><td>21.108</td><td>0.915</td><td>0.050</td><td>0.043</td></tr>
+        <tr><td>+ 100K 视频</td><td>21.429</td><td>0.920</td><td>0.049</td><td>0.045</td></tr>
+        <tr><td><strong>+ 300K（全部）</strong></td><td><strong>21.648</strong></td><td><strong>0.924</strong></td><td><strong>0.044</strong></td><td><strong>0.042</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  关键发现：==合成数据单独训练泛化能力极差==，加入真实视频后性能大幅提升。数据量从 10K→300K，PSNR 持续提升但==边际递减效应明显==——100K→300K 只提升 0.219 dB。这暗示 300K 可能已接近当前架构的收益上限。
+
+  <strong>3. Transformer 架构设计</strong>：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>FC ↓</th></tr></thead>
+      <tbody>
+        <tr><td>w/ MM-Transformer（标准）</td><td>20.072</td><td>0.907</td><td>0.100</td><td>0.053</td></tr>
+        <tr><td>w/o Shrinkage Reg.</td><td>21.037</td><td>0.915</td><td>0.049</td><td><strong>0.041</strong></td></tr>
+        <tr><td><strong>LHM-0.5B（完整）</strong></td><td><strong>21.648</strong></td><td><strong>0.924</strong></td><td><strong>0.044</strong></td><td>0.042</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  MBHT 相比标准 MM-Transformer 提升 PSNR ==1.576==、LPIPS 降 0.056，证实了 Body-Head 分离注意力的有效性。Shrinkage Regularization 进一步提升整体性能，但 FC 从 0.041 升至 0.042——这是预期的权衡：牺牲少量面部一致性换取更好的身体建模。
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_ablation_study_for_model.webp" alt="模型架构消融" loading="lazy">
+    <div class="cap">图 6：模型架构消融。(a) 标准 MM-Transformer; (b) LHM-0.5B; (c) LHM-1B。更大的模型在面部区域有更准确的重建。来源：LHM, Fig. 6</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/lhm-2025/lhm_img_ablation_study_for_regularization.webp" alt="Canonical 正则化消融" loading="lazy">
+    <div class="cap">图 7：Canonical 空间正则化消融。ASAP 损失消除半透明边界伪影，ACAP 损失消除人体周围的浮点。来源：LHM, Suppl. Fig.</div>
+  </div>
+
+</div>
+
+<!-- ======================== Part 7 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发</div>
+
+  <h3 class="section-title">技术贡献定位</h3>
+
+  LHM 在"单图可动画 3D 人体重建"这一任务上实现了从"优化式"到"前馈式"的范式跃迁。如果说 AniGS 是"先生成再优化"的两阶段方案，LHM 则是"端到端回归"的一阶段方案。这种跃迁与 2D 图像生成领域从 GAN 到扩散模型的变化不同——LHM 的进步体现在==推理范式的简化==上，而非生成质量的提升。
+
+  <h3 class="section-title">局限性</h3>
+
+  论文承认的主要局限是==视角偏差==：真实视频数据以正面视角为主，对罕见姿态和极端角度的覆盖不足，影响模型对新视角的泛化。#Qiu et al., 2025# 此外从工程角度还有几个值得注意的问题：
+
+  - <strong>推理分辨率未披露</strong>：论文未明确给出评测时的渲染分辨率，使得指标的可复现性存在不确定性。
+  - <strong>运动驱动方式有限</strong>：LHM 只支持 SMPL-X 姿态参数驱动，无法直接接收文本或音频输入做语义级动画控制。
+  - <strong>衣物动态缺失</strong>：LHM 重建的是 canonical 空间的静态 3DGS，动画时只通过 LBS 做刚性形变，无法表示衣物的非刚性物理动态。
+  - <strong>显存门槛</strong>：虽然推理显存 18–24 GB 看似可接受，但这只是模型推理部分，加上前置的 SMPL-X 估计和后置渲染，完整 pipeline 的显存需求会更高。
+
+  <h3 class="section-title">启发与展望</h3>
+
+  <strong>1. LRM 范式的可扩展性得到验证。</strong> LRM 在通用物体上证明了"大 Transformer + 大数据"的前馈重建可行，LHM 将其成功扩展到可动画人体。这意味着 LRM 范式可能适用于更多结构化对象（如手部、面部、动物）。
+
+  <strong>2. 冻结预训练编码器的策略值得借鉴。</strong> LHM 冻结 Sapiens-1B 和 DINOv2，只训练 Transformer 和 MLP 部分。这种"冻结-提取-融合"的设计大幅降低了训练成本，同时利用了大规模预训练的语义知识。
+
+  <strong>3. 自监督视频训练的潜力。</strong> LHM 不需要任何 3D 扫描标注，只用视频帧的渲染损失训练。这为解决 3D 标注稀缺问题提供了一个可行路径——只要有足够多的视频数据和可靠的 SMPL-X 估计，就可以训练出泛化能力强的人体重建模型。
+
+  <strong>4. Body-Head 分离注意力是一种通用的 part-aware 设计。</strong> 这种"先局部后全局"的注意力模式不限于人体，可以推广到任何有明显部件结构的任务（如车辆的车身-车灯、家具的框架-装饰）。
+
+</div>
+
+<!-- ======================== Sources ======================== -->
+<div class="sources">
+  <h3>参考文献</h3>
+  <ol>
+    <li data-cite-key="Qiu-et-al.-2025">Qiu, L. et al. (2025). <strong>LHM: Large Animatable Human Reconstruction Model from a Single Image in Seconds</strong>. <a href="https://arxiv.org/abs/2503.10625" target="_blank">arXiv:2503.10625</a>. ICCV 2025.</li>
+    <li data-cite-key="Qiu-et-al.-2024">Qiu, L. et al. (2024). <strong>AniGS: Animatable Gaussian Avatar from a Single Image with Inconsistent Gaussian Reconstruction</strong>. <a href="https://arxiv.org/abs/2412.02684" target="_blank">arXiv:2412.02684</a>. CVPR 2025. · <a href="anigs-2024.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Hong-et-al.-2023">Hong, Y. et al. (2023). <strong>LRM: Large Reconstruction Model for Single Image to 3D</strong>. <a href="https://arxiv.org/abs/2311.04400" target="_blank">arXiv:2311.04400</a>. ICLR 2024.</li>
+    <li data-cite-key="Esser-et-al.-2024">Esser, P. et al. (2024). <strong>Scaling Rectified Flow Transformers for High-Resolution Images (SD3)</strong>. <a href="https://arxiv.org/abs/2403.03206" target="_blank">arXiv:2403.03206</a>. ICML 2024.</li>
+    <li data-cite-key="Khirodkar-et-al.-2024">Khirodkar, R. et al. (2024). <strong>Sapiens: Foundations for Human Vision Models</strong>. <a href="https://arxiv.org/abs/2408.12569" target="_blank">arXiv:2408.12569</a>. ECCV 2024.</li>
+    <li data-cite-key="Oquab-et-al.-2023">Oquab, M. et al. (2023). <strong>DINOv2: Learning Robust Visual Features without Supervision</strong>. <a href="https://arxiv.org/abs/2304.07193" target="_blank">arXiv:2304.07193</a>. TMLR 2024.</li>
+    <li data-cite-key="He-et-al.-2022">He, K. et al. (2022). <strong>Masked Autoencoders Are Scalable Vision Learners (MAE)</strong>. <a href="https://arxiv.org/abs/2111.06377" target="_blank">arXiv:2111.06377</a>. CVPR 2022.</li>
+    <li data-cite-key="Yang-et-al.-2024">Yang, T. et al. (2024). <strong>SAMURAI: Adapting Segment Anything Model for Zero-Shot Visual Tracking</strong>. <a href="https://arxiv.org/abs/2410.22455" target="_blank">arXiv:2410.22455</a>.</li>
+    <li data-cite-key="Baradel-et-al.-2024">Baradel, N. et al. (2024). <strong>Multi-HMR: Multi-Person Whole-Body Human Mesh Recovery in a Single Shot</strong>. <a href="https://arxiv.org/abs/2403.07528" target="_blank">arXiv:2403.07528</a>.</li>
+    <li data-cite-key="smplx-2019">Pavlakos, G. et al. (2019). <strong>Expressive Body Capture: 3D Hands, Face, and Body from One Image (SMPL-X)</strong>. <a href="https://arxiv.org/abs/1904.05866" target="_blank">arXiv:1904.05866</a>. CVPR 2019.</li>
+    <li data-cite-key="Kerbl-et-al.-2013">Kerbl, B. et al. (2013). <strong>3D Gaussian Splatting for Real-Time Radiance Field Rendering</strong>. <a href="https://arxiv.org/abs/2308.15240" target="_blank">arXiv:2308.15240</a>. SIGGRAPH 2023.</li>
+  </ol>
+</div>
+
+<!-- ======================== Chapter Nav ======================== -->
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="anigs-2024.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">AniGS：用 4D 高斯重建把单图变成可动画 Avatar</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">系列目录</span><span class="nav-title">数字人论文精读</span></a>
+  <a class="nav-card nav-next" href="#"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">待更新</span></a>
+</div>

@@ -468,9 +468,9 @@ HTML 写作完成后，**同时派出 3 个 Review subagent**：
 | **HTML 正文总量** | 常规论文 ≥ 3000 字；复杂系统/综述 ≥ 4000 字 |
 | Part 1 引言 + Part 2 问题剖析 | ≥ 500 字 |
 | Part 3 模型结构与创新 | ≥ 1000 字 |
-| Part 4 Training Pipeline | ≥ 500 字 |
+| Part 4 Training Pipeline | ≥ 500 字（含训练配置披露表，10 项逐项标注） |
 | Part 5 Inference Pipeline | ≥ 500 字（实时论文 ≥ 700 字，含 Streaming Pipeline） |
-| Part 6 实验配置与验证 | ≥ 600 字（含实验配置表，逐项标注披露状态） |
+| Part 6 实验配置与验证 | ≥ 600 字（含实验配置表，6 项逐项标注） |
 | Part 7 讨论与启发 | ≥ 300 字 |
 | 代码分析（若有） | ≥ 400 字 |
 | 图片 | ≥ 3 张（优先论文原图） |
