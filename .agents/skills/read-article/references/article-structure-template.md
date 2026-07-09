@@ -83,7 +83,40 @@
 
 ### 实验配置表（Part 6 必含）
 
-列出数据集、数据规模、训练/推理硬件、GPU 型号与数量、CPU/内存、优化器、学习率、batch size、epoch、训练时长、推理环境。每项标注"论文披露 / 未披露 / 未完整披露"。
+**与 Part 4 训练配置披露表的区别**：Part 4 聚焦训练阶段（数据、优化器、学习率等），Part 6 聚焦评测/推理阶段。两者互补，不重复。
+
+**核心目的**：这张表最重要的披露项是**推理硬件**——论文用什么硬件跑出报告中的结果。这是读者最关心、论文最常遗漏的信息。即使论文只披露了一部分，也必须列出并标注状态。
+
+**三列格式**：`配置项 | 披露状态 | 值 / 说明`。披露状态为 `已披露` / `未披露`。
+
+#### 必含基础项（6 项全部出现，论文未提及则标"未披露"）
+
+| 配置项 | 说明 |
+|--------|------|
+| 评测数据集 | 数据集名称 + 规模（如 "Human4DiT, 50 avatars"） |
+| 评测指标 | 指标名称 + 方向（如 "PSNR↑ / SSIM↑ / LPIPS↓"） |
+| Baseline 方法 | 列出所有对比方法名称 |
+| **推理硬件** | **GPU 型号 + 数量**（如 "单张 RTX 3090"、"8× A100 80GB"）。如果论文提及显存或内存也一并记录。这是本表最关键的披露项 |
+| 推理分辨率 | 如 "256×256" 或 "512×512" |
+| 推理环境 | 框架/版本（如 "PyTorch 2.1, CUDA 12.1"），论文未提则标"未披露" |
+
+**示例**：
+
+```html
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>评测数据集</td><td>已披露</td><td>Human4DiT, 50 rigged avatars</td></tr>
+      <tr><td>评测指标</td><td>已披露</td><td>PSNR↑ / SSIM↑ / LPIPS↓ / Normal Loss↓</td></tr>
+      <tr><td>Baseline 方法</td><td>已披露</td><td>MagicMan⁺, CHAMP*</td></tr>
+      <tr><td>推理硬件</td><td>已披露</td><td>单张 RTX 3090</td></tr>
+      <tr><td>推理分辨率</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>推理环境</td><td>未披露</td><td>原文未给出</td></tr>
+    </tbody>
+  </table>
+</div>
+```
 
 ### 系统型论文额外规则
 
@@ -146,11 +179,11 @@
 |---------|------|--------|
 | 核心问题与 Insight | Phase 2 | ≥ 250 字 |
 | 完整方法 pipeline | Phase 2d | ≥ 1000 字 |
-| Training Pipeline | Phase 2c/2d | 系统型必须有 |
+| Training Pipeline | Phase 2c/2d | 系统型必须有；含训练配置披露表（10 项） |
 | Inference Pipeline | Phase 2c/2d | 系统型必须有；实时还须含 Streaming |
 | 至少 2 个完整公式 | Phase 2c | — |
 | 至少 1 个 baseline 对比表 | Phase 2c/2d | 含数值 |
-| 完整实验配置表 | Phase 2c/2d | 逐项标注披露状态 |
+| 实验配置表 | Phase 2c/2d | 6 项必含基础项，逐项标注披露状态 |
 | 至少 3 个超参数 | Phase 2c | — |
 | 计算成本 | Phase 2c | 训练/推理分开 |
 | 至少 1 个消融发现 | Phase 2c | — |

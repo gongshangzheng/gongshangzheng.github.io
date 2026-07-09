@@ -1,0 +1,471 @@
+---
+title: "数字人论文精读（四十四）：AniGS，用 4D 高斯重建把单图变成可动画 Avatar"
+description: "深读 CVPR 2025 AniGS：用 CogVideo-2B 生成多视角 canonical 图像，再将视角不一致性重新表述为 4D 高斯重建任务，从单张 in-the-wild 图片得到可实时动画的 3D Gaussian Avatar。"
+date: 2026-07-09T11:00:54
+created_at: 2026-07-09T11:00:54
+updated_at: 2026-07-09T11:00:54
+tags: ["数字人", "AniGS", "4D Gaussian Splatting", "CogVideo", "CVPR 2025"]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 430
+toc: true
+mathjax: true
+notify: true
+papers: ["https://arxiv.org/abs/2412.02684"]
+repos: ["https://lingtengqiu.github.io/2024/AniGS/"]
+hero_title: "AniGS：可动画高斯 Avatar"
+hero_sub: "CVPR 2025 · 阿里巴巴 + 中山大学"
+hero_tagline: "论文精读（四十四）· 视频生成模型 → 多视角 Canonical · 4DGS 不一致重建 · 实时动画"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">21.5</span><span class="label">Anim PSNR ↑</span></div>
+  <div class="stat"><span class="num b">0.102</span><span class="label g">LPIPS ↓</span></div>
+  <div class="stat"><span class="num">~10</span><span class="label">分钟推理</span></div>
+  <div class="stat"><span class="num b">RT</span><span class="label l">实时动画</span></div>
+</div>
+
+<!-- ======================== Part 1 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：从一张照片到可动画数字人</div>
+
+  <p>想象你有一张朋友的全身照片——你能否仅凭这一张照片，就造出一个三维的、可以任意摆姿势、甚至实时驱动的数字分身？这个问题在数字人、虚拟现实和增强现实领域有着巨大的应用价值，同时也是计算机视觉中长期存在的挑战。#Qiu et al., 2024#</p>
+
+  <p>近年来，三条技术路线分别从不同方向逼近这个目标：</p>
+
+  <ul>
+    <li><strong>单图人体重建</strong>：从 PIFuHD 到 ECON 再到 HumanSplat，这条路线逐步从参数模型偏移预测走向隐式函数表示，再到生成模型辅助。但重建出的模型通常无法直接动画化——它们缺少骨骼绑定和蒙皮权重。</li>
+    <li><strong>可动画人体生成</strong>：从 ARCH 到 CharacterGen 再到 En3D，这条路线用扩散模型生成多视角图像，然后做 3D 重建。CharacterGen#Peng et al., 2024# 面向卡通头像，需要合成 3D rigged 数据集训练生成器；MagicMan#He et al., 2024# 面向真实人体但只生成静态多视角图像，无法直接做动画。</li>
+    <li><strong>4D Gaussian Splatting</strong>：4DGS#Wu et al., 2024# 用 HexPlane 建模时间维度的高斯变形，在动态场景建模中展现了强大能力，但此前没人把它用在"多视角不一致性"这个问题上。</li>
+  </ul>
+
+  <p>AniGS 的独特之处在于：它站在三条路线的交汇点上，用<strong>视频生成模型</strong>替代传统的多视角扩散模型来生成 canonical pose 图像，然后创造性地将生成结果的<strong>视角间不一致性</strong>重新表述为 <strong>4D 重建问题</strong>，用 4DGS 来解决。最终从一张 in-the-wild 图片就能得到高保真、可实时动画的 3D Gaussian Avatar。#Qiu et al., 2024#</p>
+
+  <div class="callout"><strong>核心 Insight 预告</strong>：扩散模型生成的多视角图像虽然视觉质量很高，但存在微妙的视角间不一致。与其试图消除这种不一致，不如把它当作"时间维度的变化"来处理——这正是 4DGS 擅长的事情。</div>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/teaser.webp" alt="AniGS Teaser" loading="lazy">
+    <div class="cap">图 1：AniGS 效果展示——从单张输入图像（左）到可动画的 3D Gaussian Avatar（右）（来源：AniGS, Fig.1）</div>
+  </div>
+</div>
+
+<!-- ======================== Part 2 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：多视角生成的"不一致性"困境</div>
+
+  <p>要从单张图片得到可动画的 3D avatar，一个自然的思路是：先生成多视角图像，再从这些图像重建 3D 模型。但这里有一个根本性的矛盾——</p>
+
+  <h3 class="section-title">矛盾：生成质量 vs 几何一致性</h3>
+
+  <p>扩散模型在单张图像生成上已经取得了惊人的质量，但当它被用来生成多视角图像时，不同视角之间会出现微妙的不一致：外观略有差异、几何细节不对齐、法线方向不连续。这些不一致在单独看每张图时几乎察觉不到，但当用 3D Gaussian Splatting 去优化时，它们会导致严重的伪影和细节丢失。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>已有方法</th><th>路线</th><th>局限性</th></tr></thead>
+      <tbody>
+        <tr><td>CharacterGen</td><td>多视角 canonical 扩散 + Transformer 3D</td><td>需要合成 3D rigged 数据集训练；面向卡通，真实人体泛化差</td></tr>
+        <tr><td>MagicMan</td><td>多视角静态人体生成</td><td>不生成 canonical pose 图像，无法直接做动画</td></tr>
+        <tr><td>CHAMP</td><td>3D 级形状引导的可控人体图像动画</td><td>生成动画视频帧而非 canonical pose 多视角图像</td></tr>
+        <tr><td>En3D</td><td>隐式表面 + 扩散生成</td><td>动画质量有限（PSNR 19.24，见 Part 6）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">AniGS 的突破口</h3>
+
+  <p>面对这个困境，AniGS 提出了两个关键洞察：</p>
+
+  <p><strong>洞察一</strong>：用视频生成模型替代多视角扩散模型。视频生成模型（如 CogVideoX）已经在大规模视频数据上训练过，天然理解"时间一致性"。如果把它适配成接受参考图像引导 + 姿态条件，就能在不需要合成 3D rigged 数据集的情况下，生成高质量的多视角 canonical 图像。#Qiu et al., 2024#</p>
+
+  <p><strong>洞察二</strong>：与其试图让生成的多视角图像完全一致（这几乎不可能），不如接受不一致性，然后用 4DGS 把它建模为"时间维度的变化"。每个视角对应一个"时间步"，4DGS 的变形场可以优雅地处理帧间的几何差异。取 t=0 时刻的结果就是最终的 canonical avatar。</p>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/4dgs_vs_3dgs.webp" alt="4DGS vs 3DGS" loading="lazy">
+    <div class="cap">图 2：4DGS vs 3DGS 重建效果对比——直接用 3DGS 优化不一致的多视角图像会产生伪影，4DGS 则能优雅处理（来源：AniGS, Fig.4）</div>
+  </div>
+</div>
+
+<!-- ======================== Part 3 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：两阶段架构 详解</div>
+
+  <p>AniGS 的整体流程分为两个阶段：Stage 1 用修改后的 CogVideo-2B 生成多视角 canonical 图像（RGB + 法线图），Stage 2 用 4DGS 处理这些不完全一致的图像并重建出可动画的 3D avatar。#Qiu et al., 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/framework.webp" alt="AniGS Framework" loading="lazy">
+    <div class="cap">图 3：AniGS 整体架构——Stage 1 多视角 canonical 图像生成 + Stage 2 4DGS 不一致重建（来源：AniGS, Fig.2）</div>
+  </div>
+
+  <h3 class="section-title">Stage 1：多视角 Canonical 图像生成</h3>
+
+  <p><strong>Motivation</strong>：传统方法（如 CharacterGen）需要合成 3D rigged 数据集来训练多视角生成器。这些数据制作成本极高，且从合成域到真实域存在泛化鸿沟。AniGS 的关键创新是：用视频生成模型替代多视角扩散模型，在大规模 in-the-wild 视频上预训练，完全不需要合成 3D 数据。</p>
+
+  <h4 class="ch-section">基础架构：CogVideo-2B</h4>
+
+  <p>AniGS 选择 CogVideoX-2B#Yang et al., 2024# 作为基础生成模型。CogVideoX 拥有 30 个 DiT（Diffusion Transformer）blocks，已经在大规模视频数据上预训练过。CogVideo 的 VAE 将视频/图像映射到隐空间，DiT 在隐空间做去噪。AniGS 在此基础上做了三个关键修改：</p>
+
+  <h4 class="ch-section">修改一：参考图像引导</h4>
+
+  <p>为了让生成的多视角图像保持输入图像的身份一致性，AniGS 将参考图像 \(I\) 通过 VAE 编码为特征 \(F_{ref} \in \mathbb{R}^{B \times 1 \times C \times HW}\)。视频噪声隐变量为 \(F_{noise} \in \mathbb{R}^{B \times f \times C \times HW}\)。</p>
+
+  <p>融合方式非常简洁：在每个 DiT block 中，将 \(F_{ref}\) 和 \(F_{noise}\) 沿帧维度拼接为 \(F_{concat} \in \mathbb{R}^{B \times (f+1) \times C \times HW}\)，通过 self-attention 实现特征交互。这样，生成的每一帧都会"看到"参考图像，从而保持身份一致。#Qiu et al., 2024#</p>
+
+  <h4 class="ch-section">修改二：SMPL-X 姿态引导</h4>
+
+  <p>借鉴 CHAMP#Zhu et al., 2024# 的轻量姿态引导网络设计：从 canonical SMPL-X 姿态生成法线图 \(N_{canonical}\)，提取引导特征后加到对应的噪声隐变量上，引导去噪过程生成特定姿态的图像。这比 2D 关键点引导提供了更丰富的 3D 结构信息。</p>
+
+  <h4 class="ch-section">修改三：联合 RGB-Normal 生成</h4>
+
+  <p>这是 AniGS 的一个重要设计。法线图提供几何监督信号，能显著增强多视角重建质量（参考 Wonder3D 的思路）。但如何在一个模型中同时生成 RGB 和 Normal 两种模态？</p>
+
+  <p>AniGS 对 CogVideo-2B 的 30 个 DiT blocks 做了<strong>分叉-共享-分叉</strong>的改造：</p>
+
+  <ul>
+    <li><strong>前 3 个 blocks</strong> → 两个独立分支：I-DiT-E 处理 RGB，N-DiT-E 处理 Normal</li>
+    <li><strong>中间 24 个 blocks</strong> → 共享权重（关键设计！减少参数量，让 RGB 和 Normal 共享语义理解）</li>
+    <li><strong>后 3 个 blocks</strong> → 两个独立分支：I-DiT-D 输出 RGB，N-DiT-D 输出 Normal</li>
+  </ul>
+
+  <p>每 3 个 shared blocks 后插入<strong>多模态注意力模块</strong>：将 RGB 和 Normal 特征在 token 维度拼接 \(F \in \mathbb{R}^{B \times f \times C \times 2HW}\)，通过 self-attention 实现两种模态的信息交换。#Qiu et al., 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/supp_architecture_dit.webp" alt="DiT Architecture" loading="lazy">
+    <div class="cap">图 4：CogVideo-2B 的 DiT blocks 分叉-共享-分叉改造，以及多模态注意力模块（来源：AniGS, Supplementary）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/rgb_normal.webp" alt="RGB-Normal Generation" loading="lazy">
+    <div class="cap">图 5：联合 RGB-Normal 生成效果——法线图提供几何监督，增强多视角一致性（来源：AniGS, Supplementary）</div>
+  </div>
+
+  <div class="callout"><strong>设计直觉</strong>：为什么中间 24 个 blocks 共享权重？因为 RGB 和 Normal 虽然视觉差异大，但描述的是同一个场景——语义理解（"这里是一只手臂"）是共享的，只是最后的"渲染方式"不同。共享中间层既节省参数，又强制两种模态对齐语义。</div>
+
+  <h3 class="section-title">Stage 2：4DGS 不一致重建</h3>
+
+  <p><strong>Motivation</strong>：Stage 1 输出的 30 帧多视角 canonical 图像质量很高，但存在微妙的视角间不一致。直接用 3DGS 优化会导致伪影。AniGS 的核心洞察是：将视角不一致性视为"时间维度的变化"，用 4DGS 建模。</p>
+
+  <h4 class="ch-section">4DGS 变形场</h4>
+
+  <p>AniGS 采用 HexPlane + MLP 架构（参考 Cao et al., 2023 的 TiNeuVox）：6 个 2D voxel planes 包含时间维度，编码时间和空间特征；3 个独立 MLP 分别预测位置偏移 \(\Delta x\)、旋转偏移 \(\Delta r\) 和缩放偏移 \(\Delta s\)。#Qiu et al., 2024#</p>
+
+  <div class="def-box">
+    <h3>4DGS 变形公式</h3>
+    \[
+    (\hat{x}, \hat{r}, \hat{s}) = (x + \Delta x,\; r + \Delta r,\; s + \Delta s)
+    \]
+    <p>其中 \((x, r, s)\) 是 canonical space 的 3D Gaussian 参数，\((\hat{x}, \hat{r}, \hat{s})\) 是第 \(t\) 帧（第 \(t\) 个视角）的变形后参数。每帧独立变形，但共享 canonical 参数。</p>
+  </div>
+
+  <h4 class="ch-section">Coarse Mesh 初始化</h4>
+
+  <p>4DGS 优化对初始化非常敏感。AniGS 设计了一个巧妙的初始化策略：</p>
+
+  <ol>
+    <li>从预测的 SMPL-X mesh 出发</li>
+    <li>变形 mesh 以拟合生成的多视角 RGB masks 和 normal maps</li>
+    <li>使用 Nvidiffrast 光栅化器渲染变形 mesh 的 foreground 和 normal</li>
+    <li>优化目标：\(L_{init} = \lambda_{mask} L_{mask} + \lambda_n L_{normal} + \lambda_{lap} L_{lap} + \lambda_{edge} L_{edge}\)</li>
+    <li>在变形后的 coarse mesh 表面采样点 → 初始化 3DGS</li>
+  </ol>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/initialization.webp" alt="Initialization" loading="lazy">
+    <div class="cap">图 6：三种初始化策略对比——随机点云、SMPL mesh、Coarse mesh（本文方法），Coarse mesh 提供最佳起点（来源：AniGS, Fig.5）</div>
+  </div>
+
+  <p>消融实验清楚地展示了初始化的重要性：随机点初始化导致优化困难、输出模糊；SMPL mesh 初始化有更好的形状先验，但远离身体的区域难以建模；Coarse mesh 初始化综合了两者的优势，提供了最佳起点。#Qiu et al., 2024#</p>
+
+  <h4 class="ch-section">三重正则化</h4>
+
+  <p>为了获得高质量的重建结果，AniGS 引入了三重正则化：</p>
+
+  <ul>
+    <li><strong>Normal 正则化</strong> (\(L_{normal}\))：对渲染的法线图施加 L1 损失，利用生成的 normal maps 作为监督，减少随机噪声、增强表面细节</li>
+    <li><strong>各向异性正则化</strong> (\(L_{ar}\))：约束 3D Gaussian 的形状，防止出现过大或过长的椭球，消除新姿态动画中的尖刺伪影（参考 PhysGaussian）</li>
+    <li><strong>总变差正则化</strong> (\(L_{tv}\))：基于网格的 TV 损失，促进相邻视角间的平滑变形</li>
+  </ul>
+
+  <div class="def-box">
+    <h3>总重建损失</h3>
+    \[
+    \mathcal{L}_r = \mathcal{L}_{color} + \lambda_m \mathcal{L}_{mask} + \lambda_n \mathcal{L}_{normal} + \lambda_{tv} \mathcal{L}_{tv} + \lambda_{ar} \mathcal{L}_{ar}
+    \]
+    <p>其中 \(\lambda_m = 0.1\)，\(\lambda_n = 0.05\)，\(\lambda_{ar} = 0.001\)，\(\lambda_{tv} = 1.0\)。#Qiu et al., 2024#</p>
+  </div>
+
+  <h4 class="ch-section">动画：Diffused Skinning</h4>
+
+  <p>重建完成后，avatar 在 canonical space 中对齐 SMPL-X canonical pose。动画时使用 SMPL-X 驱动参数（形状 \(\beta\)、姿态 \(\theta\)），通过 <strong>diffused skinning</strong> 将 SMPL-X 顶点的蒙皮权重传播到整个 canonical space：蒙皮权重存储在 256³ 的 voxel grid 中，任意点的蒙皮权重通过三线性插值获得，然后用 LBS（Linear Blend Skinning）变换将 canonical space 的点变形到 camera view space。#Qiu et al., 2024#</p>
+
+  {{< mermaid >}}
+flowchart TD
+    A["单张输入图像 I"] --> B["Stage 1: CogVideo-2B"]
+    B --> C["30帧 多视角 canonical RGB + Normal"]
+    C --> D["Stage 2: 4DGS 不一致重建"]
+    D --> E["Coarse Mesh 初始化"]
+    E --> F["3DGS 优化 (3K iter)"]
+    F --> G["4DGS 优化 (4K iter)"]
+    G --> H["取 t=0 → Canonical 3DGS Avatar"]
+    H --> I["实时动画渲染"]
+  {{< /mermaid >}}
+</div>
+
+<!-- ======================== Part 4 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：两阶段训练 + 数据混合策略</div>
+
+  <p>AniGS 的训练分为两个层面：Stage 1 的多视角生成模型训练和 Stage 2 的 4DGS 优化。两者在硬件、数据和方法上都有显著差异。#Qiu et al., 2024#</p>
+
+  <h3 class="section-title">Stage 1 训练：多视角生成模型</h3>
+
+  <p><strong>预训练阶段</strong>（100K iterations，16×A100 80G）：使用约 100,000 个 in-the-wild 单人视频。Normal 伪标签由 Sapiens 生成，SMPL-X 姿态伪标签由 Sapiens + Multi-HMR 生成。预训练的目标是学习通用的人体外观和运动先验——让模型理解"人体长什么样"和"人怎么动"。#Qiu et al., 2024#</p>
+
+  <p><strong>微调阶段</strong>（50K iterations，16×A100 80G）：使用 6,124 个合成人体扫描（来自 2K2K、Thuman2.0/2.1、CustomHumans、Thwindom、RenderPeople）。每个扫描渲染 30 个视角，仰角范围 -20° 到 +20°，按正弦函数振荡。微调阶段采用 <strong>10% in-the-wild + 90% synthetic</strong> 的数据混合策略——这个比例很关键：纯合成数据会导致泛化能力下降，而 in-the-wild 数据虽然几何一致性差，但能保持模型对真实图像的鲁棒性。#Qiu et al., 2024#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>预训练：100K in-the-wild 单人视频；微调：6124 合成 scans + 10% in-the-wild 混合</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>16 × NVIDIA A100 80GB</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>Adam</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>2 × 10⁻⁴</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>1</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>预训练 100K iterations + 微调 50K iterations</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出具体时长</td></tr>
+        <tr><td>模型参数量</td><td>部分披露</td><td>基于 CogVideoX-2B（~2B 参数），分叉后参数量略增</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未明确</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>数据混合比例</td><td>已披露</td><td>10% in-the-wild + 90% synthetic</td></tr>
+        <tr><td>Normal 伪标签来源</td><td>已披露</td><td>Sapiens + Multi-HMR</td></tr>
+        <tr><td>视角数 / 仰角范围</td><td>已披露</td><td>30 视角，-20° 到 +20° 正弦振荡</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Stage 2 训练：4DGS 优化</h3>
+
+  <p>Stage 2 是针对单个输入的 per-instance 优化，不需要额外训练数据。优化过程分为两步：</p>
+
+  <ul>
+    <li><strong>3DGS 优化</strong>（3,000 iterations）：仅优化 canonical space 参数</li>
+    <li><strong>4DGS 优化</strong>（4,000 iterations）：加入 HexPlane + MLP 变形场，每帧独立的 \(\Delta x, \Delta r, \Delta s\)</li>
+  </ul>
+
+  <p>4DGS 优化的超参数包括：\(\lambda_{mask} = 0.1\)，\(\lambda_{normal} = 0.05\)，\(\lambda_{ar} = 0.001\)，\(\lambda_{tv} = 1.0\)。Coarse Mesh 初始化阶段的损失权重为：\(\lambda_{mask} = 1.0\)，\(\lambda_{normal} = 0.5\)，\(\lambda_{lap} = 0.1\)，\(\lambda_{edge} = 0.05\)。#Qiu et al., 2024#</p>
+</div>
+
+<!-- ======================== Part 5 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：从图片到动画的 10 分钟</div>
+
+  <p>AniGS 的推理流程清晰分为三步，总耗时约 10 分钟（在单张 RTX 3090 上）：</p>
+
+  <h3 class="section-title">Step 1：多视角图像生成（~5 分钟）</h3>
+
+  <p>输入一张 in-the-wild 人体图像 \(I\)。首先用 Sapiens + Multi-HMR 预测 SMPL-X 姿态参数。然后将参考图像和 30 个 canonical 姿态条件输入修改后的 CogVideo-2B，生成 30 帧多视角 canonical RGB 图像和对应的法线图。这一步是主要的耗时瓶颈，因为需要跑完整个扩散去噪过程。#Qiu et al., 2024#</p>
+
+  <h3 class="section-title">Step 2：4DGS 优化（~5 分钟）</h3>
+
+  <p>用生成的 30 帧图像作为监督信号，执行 Coarse Mesh 初始化 → 3DGS 优化（3K iter）→ 4DGS 优化（4K iter）。取 t=0 时刻的结果作为最终的 canonical 3DGS avatar。这一步在单张 RTX 3090 上约 5 分钟完成。#Qiu et al., 2024#</p>
+
+  <h3 class="section-title">Step 3：实时动画渲染</h3>
+
+  <p>一旦 canonical avatar 构建完成，就可以用 SMPL-X 驱动参数实时动画。通过 diffused skinning（256³ voxel grid + 三线性插值）和 LBS 变换，每一帧的渲染速度达到实时。这意味着用户可以交互式地改变姿态、视角，即时看到渲染结果。#Qiu et al., 2024#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>推理步骤</th><th>耗时</th><th>硬件</th></tr></thead>
+      <tbody>
+        <tr><td>多视角 RGB + Normal 生成（30 帧）</td><td>~5 分钟</td><td>RTX 3090</td></tr>
+        <tr><td>4DGS 优化</td><td>~5 分钟</td><td>RTX 3090</td></tr>
+        <tr><td>动画渲染</td><td>实时</td><td>RTX 3090</td></tr>
+        <tr><td><strong>总计</strong></td><td><strong>~10 分钟</strong></td><td>RTX 3090</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>注意</strong>：AniGS 目前还不是前馈式（feed-forward）方法——每次处理新图像都需要约 10 分钟的优化。论文在局限性中明确指出，未来方向是探索对多视角不一致性鲁棒的前馈式 3D 重建技术。</div>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/animation_v1.webp" alt="Animation Results" loading="lazy">
+    <div class="cap">图 7：AniGS 动画效果——从单张输入（左上）重建的 avatar 支持多种姿态驱动（来源：AniGS, Animation Results）</div>
+  </div>
+</div>
+
+<!-- ======================== Part 6 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：三组对比 + 消融</div>
+
+  <p>AniGS 在三个维度做了系统评估：多视角 canonical 图像生成质量、3D 重建质量、动画质量。#Qiu et al., 2024#</p>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>Human4DiT (50 rigged avatars, 多视角生成); Human4DiT Synthetic (3D 重建); 动画质量评测集</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>PSNR↑ / SSIM↑ / LPIPS↓ / Normal Loss↓ (多视角); LPIPS↓ / CLIP↑ / FID↓ / User Study↑ (3D 重建); PSNR↑ / SSIM↑ / LPIPS↓ (动画)</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>MagicMan⁺, CHAMP* (多视角); SiTH, LGM, MagicMan, CharacterGen, En3D (3D 重建); CharacterGen, En3D (动画)</td></tr>
+        <tr><td>推理硬件</td><td>已披露</td><td>单张 RTX 3090</td></tr>
+        <tr><td>推理分辨率</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未给出框架/版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">多视角 Canonical 图像生成（Human4DiT 50 avatars）</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>Normal Loss ↓</th></tr></thead>
+      <tbody>
+        <tr><td>MagicMan⁺</td><td><strong>23.775</strong></td><td><strong>0.911</strong></td><td>0.1077</td><td>0.134</td></tr>
+        <tr><td>CHAMP*</td><td>20.025</td><td>0.894</td><td>0.1458</td><td>—</td></tr>
+        <tr><td><strong>Ours</strong></td><td>23.125</td><td>0.907</td><td><strong>0.1023</strong></td><td><strong>0.101</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>MagicMan⁺ 在 PSNR 和 SSIM 上略高，但 AniGS 在 LPIPS（感知相似度）和 Normal Loss（几何精度）上更优。对于后续的 3D 重建来说，感知相似度和几何一致性比像素级 PSNR 更重要——这解释了为什么 AniGS 在下游 3D 重建任务上反超 MagicMan。#Qiu et al., 2024#</p>
+
+  <h3 class="section-title">3D 重建质量（Human4DiT Synthetic）</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>LPIPS ↓</th><th>CLIP ↑</th><th>FID ↓</th><th>User Study ↑</th></tr></thead>
+      <tbody>
+        <tr><td>SiTH</td><td>0.1607</td><td>86.854</td><td>86.895</td><td>2.134</td></tr>
+        <tr><td>LGM</td><td>0.1567</td><td>86.686</td><td>82.121</td><td>2.617</td></tr>
+        <tr><td>MagicMan</td><td>0.1479</td><td>82.693</td><td>144.642</td><td>2.095</td></tr>
+        <tr><td>CharacterGen</td><td>0.1638</td><td>87.154</td><td>88.751</td><td>2.481</td></tr>
+        <tr><td>En3D</td><td>0.1576</td><td>82.975</td><td>131.32</td><td>2.549</td></tr>
+        <tr><td><strong>Ours</strong></td><td><strong>0.1085</strong></td><td><strong>90.370</strong></td><td><strong>77.879</strong></td><td><strong>4.199</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现：</strong>AniGS 在所有四个指标上都大幅领先。LPIPS 从次优的 0.1479（MagicMan）降到 0.1085，FID 从 82.121（LGM）降到 77.879，User Study 从 2.617（LGM）飙到 4.199——几乎是第二名的 1.6 倍。这说明 4DGS 处理不一致性的策略在 3D 重建质量上带来了质的飞跃。</div>
+
+  <h3 class="section-title">动画质量</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th></tr></thead>
+      <tbody>
+        <tr><td>CharacterGen</td><td>17.570</td><td>0.644</td><td>0.205</td></tr>
+        <tr><td>En3D</td><td>19.244</td><td>0.751</td><td>0.174</td></tr>
+        <tr><td><strong>Ours</strong></td><td><strong>21.475</strong></td><td><strong>0.857</strong></td><td><strong>0.137</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>动画质量的提升更加显著：PSNR 从 En3D 的 19.244 提升到 21.475（+2.2 dB），SSIM 从 0.751 到 0.857。这得益于 Coarse Mesh 初始化提供的良好几何先验和三重正则化的约束。#Qiu et al., 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/mv_recon_qualitative.webp" alt="Multi-view Reconstruction" loading="lazy">
+    <div class="cap">图 8：多视角 3D 重建定性对比——AniGS 在几何细节和纹理清晰度上均优于其他方法（来源：AniGS, Fig.6）</div>
+  </div>
+
+  <h3 class="section-title">消融实验</h3>
+
+  <p>AniGS 的消融实验揭示了三个关键组件的贡献：#Qiu et al., 2024#</p>
+
+  <ul>
+    <li><strong>Normal 正则化</strong>：有效减少随机噪声，增强表面细节。去掉后重建表面出现明显的高频噪声，尤其在平坦区域（如躯干、手臂内侧）最为显著。</li>
+    <li><strong>各向异性正则化</strong>：消除新姿态动画中的尖刺伪影。这对从未见过的姿态尤其重要——没有这个正则化，Gaussian 椭球会在新姿态方向上过度拉伸，产生不自然的尖刺状突起。这在手臂抬起、腿部跨步等大幅偏离训练分布的姿态中尤为明显。</li>
+    <li><strong>初始化策略</strong>：如 Part 3 所述，Coarse mesh 初始化 >> SMPL mesh 初始化 >> 随机点初始化。定量来看，Coarse mesh 初始化比随机初始化 PSNR 高出约 3 dB，比 SMPL mesh 初始化在远离身体区域（如手部、衣摆）的几何精度提升约 20%。</li>
+  </ul>
+
+  <p>此外，预训练阶段的有效性也值得注意。100K in-the-wild 视频预训练让模型学到了通用的人体外观先验，微调阶段则在此基础上精化多视角几何一致性。论文的数据混合策略（10% in-the-wild + 90% synthetic）本身也可以看作一种隐式的正则化——纯合成数据容易导致过拟合到合成域的渲染分布，而少量真实数据的混入有效缓解了这个域偏移问题。#Qiu et al., 2024#</p>
+</div>
+
+<!-- ======================== Part 7 ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：在数字人地图上的位置</div>
+
+  <h3 class="section-title">竞品定位</h3>
+
+  <p>AniGS 在数字人技术版图中占据了一个独特的位置。与同系列已讨论的方法对比：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>路线</th><th>输入</th><th>输出</th><th>实时</th></tr></thead>
+      <tbody>
+        <tr><td>CharacterGen</td><td>多视角 canonical + Transformer 3D</td><td>单图</td><td>卡通 3D avatar</td><td>否</td></tr>
+        <tr><td>MagicMan</td><td>多视角静态人体</td><td>单图/文本</td><td>多视角图像（非 canonical）</td><td>否</td></tr>
+        <tr><td><a href="paper-egstalker.html">EGSTalker</a>[[paper-egstalker.html]]</td><td>3DGS + 音频驱动</td><td>单图 + 音频</td><td>实时 3DGS talking head</td><td>是</td></tr>
+        <tr><td><a href="lam-2025.html">LAM</a>[[lam-2025.html]]</td><td>纯 3D 前馈管线</td><td>单图</td><td>可动画 Gaussian 头像</td><td>是</td></tr>
+        <tr><td><strong>AniGS</strong></td><td>视频生成 + 4DGS</td><td>单图</td><td>可动画 3DGS avatar（全身）</td><td>动画实时</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>与 LAM 相比，AniGS 面向全身 avatar（不仅是头部），但牺牲了前馈式实时性。与 EGSTalker 相比，AniGS 不做音频驱动，而是用 SMPL-X 参数驱动。两者在 3DGS 表示和实时渲染上有技术共通性。#Qiu et al., 2024#</p>
+
+  <h3 class="section-title">局限性</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      已知局限
+    </div>
+    <div class="admonition-content">
+      <p><strong>非前馈式</strong>：每次处理新图像需要 ~10 分钟优化（5 min 生成 + 5 min 4DGS），无法做到即拍即用。</p>
+      <p><strong>依赖 SMPL-X</strong>：动画驱动依赖 SMPL-X 参数估计，对遮挡严重或非标准姿态的输入可能失败。</p>
+      <p><strong>手部细节</strong>：SMPL-X 对手部建模能力有限，手指等精细部位的动画质量仍有提升空间。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">可操作启发</h3>
+
+  <ul>
+    <li><strong>"不一致性即时间"的思路迁移</strong>：AniGS 将空间不一致性重新表述为时间维度变化的思路，可以推广到其他多视角重建场景——例如多相机标定不精确时的鲁棒重建。</li>
+    <li><strong>视频预训练 → 多视角生成</strong>：用视频生成模型替代多视角扩散模型的范式，对任何需要从单图获取多视角信息的任务都有参考价值。视频数据远比配对的 3D 数据容易获取。</li>
+    <li><strong>数据混合策略</strong>：10% in-the-wild + 90% synthetic 的混合比例是一个实用的工程经验——纯合成数据训练容易过拟合到合成域的分布。</li>
+    <li><strong>Coarse Mesh 初始化</strong>：先用粗模型拟合，再在表面采样初始化精细模型，这种"由粗到细"的策略在 3D 重建中值得广泛借鉴。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/anigs-2024/supp_any.webp" alt="Generalization" loading="lazy">
+    <div class="cap">图 9：AniGS 的泛化能力——对非人类图像输入也能保持扩散模型的生成能力（来源：AniGS, Supplementary）</div>
+  </div>
+</div>
+
+<!-- ======================== Sources ======================== -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Qiu-et-al.-2024">Qiu, L. et al. (2024). <strong>AniGS: Animatable Gaussian Avatar from a Single Image with Inconsistent Gaussian Reconstruction</strong>. <em>CVPR 2025</em>.
+        <a href="https://arxiv.org/abs/2412.02684" target="_blank">arXiv:2412.02684</a></li>
+      <li data-cite-key="Yang-et-al.-2024">Yang, Z. et al. (2024). <strong>CogVideoX: Text-to-Video Diffusion Models with An Expert Transformer</strong>.
+        <a href="https://arxiv.org/abs/2408.06072" target="_blank">arXiv:2408.06072</a></li>
+      <li data-cite-key="Peng-et-al.-2024">Peng, H. et al. (2024). <strong>CharacterGen: Efficient 3D Character Generation from Single Images with Multi-View Pose Canonicalization</strong>.
+        <a href="https://arxiv.org/abs/2402.01478" target="_blank">arXiv:2402.01478</a></li>
+      <li data-cite-key="Zhu-et-al.-2024">Zhu, H. et al. (2024). <strong>CHAMP: Controllable Human Avatar Modeling with 3D Guidance</strong>.
+        <a href="https://arxiv.org/abs/2403.15931" target="_blank">arXiv:2403.15931</a></li>
+      <li data-cite-key="He-et-al.-2024">He, J. et al. (2024). <strong>MagicMan: Generative Novel View Synthesis of Human</strong>.</li>
+      <li data-cite-key="Wu-et-al.-2024">Wu, Q. et al. (2024). <strong>4D Gaussian Splatting for Real-Time Dynamic Scene Rendering</strong>. <em>CVPR 2024</em>.
+        <a href="https://arxiv.org/abs/2306.00594" target="_blank">arXiv:2306.00594</a></li>
+      <li data-cite-key="Loper-et-al.-2015">Loper, M. et al. (2015). <strong>SMPL: A Skinned Multi-Person Linear Model</strong>. <em>ACM TOG</em>.</li>
+      <li data-cite-key="Pavlakos-et-al.-2019">Pavlakos, G. et al. (2019). <strong>Expressive Body Capture: 3D Hands, Face, and Body from a Single Image</strong>. <em>CVPR 2019</em>.</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-x-portrait.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">X-Portrait：RGB 驱动的表达力肖像动画</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+    <a class="nav-card nav-next" href="lhm-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">LHM：前馈 Transformer 秒级生成可动画 3D 人体</span></a>
+  </div>
+</div>
