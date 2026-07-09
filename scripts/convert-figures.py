@@ -42,34 +42,62 @@ except ImportError:
 SUPPORTED_INPUT = {'.pdf', '.eps', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif'}
 
 
-def crop_whitespace(img, padding_pct=0.02, threshold=250):
+def crop_whitespace(img, padding_pct=0.02, threshold=None):
     """自动裁剪图片四周的留白
+
+    自适应检测背景色，对非纯白背景（如灰度 248）同样有效。
 
     Args:
         img: PIL Image (RGB)
         padding_pct: 裁剪后保留的边距百分比（相对于短边），默认 2%
-        threshold: 灰度值 >= threshold 视为背景（白），< threshold 视为内容。默认 250（近白也算背景）
+        threshold: 灰度阈值，>= threshold 视为背景。None 时自动检测背景色。
     Returns:
         裁剪后的 PIL Image
     """
-    gray = img.convert('L')
-    # 将灰度图二值化：< threshold 的像素标记为内容（255），>= threshold 标记为背景（0）
-    mask = gray.point(lambda x: 255 if x < threshold else 0, mode='L')
-    bbox = mask.getbbox()
+    import numpy as np
+    gray = np.array(img.convert('L'))
+    h, w = gray.shape
 
-    if not bbox:
-        # 整张图都是背景（纯白图），不裁剪
+    # 自动检测背景色：取四角 10% 区域的中位数灰度
+    bg_level = None
+    if threshold is None:
+        corner_size_h = max(10, h // 10)
+        corner_size_w = max(10, w // 10)
+        corners = np.concatenate([
+            gray[:corner_size_h, :corner_size_w].ravel(),
+            gray[:corner_size_h, -corner_size_w:].ravel(),
+            gray[-corner_size_h:, :corner_size_w].ravel(),
+            gray[-corner_size_h:, -corner_size_w:].ravel(),
+        ])
+        bg_level = int(np.median(corners))
+        # threshold = 背景色 - 8，确保比背景稍暗的像素被识别为内容
+        threshold = max(0, bg_level - 8)
+
+    # 行/列级别的内容检测：每行/列中 < threshold 的像素比例
+    content_mask = gray < threshold
+    row_content_pct = content_mask.mean(axis=1)  # 每行的内容像素比例
+    col_content_pct = content_mask.mean(axis=0)  # 每列的内容像素比例
+
+    # 内容像素比例 > 0.3% 的行/列视为有内容（容忍少量噪点）
+    content_rows = np.where(row_content_pct > 0.003)[0]
+    content_cols = np.where(col_content_pct > 0.003)[0]
+
+    if len(content_rows) == 0 or len(content_cols) == 0:
+        # 整张图都是背景，不裁剪
         return img
 
+    top, bottom = content_rows[0], content_rows[-1]
+    left, right = content_cols[0], content_cols[-1]
+
     # 计算边距：短边的 padding_pct，最小 10px
-    min_dim = min(img.size)
+    min_dim = min(w, h)
     pad = max(10, int(min_dim * padding_pct))
 
     # 扩展 bbox，但不超过图片边界
-    left = max(0, bbox[0] - pad)
-    top = max(0, bbox[1] - pad)
-    right = min(img.size[0], bbox[2] + pad)
-    bottom = min(img.size[1], bbox[3] + pad)
+    left = max(0, left - pad)
+    top = max(0, top - pad)
+    right = min(w, right + pad)
+    bottom = min(h, bottom + pad)
 
     cropped = img.crop((left, top, right, bottom))
 
@@ -81,7 +109,8 @@ def crop_whitespace(img, padding_pct=0.02, threshold=250):
     if removed_w > 5 or removed_h > 5:
         pct_w = removed_w / orig_w * 100
         pct_h = removed_h / orig_h * 100
-        print(f"     裁剪留白: {orig_w}x{orig_h} → {crop_w}x{crop_h} (去除 {pct_w:.0f}% W, {pct_h:.0f}% H)")
+        bg_info = f"bg≈{bg_level}" if bg_level is not None else "manual"
+        print(f"     裁剪留白: {orig_w}x{orig_h} → {crop_w}x{crop_h} (去除 {pct_w:.0f}% W, {pct_h:.0f}% H) [{bg_info}, thresh={threshold}]")
 
     return cropped
 

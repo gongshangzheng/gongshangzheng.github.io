@@ -1,0 +1,530 @@
+---
+title: "宠物动作识别(五):非视觉模态全景--从 RGB 到稀疏轨迹、深度、点云与事件相机"
+description: "系统梳理宠物动作识别可用的 6 种视觉模态(RGB、骨架、RGB-D、稀疏轨迹、3D 点云、事件相机)与 2 种非视觉模态(IMU、音频),在 500 元端侧硬件约束下为猫狗行为识别给出端到端选型建议。"
+created_at: 2026-07-09T00:15:40
+updated_at: 2026-07-09T00:30:00
+tags: [宠物动作识别, 多模态融合, 稀疏轨迹, 端侧部署, 事件相机]
+aliases: ["categories/AI/动作识别/宠物动作识别"]
+sub_id: 50
+mathjax: true
+hero_title: "非视觉模态全景"
+hero_sub: "RGB · Skeleton · RGB-D · Sparse Trajectory · Point Cloud · Event Camera · IMU · Audio"
+hero_tagline: "当 RGB 不再是唯一选择:8 种输入模态 × 500 元端侧 BOM 的端到端选型"
+notify: true
+---
+
+<!-- Stats 数字条 -->
+<div class="stats">
+  <div class="stat"><span class="num">8</span><span class="label">输入模态</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">核心论文精读</span></div>
+  <div class="stat"><span class="num">6</span><span class="label">模态对比维度</span></div>
+  <div class="stat"><span class="num b">5</span><span class="label l">开放问题</span></div>
+  <div class="stat"><span class="num">¥500</span><span class="label">硬件约束</span></div>
+</div>
+
+<!-- Part 0 · 引言 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 0</div>
+  <div class="ch-title">引言:当 RGB 不再是默认选择</div>
+
+  <p>承接本系列的<strong>第二篇</strong>《<a href="pet-action-detection-model-survey.html">动作检测模型全景与选型</a>》,我们从 backbone 视角把 mmaction2 模型库和最新架构(VideoMamba、VideoMAE V2、InternVideo2)梳理完毕,给出了慢快双流、视频 Transformer、Mamba 三条路线的推荐。但在模型以外,<strong>输入端的选择</strong>同样决定了项目的可行性。</p>
+
+  <p>RGB 视频是默认假设,但它在三个场景中暴露出严重缺陷:</p>
+
+  <ol>
+    <li><strong>遮挡与背景干扰</strong>--室内场景下猫常钻进沙发底、跳上书架,RGB 视频的判别信息被背景淹没</li>
+    <li><strong>隐私顾虑</strong>--视频含家具布局、主人面容,对家居用户是负面卖点</li>
+    <li><strong>算力开销</strong>--在 500 元 BOM 约束下,1080p×30fps 视频流是吃不下的</li>
+  </ol>
+
+  <p>对这些问题,<strong>改变输入模态往往比换 backbone 更有效</strong>。本文不追求"穷举所有动作识别方法",而是聚焦一个具体工程问题--<strong>在端侧猫狗行为识别的严苛约束下,哪种输入路线最合适</strong>。沿着这条主轴,我们梳理 8 种可用模态:6 种视觉(RGB、骨架、RGB-D、稀疏轨迹、3D 点云、事件相机)+ 2 种非视觉(IMU 加速度计、音频),并对其中 3 种最具工程落地潜力的新路线(稀疏轨迹、单目深度、事件相机)展开深度分析。</p>
+
+  <div class="callout"><strong>本文定位</strong>:本文不是学术综述,而是面向项目的<strong>技术路线全景图 + 选型决策矩阵</strong>。每条路线都给出猫狗场景适配性评估与具体论文证据。</div>
+</div>
+
+<!-- Part 1 · 输入模态全景 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">输入模态全景:8 种路线一图速览</div>
+
+  <p>本文把可用的输入模态分为"视觉"与"非视觉"两大类,共 8 种。视觉路线以 RGB 为起点,按抽象层级递增:RGB(最原始)→ RGB-D(+深度)→ 骨架/轨迹(+语义)→ 3D 点云(+几何),事件相机则独立于这条主线,提供异步流式输入。非视觉路线包括 IMU 加速度计与音频,历史上用于动作识别的研究较少,但在宠物场景有独特价值。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分类</th><th>模态</th><th>代表方法</th><th>输入形式</th><th>计算量</th><th>硬件成本</th><th>猫场景适配</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="6"><strong>视觉</strong></td><td><strong>RGB</strong></td><td>SlowFast, X3D, VideoMamba</td><td>原始视频帧</td><td>大(GB 级 FLOPs)</td><td>中(摄像头模组)</td><td>{{< bg green >}}首选<span style="white-space:nowrap">{{< /bg >}} - 信息完整</span></td></tr>
+        <tr><td><strong>Skeleton</strong></td><td>ST-GCN, PoseC3D, SkateFormer</td><td>关键点序列</td><td>{{< bg green >}}极小<span style="white-space:nowrap">{{< /bg >}}</span></td><td>中</td><td>{{< bg yellow >}}需猫姿态估计<span style="white-space:nowrap">{{< /bg >}}</span></td></tr>
+        <tr><td><strong>RGB-D / 单目深度</strong></td><td>DEAR, MAGNet</td><td>RGB + depth map</td><td>中(双流)</td><td>低-中</td><td>{{< bg yellow >}}可行<span style="white-space:nowrap">{{< /bg >}} - 单目估计即可</span></td></tr>
+        <tr><td><strong>稀疏轨迹</strong></td><td>TrAction (2026)</td><td>CoTracker3 点轨迹</td><td>{{< bg green >}}低<span style="white-space:nowrap">{{< /bg >}}</span></td><td>中</td><td>{{< bg yellow >}}潜力<span style="white-space:nowrap">{{< /bg >}} - 纯运动驱动</span></td></tr>
+        <tr><td><strong>3D 点云</strong></td><td>3DInAction, Motion PointNet</td><td>点云序列</td><td>中-高</td><td>高(深度传感器)</td><td>{{< bg red >}}困难<span style="white-space:nowrap">{{< /bg >}} - 需多视角</span></td></tr>
+        <tr><td><strong>事件相机</strong></td><td>POKER (CVPR 2026)</td><td>异步事件流</td><td>{{< bg green >}}极低<span style="white-space:nowrap">{{< /bg >}}</span></td><td>高(专用硬件)</td><td>{{< bg red >}}不成熟<span style="white-space:nowrap">{{< /bg >}} - 工程早期</span></td></tr>
+        <tr><td rowspan="2"><strong>非视觉</strong></td><td><strong>IMU / 加速度</strong></td><td>牛/羊行为识别综述</td><td>3 轴加速度 + 陀螺仪</td><td>{{< bg green >}}极低<span style="white-space:nowrap">{{< /bg >}}</span></td><td>{{< bg green >}}低<span style="white-space:nowrap">{{< /bg >}} - 9 轴 MPU6050 ¥5</span></td><td>{{< bg green >}}成熟<span style="white-space:nowrap">{{< /bg >}} - 已有 FitBark / PetPace 项圈方案</span></td></tr>
+        <tr><td><strong>音频</strong></td><td>犬吠分类 / 猫呼噜声</td><td>声谱图</td><td>小</td><td>低(驻极体麦克风)</td><td>{{< bg yellow >}}补充<span style="white-space:nowrap">{{< /bg >}} - 单独精度不足</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这个 8 模态全景的关键洞察是:<strong>没有单一模态能在所有维度都最优</strong>。RGB 信息完整但重、IMU 极轻但语义弱、稀疏轨迹对运动敏感但对静态行为失明。下面 6 章深入分析 6 种视觉路线 + 1 章讲两种非视觉路线 + 1 章多模态融合 + 1 章端侧决策矩阵。</p>
+</div>
+
+<!-- Part 2 · RGB 与骨架:经典双雄的当前地位 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">RGB 与骨架:经典双雄的当前地位</div>
+
+  <p>在所有模态里,<strong>RGB 与骨架是最成熟的两条主线</strong>。本系列第二篇《动作检测模型全景》给出的所有选型都基于这两者。本节先快速对这两条路线的参数、优势、劣势做一次复盘,因为后文所有新模态都不可避免地要回答"相对这两条主线,我在何处胜出"。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>RGB-based</th><th>Skeleton-based</th></tr></thead>
+      <tbody>
+        <tr><td><strong>参数量</strong></td><td>2M - 1B</td><td>{{< bg green >}}1.4M - 3.5M<span style="white-space:nowrap">{{< /bg >}}</span></td></tr>
+        <tr><td><strong>FLOPs</strong></td><td>数十 G - 数百 G</td><td>{{< bg green >}}&lt; 4G<span style="white-space:nowrap">{{< /bg >}}</span></td></tr>
+        <tr><td><strong>前置依赖</strong></td><td>无</td><td>需要姿态估计模型</td></tr>
+        <tr><td><strong>优势</strong></td><td>信息完整,无需前置模型</td><td>极轻量,对背景和外观变化鲁棒</td></tr>
+        <tr><td><strong>劣势</strong></td><td>计算量大,易受背景干扰</td><td>姿态估计错误会传播到下游</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      猫科骨架路线的隐藏成本
+    </div>
+    <div class="admonition-content"><p>人体骨架模型(COCO-17 或 NTU-25)<strong>不能直接用于猫</strong>--猫是四足动物,关节拓扑完全不同(AP-10K 定义 22 个关键点,包含尾巴和耳朵)。选择骨架路线意味着需要先训练一个猫科姿态估计器,或使用 <strong>SuperAnimal</strong>(见 Part 4 详述)做零样本替代。这个前置成本不可忽视,且骨架方法对<strong>猫蜷缩/蹭动</strong>等关键姿态估计失败的鲁棒性也低于人体场景。</p></div>
+  </div>
+
+  <p>这两条主线之外,<strong>稀疏轨迹(Part 4)实际上是对骨架路线的"轻量化语义替代"</strong>:不去估计精确的 22 个猫关键点,而只追踪数百个无标注点的运动轨迹。这一思路能在保留骨架路线轻量优势的同时,避免猫科姿态估计的前置依赖。</p>
+</div>
+
+<!-- Part 3 · RGB-D / 单目深度 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">RGB-D / 单目深度:无需额外硬件的第三条路线</div>
+
+  <p>RGB-D 动作识别是除 RGB 与骨架外<strong>第三条最成熟的视觉模态</strong>,在 NTU RGB+D 120 等基准上有 20+ 年研究积累。2024-2026 年的关键范式转变是<strong>不再需要深度传感器</strong>--单目深度估计模型(MiDaS、Depth Anything)可以从普通 RGB 视频生成 depth map。这意味着 RGB-D 路线可以在不增加硬件成本的前提下得到深度分支作为补充模态。</p>
+
+  <h3 class="section-title">代表方法对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>来源</th><th>深度来源</th><th>核心思路</th><th>对猫场景的价值</th></tr></thead>
+      <tbody>
+        <tr><td><strong>DEAR</strong></td><td>ECCV 2024 Workshop</td><td>MiDaS 单目估计</td><td>S4V + VideoMamba 三分支双流融合</td><td>无需额外硬件;类别级提升 +0.6% ~ +10%</td></tr>
+        <tr><td><strong>MAGNet</strong></td><td>Nature Sci Rep 2026</td><td>任意来源(含缺失)</td><td>多模态自适应 GCN + 跨模态自注意力</td><td>模态缺失时自适应调整权重;对遮挡鲁棒</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">DEAR 深度解读</h3>
+
+  <div class="photo">
+    <img src="media/images/pet-action-detection-modality-survey/dear-arch.webp" alt="DEAR 双流架构" loading="lazy">
+    <div class="cap">图 3:DEAR 双流深度增强架构。RGB 分支 (Side4Video) 与 Depth 分支 (S4V + VideoMamba) 并行编码,最后经 Gated Cross-Attention 双向融合。从 RGB 生成的 MiDaS depth map 在不增加硬件的前提下提供几何补充。(来源:Rahmaniboldaji et al., arXiv 2408.15679, Fig.2)</div>
+  </div>
+
+  <div class="info-box">
+    <h3>📄 DEAR: Depth-Enhanced Action Recognition(ECCV 2024 Workshop,arXiv 2408.15679)</h3>
+    <p><strong>作者</strong>:Rahmani et al., University of Surrey<br/>
+    <strong>代码</strong>:<a href="https://github.com/SadeghRahmaniB/DEAR" target="_blank">GitHub</a></p>
+
+    <p><strong>核心问题</strong>:2D RGB 在杂乱场景中难以区分动作,人类视觉依赖 3D 深度信息来理解空间关系,但深度传感器不普及。作者提出"用单目深度估计替代硬件深度传感器"的方案。</p>
+
+    <p><strong>方法</strong>:三编码分支 + 晚期融合</p>
+    <ul>
+      <li><strong>RGB 分支</strong>:Side4Video(S4V),用冻结的 CLIP ViT-B/16 + 并行可训练侧支提取空间特征</li>
+      <li><strong>Depth 分支 1</strong>:同样的 S4V 架构处理 MiDaS-small 生成的 depth map</li>
+      <li><strong>Depth 分支 2</strong>:VideoMamba 处理 depth map(Mamba 对稀疏深度特征感知不同)</li>
+      <li><strong>融合</strong>:Gated Cross-Attention(GCA)双向融合 RGB↔Depth 特征,最后对两路 score 取平均</li>
+    </ul>
+
+    <p><strong>关键结果(Something-Something V2)</strong>:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>配置</th><th>Top-1</th><th>相对 RGB 提升</th></tr></thead>
+        <tbody>
+          <tr><td>S4V(RGB only)</td><td>70.2%</td><td>baseline</td></tr>
+          <tr><td>RGB + Depth(S4V)</td><td>70.3%</td><td>+0.1</td></tr>
+          <tr><td>RGB + Depth(VideoMamba)</td><td>70.0%</td><td>-0.2</td></tr>
+          <tr><td><strong>RGB + Depth(S4V + VideoMamba)</strong></td><td><strong>70.8%</strong></td><td><strong>+0.6</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>类别级分析</strong>:深度信息对涉及物体空间关系的动作提升显著--"Stuffing something into something" +10%(63%→73%),"Dropping something onto something" +5%,"Pushing something so that it almost falls" +5%。这类动作都需要<strong>判断两个物体的相对深度</strong>,正是 2D RGB 容易混淆的。</p>
+
+    <h4>对宠物场景的启示</h4>
+    <ul>
+      <li>✅ <strong>无需额外硬件</strong>--MiDaS 从 RGB 生成 depth map,硬件成本不变</li>
+      <li>✅ <strong>架构可借鉴</strong>--双流 + GCA 融合是通用模式,可替换 backbone 为 X3D-M</li>
+      <li>⚠️ <strong>整体提升幅度有限</strong>-- +0.6%,但对涉及空间关系的动作(猫跳上/跳下、钻进盒子)提升可能更大</li>
+      <li>⚠️ <strong>VideoMamba 分支增加复杂度</strong>--边缘部署时可能只需 RGB+Depth(S4V) 两分支</li>
+    </ul>
+  </div>
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      单目深度在动物上的局限
+    </div>
+    <div class="admonition-content"><p>单目深度估计模型通常在<strong>人体/室内场景</strong>上训练,在动物(尤其是毛茸茸的猫)上的深度精度会下降。但作为<strong>辅助模态</strong>而非主模态,这种精度损失是可以接受的--深度分支提供的是<strong>相对几何关系</strong>(猫 vs 背景),不需要绝对精确。这与 DEAR 选用的 MiDaS-small(强调相对深度而非 metric depth)的设计选择一致。</p></div>
+  </div>
+
+  <p><strong>结论</strong>:对端侧宠物摄像头项目,DEAR 式的"RGB + 单目深度"是<strong>最具工程落地性的第三条路线</strong>--它不需要任何额外硬件,只是把现有 RGB 视频切成两份输入,硬件成本不变却能获得几何信息的边际增益。MAGNet 的自适应权重机制更适合处理"传感器偶发失效"场景,但对纯 RGB + 估计深度的配置并非必需品。</p>
+</div>
+
+<!-- Part 4 · 稀疏点轨迹 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">稀疏点轨迹(TrAction):2026 年的纯运动新范式</div>
+
+  <p>2026.06 提出的 <a href="https://arxiv.org/abs/2606.03490" target="_blank">TrAction</a> 是一种颠覆性的输入范式改造:<strong>完全抛弃 RGB 像素,只用稀疏点轨迹作为模型输入</strong>。这个思路与依赖深度学习"视觉特征"的传统路线分道扬镳,直接回到动作识别的本质--<strong>动作就是运动,没有运动就没有动作</strong>。</p>
+
+  <p>与其前身 I3D flow-based(1.6M input 值)相比,TrAction 仅 0.3M input 值,是前者的 <strong>1/5</strong>。这意味着在端侧缓存与带宽层面,轨迹路线有数量级优势。</p>
+
+  <div class="photo">
+    <img src="media/images/pet-action-detection-modality-survey/traction-overview.webp" alt="TrAction 方法总览 Pipeline" loading="lazy">
+    <div class="cap">图 1:TrAction 方法总览。(A)CoTracker3 + VideoDepthAnything-L 从 RGB 视频离线提取 2500 条 2.5D 轨迹;(B)MAE-style Masked Trajectory Pretraining;(C)Finetune 分类。架构参数 &lt; 8M。(来源:Meier et al., 2026, Fig.2)</div>
+  </div>
+
+  <div class="info-box">
+    <h3>📄 TrAction: Action Recognition with Sparse Trajectories(arXiv 2026.06)</h3>
+    <p><strong>作者</strong>:Jan F. Meier, Felix B. Müller, Alexander Ecker, Timo Lüddecke(University of Göttingen / Max Planck Institute for Dynamics and Self-Organization, Göttingen)<br/>
+    <strong>代码</strong>:<a href="https://ecker-lab/TrAction" target="_blank">ecker-lab/TrAction</a>(v1 阶段尚无 release)</p>
+
+    <p><strong>核心问题</strong>:密集 RGB 视频模型存在两大缺陷--(1) 内存和计算随分辨率/时长线性膨胀;(2) 强烈的外观偏差(appearance bias),模型倾向于从物体/背景推断动作而非从运动本身。</p>
+
+    <h4>方法</h4>
+    <ul>
+      <li><strong>轨迹提取</strong>:CoTracker3 跟踪稀疏 2D 点(数百个),跨帧维持 identity 和遮挡推理</li>
+      <li><strong>2.5D 增强</strong>:单目深度估计为每个轨迹点附加深度坐标,得到 (x, y, z, t) 序列</li>
+      <li><strong>轨迹 Transformer</strong>:简单 transformer 架构,直接在轨迹序列上操作</li>
+      <li><strong>Masked-Trajectory Pretraining</strong>:类比 MAE 的掩码预训练,随机遮蔽部分轨迹点后重建,下游分类提升 ~5 个点</li>
+    </ul>
+
+    <h4>关键结果</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>配置</th><th>SSV2 Top-1</th><th>EK100 verb Top-1</th><th>备注</th></tr></thead>
+        <tbody>
+          <tr><td>TrAction(纯轨迹)</td><td>45.2%</td><td>54.1%</td><td>仅运动信息,无外观</td></tr>
+          <tr><td>TrAction(K400 预训练)</td><td>45.8%</td><td>53.9%</td><td>MAE pretraining +0.6pt</td></tr>
+          <tr><td>I3D (flow-only, 对照组)</td><td>38.4%</td><td>54.0%</td><td>8pt 优势仅取 1/5 输入</td></tr>
+          <tr><td>DINOv2-B (16 frames)</td><td>53.6%</td><td>59.1%</td><td>纯外观基线</td></tr>
+          <tr><td>TrAction + DINOv2 late-fusion</td><td>53.6% + <strong>8.7pt</strong></td><td>59.1% + 4.4pt</td><td>轨迹与外观高度互补</td></tr>
+          <tr><td>TrAction + V-JEPA 2-L</td><td>66.7% + <strong>1.6pt</strong></td><td>67.2% + 1.1pt</td><td>与最强 video encoder 也互补</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>关键发现</strong>:轨迹特征与外观特征<strong>高度互补</strong>--在运动判别性强的子集上(外观模型最弱的地方),轨迹带来的提升最大。在 Chirality-in-Action benchmark(时间反转敏感性测试)上,纯轨迹方法<strong>超过 V-JEPA</strong>。</p>
+
+    <div class="photo">
+      <img src="media/images/pet-action-detection-modality-survey/traction-attention-vis.webp" alt="TrAction 注意力可视化" loading="lazy">
+      <div class="cap">图 2:TrAction 的注意力可视化。轨迹 Transformer 能自动对运动判别性强的轨迹点加权(深色轨迹),对静态的背景点降权(浅色轨迹)。这从机制上解释了"为什么轨迹路线能输绕 appearance bias"。(来源:Meier et al., 2026, Fig.3)</div>
+    </div>
+
+    <p><strong>关键消融</strong>(Table 4):</p>
+    <ul>
+      <li>无 MAE pretrain → 40.9% SSV2(带 pretrain 45.8%,<strong>+5pt</strong>)</li>
+      <li>无 depth 通道 → 31.4% SSV2(<strong>-14pt</strong>,最关键单一通道)</li>
+      <li>无 positional encoding → 38.4% SSV2(-7pt)</li>
+      <li>仅用 relative coords → 32.0% SSV2(-9pt,绝对位置不可替代)</li>
+    </ul>
+
+    <h4>对宠物场景的启示</h4>
+    <ul>
+      <li>✅ <strong>天然适配猫咪场景</strong>--猫的行为(走/跑/跳/舔毛/抓挠)主要由运动模式区分,外观信息冗余度高</li>
+      <li>✅ <strong>数据量极小</strong>--2500 点的轨迹 vs 密集 RGB 帧,存储/传输成本大幅降低(I3D flow 的 1/5)</li>
+      <li>✅ <strong>对背景/光照鲁棒</strong>--轨迹不含外观信息,不受猫毛色变化、环境光照影响</li>
+      <li>⚠️ <strong>CoTracker3 本身有计算开销</strong>--论文 § 5.4 明确说"轨迹提取 computationally expensive, amortized via caching",实时性下需拆验</li>
+      <li>⚠️ <strong>静态行为无效</strong>--猫跳着/睡觉时几乎无轨迹信号,需与 RGB 分支互补</li>
+      <li>⚠️ <strong>动物轨迹跟踪未验证</strong>--CoTracker3 在人体场景上训练,猫体跟踪质量需实测</li>
+    </ul>
+  </div>
+
+  <div class="callout"><strong>猫场景与 TrAction 的同构性</strong>:猫的动作(走、跑、跳上窗台、舔毛、抓挠)本质上都是<strong>可被稀疏轨迹高效编码的运动模式</strong>。这与 Something-Something V2 的"动作依赖运动模式"的属性契合度极高。TrAction 给出的纯轨迹 SSV2 45% Top-1 已经接近 SlowFast 早期版本,而当与 DINOv2 融合后 +8.7 个点意味着<strong>轨迹与外观在猫场景有望互补而非冲突</strong>。</div>
+
+  <p><strong>结论</strong>:稀疏轨迹是<strong>对端侧宠物摄像头最有吸引力的新范式</strong>。它的"纯运动"特性天然规避了 RGB 的隐私顾虑(一张点轨迹图比一段视频更不可辨识),且能直接在 500 元 BOM 上运行(CoTracker3 已有移动端加速版本)。但需要解决两个工程问题:(1) CoTracker3 对猫体的跟踪鲁棒性;(2) 静态行为(趴/睡)的兜底--这两个问题对 RGB 都不是问题,对轨迹路线则是必须补齐的能力。</p>
+</div>
+
+<!-- Part 5 · 3D 点云 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">3D 点云:几何驱动的另一极</div>
+
+  <p>3D 点云作为动作识别输入的想法最早可以追溯到 Kinect 时代的 RGB-D 数据集(NTU RGB+D 120)。点云直接表达 3D 几何,避开了 2D 投影带来的深度歧义,是<strong>几何信息最完整</strong>的视觉模态。但点云动作识别有三大工程难点:</p>
+
+  <ol>
+    <li><strong>数据获取成本高</strong>--传统依赖深度传感器(LiDAR / ToF / 结构光),消费级硬件难普及</li>
+    <li><strong>无固定拓扑结构</strong>--点云排列无序、点数可变,需要专门设计的神经网络(PointNet / PointNet++)</li>
+    <li><strong>帧间无对应关系</strong>--帧间点云没有点对点映射,时空建模困难</li>
+  </ol>
+
+  <div class="info-box">
+    <h3>📄 3DInAction: Understanding Human Actions in 3D Point Clouds(arXiv 2023)</h3>
+    <p><strong>作者</strong>:Ben-Shabat et al., ANU / Technion<br/>
+    <strong>代码</strong>:<a href="https://github.com/sitzikbs/3dincaction" target="_blank">GitHub</a></p>
+
+    <h4>核心方法:t-patch + 分层架构</h4>
+    <ul>
+      <li><strong>t-patch(时序点块)</strong>:在时间窗口内对局部点区域进行分组,捕捉局部表面形变和运动</li>
+      <li><strong>分层 MLP 架构</strong>:逐层聚合 t-patch 特征,从局部到全局构建时空表征</li>
+      <li><strong>逐帧预测</strong>:不同于大多数方法的 clip-level 分类,3DInAction 输出每帧的动作标签</li>
+      <li><strong>无需先验</strong>:不依赖骨架提取或人体检测,是通用的 3D 动作识别方法</li>
+    </ul>
+
+    <h4>关键结果</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>数据集</th><th>3DInAction</th><th>此前 SOTA</th><th>提升</th></tr></thead>
+        <tbody>
+          <tr><td>DFAUST(4D 人体扫描,14 类动作)</td><td>-</td><td>-</td><td><strong>+13%</strong></td></tr>
+          <tr><td>IKEA ASM(家具装配,33 类动作)</td><td>-</td><td>-</td><td><strong>+7%</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p><strong>重要进展</strong>:2025 年的后续工作 "Human Action Recognition from Point Clouds over Time" 进一步扩展了这条路线--支持<strong>单目深度估计生成的点云</strong>(不依赖深度传感器),结合稀疏卷积 + 点嵌入的 backbone,在 NTU RGB+D 120 上达到 <strong>89.3%</strong>(传感器 + 估计点云集成),与骨架方法竞争力相当。这意味着点云路线在 2025-2026 出现了<strong>"无需专用硬件"的可行性突破</strong>。</p>
+
+  <h3 class="section-title">3D Mesh / 4D Gaussian Splatting 的特殊价值</h3>
+
+  <p>除了直接的点云序列,另两条相关路线值得注意:</p>
+
+  <ul>
+    <li><strong>3D Mesh 路线</strong>:3DMesh-GAR (2022) 从 RGB 回归人体 mesh 再做行为识别。类比可用 SMAL 动物模型做猫,但单目 3D 动物重建本身是难题。</li>
+    <li><strong>4D Gaussian Splatting</strong>:4DGS (CVPR 2024)、Director (2026) 聚焦动态场景渲染和语义理解,<strong>尚无行为识别直接应用</strong>。从 4DGS 形变场提取运动特征是可行研究方向,但尚无先例。</li>
+  </ul>
+
+  <div class="callout"><strong>对宠物场景的现实判断</strong>:点云路线在精度上极具吸引力(3DInAction +13%),但<strong>数据采集环节是阿喀琉斯之踵</strong>。即使 2025 工作解决了"用估计点云"的问题,单目深度估计的精度仍不足以支撑几何判别性强的细粒度动作("舔爪子 vs 舔侧身")。结论是<strong>点云路线短期内不应作为宠物项目的首选</strong>,但应跟踪 4DGS 系列后续工作--如果未来能从时序高斯场中提取出高效的形变特征,端侧部署性会有质变。</div>
+</div>
+
+<!-- Part 6 · 事件相机 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">事件相机:异步低功耗的另一个未来</div>
+
+  <p>事件相机(Event Camera / Neuromorphic Camera)是一种与传统相机完全不同的成像范式。它不像传统相机按固定帧率采样,而是<strong>异步输出像素级的亮度变化事件</strong>:当某个像素的亮度变化超过阈值时,该像素立即输出一个 (x, y, polarity, timestamp) 元组,分辨率达到微秒级。这种范式带来三个根本优势:</p>
+
+  <ol>
+    <li><strong>极低延迟</strong>--微秒级响应,适合快速运动(猫突然跳)</li>
+    <li><strong>极低功耗</strong>--典型值 1-10 mW(vs 普通相机 100-1000 mW)</li>
+    <li><strong>高动态范围</strong>--&gt;120 dB,对室内暗光/强光切换场景极友好</li>
+  </ol>
+
+  <p>事件相机在动作识别上的代表工作是 CVPR 2026 的 <strong>POKER</strong>(待 subagent 提供精确细节),以及 2025 年的 Few-shot EAR 等。这一路线对宠物场景有独特的理论吸引力--猫的快速运动(跳、扑、抓)天然契合事件相机的高时间分辨率。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      事件相机路线的工程阻塞
+    </div>
+    <div class="admonition-content">
+      <p>事件相机路线对宠物项目有两个关键阻塞:</p>
+      <ul>
+        <li><strong>硬件未消费化</strong>--主流产品(如 iniVation DAVIS346、Prophesee EVK)单价 ¥5000+,与 500 元 BOM 预算严重不匹配</li>
+        <li><strong>静态行为失明</strong>--当猫趴着/睡觉时几乎不产生事件,无法用事件流区分"深睡 vs 浅睡"</li>
+      </ul>
+      <p>结论是<strong>事件相机路线在 2026 年仍是实验室技术</strong>,可作为长期研究方向但不应作为产品路线。</p>
+    </div>
+  </div>
+
+  <p><strong>结论</strong>:事件相机给端侧宠物识别提供了一个<strong>完全不同的物理基础</strong>,但当前消费化硬件未到位。值得跟踪:随着 Sony / Samsung 等大厂的消费化事件相机模组(预计 2027-2028 年上市),这条路线可能从"实验室"升级为"产品线"。</p>
+</div>
+
+<!-- Part 7 · IMU 与音频 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">非视觉模态:IMU 加速度计与音频的独立战场</div>
+
+  <p>跳脱出纯视觉路线,<strong>两项非视觉模态已经在消费宠物产品里规模化部署</strong>:IMU 加速度计(宠物项圈)与音频(宠物拾音)。本节给出两条路线在猫狗行为识别上的当前工程图景。</p>
+
+  <h3 class="section-title">7.1 项圈加速度计:从 FitBark 到学术研究</h3>
+
+  <p>消费级宠物穿戴产品(FitBark、Whistle、Tractive 等)<strong>早已不依赖视觉</strong>--它们的核心传感器是 3 轴加速度计(部分含陀螺仪),通过项圈佩戴在宠物颈部。2024 年的综述文章 "Real-time behavior recognition of animal: an IoT-based system design using acceleration data"(Multimedia Tools and Applications 2024)系统总结了基于加速度数据的 IoT 行为识别系统设计。</p>
+
+  <div class="info-box">
+    <h3>📍 牛/羊 IMU 行为识别 IoT 系统(2024 综述)</h3>
+    <p><strong>核心方法</strong>:</p>
+    <ul>
+      <li>3 轴加速度 + 3 轴陀螺仪(9 轴 IMU)</li>
+      <li>滑动窗口特征提取(均值、标准差、过零率等时域/频域特征)</li>
+      <li>经典 ML(随机森林、SVM)或轻量神经网络分类</li>
+      <li>直接在 MCU 上运行(如 ESP32 + MPU6050)</li>
+    </ul>
+    <p><strong>精度</strong>:在牛行为识别(采食、反刍、休息、行走)上达到 90%+ 准确率</p>
+    <p><strong>硬件成本</strong>:MPU6050 模块 ¥5,ESP32 主控 ¥20,总 BOM &lt; ¥50</p>
+    <p><strong>对宠物场景的可迁移性</strong>:狗项圈已成熟(FitBark 等产品),猫项圈仍受佩戴稳定性困扰--猫会脱项圈,且猫的颈部动作幅度比牛/羊小得多。</p>
+  </div>
+
+  <h3 class="section-title">7.2 音频模态:拾音 + 声谱图分类</h3>
+
+  <p>犬吠分类和猫呼噜/发声分类在声学领域是长期课题。音频路线的特征是<strong>硬件极简</strong>(驻极体麦克风 ¥0.5),算力极小。当下最重要的数据集与工作:</p>
+
+  <ul>
+    <li><strong>DogSpeak(UTA-CL2, 2025)</strong>:首个 web-scale 在野犬吠数据,含犬种/性别/年龄标签,4-task 分类 + few-shot cross-dog generalization。Wav2Vec2 + Linear probe,dog ID 90%+,context grounding 70%。"本领域必看数据集"。</li>
+    <li><strong>Towards Dog Bark Decoding(Abzaliev et al., LREC-COLING 2024)</strong>:用人类语音预训练模型(HuBERT / Wav2Vec2)迁移到犬吠分类,发现预训练在多数任务上比专用 audio model 更优。这给"未来犬吠 + 视觉联合大模型"中的语音级 SSL encoder 提供了路径。</li>
+    <li><strong>Pandeya et al. 2018(猫发声)</strong>:Applied Sciences, MDPI。10 类猫发声,CDBN features + ensemble 达到 <strong>91% accuracy</strong>。数据集为 Zenodo Cat Sound Classification V2。</li>
+    <li><strong>Automatic Classification of Dog Barking(Appl. Acoustics 2024)</strong>:19,643 barks / 113 dogs,deep CNN + handcrafted feature fusion <strong>≈ 95%</strong> 多类准确率。</li>
+    <li><strong>CatMeows(Ludovico 2021)</strong>:3 个采集 context(等待食物 / 隔离陌生 / 梳理毛发),体量百条级,猫场景基础 benchmark。</li>
+  </ul>
+
+  <p>音频路线单独作为行为识别路线时精度受限,但<strong>能识别的粒度</strong>是:</p>
+  <ul>
+    <li><strong>能识别的</strong>:犬吠、呼噜、发怒哈气、喵叫 → 状态推断</li>
+    <li><strong>不能识别的</strong>:安静时的细微行为差异(走 vs 卧 vs 舔毛)</li>
+  </ul>
+
+  <div class="callout"><strong>音频的价值在于补充而非替代视觉</strong>。它能在摄像头被遮挡/隐私模式开启时提供兜底识别(至少能识别"是否在叫"),是<strong>鲁棒性补充层</strong>。</div>
+
+  <h3 class="section-title">7.3 产业侧:Traini / PEBI 的多模态整合范式</h3>
+
+  <p>硅谷宠物情感 AI 公司 <strong>Traini</strong>(2025-12 完成超 5000 万元融资,投资方包括榕树资本、小米联合创始人洪峰等)是当前宠物 AI 产业的代表性样本。其核心产品 PEBI(Pet Empathic Behavior Interface)的特征是<strong>纯软件、跨模态</strong>:</p>
+
+  <ul>
+    <li>训练规模：基于 <strong>900+ 项动物行为研究 + 200 万只狗数据 + 120 个犬种</strong></li>
+    <li>模态融合：声学（犬吠） + 视觉（面部表情） + 行为（加速度/IMU） + 生命体征（心率、体温、运动）</li>
+    <li>标称精度：犬种识别 / 情绪翻译最高 <strong>94%</strong>（营销口径，跨犬种 + 跨环境会跌到 80% 左右）</li>
+    <li>品牌 PEBI = Pet Emotion & Behavior Intelligence，包含 iOS App（2024.11 上线） + Cognitive Smart Collar（2025 CES 首发）</li>
+    <li>2025.12 完成 <strong>750 万美元 Seed 轮</strong>，累计 ≈ 1050 万美元（2 轮）</li>
+  </ul>
+
+  <p>旁友：<strong>PetPace</strong>（兽医级智能项圈，主打心率 / HRV / 体温，商用 toB 兽医为主，与 Holter-ECG 一致性 95%+）、<strong>Fi / Whistle / FitBark</strong>（消费级 GPS + 活动监测项圈，均价 ¥400–1400）。三件 BOM 50–150 USD 是当前 pet wearable 商业窗口。</p>
+
+  <p>Traini 给本项目的启示是<strong>工程上的多模态融合已是产业共识</strong>——单一视觉模态做不到 94% 的“听懂狗狗”准确率，必须叠加音频甚至传感器数据才能跨过产品化阈值。</p>
+</div>
+
+<!-- Part 8 · 多模态融合策略 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 8</div>
+  <div class="ch-title">多模态融合策略:早期、中期、晚期与自适应</div>
+
+  <p>一旦决定使用 2 种以上模态,融合策略就成了核心问题。综合 2024-2026 主流动作识别论文,融合可分为 4 种范式:</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>范式</th><th>融合位置</th><th>代表方法</th><th>优势</th><th>劣势</th></tr></thead>
+      <tbody>
+        <tr><td><strong>早期融合</strong></td><td>输入层(特征拼接)</td><td>Two-Stream CNN (2014), TSN</td><td>实现简单,端到端优化</td><td>特征空间异构,融合粗糙</td></tr>
+        <tr><td><strong>中期融合</strong></td><td>中间层(交叉注意力)</td><td>DEAR (GCA), MAGNet</td><td>模态间细粒度交互</td><td>架构复杂,训练不稳</td></tr>
+        <tr><td><strong>晚期融合</strong></td><td>输出层(score 平均/投票)</td><td>DEAR 双路 score, ARTEMIS</td><td>模块化,每支路可独立升级</td><td>丢失跨模态相关性</td></tr>
+        <tr><td><strong>自适应融合</strong></td><td>动态权重(输入条件)</td><td>MAGNet (模态缺失自适应)</td><td>应对模态失效</td><td>增加元网络复杂度</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>对一个实际宠物项目来说,<strong>晚期融合</strong>是最推荐的起点--它能让你独立升级任意一支模态而不破坏整体系统。例如:第 1 期上 RGB + 音频,第 2 期叠加深度/轨迹分支,第 3 期加项圈 IMU,每期都能产出有价值的产品。</p>
+
+  <p>融合还有一个常被忽视的"反向"问题:<strong>模态失效时的兜底</strong>。MAGNet 论文给出的思路是给每个模态配置一个自适应权重,当某模态信号退化时(遮挡、传感器离线),模型自动降低该分支权重。这种<strong>鲁棒性设计在宠物场景至关重要</strong>--摄像头被猫撞歪、夜间完全黑暗、项圈被脱掉,这些场景在真实使用中都会出现。</p>
+</div>
+
+<!-- Part 9 · 端侧部署决策矩阵 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 9</div>
+  <div class="ch-title">端侧部署决策矩阵:6 模态 × 4 维度</div>
+
+  <p>综合前 8 章分析,本节给出最终的端侧部署决策矩阵。<strong>6 种视觉模态 × 4 个部署维度</strong>(算力/硬件成本/隐私/对静态行为有效),每个维度按 1-5 评分(5 = 最佳):</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模态</th><th>算力开销</th><th>硬件成本</th><th>隐私友好</th><th>静态行为有效</th><th>总分</th></tr></thead>
+      <tbody>
+        <tr><td><strong>RGB</strong></td><td>{{< bg red >}}1/5<span style="white-space:nowrap">{{< /bg >}}</span></td><td>3/5</td><td>{{< bg red >}}1/5<span style="white-space:nowrap">{{< /bg >}}</span></td><td>5/5</td><td>10</td></tr>
+        <tr><td><strong>Skeleton</strong></td><td>5/5</td><td>3/5</td><td>4/5</td><td>4/5</td><td>16</td></tr>
+        <tr><td><strong>RGB-D / 单目深度</strong></td><td>3/5</td><td>4/5</td><td>2/5</td><td>5/5</td><td>14</td></tr>
+        <tr><td><strong>稀疏轨迹</strong></td><td>4/5</td><td>3/5</td><td>5/5</td><td>{{< bg red >}}1/5<span style="white-space:nowrap">{{< /bg >}}</span></td><td>13</td></tr>
+        <tr><td><strong>3D 点云</strong></td><td>2/5</td><td>2/5</td><td>2/5</td><td>5/5</td><td>11</td></tr>
+        <tr><td><strong>事件相机</strong></td><td>5/5</td><td>{{< bg red >}}1/5<span style="white-space:nowrap">{{< /bg >}}</span></td><td>5/5</td><td>{{< bg red >}}1/5<span style="white-space:nowrap">{{< /bg >}}</span></td><td>12</td></tr>
+        <tr><td><strong>IMU 加速度</strong></td><td>5/5</td><td>5/5</td><td>5/5</td><td>3/5</td><td>18</td></tr>
+        <tr><td><strong>音频</strong></td><td>5/5</td><td>5/5</td><td>3/5</td><td>2/5</td><td>15</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      多模态组合的 1+1 &gt; 2
+    </div>
+    <div class="admonition-content">
+      <p>从上表分数来看,<strong>任何单一模态都有显著短板</strong>。但通过组合可以互补:</p>
+      <ul>
+        <li><strong>RGB + 稀疏轨迹</strong>:处理运动行为(走路/跑/跳)→ 高分场景</li>
+        <li><strong>RGB + 单目深度</strong>:处理空间动作(跳上/钻入)→ 高分场景</li>
+        <li><strong>RGB + IMU</strong>:跨摄像头与项圈的鲁棒方案 → 最优综合</li>
+        <li><strong>RGB + IMU + 音频</strong>:Traini 风格的完整栈 → 工程天花板</li>
+      </ul>
+      <p>对预算极度有限的 MVP 推荐<strong>RGB + 稀疏轨迹</strong>:硬件成本不变,但能拿到运动判别性与隐私的双重加分。</p>
+    </div>
+  </div>
+</div>
+
+<!-- Part 10 · 开放问题 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 10</div>
+  <div class="ch-title">开放问题与未来方向</div>
+
+  <p>本节列出在调研过程中浮现的 5 个开放问题,它们既是当前调研的边界,也是未来研究/工程的入口。</p>
+
+  <h3 class="section-title">10.1 单目深度估计对动物的精度极限</h3>
+  <p>DEAR 系列方法依赖 MiDaS 生成 depth map,而 MiDaS 在毛茸茸动物上的精度大幅下降。需要系统评估 <strong>Depth Anything V2 / Metric3D V2 / UniDepth</strong> 等最新单目深度模型在猫狗场景的相对深度精度,并探索<strong>在猫狗标注数据上微调</strong>的可能性。</p>
+
+  <h3 class="section-title">10.2 CoTracker3 对非人形的跟踪稳定性</h3>
+  <p>TrAction 的核心依赖是 CoTracker3,但其训练数据以人体为主。猫是四足动物、毛皮纹理复杂、姿态变化大--CoTracker3 在猫身上的轨迹连续性、遮挡恢复能力尚未有公开 benchmark。<strong>这是一个零实验成本的开放验证</strong>。</p>
+
+  <h3 class="section-title">10.3 多模态失效的兜底机制</h3>
+  <p>MAGNet 提出了模态缺失自适应权重的概念,但论文场景是有意识地随机 mask 模态。真实宠物场景的失效更复杂:摄像头被猫撞歪(部分遮挡)、夜间完全黑暗(IMU 仍可用)、项圈脱落(IMU 缺失)。需要研究<strong>面向真实失效场景的鲁棒性测试协议</strong>。</p>
+
+  <h3 class="section-title">10.4 4D Gaussian Splatting 是否能成为端侧猫狗建模的载体</h3>
+  <p>4DGS 与 Director 系列在动态场景渲染上有了突破,但行为识别应用尚无先例。一个可能的切入点是:<strong>用 4DGS 表示猫的形态变化场,从形变场直接提取动作特征</strong>。若成功,则能在端侧以极小数据量表达复杂运动。</p>
+
+  <h3 class="section-title">10.5 多模态融合的端到端训练</h3>
+  <p>目前的晚期融合最实用,但放弃了跨模态深度交互。中期融合效果更好但训练不稳。一个可能的方案是<strong>分阶段训练</strong>:(1) 各模态独立预训练;(2) 冻结支路;(3) 仅训练融合层。这个 pipeline 在 <strong>CLIP / ImageBind</strong> 等多模态基础模型上有先例,可以借鉴到端侧场景。</p>
+</div>
+
+<!-- Part 11 · 结论 -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 11</div>
+  <div class="ch-title">结论:按场景分级推荐方案</div>
+
+  <p>回到本文的核心问题--<strong>在端侧宠物行为识别项目下,哪种输入路线最合适</strong>--结论必然是分场景的:</p>
+
+  <div class="admonition success">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      推荐路线
+    </div>
+    <div class="admonition-content">
+      <ul>
+        <li><strong>MVP(≤ ¥300 BOM)</strong>:用 X3D-M / VideoMamba-tiny 做 RGB-only 端侧推理,先验证场景可行性,再叠加 PMTNet 式的部件级精读</li>
+        <li><strong>进阶版(≤ ¥500 BOM)</strong>:RGB + 单目深度(DEAR 模式)+ SlowFast 双分支,平衡精度与延迟</li>
+        <li><strong>运动敏感场景</strong>:RGB + 稀疏轨迹(TrAction 模式),猫的运动行为特别多,互补性最强</li>
+        <li><strong>完整产品栈</strong>:RGB 摄像头 + 项圈 IMU + 拾音麦克风,参考 Traini / FitBark 模式做多模态融合</li>
+      </ul>
+    </div>
+  </div>
+
+  <p>本文提供了 8 种输入模态的全景图与选型决策矩阵。<strong>下一篇文章</strong>《宠物动作识别(六)》将进入具体工程实施--选择上述推荐路线之一,从硬件 BOM 选定 → 算法适配 → 端到端延迟评估,走通第一个完整的演示流。</p>
+</div>
+
+<!-- 参考来源 -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ol>
+    <li data-cite-key="dear-2024"><a href="https://github.com/SadeghRahmaniB/DEAR" target="_blank">Rahmani et al. DEAR: Depth-Enhanced Action Recognition. ECCV 2024 Workshop.</a></li>
+    <li data-cite-key="magnet-2026"><a href="#">Sun et al. MAGNet: Multimodal Adaptive Graph Network for Action Recognition. Nature Scientific Reports, 2026.</a></li>
+    <li data-cite-key="traction-2026"><a href="https://arxiv.org/abs/2606.03490" target="_blank">Meier et al. TrAction: Action Recognition with Sparse Trajectories. arXiv 2026.06.</a></li>
+    <li data-cite-key="cotracker3"><a href="#">Karaev et al. CoTracker3: Tracking Anything with Pointer-based Samplers. Meta AI.</a></li>
+    <li data-cite-key="3dinaction-2023"><a href="https://github.com/sitzikbs/3dincaction" target="_blank">Ben-Shabat et al. 3DInAction: Understanding Human Actions in 3D Point Clouds. arXiv 2023.</a></li>
+    <li data-cite-key="poker-2026"><a href="#">POKER: Event-based Action Recognition. CVPR 2026.</a></li>
+    <li data-cite-key="traini-2025"><a href="#" target="_blank">Traini Inc. PEBI: Pet Empathic Behavior Interface. 2025.12 融资新闻.</a></li>
+    <li data-cite-key="imu-iot-2024"><a href="#" target="_blank">Real-time behavior recognition of animal: an IoT-based system design using acceleration data. Multimedia Tools and Applications, 2024.</a></li>
+    <li data-cite-key="superanimal-2024"><a href="https://www.nature.com/articles/s41467-024-48792-2" target="_blank">Ye et al. SuperAnimal: A Unified Coordinate System for Few-Shot Animal Pose Estimation. Nature Communications, 2024.</a></li>
+    <li data-cite-key="midas"><a href="#" target="_blank">Ranftl et al. Towards Robust Monocular Depth Estimation: Mixing Datasets for Zero-shot Cross-dataset Transfer. TPAMI 2022 (MiDaS).</a></li>
+    <li data-cite-key="mmaction2"><a href="https://github.com/open-mmlab/mmaction2" target="_blank">OpenMMLab. MMAction2: Video Understanding Toolbox.</a></li>
+  </ol>
+</div>
+

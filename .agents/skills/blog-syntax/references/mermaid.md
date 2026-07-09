@@ -6,9 +6,9 @@
 
 ## 基本语法
 
-在 HTML 源文件中使用 **短代码** 或 **div 容器** 两种写法之一，构建时统一转为 `<pre class="mermaid">` 块，页面加载时由 Mermaid.js 在客户端渲染为 SVG。
+在 HTML 源文件中使用 **短代码** 或 **div 容器** 两种写法之一,构建时统一转为 `<pre class="mermaid">` 块,页面加载时由 Mermaid.js 在客户端渲染为 SVG。
 
-### 方式一：短代码（推荐）
+### 方式一:短代码(推荐)
 
 ```html
 {{< mermaid >}}
@@ -23,7 +23,7 @@ graph TD
 {{< /mermaid >}}
 ```
 
-### 方式二：div 容器（兼容）
+### 方式二:div 容器(兼容)
 
 ```html
 <div class="mermaid">
@@ -35,10 +35,10 @@ graph LR
 </div>
 ```
 
-两种写法等价，构建时都转化为 `<pre class="mermaid">`。短代码形式更简洁，推荐优先使用。
+两种写法等价,构建时都转化为 `<pre class="mermaid">`。短代码形式更简洁,推荐优先使用。
 
 <div class="info-box">
-  <strong>注意</strong>：div 写法支持任意 HTML 属性（如 <code>data-type</code>、<code>style</code>），构建时自动剥离，只保留 mermaid 代码内容。
+  <strong>注意</strong>:div 写法支持任意 HTML 属性(如 <code>data-type</code>、<code>style</code>),构建时自动剥离,只保留 mermaid 代码内容。
 </div>
 
 ## 支持的图表类型
@@ -53,19 +53,19 @@ graph LR
 | 饼图 | `pie` | 数据占比 |
 | 架构图 | `graph` + subgraph | 系统架构、模块层级 |
 | 思维导图 | `mindmap` | 失败空间梳理、知识结构、概念发散 |
-| 象限图 | `quadrantChart` | 多方案在两维度上的定位与权衡（成本/收益、稳定性/速度等） |
-| 时间线 | `timeline` | 技术演进史、项目里程碑（比 gantt 轻量） |
-| 时序图（进阶） | `sequenceDiagram` | 协议交互、推理/调用流程，支持 alt/opt/loop/par |
+| 象限图 | `quadrantChart` | 多方案在两维度上的定位与权衡(成本/收益、稳定性/速度等) |
+| 时间线 | `timeline` | 技术演进史、项目里程碑(比 gantt 轻量) |
+| 时序图(进阶) | `sequenceDiagram` | 协议交互、推理/调用流程,支持 alt/opt/loop/par |
 | 分支图 | `gitGraph` | 分支策略、版本演进、发布流程 |
-| 折线/柱状图 | `xychart-beta` | 简单趋势对比（v11 beta，仅用于轻量示意） |
+| 折线/柱状图 | `xychart-beta` | 简单趋势对比(v11 beta,仅用于轻量示意) |
 
 ## 进阶图表类型
 
-下面两种图表在普通流程图之外很有表现力，已在博客中实战验证可正常渲染。
+下面两种图表在普通流程图之外很有表现力,已在博客中实战验证可正常渲染。
 
 ### 思维导图 mindmap
 
-适合把一个主题发散成多层结构，例如「失败空间」「知识地图」「方案分类」。
+适合把一个主题发散成多层结构,例如「失败空间」「知识地图」「方案分类」。
 
 ```html
 {{< mermaid >}}
@@ -86,12 +86,12 @@ mindmap
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- **层级靠缩进表达**，不用箭头。每多一级缩进就多一层子节点，缩进必须一致。
-- 根节点用 `root(("文本"))` 包裹；节点文本含括号、斜杠、逗号、中英文混排等特殊字符时**必须加引号**（如 `"手势与语义不符"`、`"背景闪烁/漂移"`）。
-- 节点内换行用 `<br/>`，不要用真实换行。
-- 不支持 `style`/`classDef` 着色，靠层级和文本表达即可。
+- **层级靠缩进表达**,不用箭头。每多一级缩进就多一层子节点,缩进必须一致。
+- 根节点用 `root(("文本"))` 包裹;节点文本含括号、斜杠、逗号、中英文混排等特殊字符时**必须加引号**(如 `"手势与语义不符"`、`"背景闪烁/漂移"`)。
+- 节点内换行用 `<br/>`,不要用真实换行。
+- 不支持 `style`/`classDef` 着色,靠层级和文本表达即可。
 
 ### 象限图 quadrantChart
 
@@ -113,16 +113,16 @@ quadrantChart
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- `x-axis` / `y-axis` 用 `"左端标签" --> "右端标签"` 描述两端语义，**轴标签含特殊字符要加引号**。
-- 四个象限标题分别为 `quadrant-1`（右上）、`quadrant-2`（左上）、`quadrant-3`（左下）、`quadrant-4`（右下），注意编号是逆时针。
-- 数据点写成 `"名称": [x, y]`，**坐标取值范围是 0~1**（归一化），不是真实数值；点名含特殊字符同样要加引号。
-- `title` 一行可以不加引号，但含冒号/括号等也建议加引号。
+- `x-axis` / `y-axis` 用 `"左端标签" --> "右端标签"` 描述两端语义,**轴标签含特殊字符要加引号**。
+- 四个象限标题分别为 `quadrant-1`(右上)、`quadrant-2`(左上)、`quadrant-3`(左下)、`quadrant-4`(右下),注意编号是逆时针。
+- 数据点写成 `"名称": [x, y]`,**坐标取值范围是 0~1**(归一化),不是真实数值;点名含特殊字符同样要加引号。
+- `title` 一行可以不加引号,但含冒号/括号等也建议加引号。
 
 ### 时间线 timeline
 
-适合技术演进史、发展脉络、项目里程碑，比 gantt 轻量，不需要真实日期。
+适合技术演进史、发展脉络、项目里程碑,比 gantt 轻量,不需要真实日期。
 
 ```html
 {{< mermaid >}}
@@ -130,16 +130,16 @@ timeline
   title 视觉 Tokenizer 演进
   2021 : VQ-GAN
   2022 : MaskGIT
-  2023 : "TiTok（1D tokenizer）"
+  2023 : "TiTok(1D tokenizer)"
   2024 : "TokenFlow / 双码本统一"
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- 每行格式为 `时间段 : 事件`，同一时间段下多个事件用 `: 事件A : 事件B` 串联。
+- 每行格式为 `时间段 : 事件`,同一时间段下多个事件用 `: 事件A : 事件B` 串联。
 - 事件文本含括号、斜杠、中英文混排等特殊字符**必须加引号**。
-- 时间段标签可以是年份，也可以是任意阶段名（如「萌芽期」）。
+- 时间段标签可以是年份,也可以是任意阶段名(如「萌芽期」)。
 
 ### 状态图 stateDiagram-v2
 
@@ -157,15 +157,15 @@ stateDiagram-v2
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- `[*]` 表示起始/终止伪状态；转移写成 `A --> B: 触发条件`。
-- 转移标签（冒号后文本）含特殊字符同样要加引号。
-- 复合状态用 `state 名称 { ... }` 嵌套；并发用 `--` 分隔。
+- `[*]` 表示起始/终止伪状态;转移写成 `A --> B: 触发条件`。
+- 转移标签(冒号后文本)含特殊字符同样要加引号。
+- 复合状态用 `state 名称 { ... }` 嵌套;并发用 `--` 分隔。
 
 ### 时序图进阶 sequenceDiagram
 
-表格里已列出基础用法，这里补充交互逻辑写法，适合画协议通信、推理调用链。
+表格里已列出基础用法,这里补充交互逻辑写法,适合画协议通信、推理调用链。
 
 ```html
 {{< mermaid >}}
@@ -189,11 +189,11 @@ sequenceDiagram
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- `participant X as 别名` 定义参与者；`->>` 实线箭头、`-->>` 虚线返回。
-- `loop / alt / opt / par` 块包裹一段交互；`activate / deactivate` 控制生命线激活区间。
-- `Note over A,B: 文本` 可加注释；所有含特殊字符的文本加引号。
+- `participant X as 别名` 定义参与者;`->>` 实线箭头、`-->>` 虚线返回。
+- `loop / alt / opt / par` 块包裹一段交互;`activate / deactivate` 控制生命线激活区间。
+- `Note over A,B: 文本` 可加注释;所有含特殊字符的文本加引号。
 
 ### 分支图 gitGraph
 
@@ -211,14 +211,14 @@ gitGraph
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- `commit` / `branch` / `checkout` / `merge` 为核心指令；`id:` 和 `tag:` 的值用引号包裹。
-- 不要在一张图里建过多分支，否则横向溢出，靠 `.mermaid-wrap` 滚动查看。
+- `commit` / `branch` / `checkout` / `merge` 为核心指令;`id:` 和 `tag:` 的值用引号包裹。
+- 不要在一张图里建过多分支,否则横向溢出,靠 `.mermaid-wrap` 滚动查看。
 
 ### 折线/柱状图 xychart-beta
 
-v11 新增，可在 Mermaid 内画轻量趋势图。**注意它是 beta 特性，仅用于简单示意**，复杂数据图请用 JSXGraph（见 `plots.md`）。
+v11 新增,可在 Mermaid 内画轻量趋势图。**注意它是 beta 特性,仅用于简单示意**,复杂数据图请用 JSXGraph(见 `plots.md`)。
 
 ```html
 {{< mermaid >}}
@@ -230,19 +230,19 @@ xychart-beta
 {{< /mermaid >}}
 ```
 
-要点：
+要点:
 
-- `x-axis [...]` 为离散刻度；`y-axis "标签" 下限 --> 上限`。
-- `line [...]` 折线、`bar [...]` 柱状；可叠加多条。
+- `x-axis [...]` 为离散刻度;`y-axis "标签" 下限 --> 上限`。
+- `line [...]` 折线、`bar [...]` 柱状;可叠加多条。
 - 标签含括号/单位等特殊字符要加引号。
 
 ## 通用高级特性
 
-这些特性可跨多种图表使用（主要针对 `graph` / `flowchart`）。
+这些特性可跨多种图表使用(主要针对 `graph` / `flowchart`)。
 
 ### 节点着色 classDef + class
 
-比逐个 `style` 更易维护，适合给一组节点统一上色。
+比逐个 `style` 更易维护,适合给一组节点统一上色。
 
 ```html
 {{< mermaid >}}
@@ -256,7 +256,7 @@ flowchart LR
 ```
 
 <div class="info-box">
-  <strong>双主题注意</strong>：本项目用 <code>theme:'base'</code> + 自定义 light/dark <code>themeVariables</code>。自定义 <code>fill</code> 是写死的固定色，在暗色模式下不会自动切换，需肉眼确认在深色背景下不撞色、文字仍清晰。能不写死颜色就尽量靠默认主题色。
+  <strong>双主题注意</strong>:本项目用 <code>theme:'base'</code> + 自定义 light/dark <code>themeVariables</code>。自定义 <code>fill</code> 是写死的固定色,在暗色模式下不会自动切换,需肉眼确认在深色背景下不撞色、文字仍清晰。能不写死颜色就尽量靠默认主题色。
 </div>
 
 ### subgraph 方向控制
@@ -276,16 +276,16 @@ flowchart TB
 
 ### 多行标签与节点跳转
 
-- 节点内换行统一用 `<br/>`（不要写真实换行）：`A["第一行<br/>第二行"]`。
-- 因 `securityLevel:'loose'` 已开启，支持节点点击跳转：`click A href "https://example.com" "提示文字"`。站内跳转可填相对路径。
+- 节点内换行统一用 `<br/>`(不要写真实换行):`A["第一行<br/>第二行"]`。
+- 因 `securityLevel:'loose'` 已开启,支持节点点击跳转:`click A href "https://example.com" "提示文字"`。站内跳转可填相对路径。
 
 ## 技术细节
 
-- **渲染方式**：运行时，Mermaid.js v11 CDN（`cdn.jsdelivr.net/npm/mermaid@11`）
-- **按需加载**：仅当页面包含 `class="mermaid"` 元素时注入 Mermaid.js + `mermaid-init.js`
-- **主题**：双版本预渲染——每个图表同时生成 light 和 dark 两份 SVG，切换主题时 CSS 显隐，零重渲染
-- **样式**：外层 `.mermaid-dual` 提供圆角背景框和居中对齐；内部 `.mermaid-d` / `.mermaid-d--dark` 控制可见性
-- **缩进**：shortcode 内部支持任意缩进，构建时自动去除公共前导空白
+- **渲染方式**:运行时,Mermaid.js v11 CDN(`cdn.jsdelivr.net/npm/mermaid@11`)
+- **按需加载**:仅当页面包含 `class="mermaid"` 元素时注入 Mermaid.js + `mermaid-init.js`
+- **主题**:双版本预渲染--每个图表同时生成 light 和 dark 两份 SVG,切换主题时 CSS 显隐,零重渲染
+- **样式**:外层 `.mermaid-dual` 提供圆角背景框和居中对齐;内部 `.mermaid-d` / `.mermaid-d--dark` 控制可见性
+- **缩进**:shortcode 内部支持任意缩进,构建时自动去除公共前导空白
 
 ## 注意事项
 
@@ -302,4 +302,61 @@ flowchart TB
 - **classDef 自定义颜色**：`fill` 是写死的固定色，暗色模式不自动切换，需双主题肉眼确认不撞色；能用默认主题色就不要写死。
 - **classDef 颜色格式**：Mermaid v11 的 `classDef` 解析器**不支持 `rgba(r,g,b,a)` 格式**。请一律使用十六进制 `#rrggbb` 或带透明通道的 `#rrggbbaa`，例如 `fill:#6366f126`（对应 `rgba(99,102,241,0.15)`）。使用 `rgba()` 会导致整张图渲染失败。
 - **不要在本项目使用** C4 图、`block-beta`、`sankey`、`requirement` 图：要么 beta 不稳定，要么在 `theme:'base'` 下样式错乱。`gantt` 用真实日期时网格线在双主题下易出问题，需重点测试。
-- 当 Mermaid 流程图和对应 Algorithm 伪代码描述同一流程时，优先用 `html-components.md` 中的 `.code-tabs` 组合成“流程图 / 算法”两个标签页，避免正文纵向过长
+- 当 Mermaid 流程图和对应 Algorithm 伪代码描述同一流程时，优先用 `html-components.md` 中的 `.code-tabs` 组合成"流程图 / 算法"两个标签页，避免正文纵向过长
+
+## ⚠️ 复杂图表的 `<br/>` 使用限制
+
+> **问题现象**：包含多个 subgraph、大量节点的 flowchart 中，节点标签内的 `<br/>` 可能导致整张图渲染失败（页面中 mermaid 区域空白）。
+
+**原因**：Mermaid v11 在处理 subgraph 内节点的 `<br/>` 时，会为每个多行节点创建 `foreignObject` 来渲染 HTML 换行。当图表复杂度高（≥3 个 subgraph 且 ≥10 个含 `<br/>` 的节点）时，多个 foreignObject 的并行渲染可能触发 Mermaid 内部解析器的边界条件，导致整张图静默失败（不抛异常但 SVG 为空）。
+
+**安全阈值**：
+- ≤2 个 subgraph + ≤5 个 `<br/>` 节点 → 安全
+- ≥3 个 subgraph + ≥8 个 `<br/>` 节点 → **高风险**
+
+**替代方案**（复杂图表中）：
+
+```html
+<!-- ❌ 高风险：5 个 subgraph，每个节点都有 <br/> -->
+{{< mermaid >}}
+flowchart TD
+  subgraph L1["Layer 1"]
+    A["Animal Kingdom<br/>30K 视频 / 850 物种"]
+    B["MammalNet<br/>18K 视频 / 173 物种"]
+  end
+{{< /mermaid >}}
+
+<!-- ✅ 安全：用逗号/空格替代 <br/>，保持单行 -->
+{{< mermaid >}}
+flowchart TD
+  subgraph L1["Layer 1"]
+    A["Animal Kingdom, 30K视频, 850物种"]
+    B["MammalNet, 18K视频, 173物种"]
+  end
+{{< /mermaid >}}
+```
+
+**节点标签中的 `/` 字符**：在复杂 subgraph 中，节点标签内的 `/` 与 `<br/>` 组合时风险更高。复杂图表中建议将 `/` 替换为逗号或"与"字：
+
+```html
+<!-- ❌ subgraph 标签中的 / -->
+subgraph L2["Layer 2 · 姿态估计/跟踪"]
+
+<!-- ✅ 用"与"替代 -->
+subgraph L2["Layer 2 · 姿态估计与跟踪"]
+```
+
+## 🔧 Mermaid 渲染失败排查清单
+
+当页面上某个 Mermaid 图表不渲染（区域空白）时，按以下顺序排查：
+
+| 步骤 | 检查项 | 修复方法 |
+|------|--------|----------|
+| 1 | 节点/边标签含特殊字符但没加引号 | 所有含 `()[]{}/:<>#` 的标签加 `""` 引号 |
+| 2 | 复杂图表（≥3 subgraph）中大量使用 `<br/>` | 替换为逗号/空格，保持节点标签单行 |
+| 3 | `classDef` 使用了 `rgba()` 颜色格式 | 改为 `#rrggbb` 或 `#rrggbbaa` |
+| 4 | subgraph 标签中含 `/` + 节点含 `<br/>` | subgraph 标签中的 `/` 改为"与"或逗号 |
+| 5 | 使用了不支持的图表类型（C4/block-beta/sankey） | 改用 flowchart 或其他支持类型 |
+| 6 | 打开浏览器 DevTools Console 查看 Mermaid 报错 | 错误信息通常会指出具体哪一行解析失败 |
+
+**快速验证方法**：把有问题的 mermaid 代码复制到 [Mermaid Live Editor](https://mermaid.live) 中测试。如果 Live Editor 也不渲染，说明是语法问题；如果 Live Editor 能渲染但博客不能，可能是 `theme:'base'` 或双主题渲染的问题。

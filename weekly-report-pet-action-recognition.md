@@ -1,6 +1,6 @@
 # 宠物动作识别项目周报
 
-> 2026 年 7 月第一周（6/29 – 7/6）
+> 2026 年 7 月第一周（6/29 – 7/8）
 
 ---
 
@@ -8,7 +8,7 @@
 
 本周围绕"宠物/动物动作识别"这一研究主题，完成了从文献调研、综述撰写到可行方案设计的全链路工作。产出包括 **1 篇系列总览 + 7 篇系列文章 + 2 篇论文精读**，覆盖动作识别技术全景、动物动作识别方法、视频基础模型前沿、个体特定动作检测范式，以及端侧宠物行为识别的工程选型。
 
-分类路径：`categories/AI/动作识别`
+分类路径：[categories/AI/动作识别](https://gongshangzheng.github.io/categories/ai/action-recognition/)
 
 ---
 
@@ -37,6 +37,8 @@
 | (一) | 端侧宠物行为识别任务规划 | 面向室内猫咪居家场景的端侧宠物行为识别项目规划：9 种常见行为 + 4 类异常场景分类、3 条任务线、500 元 BOM 硬件约束 | [阅读](https://gongshangzheng.github.io/pet-action-detection-phase1.html) |
 | (二) | 动作检测模型全景与选型 | 系统梳理 mmaction2 模型库、2023-2026 新架构（VideoMamba/VideoMAE V2/InternVideo2）、25+ 模型 × 9 数据集 × 3 条技术路线，500 元硬件约束下的猫咪行为识别选型建议 | [阅读](https://gongshangzheng.github.io/pet-action-detection-model-survey.html) |
 | (三) | PMTNet 论文精读 | 精读 2026 年 Animals 期刊 PMTNet：部件级时序建模 + 缺失感知融合，解决非受限视频中猫身体/头部/尾巴部件不稳定可见性，5 类猫行为 93.1% 准确率 | [阅读](https://gongshangzheng.github.io/pmtnet-2026-cat-behavior.html) |
+| (四) | 数据集全景汇总与缺口分析 | 18 个公开/自采数据源全景汇总，17 项行为类别逐条核查，6 个主要数据缺口标注，分层数据策略（公开预训练 + 自采微调 + 异常检测）与新增 5 个数据源（MammalNet/PMTNet/PetFace/TICD/EgoPet） | [阅读](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html) |
+| (五) | 非视觉模态全景 | **本周重点产出**。8 种输入模态（6 视觉 + 2 非视觉）全面对标：RGB / Skeleton / RGB-D / 稀疏轨迹 / 3D 点云 / 事件相机 + IMU / 音频。核心精读 [TrAction (2606.03490)](https://arxiv.org/abs/2606.03490)（<strong>Meier et al., 2026, Göttingen大学 Ecker lab，纯轨迹 SSV2 45.2%，融合 DINOv2 提升 +8.7pt</strong>）、[DEAR (2408.15679)](https://arxiv.org/abs/2408.15679)（ECCV 2024 Workshop，单目深度双流架构）、3DInAction（3D 点云）；产业侧引入 [Traini/PEBI](https://traini.app)（120 犬种、94% 情绪识别、2025.12 完成 750 万美元 Seed）、DogSpeak 犬吠数据集 | [阅读](https://gongshangzheng.github.io/pet-action-detection-modality-survey.html) |
 
 ### 2.2 核心研究发现
 
@@ -94,54 +96,60 @@
 
 ### 3.1 姿态估计工具
 
-| 项目 | 描述 | 链接 |
-|------|------|------|
-| **DeepLabCut** | 多动物姿态估计+识别+跟踪，Nature Methods 2022 | [GitHub](https://github.com/DeepLabCut/DeepLabCut) |
-| **SLEAP** | 多动物社交姿态追踪，轻量级 CNN 架构 | [官网](https://talmolab.github.io/sleap-website/) |
-| **SuperAnimal** | 跨 45+ 物种零样本姿态估计基础模型，Nature Communications 2024 | [论文](https://www.nature.com/articles/s41467-024-48792-2) |
-| **ADPT** | Transformer 抗漂移姿态追踪器，eLife 2024 | [论文](https://elifesciences.org/reviewed-preprints/95709v1) |
+| 项目 | 描述 | 链接 | 博客详情 |
+|------|------|------|----------|
+| **DeepLabCut** | 多动物姿态估计+识别+跟踪，Nature Methods 2022 | [GitHub](https://github.com/DeepLabCut/DeepLabCut) | — |
+| **SLEAP** | 多动物社交姿态追踪，轻量级 CNN 架构 | [官网](https://talmolab.github.io/sleap-website/) | — |
+| **SuperAnimal** | 跨 45+ 物种零样本姿态估计基础模型，Nature Communications 2024 | [论文](https://www.nature.com/articles/s41467-024-48792-2) | [模型选型 §SuperAnimal](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#SuperAnimal零样本猫科姿态估计) |
+| **ADPT** | Transformer 抗漂移姿态追踪器，eLife 2024 | [论文](https://elifesciences.org/reviewed-preprints/95709v1) | — |
 
 ### 3.2 动作识别骨干网络
 
-| 方法 | 架构特点 | 动物场景表现 |
-|------|---------|-------------|
-| **I3D** | 2D→3D 权重膨胀 | MammalNet 34.2%–46.6%（mixed） |
-| **SlowFast** | 双路径低/高帧率 | CVB CG 73.96%, FG 12.7%–29.6% |
-| **X3D** | 渐进扩展，效率优先 | Animal Kingdom 27.3%–39.7%（CARe） |
-| **MViT V2** | 多尺度 Vision Transformer | MammalNet 中使用 |
-| **SkeleTR** | 骨架图卷积 + Transformer | AVA +7.8%（人体），可迁移动物 |
-| **PMTNet** | 部件级时序建模 + 缺失感知融合 | 猫行为 93.1%（5类），Animals 2026 |
-| **MMAction2** | OpenMMLab 视频理解工具箱 | [GitHub](https://github.com/open-mmlab/mmaction2) |
+| 方法 | 架构特点 | 动物场景表现 | 博客详情 |
+|------|---------|-------------|----------|
+| **I3D** | 2D→3D 权重膨胀 | MammalNet 34.2%–46.6%（mixed） | [模型选型 §mmaction2](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#mmaction2-模型库) |
+| **SlowFast** | 双路径低/高帧率 | CVB CG 73.96%, FG 12.7%–29.6% | [模型选型 §mmaction2](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#mmaction2-模型库) |
+| **X3D** | 渐进扩展，效率优先 | Animal Kingdom 27.3%–39.7%（CARe） | [模型选型 §推荐方案](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#推荐方案矩阵) |
+| **MViT V2** | 多尺度 Vision Transformer | MammalNet 中使用 | — |
+| **SkeleTR** | 骨架图卷积 + Transformer | AVA +7.8%（人体），可迁移动物 | [精读](https://gongshangzheng.github.io/paper-skeletr-2023.html) |
+| **PMTNet** | 部件级时序建模 + 缺失感知融合 | 猫行为 93.1%（5类），Animals 2026 | [精读](https://gongshangzheng.github.io/pmtnet-2026-cat-behavior.html) |
+| **MMAction2** | OpenMMLab 视频理解工具箱 | — | [GitHub](https://github.com/open-mmlab/mmaction2) · [模型选型](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#mmaction2-模型库) |
 
 ### 3.3 视频基础模型（2022–2026）
 
-| 模型 | 范式 | 参数量 | K400 Top-1 | 特色 |
-|------|------|--------|-----------|------|
-| **InternVideo2** | 双教师蒸馏 | 6B | 92.1% | THUMOS14 TAD 72.0 mAP |
-| **V-JEPA 2** | 表示预测（JEPA） | 1B | 87.3% | SSv2 77.3%，1/6 参数达 InternVideo2 水平 |
-| **VideoMamba** | 状态空间模型（SSM） | 74M | 85.0% | 线性复杂度，边缘部署候选 |
-| **RVM-S** | 循环掩码重建 | 34M | 49.6% | 最小参数，8 任务归一化均值超 1B 模型 |
-| **UniFormerV2** | 图像预训练迁移 | 354M | 90.0% | 极少微调即可迁移 |
-| **FreeZAD** | 零样本检测 | — | — | 无需训练，THUMOS14 10.0% mAP @ 128.9 FPS |
+| 模型 | 范式 | 参数量 | K400 Top-1 | 特色 | 博客详情 |
+|------|------|--------|-----------|------|----------|
+| **InternVideo2** | 双教师蒸馏 | 6B | 92.1% | THUMOS14 TAD 72.0 mAP | [VFM 动作检测](https://gongshangzheng.github.io/video-foundation-model-action-detection.html) |
+| **V-JEPA 2** | 表示预测（JEPA） | 1B | 87.3% | SSv2 77.3%，1/6 参数达 InternVideo2 水平 | [VFM 动作检测](https://gongshangzheng.github.io/video-foundation-model-action-detection.html) |
+| **VideoMamba** | 状态空间模型（SSM） | 74M | 85.0% | 线性复杂度，边缘部署候选 | [模型选型 §SSM](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#SSM-路线VideoMamba-系列) |
+| **RVM-S** | 循环掩码重建 | 34M | 49.6% | 最小参数，8 任务归一化均值超 1B 模型 | [VFM 动作检测](https://gongshangzheng.github.io/video-foundation-model-action-detection.html) |
+| **UniFormerV2** | 图像预训练迁移 | 354M | 90.0% | 极少微调即可迁移 | [模型选型 §掩码预训练](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#掩码预训练的规模化VideoMAE-V2-→-InternVideo2) |
+| **FreeZAD** | 零样本检测 | — | — | 无需训练，THUMOS14 10.0% mAP @ 128.9 FPS | [VFM 动作检测](https://gongshangzheng.github.io/video-foundation-model-action-detection.html) |
 
 ### 3.4 数据集
 
-| 数据集 | 规模 | 特色 | 公开 |
-|--------|------|------|------|
-| **Animal Kingdom** | 850 物种, 50h, 30K 序列 | CVPR 2022，最大规模动物行为数据集 | ✅ |
-| **MammalNet** | 173 种哺乳动物, 539h, 12 行为 | CVPR 2023，唯一多物种大规模视频 | ✅ |
-| **CVB** | 502 clips, 11 行为, 450 帧/clip | 单物种（牛）多行为基准 | ✅ |
-| **PBRD** | 7500 图像, 30 行为 | 灵长类，渐进注意力训练 | ✅ |
+| 数据集 | 规模 | 特色 | 公开 | 博客详情 |
+|--------|------|------|------|----------|
+| **Animal Kingdom** | 850 物种, 50h, 30K 序列 | CVPR 2022，最大规模动物行为数据集 | ✅ | [数据集汇总 §Layer 1](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-1动物行为识别数据集) |
+| **MammalNet** | 173 种哺乳动物, 539h, 12 行为 | CVPR 2023，唯一多物种大规模视频 | ✅ | [数据集汇总 §Layer 1](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-1动物行为识别数据集) |
+| **PMTNet 数据集** | 1,283 clip, 5 类猫行为 | 唯一公开猫专用行为数据集 | ✅ | [数据集汇总 §Layer 1](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-1动物行为识别数据集) |
+| **CVB** | 502 clips, 11 行为, 450 帧/clip | 单物种（牛）多行为基准 | ✅ | — |
+| **PBRD** | 7500 图像, 30 行为 | 灵长类，渐进注意力训练 | ✅ | — |
+| **AP-10K** | 10K 图像, 17 关键点, 23 科 | NeurIPS 2021，动物姿态基础 | ✅ | [数据集汇总 §Layer 2](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-2姿态估计与跟踪数据集) |
+| **APT-36K** | 36K 帧, 30 物种, 姿态+跟踪 | NeurIPS 2022 | ✅ | [数据集汇总 §Layer 2](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-2姿态估计与跟踪数据集) |
+| **PetFace** | 257K 唯一个体, 13 科, 319 品种 | ECCV 2024 Oral，猫脸识别最大规模 | ✅ | [数据集汇总 §Layer 3](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-3图像检测分割识别数据集) |
+| **Oxford-IIIT Pet** | 37 品种, 每类 ~200 张 | 猫/狗品种 + 头部 ROI + trimap 分割 | ✅ | [数据集汇总 §Layer 3](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-3图像检测分割识别数据集) |
+| **TICD** | 2.4K 图像, 94 只猫, 13 只 symptomatic | Frontiers 2025，猫健康监测 | ✅ | [数据集汇总 §Layer 3](https://gongshangzheng.github.io/pet-action-detection-dataset-gap.html#Layer-3图像检测分割识别数据集) |
 
 ### 3.5 前沿多模态方法（2024–2025）
 
-| 方法 | 贡献 | 性能 |
-|------|------|------|
-| **ARTEMIS** | 文本+视觉多模态融合动物识别 | mAP 79.82 |
-| **Animal-CLIP** | 双 Prompt 增强 VLM | IJCV 2025 |
-| **AnimalMotionCLIP** | CLIP + 光流 | mAP 74.63 |
-| **EthoCLIP** | 本体增强视频-语言预训练 | CVPR 2026 Highlight |
-| **DiffPose-Animal** | 扩散模型 + 语言条件姿态估计 | 2024 |
+| 方法 | 贡献 | 性能 | 博客详情 |
+|------|------|------|----------|
+| **ARTEMIS** | 文本+视觉多模态融合动物识别 | mAP 79.82 | — |
+| **Animal-CLIP** | 双 Prompt 增强 VLM | IJCV 2025 | — |
+| **AnimalMotionCLIP** | CLIP + 光流 | mAP 74.63 | — |
+| **EthoCLIP** | 本体增强视频-语言预训练 | CVPR 2026 Highlight | [模型选型 §动物行为识别](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#动物行为识别) |
+| **DiffPose-Animal** | 扩散模型 + 语言条件姿态估计 | 2024 | [模型选型 §动物行为识别](https://gongshangzheng.github.io/pet-action-detection-model-survey.html#动物行为识别) |
 
 ---
 

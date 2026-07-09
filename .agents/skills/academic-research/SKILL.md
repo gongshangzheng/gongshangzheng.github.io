@@ -228,6 +228,42 @@ for p in recent[:10]:
 PYEOF
 ```
 
+### arXiv 图片提取（Phase 4 必做）
+
+每篇 `must-read-paper` 必须从 arXiv source tarball 提取至少 1 张核心原图：
+
+```bash
+SLUG="<slug>"
+IMG_DIR="$HOME/gongshangzheng.github.io/media/images/$SLUG"
+mkdir -p "$IMG_DIR" /tmp/arxiv-extract
+
+# 1. 下载并解压 source tarball
+cd /tmp/arxiv-extract
+curl -sL "https://arxiv.org/e-print/<arxiv-id>" -o "<arxiv-id>.tar.gz"
+mkdir -p "<arxiv-id>" && tar xzf "<arxiv-id>.tar.gz" -C "<arxiv-id>"
+
+# 2. 找到论文配图
+find "<arxiv-id>" -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.pdf" -o -name "*.eps" \)
+
+# 3. 复制关键图并转为 WebP
+# PDF → WebP（推荐 200 DPI）
+pdftoppm -png -r 200 -singlefile "<arxiv-id>/figures/arch.pdf" /tmp/tmp_fig
+cwebp -q 85 /tmp/tmp_fig.png -o "$IMG_DIR/paper-arch.webp"
+rm /tmp/tmp_fig.png
+
+# JPG/PNG → WebP
+cwebp -q 85 "<arxiv-id>/figures/fig1.jpg" -o "$IMG_DIR/paper-fig1.webp"
+
+# 4. 验证文件存在
+ls -la "$IMG_DIR/"
+```
+
+**关键原则**：
+- 优先选择架构图、pipeline 图、关键实验可视化
+- 每张图在 HTML 中用 `.photo` + `.cap` 组件插入，caption 标注来源（论文名, Fig.N）
+- 图片文件名要有语义（如 `igmn-overview.webp` 而非 `fig1.webp`）
+- **Phase 4 完成后必须 `grep '<img' <html-file>` 确认至少有 3 张图片**
+
 ### Web 搜索（DDGS 回退）
 
 ```bash
@@ -249,6 +285,9 @@ PYEOF
 - 重要论文没有正文论述和核心图片
 - 图片来自 Docling 临时图或 AI 生图
 - HTML 引用、图片路径、MathJax 或 build 校验未通过
+- **最终 HTML 零图片**（没有任何 `<img>` 标签）—— 必须从 arXiv source tarball 提取论文原图后重新插入
+- **LaTeX 非标准命令**（如 `\vp`、`\eps` 等 MathJax 不支持的缩写）—— 必须替换为标准命令
+- **HTML 标签不配对**（孤立 `</p>`、`</div>` 等）—— 必须用 `node lib/lint-html.js` 验证并修复
 
 ## 质量底线
 
