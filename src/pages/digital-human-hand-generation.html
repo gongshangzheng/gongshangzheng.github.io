@@ -1,0 +1,442 @@
+---
+title: "数字人系列（十七）：手部生成方案——从 3D 整体运动到 2D 像素空间"
+description: "系统调研数字人手部生成方案：3D 运动空间整体生成、2D 像素空间直接生成、运动到渲染级联三大路线，覆盖 TalkSHOW、EMAGE、CyberHost、EMO2、AudCast 等 15+ 篇核心论文。"
+date: 2026-07-10T16:52:09
+created_at: 2026-07-10T16:52:09
+updated_at: 2026-07-10T17:45:00
+tags: [数字人, 手部生成, Co-Speech Gesture, 扩散模型, Holistic Generation]
+aliases: ["categories/AI/数字人"]
+sub_id: 170
+papers: ["https://arxiv.org/abs/2212.04420", "https://arxiv.org/abs/2401.00374", "https://arxiv.org/abs/2401.04747", "https://arxiv.org/abs/2409.01876", "https://arxiv.org/abs/2401.01885", "https://arxiv.org/abs/2503.19824", "https://arxiv.org/abs/2508.20210", "https://arxiv.org/abs/2605.14731", "https://arxiv.org/abs/2501.10687", "https://arxiv.org/abs/2503.21144", "https://arxiv.org/abs/2506.18866", "https://arxiv.org/abs/2605.30311"]
+mathjax: true
+hero_title: "数字人手部生成方案"
+hero_sub: "从 3D 整体运动到 2D 像素空间"
+hero_tagline: "三大技术路线 · 15+ 篇核心论文 · 从分离建模到统一生成"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">3</span><span class="label">技术路线</span></div>
+  <div class="stat"><span class="num b">15+</span><span class="label">核心论文</span></div>
+  <div class="stat"><span class="num">4</span><span class="label">评测指标</span></div>
+  <div class="stat"><span class="num b">5+</span><span class="label">开放问题</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列（十七）</div>
+  <div class="ch-title">数字人手部生成方案：从 3D 整体运动到 2D 像素空间</div>
+
+  <p>在数字人系列的前十六篇中，我们从唇形同步出发，依次走过运动空间、3DGS/NeRF、扩散基模、整帧生成、实时流式、Avatar 类型、评测选型、产业图谱、卡通风格化、后端 Agent、训练 Loss 和工具增强。但有一个关键部位始终如幽灵般贯穿其中——手部。它太复杂、太显眼、太容易出错，以至于很多数字人系统干脆回避它：只做 talking head，画面截止到肩膀。本篇正面回答两个问题：<strong>有没有可以直接生成手部，或将生成的头与身体结合的方法？有没有可以直接连同手和头一起生成的方法？</strong></p>
+
+  <div class="callout"><strong>一句话结论</strong>：答案是肯定的。从 2023 年 TalkSHOW 首次从语音生成 3D body+hand+face，到 2024 年 CyberHost 在像素空间同时生成手部和面部，再到 2025-2026 年 AudCast 和 InfinityHuman 用级联 DiT 实现端到端手部精修，手部生成已经从"回避的区域"变成"核心战场"。三大技术路线——3D 运动空间、2D 像素空间、运动到渲染级联——各有其优势与瓶颈。</div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="tool-augmented-digital-human.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">工具增强型数字人 Agent</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">问题定义</div>
+  <div class="ch-title">为什么手部是数字人最后一块拼图</div>
+
+  <p>数字人生成的核心难题可以归结为一个不对称结构：面部（尤其嘴部）与语音有强对应关系——一个音素对应一组确定的唇形，这使得 talking head 可以把问题收缩为口型、表情和头动的确定性映射。但手部不一样。手势与语音的关系是语义层面的、弱对应的、多模态的——同一句话可以配多种合理手势，也可以完全没有手势。#Yi et al., 2023# 将这一观察总结为："面部运动与语音强相关（确定性映射），而身体和手部运动与语音弱相关（非确定性、多模态分布）。"</p>
+
+  <p>这个弱对应关系带来了三个连锁难题。第一，<strong>生成多样性</strong>：如果模型只学会了"一种"手势对应"一种"语音模式，输出会僵硬重复；但如果允许太多自由度，又可能生成不自然的手势。第二，<strong>手部结构复杂性</strong>：人手有 21 个关节、26 个自由度，是人体中最灵活的部位，错误极其显眼——哪怕一个手指弯曲角度偏差 10 度，观察者也会立即感知到不自然。第三，<strong>渲染保真度</strong>：在 2D 视频生成中，手部仅占画面的一小部分像素，却承载了大量的身份信息和语义表达，神经网络往往无法自发优先学习这些关键区域。#Lin et al., 2024# 将这一现象称为"细节欠拟合"（Details Underfitting）。</p>
+
+  <p>更根本的挑战在于<strong>协调性</strong>。一个正在说话的数字人，如果只有嘴在动、手却僵硬地垂在两侧，或者手势节奏与语音完全脱节，会立即产生"恐怖谷"效应。面部表情、手势和身体姿态之间存在天然的协调关系——挥手时身体会微微前倾，强调某个词时手会同步抬起。如何让模型学会这种跨部位的协调，是区分"能生成手"和"能生成自然的数字人"的关键分水岭。</p>
+
+  <div class="info-box">
+    <h3>核心术语速查</h3>
+    <ul>
+      <li><strong>Holistic Generation</strong> :: 同时生成面部、身体和手部（有时含全局运动）的统一生成范式</li>
+      <li><strong>Co-Speech Gesture</strong> :: 与语音同步的协同手势，手势节奏和语义与语音内容对应</li>
+      <li><strong>MANO</strong> :: Mobile hand ANthropometry mOdel，3D 手部参数化模型，常用于手部运动表示</li>
+      <li><strong>SMPL-X</strong> :: 统一人体参数化模型，覆盖身体、手部和面部，是 3D 路线的标准表示</li>
+      <li><strong>End-Effector</strong> :: 机器人学概念，指运动链的末端执行器；在数字人中常指手部</li>
+      <li><strong>HKC / HKV</strong> :: Hand Keypoint Confidence / Variance，手部质量与运动丰富度的评测指标</li>
+    </ul>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">任务分类</div>
+  <div class="ch-title">手部生成的任务 Taxonomy</div>
+
+  <p>在进入技术路线之前，我们需要先理清"手部生成"到底包含哪些子任务。不同论文对手部的处理方式差异巨大，但可以按照"生成什么"和"怎么协调"两个维度来分类。</p>
+
+  <h3 class="section-title">按生成范围划分</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>任务类型</th><th>生成范围</th><th>代表方法</th><th>核心挑战</th></tr></thead>
+      <tbody>
+        <tr><td>纯手部生成</td><td>仅手部运动或手部图像</td><td>EMO2 Stage 1, Body2Hands</td><td>与身体/面部的接口设计</td></tr>
+        <tr><td>上半身生成（含手）</td><td>面部 + 上半身 + 手部</td><td>CyberHost, ChatAnyone, EMO2</td><td>手部占比小，细节保真度</td></tr>
+        <tr><td>整体人体生成</td><td>面部 + 全身 + 手部 + 全局运动</td><td>TalkSHOW, EMAGE, AudCast, InfinityHuman</td><td>协调性、计算成本、数据获取</td></tr>
+        <tr><td>多模态统一生成</td><td>语音/文本/视频 → 面部+身体+手部+多模态</td><td>Archon</td><td>模态对齐、token 统一</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">按协调方式划分</h3>
+
+  <p>手部与面部/身体的协调方式是区分各路线的核心维度：</p>
+
+  <ul>
+    <li><strong>分离生成 + 后处理拼接</strong> :: 面部和手部由不同模型独立生成，再在渲染或后处理阶段拼接。代表：早期 talking head + 独立手势生成的级联方案。优势是模块化、可独立优化；劣势是协调性差，面部和手势节奏脱节。</li>
+    <li><strong>分离生成 + 交叉条件</strong> :: 面部和手部使用不同策略生成，但通过交叉条件建模确保协调。TalkSHOW 是典型代表：面部用确定性编码器，手部用 VQ-VAE，但身体和手部之间有交叉条件自回归。</li>
+    <li><strong>统一生成 + 区域增强</strong> :: 手部和面部在同一模型中同时生成，但通过区域注意力等机制分别增强。CyberHost 的 RAM（Region Attention Module）是典型：单阶段扩散同时生成半身视频，但 Hand RAM 和 Face RAM 分别增强各自区域。</li>
+    <li><strong>端到端统一生成</strong> :: 所有部位在一个统一框架中生成，无显式的区域分离。AudCast 的 H²-DiT 和 InfinityHuman 的 LR-A2V 属于此类。</li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">技术路线</div>
+  <div class="ch-title">三大技术路线 Taxonomy</div>
+
+  <p>根据表示空间和生成方式的不同，手部生成方案可以归纳为三大技术路线。它们不是互斥的——很多系统混合使用——但理解各自的核心理念有助于判断方法的适用场景。</p>
+
+  {{< mermaid >}}
+  flowchart TB
+    A["语音/文本/视频输入"] --> B{"表示空间选择"}
+    B -->|"3D 参数空间"| C["路线一: 3D 运动空间整体生成"]
+    B -->|"2D 像素空间"| D["路线二: 2D 像素空间直接生成"]
+    B -->|"3D 运动 + 2D 渲染"| E["路线三: 运动到渲染级联"]
+    C --> C1["TalkSHOW (2023)"]
+    C --> C2["EMAGE (2024)"]
+    C --> C3["DiffSHEG (2024)"]
+    C --> C4["UMo (2026)"]
+    D --> D1["CyberHost (2024)"]
+    D --> D2["EMO2 (2025)"]
+    D --> D3["ChatAnyone (2025)"]
+    D --> D4["AudCast (2025)"]
+    D --> D5["InfinityHuman (2025)"]
+    E --> E1["Audio2Photoreal (2024)"]
+    E --> E2["OmniAvatar (2025)"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">路线对比概览</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>路线一: 3D 运动空间</th><th>路线二: 2D 像素空间</th><th>路线三: 运动到渲染级联</th></tr></thead>
+      <tbody>
+        <tr><td>核心表示</td><td>SMPL-X / MANO 参数</td><td>VAE 潜空间像素</td><td>3D 运动 + 2D 渲染器</td></tr>
+        <tr><td>手部处理</td><td>关节角度参数化</td><td>像素级区域增强</td><td>运动参数 + 渲染精修</td></tr>
+        <tr><td>优势</td><td>可控性强，可编辑</td><td>视觉质量高，端到端</td><td>兼顾可控性和视觉质量</td></tr>
+        <tr><td>限制</td><td>需额外渲染器</td><td>手部细节难保证</td><td>需个性化渲染器训练</td></tr>
+        <tr><td>实时性</td><td>可达 44 FPS (UMo)</td><td>RTF ~65 (CyberHost)</td><td>依赖渲染器速度</td></tr>
+        <tr><td>代表论文</td><td>TalkSHOW, EMAGE</td><td>CyberHost, EMO2</td><td>Audio2Photoreal</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">路线一</div>
+  <div class="ch-title">3D 运动空间整体生成</div>
+
+  <p>3D 运动空间路线的核心思想是：先在参数化 3D 模型（SMPL-X、MANO、FLAME）中生成运动序列，再通过渲染器转换为可视图像。这条路线的关键优势是<strong>可控性</strong>——3D 参数可以直接编辑、约束和重定向，且天然保证骨骼拓扑一致性。</p>
+
+  <h3 class="section-title">TalkSHOW：首个语音驱动 3D 整体人体（CVPR 2023）</h3>
+
+  <p>TalkSHOW 是从语音生成 3D 整体人体运动的开创性工作，也是第一条系统性地同时处理面部、身体和手部的路线。#Yi et al., 2023# 提出的核心洞察是：不同身体部位与语音信号的相关性不同——面部与语音强相关（嘴部运动由音素决定），而身体和手部与语音弱相关（手势表达语义而非音素）。因此，TalkSHOW 对面部使用确定性编码器-解码器（wav2vec 2.0 → TCN），对身体和手部使用生成式模型（组合式 VQ-VAE + 交叉条件自回归）。</p>
+
+  <p>组合式 VQ-VAE 是 TalkSHOW 的核心创新。它对身体和手部分别训练独立的离散码本 $Z^b$ 和 $Z^h$（各 1024 个码字），组合后获得 $1024 \times 1024 = 1048576$ 种不同的身体-手部姿态组合，大幅扩展了运动多样性。在码本之上，交叉条件自回归模型通过 Gated PixelCNN 预测未来运动码的分布，关键在于当前身体运动 $c^b_t$ 依赖过去身体运动 $c^b_{<t}$ 和过去手部运动 $c^h_{<t}$，当前手部运动 $c^h_t$ 依赖当前身体运动 $c^b_t$ 和过去手部运动 $c^h_{<t}$：</p>
+
+  $$
+  p(C^b, C^h | A, I) = \prod_t p(c^b_t | c^b_{<t}, c^h_{<t}, a_t, I) \cdot p(c^h_t | c^b_t, c^h_{<t}, a_t, I)
+  $$
+
+  <p>这个交叉条件建模确保了手部与身体的协调——当身体做出某种姿态时，手部会自然地跟随调整。消融实验证实，有交叉条件的真实性得分 0.414 高于无交叉条件的 0.409，但多样性略降（0.821 vs 0.922），因为无交叉条件会导致身体和手部的不合理组合。#Yi et al., 2023#</p>
+
+  <div class="photo">
+    <img src="media/images/talkshow-2023/architecture.webp" alt="TalkSHOW 架构图" loading="lazy">
+    <div class="cap">图 1：TalkSHOW 核心架构。面部使用确定性编码器-解码器（上方），身体和手部使用组合式 VQ-VAE + 交叉条件自回归模型（下方），SMPL-X 统一表示将三者连接（来源：TalkSHOW, CVPR 2023, Fig. 2）</div>
+  </div>
+
+  <p>手部在 TalkSHOW 中以 SMPL-X 的手部关节角度表示，每只手 15 个关节 × 3 维 = 45 维，双手共 90 维。虽然这种表示保证了拓扑一致性，但 45 维/手的参数化精度有限——它只建模关节角度，不包含手指形状和纹理细节。论文也承认 SHOW 重建流水线对严重手部形变和遮挡敏感。#Yi et al., 2023#</p>
+
+  <h3 class="section-title">EMAGE：统一 Holistic 共语音手势（CVPR 2024）</h3>
+
+  <p>EMAGE 将 holistic 生成推向了一个新的统一程度。#Liu et al., 2024# 提出了 Expressive Masked Audio Gesture Transformer，在统一的 Transformer 框架内同时生成面部表情（100 维 FLAME 参数）、身体姿态（55 个 SMPL-X 关节的 Rot6D）、手部运动、足部接触和全局平移。与 TalkSHOW 的分离策略不同，EMAGE 使用 Masked Audio Gesture Transformer 统一处理所有部位。</p>
+
+  <p>EMAGE 的表示维度为 $T \times (55 \times 6 + 100 + 4 + 3)$：55 个 SMPL-X 关节的 6D 旋转、100 维 FLAME 面部参数、4 维足部接触标签和 3 维全局平移。手部作为 SMPL-X 身体关节的一部分被统一建模，不单独分离。多个 compositional VQ-VAE 分别解码面部、身体和手部，Global Motion Predictor 估计全局平移。BEAT2 数据集将 BEAT 标准化为 refined SMPL-X body 与 optimized FLAME head/face，为整体生成提供了高质量训练数据。#Liu et al., 2024#</p>
+
+  <h3 class="section-title">DiffSHEG：扩散模型同时生成表情与手势</h3>
+
+  <p>DiffSHEG 解决了一个被 TalkSHOW 和 EMAGE 间接回避的问题：表情和手势之间的协调。#Chen et al., 2024# 观察到表情和手势存在天然的不对称依赖——表情可以独立于手势（一个人可以只微笑不挥手），但手势往往伴随表情变化（挥手时面部也会调整）。基于这个直觉，DiffSHEG 设计了 uni-directional information flow：表情预测结果单向流入手势生成器，而不是双向交互。</p>
+
+  <p>这个设计既保留了表情对手势的影响，又避免了双向耦合带来的训练不稳定。DiffSHEG 在 BEAT 数据集上使用扩散模型同时生成 3D 面部表情和身体手势，是 first to explicitly model the asymmetric dependency between expression and gesture。#Chen et al., 2024# 已在 [[@DiffSHEG：扩散模型如何同时生成表情与手势|本系列 P08]] 中详细解读。</p>
+
+  <h3 class="section-title">UMo：统一稀疏运动建模实现 44 FPS 实时（2026）</h3>
+
+  <p>UMo 代表了 3D 运动路线的最新进展。#UMo et al., 2026# 将人体分为四个区域（面部、身体、左手、右手），每个区域使用独立的 VQ tokenizer 学习离散运动 token，再通过 Spatial Sparse MoE（混合专家）生成。手部作为四个区域之一被独立建模，但通过 MoE 的路由机制实现跨区域协调。</p>
+
+  <p>UMo 的核心创新是时间维度的稀疏化：只预测关键帧，中间帧通过插值网络补全，从而实现 44 FPS 的实时性能。手部运动 token 由专门的 MoE 专家生成，输出为 SMPL-X 运动参数。这使得 UMo 可以作为像素空间生成（如 CyberHost）的前置运动规划模块，提供实时、可控的手部运动信号。#UMo et al., 2026#</p>
+
+  <div class="photo">
+    <img src="media/images/umo-2026/pipeline-v3.webp" alt="UMo 架构图" loading="lazy">
+    <div class="cap">图 2：UMo 管线。四区域独立 VQ tokenizer + Spatial Sparse MoE + 时间稀疏关键帧插值，实现 44 FPS 实时 co-speech avatar 生成（来源：UMo, 2026）</div>
+  </div>
+
+  <div class="callout"><strong>路线一核心发现</strong>：3D 运动空间路线从 TalkSHOW 的分离建模 + 交叉条件，演进到 EMAGE 的统一 Transformer，再到 UMo 的稀疏 MoE + 实时推理。手部在 3D 参数空间中的可控性最强，但视觉质量依赖额外的渲染器，且 3D 参数表示的手部细节精度有限。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">路线二</div>
+  <div class="ch-title">2D 像素空间直接生成</div>
+
+  <p>2D 像素空间路线跳过 3D 参数中间表示，直接在视频帧的像素空间（或 VAE 潜空间）中生成包含手部的数字人视频。这条路线的吸引力在于视觉质量——直接生成的像素不需要额外的渲染步骤，且可以利用预训练的视频扩散模型的强大生成能力。</p>
+
+  <h3 class="section-title">CyberHost：最直接的手部生成方案（ICLR 2025）</h3>
+
+  <p>CyberHost 是论文池中<strong>最直接涉及手部生成</strong>的工作。#Lin et al., 2024# 面对的核心问题是：在音频驱动的 talking body 生成中，手部和面部仅占画面一小部分像素，却承载了大部分身份信息和语义表达，而神经网络往往无法自发优先学习这些关键区域。</p>
+
+  <p>为解决这个问题，CyberHost 设计了完整的<strong>手部生成技术栈</strong>。核心是 Region Attention Module（RAM），包含三个组件：（1）时空区域潜变量库（Spatio-Temporal Region Latents Bank），由空间基 $L_{spa} \in \mathbb{R}^{512 \times 512}$ 和时间基 $L_{temp} \in \mathbb{R}^{64 \times 512}$ 组成，学习手部的共享拓扑结构和运动模式；（2）身份描述符（Identity Descriptor），从裁剪的 128×128 手部图像中提取身份特定特征（手大小、肤色、纹理）；（3）区域注意力掩码（Regional Attention Mask），确保局部增强不干扰其他区域。最终输出通过掩码加权：$F_{unet}^{out} = (F_{latent} + F_{id}) \cdot M_{pred} + F_{unet}^{in}$。#Lin et al., 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/cyberhost-2024/CyberHost_Intro1.webp" alt="CyberHost 手部完整性挑战" loading="lazy">
+    <div class="cap">图 3：CyberHost 面对的手部完整性挑战。现有方法在音频驱动 talking body 生成中，手部和面部容易出现退化（左），CyberHost 通过 Hand RAM 和 Hand Clarity Score 专门解决（来源：CyberHost, ICLR 2025, Fig. 1）</div>
+  </div>
+
+  <p>除了 RAM，CyberHost 还引入了 Hand Clarity Score——基于拉普拉斯标准差量化训练数据中手部图像的清晰度，推理时输入高分以引导模型生成清晰手部。手部关键点热图作为辅助监督信号，帮助模型理解手部结构。在评测方面，CyberHost 提出了 HKC（Hand Keypoint Confidence，手部质量）和 HKV（Hand Keypoint Variance，手部运动丰富度）两个手部专用指标。在 A2V-B 测试中，CyberHost 达到 HKC 0.884、HKV 24.73，FID 32.97，全面超越 DiffTED 和两阶段基线。#Lin et al., 2024#</p>
+
+  <p>但 CyberHost 也有明显局限。论文自述手部仍存在局部退化，HKC 0.884 虽优于基线但远未达到完美。推理 RTF ~65（比实时慢 65 倍），仅支持半身场景，全身生成时手部细节显著退化。这些局限恰恰指明了手部生成研究的下一步方向。</p>
+
+  <h3 class="section-title">EMO2：手作为 End-Effector 的音频驱动生成</h3>
+
+  <p>EMO2 提出了一个截然不同的手部生成思路。#Wang et al., 2025# 借用机器人学中的 end-effector 概念——如果知道末端执行器（手）要去哪里，身体其它关节可以围绕这个目标协同调整。EMO2 因此改变了音频驱动 avatar 的因果顺序：先从音频生成双手的 MANO 运动，再让视频扩散模型依据手部运动、身体关键点和参考图，在像素空间里补全上半身。</p>
+
+  <div class="photo">
+    <img src="media/images/emo2-2025/pipeline.webp" alt="EMO2 整体管线" loading="lazy">
+    <div class="cap">图 4：EMO2 两阶段管线。Stage 1 从音频生成 MANO 手部运动，Stage 2 用 ReferenceNet 视频扩散补全脸、身体和手势（来源：EMO2, 2025）</div>
+  </div>
+
+  <p>Stage 1 使用 24 个 DiT blocks、hidden size 512 的扩散模型，从 wav2vec 音频特征生成 MANO 手部运动。Stage 2 将 MANO maps 注入带 AnimateDiff temporal modules 的 2D-UNet，配 ReferenceNet 保持角色身份，最终生成 co-speech video。评测显示 Talkshow 数据集上 DIV 0.1345、BA 0.7626、PCK 0.8126，视频评测 FID 27.28、FVD 129.41、HKC 0.553。#Wang et al., 2025# EMO2 已在 [[@EMO2：把手当作 End-Effector 的音频驱动手势生成|本系列 P19]] 中详细解读。</p>
+
+  <h3 class="section-title">ChatAnyone：实时上半身互动</h3>
+
+  <p>ChatAnyone 同样关注上半身与手，但目标更偏实时工程。它使用低维 motion diffusion 生成控制信号（包括 MANO 手部参数），再用 warping GAN 实现 30 FPS 合成。与 EMO2 相比，ChatAnyone 更像"用 MANO 给生成器补手部结构"，而 EMO2 更像"把 MANO 作为动作生成的主舞台"。#ChatAnyone et al., 2025# 已在 [[@ChatAnyone：把 talking head 推到实时上半身互动|本系列 P18]] 中详细解读。</p>
+
+  <h3 class="section-title">AudCast：级联 DiT + 3D 先验手部精修（CVPR 2025）</h3>
+
+  <p>AudCast 采用了独特的级联策略。#Guan et al., 2025# 使用两个 DiT 模块：H²-DiT（Holistic Human DiT）统一生成全身运动（包括手部），R²-DiT（Refinement DiT）使用 3D mesh 先验对手部和面部进行推理时 inpainting 精修。这种"先生成再精修"的策略允许全局生成保持整体协调性，同时通过局部精修提升手部细节。</p>
+
+  <div class="photo">
+    <img src="media/images/audcast-2025/fig_pipeline.webp" alt="AudCast 级联管线" loading="lazy">
+    <div class="cap">图 5：AudCast 级联管线。H²-DiT 统一生成全身运动，R²-DiT 使用 3D mesh 先验对手部和面部进行局部精修（来源：AudCast, CVPR 2025）</div>
+  </div>
+
+  <p>AudCast 使用 CogVideoX-2B 作为预训练骨干，训练数据约 300 小时，8×A100。其手部处理的关键特点是<strong>推理时 3D 先验 inpainting</strong>——不修改模型权重，而是在推理过程中用 3D 重建 mesh 引导手部区域的生成。这使得 AudCast 可以在不重新训练的情况下适配不同手部先验。#Guan et al., 2025#</p>
+
+  <h3 class="section-title">InfinityHuman：训练时奖励反馈的长视频生成（AAAI 2026）</h3>
+
+  <p>InfinityHuman 采用了与 AudCast 互补的策略。#InfinityHuman et al., 2025# 使用粗到细两阶段：LR-A2V（Low-Resolution Audio-to-Video）统一联合生成，PG-Refiner（Pose-Guided Refiner）局部精修。手部处理采用<strong>训练时奖励反馈</strong>路线——在训练过程中引入手部专用奖励信号，优化模型对手部的生成能力，而不需要在推理时额外网络。</p>
+
+  <p>InfinityHuman 使用 2D 像素级关键点作为手部结构约束，预训练骨干为 Goku-I2V，训练数据 7700 小时，128×GPU。其长视频稳定性优异：50 秒视频 FID 仅 35.50，不随时间退化。手部专用奖励反馈机制是核心创新——它将手部质量评估融入训练循环，使模型在训练过程中逐步学会生成更好的手部。#InfinityHuman et al., 2025#</p>
+
+  <div class="callout"><strong>路线二核心发现</strong>：2D 像素空间路线从 CyberHost 的区域增强（RAM + Clarity Score），到 EMO2 的 end-effector 先验，再到 AudCast 的推理时精修和 InfinityHuman 的训练时奖励，手部处理策略日趋多样。但 HKC 0.884（CyberHost）和 HKC 0.553（EMO2）的数据表明，像素空间的手部质量仍有显著差距。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">路线三</div>
+  <div class="ch-title">运动到渲染的级联方案</div>
+
+  <p>第三条路线试图兼顾 3D 路线的可控性和 2D 路线的视觉质量：先在 3D 运动空间生成整体运动（含手部），再通过个性化渲染器将运动转换为照片级视频。这条路线的桥梁角色使其在学术和工程中都有独特价值。</p>
+
+  <h3 class="section-title">Audio2Photoreal：从语音到照片级全身（CVPR 2024）</h3>
+
+  <p>Audio2Photoreal 是 Meta 提出的从对话音频生成照片级全身数字人的框架。#Ng et al., 2024# 的管线分为三个阶段：（1）面部表情扩散模型从 wav2vec 音频特征生成 256 维表情码；（2）身体和手部运动通过 coarse-to-fine 策略生成——Residual VQ-VAE 量化 1fps 引导姿态，自回归 Transformer 从音频预测引导姿态 token，扩散模型填充 30fps 高频身体/手部运动；（3）个性化渲染器将生成的表情码和关节角度渲染为照片级视频帧。</p>
+
+  <p>Audio2Photoreal 的一个重要发现是：面部和身体/手部分别建模，因为"面部与音频/唇形强相关，而身体与音频相关性弱且多样性高"。身体和手部被一起生成（作为关节角度序列），面部单独生成，最终在渲染阶段组合。在消融实验中，引导姿态条件显著提升了多样性和 FD 指标；人类研究表明，照片级渲染使评估者更敏感地感知微妙的手势差异——mesh 评估可能高估生成运动质量。#Ng et al., 2024#</p>
+
+  <p>Audio2Photoreal 的训练数据为 8 小时双人对话多视角数据集，4 个参与者，每人 2 小时配对数据。训练在单张 A100 上完成：面部扩散 8h，VQ + 粗姿态预测 5h，姿态扩散 8h。其局限在于：渲染器需要多视角采集和个性化训练，不是通用的单图生成方案。#Ng et al., 2024#</p>
+
+  <h3 class="section-title">OmniAvatar：音频注入视频 Latent 的全身数字人</h3>
+
+  <p>OmniAvatar 将音频特征直接注入视频扩散模型的 latent 空间，驱动包括身体动画在内的全身生成。#OmniAvatar et al., 2025# 使用自适应身体动画模块，将音频驱动的运动信号注入到视频 latent 中。手部作为身体动画的一部分被生成，但没有像 CyberHost 那样专门的手部增强模块。OmniAvatar 已在 [[@OmniAvatar：把音频注入视频 latent 的全身数字人|本系列 P20]] 中详细解读。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">统一基座</div>
+  <div class="ch-title">Archon：统一多模态数字人基座模型（CVPR 2026）</div>
+
+  <p>除了三大路线，还有一个值得关注的趋势——统一多模态基座模型。Archon（CVPR 2026）试图用单一模型统一数字人的所有模态生成。#Archon et al., 2026# 提出了统一 token 空间，支持语音、文本、图像、视频、3DMM、语义视频等七种模态的 any-to-any 生成。</p>
+
+  <p>然而，Archon 对手部的覆盖是<strong>间接的</strong>。其 3DMM 仅覆盖面部，语义视频仅含面部语义类别，不直接建模手部/身体运动。Archon 的价值在于提供了统一架构范式的参考——如果将 token 统一空间扩展到 SMPL-X/MANO 等全身表示，理论上可以实现手部在内的整体生成。但目前 Archon 的手部生成能力尚不明确。#Archon et al., 2026#</p>
+
+  <p>SentiAvatar 则代表了 3D 绑定路线的手部处理方式。#Jin et al., 2026# 构建了可持续交互的 3D 数字人框架，使用光学动捕记录身体与手部运动，iPhone ARKit 捕获面部 blendshape。手部作为 6D 关节旋转输出，通过 plan-then-infill 策略与语义规划和韵律同步协调。SentiAvatar 已在 [[@SentiAvatar：让 3D 数字人会说、会动、会表达|本系列 P07]] 中详细解读。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">方法对比</div>
+  <div class="ch-title">跨论文方法对比总表</div>
+
+  <p>以下表格从多个维度对比各路线的代表方法。所有数据均来自论文原文。</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>年份</th><th>路线</th><th>手部表示</th><th>头部表示</th><th>协调方式</th><th>关键指标</th><th>实时性</th><th>代码</th></tr></thead>
+      <tbody>
+        <tr><td>TalkSHOW</td><td>2023</td><td>3D 运动</td><td>SMPL-X (90d)</td><td>FLAME (103d)</td><td>交叉条件自回归</td><td>FGD 74.88, BC 0.872</td><td>未报告</td><td>开源</td></tr>
+        <tr><td>EMAGE</td><td>2024</td><td>3D 运动</td><td>SMPL-X (Rot6D)</td><td>FLAME (100d)</td><td>统一 Transformer</td><td>FGD, BC, Diversity</td><td>未报告</td><td>开源</td></tr>
+        <tr><td>DiffSHEG</td><td>2024</td><td>3D 运动</td><td>身体关节</td><td>3D 表情</td><td>单向信息流</td><td>BEAT benchmark</td><td>实时声明</td><td>开源</td></tr>
+        <tr><td>UMo</td><td>2026</td><td>3D 运动</td><td>VQ token + MoE</td><td>面部区域</td><td>稀疏 MoE 路由</td><td>44 FPS</td><td>44 FPS</td><td>未开源</td></tr>
+        <tr><td>CyberHost</td><td>2024</td><td>2D 像素</td><td>Hand RAM + Clarity</td><td>Face RAM + ArcFace</td><td>单阶段扩散 + 区域掩码</td><td>HKC 0.884, FID 32.97</td><td>RTF ~65</td><td>未开源</td></tr>
+        <tr><td>EMO2</td><td>2025</td><td>2D 像素</td><td>MANO (end-effector)</td><td>视频扩散补全</td><td>手部驱动视频扩散</td><td>HKC 0.553, FID 27.28</td><td>未报告</td><td>未开源</td></tr>
+        <tr><td>ChatAnyone</td><td>2025</td><td>2D 像素</td><td>MANO + 2D 关键点</td><td>音频驱动面部</td><td>Motion diffusion + GAN</td><td>30 FPS 声明</td><td>30 FPS</td><td>开源</td></tr>
+        <tr><td>AudCast</td><td>2025</td><td>2D 像素</td><td>3D mesh inpainting</td><td>H²-DiT 统一生成</td><td>级联 DiT + 推理时精修</td><td>FID, FVD, 多指标</td><td>未报告</td><td>未开源</td></tr>
+        <tr><td>InfinityHuman</td><td>2025</td><td>2D 像素</td><td>2D 关键点 + 奖励</td><td>LR-A2V 统一生成</td><td>训练时手部奖励反馈</td><td>FID 35.50 (50s)</td><td>未报告</td><td>未开源</td></tr>
+        <tr><td>Audio2Photoreal</td><td>2024</td><td>运动到渲染</td><td>关节角度 (VQ+扩散)</td><td>表情码 (扩散)</td><td>分离生成 + 渲染组合</td><td>FD_g, FD_k, 人类研究</td><td>未报告</td><td>开源</td></tr>
+        <tr><td>SentiAvatar</td><td>2026</td><td>3D 绑定</td><td>6D 关节旋转</td><td>ARKit blendshape</td><td>Plan-then-infill</td><td>多指标</td><td>实时声明</td><td>开源</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">实验配置对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>训练数据</th><th>GPU 配置</th><th>训练时长</th><th>推理速度</th></tr></thead>
+      <tbody>
+        <tr><td>TalkSHOW</td><td>26.9h, 4 speakers</td><td>V100 (SHOW)</td><td>100 epochs</td><td>未报告</td></tr>
+        <tr><td>EMAGE</td><td>BEAT2, 60h, 25 speakers</td><td>5×4090</td><td>22.4h (VQ-VAEs)</td><td>未报告</td></tr>
+        <tr><td>CyberHost</td><td>200h, 10K+ identities</td><td>8×A100 (S1) + 32×A100 (S2)</td><td>4+4 days</td><td>RTF ~65</td></tr>
+        <tr><td>EMO2</td><td>~275h</td><td>4×A100 (Stage 2)</td><td>100K steps/stage</td><td>未报告</td></tr>
+        <tr><td>AudCast</td><td>~300h</td><td>8×A100</td><td>未详细报告</td><td>未报告</td></tr>
+        <tr><td>InfinityHuman</td><td>7700h</td><td>128×GPU</td><td>未详细报告</td><td>未报告</td></tr>
+        <tr><td>Audio2Photoreal</td><td>8h, 4 participants</td><td>1×A100</td><td>8h+5h+8h</td><td>未报告</td></tr>
+        <tr><td>UMo</td><td>BEAT2</td><td>未报告</td><td>未报告</td><td>44 FPS</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">发展脉络</div>
+  <div class="ch-title">手部生成的发展时间线</div>
+
+  <h3 class="section-title">2022-2023：奠基期——分离建模与统一表示</h3>
+
+  <p>这一阶段的核心共识是：不同身体部位与语音的相关性不同，应该分别建模。BEAT 数据集（CVPR 2022）提供了第一个大规模语义和情感多模态手势数据集，为后续工作奠定了数据基础。Habibie et al. (2021) 首次从语音生成 3D 面部网格 + 3D 身体/手部关键点，但三部分分离且确定性。TalkSHOW（CVPR 2023）突破性地使用 SMPL-X 统一表示，通过组合式 VQ-VAE 和交叉条件自回归模型实现了多样性的整体生成。这一阶段的关键转变是从"分离的确定性映射"到"统一的生成式建模"。</p>
+
+  <h3 class="section-title">2024：发展期——统一框架与像素空间突破</h3>
+
+  <p>2024 年出现了两条路线的并行突破。在 3D 运动空间，EMAGE（CVPR 2024）使用统一 Transformer 替代分离策略，DiffSHEG 显式建模表情-手势的不对称依赖，Audio2Photoreal（CVPR 2024）将 3D 运动与照片级渲染桥接。在 2D 像素空间，CyberHost 首次在单阶段扩散框架内同时生成手部和面部，引入 Hand RAM 和 Hand Clarity Score 等专门的手部处理机制。SentiAvatar 则展示了 3D 绑定路线的 plan-then-infill 策略。这一阶段的转变是从"3D 参数主导"到"3D 与 2D 并行"。</p>
+
+  <h3 class="section-title">2025-2026：深化期——端到端统一与实时化</h3>
+
+  <p>2025-2026 年的核心趋势是端到端统一和实时化。EMO2 将手部作为 end-effector 重新定义了生成因果链。AudCast（CVPR 2025）和 InfinityHuman（AAAI 2026）分别用推理时精修和训练时奖励解决手部质量问题。ChatAnyone 推进了实时上半身生成。UMo 实现了 44 FPS 的实时 co-speech avatar。Archon（CVPR 2026）探索了统一多模态基座模型的可能性。这一阶段的转变是从"手部作为附属区域"到"手部作为核心建模对象"，以及从"离线生成"到"实时交互"。</p>
+
+  <h3 class="section-title">跨阶段转变</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>转变点</th><th>之前</th><th>之后</th><th>推动力</th></tr></thead>
+      <tbody>
+        <tr><td>表示统一</td><td>面部/身体/手部分离表示</td><td>SMPL-X 统一参数化</td><td>TalkSHOW (2023)</td></tr>
+        <tr><td>空间迁移</td><td>仅 3D 参数空间</td><td>3D 与 2D 像素并行</td><td>CyberHost, EMO2 (2024-25)</td></tr>
+        <tr><td>手部定位</td><td>手部作为附属区域</td><td>手部作为核心建模对象</td><td>EMO2 end-effector, CyberHost RAM</td></tr>
+        <tr><td>质量策略</td><td>无专门手部处理</td><td>推理时精修 + 训练时奖励</td><td>AudCast, InfinityHuman (2025-26)</td></tr>
+        <tr><td>实时化</td><td>离线生成</td><td>44 FPS 实时</td><td>UMo, ChatAnyone (2026)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">评测体系</div>
+  <div class="ch-title">手部生成的评测指标体系</div>
+
+  <p>手部生成的评测是整个领域最薄弱的环节之一。不同路线使用的指标差异巨大，缺乏统一的评测标准。</p>
+
+  <h3 class="section-title">3D 运动空间指标</h3>
+
+  <p>3D 路线主要使用运动分布和节拍一致性指标：</p>
+  <ul>
+    <li><strong>FGD（Frechet Gesture Distance）</strong> :: 衡量生成运动分布与真实运动分布的距离。TalkSHOW 达到 74.88（越低越好）。</li>
+    <li><strong>BC（Beat Consistency）</strong> :: 生成运动与音频的节拍一致性。TalkSHOW 达到 0.872（GT: 0.868）。</li>
+    <li><strong>Diversity / Variation</strong> :: 多样性指标。TalkSHOW 达到 0.821。</li>
+    <li><strong>PCK（Percentage of Correct Keypoints）</strong> :: 关键点准确率。EMO2 达到 0.8126。</li>
+  </ul>
+
+  <h3 class="section-title">2D 像素空间指标</h3>
+
+  <p>2D 路线引入了手部专用评测指标：</p>
+  <ul>
+    <li><strong>HKC（Hand Keypoint Confidence）</strong> :: 手部关键点置信度，评估手部生成质量。CyberHost 达到 0.884。</li>
+    <li><strong>HKV（Hand Keypoint Variance）</strong> :: 手部关键点方差，评估手部运动丰富度。CyberHost 达到 24.73。</li>
+    <li><strong>FID / FVD</strong> :: 图像和视频质量指标。CyberHost FID 32.97, FVD 555.8。</li>
+    <li><strong>SyncC / SyncD</strong> :: 唇同步指标。CyberHost SyncC 6.627, SyncD 7.506。</li>
+  </ul>
+
+  <div class="callout"><strong>评测困境</strong>：3D 指标无法反映像素级手部质量（如手指扭曲、纹理退化），2D 指标又无法评估运动语义合理性。Audio2Photoreal 的人类研究表明，照片级渲染使评估者更敏感地感知手势差异——这意味着仅靠 mesh 级评测可能高估生成质量。统一的跨路线评测标准仍是一个开放问题。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">开放问题</div>
+  <div class="ch-title">开放问题与未来方向</div>
+
+  <p>基于对 15+ 篇核心论文的系统调研，我们识别出以下关键开放问题：</p>
+
+  <ol>
+    <li><strong>手部-面部协调的显式建模缺失</strong>：TalkSHOW 实现了身体-手部交叉条件，但面部与手部之间缺乏显式协调机制。DiffSHEG 的单向信息流是初步尝试，但仅适用于 3D 表情参数。在 2D 像素空间中，CyberHost 通过共享 U-Net + 区域掩码实现隐式协调，但没有显式的面部-手部交互建模。如何设计有效的跨部位协调机制仍是开放问题。</li>
+
+    <li><strong>全身手部生成的分辨率瓶颈</strong>：CyberHost 明确指出，在 640×384 分辨率下面部和手部占比过小，VAE 和 U-Net 建模能力受限，直接在全身图像上测试导致手部细节显著退化。这不仅是分辨率问题，更是模型容量分配问题——如何在有限计算预算下为手部分配足够的建模能力。</li>
+
+    <li><strong>训练数据中手部模糊的系统性解决</strong>：CyberHost 的 Hand Clarity Score 是第一个系统性解决训练数据中手部运动模糊的方法，但它依赖拉普拉斯标准差，对极端模糊可能不够鲁棒。更大规模数据集（如 InfinityHuman 的 7700 小时）可能通过数据量缓解此问题，但数据质量仍是根本瓶颈。</li>
+
+    <li><strong>3D 先验与 2D 生成的深度融合</strong>：AudCast 的推理时 3D mesh inpainting 和 InfinityHuman 的训练时奖励反馈代表了两种 3D-2D 融合策略，但都存在局限——前者增加推理开销，后者需要可微的奖励函数。如何在不牺牲效率的前提下将 3D 手部先验深度融入 2D 生成模型，是一个核心挑战。</li>
+
+    <li><strong>实时性与手部质量的权衡</strong>：UMo 达到了 44 FPS 实时，但输出为 3D 运动参数而非像素视频。CyberHost 的像素级生成 RTF ~65，远未达到实时。ChatAnyone 声称 30 FPS，但使用 warping GAN 而非扩散模型，手部质量受限。如何在实时约束下保证手部生成质量，是数字人走向实际部署的关键瓶颈。</li>
+
+    <li><strong>统一评测基准的缺失</strong>：3D 路线使用 FGD/BC/Diversity，2D 路线使用 HKC/HKV/FID/FVD，两者无法直接比较。Audio2Photoreal 的照片级人类研究表明 mesh 评测可能高估质量。建立跨路线的统一手部评测基准（包含 3D 运动质量、2D 像素质量、跨部位协调性和人类感知评估）是领域急需的基础设施。</li>
+
+    <li><strong>语义驱动手势的生成</strong>：当前方法主要建模音频节奏与手势的对应关系，但手势的语义对应（如说"这里"时手指向某处）仍然困难。PersonaGest、SemConFlow 等最新工作开始探索语义感知的手势生成，但距离真正的语义驱动手部生成仍有距离。</li>
+  </ol>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结论</div>
+  <div class="ch-title">总结与展望</div>
+
+  <p>回到本篇开头的两个问题：</p>
+
+  <p><strong>Q1：有没有可以直接生成手部，或将其与头/身结合的方法？</strong> 答案是肯定的。CyberHost 通过 Hand RAM 在像素空间直接生成手部，EMO2 将手作为 end-effector 先生成再驱动视频扩散，ChatAnyone 使用 MANO 控制手部运动。这些方法都实现了手部与头部/身体的结合，但各有侧重——CyberHost 最全面但最慢，EMO2 最有理论洞察但手部质量指标 HKC 仅 0.553，ChatAnyone 最快但手部建模最轻。</p>
+
+  <p><strong>Q2：有没有可以直接连同手和头一起生成的方法？</strong> 答案也是肯定的。TalkSHOW 首次实现了 3D body+hand+face 的同时生成（尽管使用不同策略），EMAGE 用统一 Transformer 统一了所有部位，CyberHost 在单阶段扩散中同时生成手部和面部，AudCast 和 InfinityHuman 实现了端到端的全身统一生成。其中，CyberHost 的"统一生成 + 区域增强"策略在当前阶段最具实践价值——它既保证了整体协调性（共享 U-Net），又通过 RAM 专门增强了手部质量。</p>
+
+  <p>展望未来，手部生成研究的核心矛盾是<strong>可控性与视觉质量的权衡</strong>。3D 运动路线可控性强但需要额外渲染，2D 像素路线视觉质量高但手部细节难以保证，级联路线兼顾两者但需要个性化渲染器。最终的解决方案很可能是三者的融合——用 3D 运动模型提供可控的手部运动先验，用 2D 扩散模型保证视觉质量，通过推理时精修或训练时奖励在两者之间建立桥梁。</p>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="tool-augmented-digital-human.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">工具增强型数字人 Agent</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Yi-et-al.-2023">Yi, H. et al. (2023). Generating Holistic 3D Human Motion from Speech (TalkSHOW). <em>CVPR 2023</em>. <a href="https://arxiv.org/abs/2212.04420" target="_blank">arXiv:2212.04420</a></li>
+      <li data-cite-key="Liu-et-al.-2024">Liu, H. et al. (2024). EMAGE: Towards Unified Holistic Co-Speech Gesture Generation via Expressive Masked Audio Gesture Modeling. <em>CVPR 2024</em>. <a href="https://arxiv.org/abs/2401.00374" target="_blank">arXiv:2401.00374</a></li>
+      <li data-cite-key="Chen-et-al.-2024">Chen, J. et al. (2024). DiffSHEG: A Diffusion-Based Approach for Real-Time Speech-driven Holistic 3D Expression and Gesture Generation. <a href="https://arxiv.org/abs/2401.04747" target="_blank">arXiv:2401.04747</a></li>
+      <li data-cite-key="Lin-et-al.-2024">Lin, G. et al. (2024). CyberHost: Taming Audio-driven Avatar Diffusion Model with Region Codebook Attention (CyberHost). <em>ICLR 2025</em>. <a href="https://arxiv.org/abs/2409.01876" target="_blank">arXiv:2409.01876</a></li>
+      <li data-cite-key="Ng-et-al.-2024">Ng, E. et al. (2024). From Audio to Photoreal Embodiment: Synthesizing Humans in Conversations (Audio2Photoreal). <em>CVPR 2024</em>. <a href="https://arxiv.org/abs/2401.01885" target="_blank">arXiv:2401.01885</a></li>
+      <li data-cite-key="Wang-et-al.-2025">Wang, Z. et al. (2025). EMO2: End-Effector Guided Audio-Driven Avatar Video Generation. <a href="https://arxiv.org/abs/2501.10687" target="_blank">arXiv:2501.10687</a></li>
+      <li data-cite-key="ChatAnyone-et-al.-2025">Mao, X. et al. (2025). ChatAnyone: Stylized Real-time Portrait Video Generation with Hierarchical Motion Diffusion Model. <a href="https://arxiv.org/abs/2503.21144" target="_blank">arXiv:2503.21144</a></li>
+      <li data-cite-key="Guan-et-al.-2025">Guan, J. et al. (2025). AudCast: Audio-Driven Human Video Generation by Cascaded Diffusion Transformers. <em>CVPR 2025</em>. <a href="https://arxiv.org/abs/2503.19824" target="_blank">arXiv:2503.19824</a></li>
+      <li data-cite-key="InfinityHuman-et-al.-2025">InfinityHuman et al. (2025). InfinityHuman: Towards Long-Term Audio-Driven Human Generation. <em>AAAI 2026</em>. <a href="https://arxiv.org/abs/2508.20210" target="_blank">arXiv:2508.20210</a></li>
+      <li data-cite-key="UMo-et-al.-2026">UMo et al. (2026). UMo: Unified Sparse Motion Modeling for Real-Time Co-Speech Avatars. <a href="https://arxiv.org/abs/2605.14731" target="_blank">arXiv:2605.14731</a></li>
+      <li data-cite-key="OmniAvatar-et-al.-2025">OmniAvatar et al. (2025). OmniAvatar: Efficient Audio-Driven Avatar Video Generation with Adaptive Body Animation. <a href="https://arxiv.org/abs/2506.18866" target="_blank">arXiv:2506.18866</a></li>
+      <li data-cite-key="Archon-et-al.-2026">Archon et al. (2026). Archon: A Unified Multimodal Model for Holistic Digital Human Generation. <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2605.30311" target="_blank">arXiv:2605.30311</a></li>
+      <li data-cite-key="Jin-et-al.-2026">Jin, Y. et al. (2026). SentiAvatar: Towards Expressive and Interactive Digital Humans. <a href="https://arxiv.org/abs/2604.02908" target="_blank">arXiv:2604.02908</a></li>
+      <li data-cite-key="Liu-et-al.-2024-BEAT">Liu, H. et al. (2022). BEAT: A Large-Scale Semantic and Emotional Multi-Modal Dataset for Conversational Gestures Synthesis. <em>ECCV 2022</em>. <a href="https://arxiv.org/abs/2203.05297" target="_blank">arXiv:2203.05297</a></li>
+      <li data-cite-key="Kucherenko-et-al.-2023">Kucherenko, T. et al. (2023). A Comprehensive Review of Data-Driven Co-Speech Gesture Generation. <a href="https://arxiv.org/abs/2301.05339" target="_blank">arXiv:2301.05339</a></li>
+    </ul>
+  </div>
+</div>
