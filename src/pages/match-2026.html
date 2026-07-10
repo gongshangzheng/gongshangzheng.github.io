@@ -1,0 +1,433 @@
+---
+title: "数字人论文精读（四十六）：MATCH，前馈式高斯配准实现 10× 加速头部 Avatar 创建"
+description: "深读 CVPR 2026 MATCH：用 registration-guided attention 直接从多视图图像预测密集语义对应的高斯泼溅纹理，0.5s/帧完成重建，将 GEM avatar 创建从 45h 加速到 4.6h。"
+date: 2026-07-10T14:36:53
+created_at: 2026-07-10T14:36:53
+updated_at: 2026-07-10T16:00:00
+tags: ["数字人", "MATCH", "Gaussian Splatting", "头部 Avatar", "CVPR 2026"]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 450
+toc: true
+mathjax: true
+notify: true
+hub: digital-human-hub
+papers: ["https://arxiv.org/abs/2603.15811"]
+repos: ["https://github.com/malteprinzler/MATCH"]
+hero_title: "MATCH：前馈式高斯配准"
+hero_sub: "CVPR 2026 · ETH Zürich / Google"
+hero_tagline: "论文精读（四十六）· Registration-guided Attention · 10× 加速 Avatar 创建"
+paper_title: "Feed-forward Gaussian Registration for Head Avatar Creation and Editing"
+paper_authors: "Malte Prinzler, Paulo Gotardo, Siyu Tang, Timo Bolkart"
+paper_affiliation: "ETH Zürich; Google"
+paper_venue: "CVPR 2026"
+paper_url: "https://arxiv.org/abs/2603.15811"
+paper_code: "https://github.com/malteprinzler/MATCH"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.5s</span><span class="label">每帧推理</span></div>
+  <div class="stat"><span class="num b">10×</span><span class="label g">Avatar 加速</span></div>
+  <div class="stat"><span class="num">1M</span><span class="label">Gaussians</span></div>
+  <div class="stat"><span class="num b">570</span><span class="label l">fps 渲染</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">从"天"到"秒"：头部 Avatar 创建的范式跃迁</div>
+
+  创建一个高质量、可动画的 3D 头部 Avatar 需要多长时间？如果你用 2025 年最先进的方法 GEM，答案是==45 小时==——先花 10.7 小时做 mesh tracking，再花 27.7 小时优化 CNN-based avatar，最后花 6.9 小时训练 expression regressor。#Zielonka et al., 2025# 这意味着，即使你拥有顶级的多视图采集系统，为 100 个受试者创建 Avatar 也需要近半年的计算时间。
+
+  这个瓶颈的根源在于一个看似合理的两阶段流水线：先建立跨视图和跨帧的==几何对应==（mesh-based tracking），再优化附着在 mesh 表面的外观基元（如 Gaussian splats）。#Kerbl et al., 2023# #Huang et al., 2024# 每个阶段都依赖耗时的优化过程，且后一阶段必须等前一阶段完成。
+
+  MATCH（Multi-view Avatars from Topologically Corresponding Heads）提出了一个截然不同的思路：用单个前馈 transformer 直接从标定的多视图图像预测==密集语义对应==的 Gaussian splat 纹理，每帧仅需 0.5 秒。#Prinzler et al., 2026# 这里的"密集语义对应"意味着：无论输入的是谁的脸、什么表情，输出纹理中的每个 Gaussian 都始终代表同一个语义区域（例如鼻尖始终是同一个 Gaussian）。
+
+  <div class="photo">
+    <img src="media/images/match-2026/teaser_match_v1.webp" alt="MATCH teaser" loading="lazy">
+    <div class="cap">图 1：MATCH 从 12 张标定多视图图像中直接预测密集语义对应的 Gaussian splat 纹理，0.5 秒/帧。结果支持头像创建、插值、语义编辑和表情迁移等下游应用（来源：Prinzler et al., 2026, Fig.1）。</div>
+  </div>
+
+  <div class="callout"><strong>核心贡献预告</strong>：MATCH 的关键创新是 registration-guided attention——每个 UV token 只关注显示对应 mesh 区域的 image tokens，而非全局密集 attention。这一设计同时提升了==计算效率==和==合成质量==，让 avatar 创建总时间从 45h 降至 4.6h（10× 加速），且在 novel view synthesis、geometry registration 和 avatar generation 上全面超越现有方法。</div>
+
+  作者 Malte Prinzler 在 Google 实习期间完成本工作，合作者 Timo Bolkart 是 FLAME 3DMM 和 TEMPEH 的创建者，Siyu Tang 是 ETH Zürich 视觉与学习组（VLG）的 PI。团队此前在 Neural Head Avatars、DINER、Joker 等工作中积累了丰富的 3D 头部建模经验。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：为什么 dense attention 不够好</div>
+
+  要理解 MATCH 解决了什么问题，我们需要先看清楚现有方法的技术路线和各自的瓶颈。#Prinzler et al., 2026#
+
+  <h3 class="section-title">三类方法的困境</h3>
+
+  论文 Related Works 将已有头部 Avatar 方法分为三类：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>类别</th><th>代表方法</th><th>核心思路</th><th>关键瓶颈</th></tr></thead>
+      <tbody>
+        <tr><td>优化式头部对应</td><td>FLAME, TEMPEH, VHAP</td><td>优化 mesh 到 3D 扫描/多视图图像</td><td>VHAP tracking 需 12s/帧，整个序列 10.7h</td></tr>
+        <tr><td>优化式 Avatar</td><td>GaussianAvatars, GEM, RGBAvatar</td><td>先 tracking 再优化外观基元</td><td>GEM 总计 45.3h/avatar</td></tr>
+        <tr><td>推理式 Avatar</td><td><a href="lam-2025.html">LAM</a>, FastAvatar, Avat3r, FaceLift</td><td>前馈网络直接预测 3D 表示</td><td>无跨帧对应 / 质量差 / 泛化弱</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  优化式方法的质量最高，但时间成本令人望而却步。推理式方法速度快，但存在一个根本性缺陷：它们预测的 Gaussian splats 缺乏==跨帧语义对应==。Avat3r 和 FaceLift 预测的是 pixel-aligned Gaussians，每个像素位置的 Gaussian 在不同帧之间没有语义关联；LAM 和 FastAvatar 虽然在 3DMM 顶点上预测 Gaussians，但在 canonical 空间而非 posed 空间中工作，保真度受限。#Kirschstein et al., 2025# #Lyu et al., 2025# #He et al., 2025# #Wu et al., 2025#
+
+  <h3 class="section-title">Dense Attention 的陷阱</h3>
+
+  一个自然的想法是用 Large Reconstruction Model（LRM）风格的 transformer，让 UV tokens 和 image tokens 之间做全量 cross-attention。#Zhang et al., 2024# #Tang et al., 2024# 但论文发现这条路线有两个严重问题：
+
+  第一，==计算复杂度==随输入图像数量二次增长。12 张 640×512 的图像经 patch 化后产生大量 image tokens，与 UV tokens 做全量 attention 的计算量惊人。
+
+  第二，更反直觉的是，==全量 attention 反而降低了泛化能力==。在未见过的受试者上，dense attention 的 LPIPS 从 0.187 恶化到 0.221，PSNR 从 23.032 降到 20.364。原因在于：当每个 UV token 试图关注所有 image tokens 时，模型容易被无关区域干扰，难以聚焦真正有用的信息。
+
+  <div class="callout"><strong>关键 Insight</strong>：如果我们已经有一个粗略的 mesh registration（来自 TEMPEH），就可以利用 UV 坐标确定每个 UV token 对应 mesh 的哪个区域，进而知道它应该关注图像中的哪个区域。把 attention 从"全局"收窄到"局部"，既减少计算又提升质量——这就是 registration-guided attention 的核心思想。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">MATCH 架构详解：从多视图到高斯纹理</div>
+
+  MATCH 的目标是从 $V$ 张标定的多视图图像 $\mathcal{I} \in \mathbb{R}^{H_\text{img} \times W_\text{img} \times 3}$ 预测一张 UV 纹理图 $\mathcal{G} \in \mathbb{R}^{H_\text{uv} \times W_\text{uv} \times C}$，其中每个 texel 编码一个 Gaussian splat 的全部属性：RGB 颜色 $\mathbf{c}$、不透明度 $\boldsymbol{\alpha}$、位置 $\boldsymbol{\phi}$、各向异性缩放 $\boldsymbol{\sigma}$ 和旋转四元数 $\boldsymbol{\theta}$。#Prinzler et al., 2026#
+
+  <div class="photo">
+    <img src="media/images/match-2026/method_v2.webp" alt="MATCH method overview" loading="lazy">
+    <div class="cap">图 2：MATCH 整体架构。输入多视图图像经 TEMPEH 获得粗略 mesh registration，然后通过 image tokenization 和 UV tokenization 生成两组 tokens。Transformer 包含交替的 registration-guided attention 和 grouped attention blocks。输出 UV tokens 被投影为 Gaussian splat 纹理（来源：Prinzler et al., 2026, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">Image Tokenization</h3>
+
+  输入图像首先与 Plücker ray coordinates 拼接，然后被分割为 $8 \times 8$ 的 patch，通过 2D 卷积层转为 tokens。借鉴 Avat3r 的做法，这些 tokens 与 Sapiens 预训练特征拼接后线性投影到 $d=512$ 维。#Kirschstein et al., 2025# #Khirodkar et al., 2024#
+
+  <h3 class="section-title">粗略 Mesh Registration</h3>
+
+  MATCH 使用 TEMPEH 的 global stage（不含 head localization）从输入图像估计粗略 mesh $\mathcal{M} \in \mathbb{R}^{N_\text{vert} \times 3}$。#Bolkart et al., 2023# TEMPEH 在 Ava-256 数据集上训练，采用该数据集提供的 mesh topology（包含头发代理几何），能在单次推理中完成。这个粗略 mesh 是后续 registration-guided attention 的基础——它告诉我们每个 UV token 应该关注图像中的哪个区域。
+
+  <h3 class="section-title">UV Tokenization</h3>
+
+  UV tokenization 将高分辨率 UV 纹理编码为低分辨率 token grid。具体步骤：(1) 通过 per-texel barycentric interpolation 计算密集 3D 位置纹理；(2) 将输入图像重投影到 mesh $\mathcal{M}$ 上获取 RGB 纹理；(3) 拼接 RGB 和 3D 位置纹理，分割为 $16 \times 16$ 的非重叠 patch；(4) 展平并与可学习位置编码拼接，线性投影为 $d=512$ 维 UV tokens。最终产生 $64 \times 64$ 个 UV tokens，对应 $1024 \times 1024$ 的纹理（1M Gaussians）。
+
+  <h3 class="section-title">Registration-Guided Attention（核心创新）</h3>
+
+  这是 MATCH 的核心模块。核心问题是：如何确定每个 UV token 应该关注哪些 image tokens？
+
+  <div class="photo">
+    <img src="media/images/match-2026/correspondence_score_calculation_v2.webp" alt="Correspondence score" loading="lazy">
+    <div class="cap">图 3：UV token 与 image token 之间的对应分数计算。通过将 UV 坐标 rasterize 到输入图像平面上，确定每个 UV token 的感兴趣区域（黄色），然后计算与每个 image token bounding box 的重叠度（来源：Prinzler et al., 2026, Fig.3）。</div>
+  </div>
+
+  MATCH 通过将粗略 mesh $\mathcal{M}$ 的 UV 坐标 rasterize 到输入图像平面上来确定对应关系。由于每个 UV token 代表一个纹理 patch，可以用其 UV 坐标范围过滤 rasterized UV 坐标，得到该 token 的感兴趣区域 $\text{RoI}_{\mathcal{T}, \text{uv}}$。对应分数定义为：
+
+  <div class="def-box">
+    <h3>对应分数（Correspondence Score）</h3>
+    \[ S\left(\mathcal{T}_\text{uv}, \mathcal{T}_\text{img}\right) = \frac{\text{RoI}_{\mathcal{T}, \text{uv}} \cap \mathcal{B}_{\mathcal{T}, \text{img}}}{\mathcal{B}_{\mathcal{T}, \text{img}}} + \lambda \cdot \frac{\text{RoI}_{\mathcal{T}, \text{uv}}}{\mathcal{B}_\text{encomp}} \]
+    <p>其中 $\mathcal{B}_{\mathcal{T},\text{img}}$ 是 image token 的 bounding box，$\mathcal{B}_\text{encomp}$ 是同时包含 $\mathcal{B}_{\mathcal{T},\text{img}}$ 和 $\text{RoI}_{\mathcal{T},\text{uv}}$ 的包围框，$\lambda = 0.1$。第一项衡量 image token 落在 RoI 内的像素比例（类似 precision），第二项衡量 image token 在 RoI 附近的比例（类似 recall，防止边缘 token 被遗漏）。</p>
+  </div>
+
+  计算完所有 image tokens 的分数后，每个 UV token 只关注分数最高的 $k_{\mathcal{T},\text{img}} = 100$ 个 image tokens。这一设计带来两个关键优势：
+
+  1. ==定位重建任务==：每个 UV token 只从相关区域获取信息，减少干扰，提升泛化能力
+  2. ==恒定 context length==：attention 的上下文长度不随输入图像数量增长，计算复杂度从 $O(V^2)$ 降为 $O(V)$
+
+  <h3 class="section-title">Grouped Attention</h3>
+
+  Registration-guided attention 之后是 grouped attention block，对 UV tokens 和每张图像的 image tokens 分别做 self-attention。这一模块将信息传播到未被观测到的头部区域，并允许图像空间特征处理，计算复杂度随输入图像数量==线性==增长。
+
+  <h3 class="section-title">UV De-tokenization</h3>
+
+  Transformer 输出的 UV tokens 被线性投影回 $16 \times 16 \times C$ 的纹理 patch，组装成 $1024 \times 1024 \times C$ 的 Gaussian splat 纹理。对于颜色和位置，借鉴 Avat3r 的 skip connection，将预测值作为 UV tokenization 阶段初始值的==偏移量==（offset），而非直接预测绝对值。
+
+  <h3 class="section-title">与已有方法的技术对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>维度</th><th>MATCH</th><th>Avat3r</th><th>LAM/FastAvatar</th><th>GEM</th></tr></thead>
+      <tbody>
+        <tr><td>核心表示</td><td>UV-aligned Gaussian 纹理</td><td>Pixel-aligned Gaussians</td><td>3DMM-vertex Gaussians</td><td>CNN avatar → PCA</td></tr>
+        <tr><td>跨帧对应</td><td>✅ 密集语义对应</td><td>❌ 无</td><td>✅ 3DMM 拓扑</td><td>✅ mesh tracking</td></tr>
+        <tr><td>重建空间</td><td>Posed space（所见即所得）</td><td>Posed space</td><td>Canonical space</td><td>Canonical space</td></tr>
+        <tr><td>Attention 机制</td><td>Registration-guided（局部）</td><td>Dense（全局）</td><td>—</td><td>—</td></tr>
+        <tr><td>推理速度</td><td>0.5s/帧</td><td>—</td><td>—</td><td>12s/帧（tracking）</td></tr>
+        <tr><td>Avatar 创建</td><td>4.6h</td><td>不适用</td><td>不适用</td><td>45.3h</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：三阶段渐进式训练</div>
+
+  MATCH 的训练分为三个阶段，逐步引入不同的损失项和数据集。#Prinzler et al., 2026#
+
+  <h3 class="section-title">损失函数</h3>
+
+  <div class="def-box">
+    <h3>总损失</h3>
+    \[ \mathcal{L}_\text{total} = \mathcal{L}_\text{photometric} + w_\text{geometry} \cdot \mathcal{L}_\text{geometry} + w_\text{reg} \cdot \mathcal{L}_\text{reg} \]
+    <p>光度损失 $\mathcal{L}_\text{photometric} = w_\text{LPIPS} \cdot \mathcal{L}_\text{LPIPS} + w_\text{L1} \cdot \mathcal{L}_\text{L1} + w_\text{SSIM} \cdot \mathcal{L}_\text{SSIM}$，匹配预测外观与真值图像。几何损失 $\mathcal{L}_\text{geometry}$ 最小化预测 Gaussian 3D 位置与真值 mesh registration 的 L2 距离。正则化损失 $\mathcal{L}_\text{reg}$ 对 scale 和 opacity 施加 L2 约束，目标值分别为 $5 \times 10^{-4}$ 和 $0.7$。</p>
+  </div>
+
+  躯干和肩部区域使用预训练的 Sapiens 语义分割模型进行 mask。#Khirodkar et al., 2024#
+
+  <h3 class="section-title">三阶段训练策略</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>阶段</th><th>迭代范围</th><th>训练数据</th><th>激活损失</th><th>关键权重</th></tr></thead>
+      <tbody>
+        <tr><td>Geometry Only</td><td>0 – 100k</td><td>Ava-256</td><td>$\mathcal{L}_\text{geometry}$ + $\mathcal{L}_\text{reg}$</td><td>$w_\text{geometry} = 10^{-3}$, $w_\text{reg} = 10^{-3}$</td></tr>
+        <tr><td>Geometry & Appearance</td><td>100k – 400k</td><td>Ava-256</td><td>加入 $\mathcal{L}_\text{photometric}$</td><td>$w_\text{L1} = 0.8$, $w_\text{SSIM} = 0.2$, LPIPS 从 0 线性增至 1.0</td></tr>
+        <tr><td>Mixed Training</td><td>400k – 860k</td><td>Ava-256 + NeRSemble</td><td>全部损失（NeRSemble 无 $\mathcal{L}_\text{geometry}$）</td><td>$w_\text{LPIPS} = 1.0$</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  LPIPS 损失的 warmup 策略值得注意：在 150k 步之前权重为 0，然后线性增加到 200k 步时达到 1.0。这是一个防止训练早期被感知损失主导的实用技巧。
+
+  <div class="callout"><strong>跨数据集训练的巧思</strong>：NeRSemble 数据集没有 ground-truth mesh registrations，但 MATCH 仍然能在其上训练——只需对来自 NeRSemble 的样本关闭 $\mathcal{L}_\text{geometry}$。联合训练在两个数据集上取得了最佳结果，避免了在 NeRSemble 上进行昂贵的 mesh registration（估计需要 216k GPU-hours 处理 65M 帧）。</div>
+
+  <h3 class="section-title">训练配置披露</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>Ava-256 (256 subjects, 80 cameras) + NeRSemble v2 (425 subjects, 16 cameras)，各采样 123k 训练帧 + 1k 验证帧</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>4× NVIDIA H100 80GB</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>AdamW, weight decay = 0.05</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>初始 4e-5, cosine schedule 衰减至 0（1M 步内），1000 步 linear warmup</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>per-GPU batch size = 1</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>860k iterations</td></tr>
+        <tr><td>训练时长</td><td>已披露</td><td>11.8 天</td></tr>
+        <tr><td>模型参数量</td><td>未披露</td><td>原文未明确给出总参数量</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未明确给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未明确给出</td></tr>
+        <tr><td>UV 纹理分辨率</td><td>已披露</td><td>1024×1024（1M Gaussians）</td></tr>
+        <tr><td>UV token 数</td><td>已披露</td><td>64×64，patch size 16</td></tr>
+        <tr><td>Token 维度</td><td>已披露</td><td>d = 512</td></tr>
+        <tr><td>Attention blocks</td><td>已披露</td><td>6 registration-guided + 6 grouped</td></tr>
+        <tr><td>k_T,img</td><td>已披露</td><td>100（每个 UV token 关注的 image tokens 数）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：从重建到可动画 Avatar</div>
+
+  MATCH 的推理流程不只是"输入图像→输出 Gaussians"那么简单。预测出的 Gaussian 纹理因其密集语义对应特性，支持多种下游应用。#Prinzler et al., 2026#
+
+  <h3 class="section-title">推理流程</h3>
+
+  给定 12 张 $640 \times 512$ 的标定多视图图像：(1) TEMPEH global stage 在单次前馈中估计粗略 mesh；(2) MATCH transformer 预测 1024×1024 的 Gaussian splat 纹理；(3) 输出的 1M Gaussians 可用 2D Gaussian Splatting 以 570 fps 渲染。#Huang et al., 2024# 整个过程每帧仅需 0.5 秒（2 fps），==无需任何数据预处理==。
+
+  <h3 class="section-title">Avatar 创建：MATCH-based GEM</h3>
+
+  GEM（Gaussian Eigen Models）展示了将高质量 3D 头部 Avatar 蒸馏为轻量级 PCA 表示的方法。#Zielonka et al., 2025# 原始 GEM 流程需要 mesh tracking（10.65h）+ CNN avatar 优化（27.70h）+ regressor 训练（6.94h），总计 45.29h。
+
+  MATCH 的密集对应预测使 GEM 流程可以被大幅简化：
+
+  <div class="photo">
+    <img src="media/images/match-2026/avatar_creation.webp" alt="Avatar creation procedure" loading="lazy">
+    <div class="cap">图 4：MATCH-based GEM avatar 创建流程。跳过 tracking 和 CNN avatar 训练，直接对预测的 Gaussian 纹理做 PCA 分解（来源：Prinzler et al., 2026, Suppl. Fig.）。</div>
+  </div>
+
+  MATCH 对 GEM 做了四项关键改进：
+
+  1. ==跳过 Tracking 和 CNN Avatar 训练==：MATCH 直接预测对应的 Gaussians，通过 inverse linear blend skining 转换到 canonical space 后直接做 PCA 分解
+  2. ==联合 PCA==：GEM 对每个属性（rotation, position, opacity, scale）分别做 PCA；MATCH 发现联合 PCA 能捕捉跨属性关联（如抬眉毛时额头皱纹颜色变化），效果更好
+  3. ==动态颜色==：GEM 禁用动态颜色以促进对应；MATCH 放弃这一约束，因为其预测本身就具有高语义对应。口腔内部区域例外——固定为均值以避免 MLP 无法学习复杂动态
+  4. ==均值精修==：GEM 只精修 PCA 基向量；MATCH 额外精修 PCA 均值 $\boldsymbol{\mu}_i$
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>阶段</th><th>GA</th><th>RGBAvatar</th><th>GEM</th><th>MATCH (Ours)</th></tr></thead>
+      <tbody>
+        <tr><td>VHAP Tracking</td><td>10.65h</td><td>10.65h</td><td>10.65h</td><td>—</td></tr>
+        <tr><td>Coarse Mesh Registration</td><td>—</td><td>—</td><td>—</td><td>0.09h</td></tr>
+        <tr><td>Avatar Optimization</td><td>4.83h</td><td>0.75h</td><td>27.70h (CNN)</td><td>0.44h (MATCH inference)</td></tr>
+        <tr><td>PCA Decomp. + Refinement</td><td>—</td><td>—</td><td>6.94h</td><td>0.16h + 2.75h</td></tr>
+        <tr><td>Expression Regressor</td><td>—</td><td>—</td><td>—</td><td>1.14h</td></tr>
+        <tr><td><strong>总计</strong></td><td><strong>15.48h</strong></td><td><strong>11.40h</strong></td><td><strong>45.29h</strong></td><td><strong>4.63h</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>10× 加速的来源</strong>：MATCH 把最耗时的两个阶段——mesh tracking（10.65h→0.09h）和 CNN avatar 优化（27.70h→0.44h）——替换为快速前馈推理。剩余的 PCA 精修和 regressor 训练虽然仍需约 4h，但已经在可接受范围内。</div>
+
+  <h3 class="section-title">下游应用：编辑与表情迁移</h3>
+
+  密集语义对应使以下应用成为"免费"的副产品：
+
+  - ==身份插值==：两个不同身份/表情的 Gaussian 纹理之间做线性插值 $\mathcal{G}_\text{interp} = (1-\gamma)\mathcal{G}_A + \gamma\mathcal{G}_B$，产生平滑过渡
+  - ==语义编辑==：将源身份鼻部区域的 Gaussian 属性替换为目标身份的对应属性，无缝融合
+  - ==表情迁移==：计算目标身份表情帧与中性帧的 Gaussian 残差，加到源身份的中性重建上
+  - ==免优化 Tracking==：从预测的 3D 位置纹理直接提取 mesh，无需优化
+
+  <div class="photo">
+    <img src="media/images/match-2026/editing_exprtransfer_a.webp" alt="Semantic editing and expression transfer" loading="lazy">
+    <div class="cap">图 5：语义编辑（上）：用目标的鼻子替换源的鼻子。表情迁移（下）：将目标的嘴部表情迁移到源身份（来源：Prinzler et al., 2026, Fig.5）。</div>
+  </div>
+
+  <h3 class="section-title">野外泛化与单图推理</h3>
+
+  MATCH 虽然只在工作室捕获数据上训练，但可以泛化到野外拍摄。用 COLMAP 估计相机参数后，MATCH 能对户外相机拍摄的照片产生高质量重建。对于单图输入场景，可以先用 CAP4D 的 2D prior 生成额外视角，再输入 MATCH。#Taubner et al., 2025#
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与结果验证</div>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>Ava-256 (11 held-out subjects, 1000 samples) + NeRSemble (6 held-out, 1000 samples)</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>LPIPS↓, CSIM↑ (ArcFace), PSNR↑, SSIM↑, L1↓, L2↓; Geometry: P2P↓, P2S↓ (mm); Avatar: EmoL1↓</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>GPAvatar, FastAvatar, LAM, Avat3r, FaceLift, CAP4D (NVS); GA, RGBAvatar, GEM (Avatar); TEMPEH (Geometry)</td></tr>
+        <tr><td>推理硬件</td><td>部分披露</td><td>NVS 推理未明确 GPU 型号；Avatar 时间测量使用单张 NVIDIA A100 40GB, 16 CPUs, 500GB RAM</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>输入 640×512（12 张），评测裁剪至 512×512</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未给出框架/版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">Novel View Synthesis 结果</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>方法</th><th>LPIPS↓</th><th>CSIM↑</th><th>PSNR↑</th><th>SSIM↑</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="4">Ava-256</td><td>LAM</td><td>0.273</td><td>0.678</td><td>15.898</td><td>0.734</td></tr>
+        <tr><td>Avat3r</td><td>0.274</td><td>0.626</td><td>22.722</td><td>0.745</td></tr>
+        <tr><td>FaceLift</td><td>0.208</td><td>0.868</td><td>21.661</td><td>0.825</td></tr>
+        <tr><td><strong>Ours</strong></td><td><strong>0.163</strong></td><td><strong>0.928</strong></td><td><strong>23.680</strong></td><td><strong>0.848</strong></td></tr>
+        <tr><td rowspan="3">NeRSemble</td><td>FaceLift</td><td>0.200</td><td>0.866</td><td>21.524</td><td>0.853</td></tr>
+        <tr><td>Ours (Ava-256 only)</td><td>0.182</td><td>0.892</td><td>23.182</td><td>0.861</td></tr>
+        <tr><td><strong>Ours (joint)</strong></td><td><strong>0.152</strong></td><td><strong>0.944</strong></td><td><strong>25.509</strong></td><td><strong>0.884</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：MATCH 在所有指标上全面领先。值得注意的是，即使只在 Ava-256 上训练（未见过 NeRSemble），MATCH 在 NeRSemble 上的表现仍优于所有 baseline（LPIPS 0.182 vs FaceLift 0.200）。这说明 registration-guided attention 带来的局部化重建显著提升了泛化能力。</div>
+
+  <div class="photo">
+    <img src="media/images/match-2026/qual_comparison_nvs_v3.webp" alt="NVS qualitative comparison" loading="lazy">
+    <div class="cap">图 6：Ava-256 上的 novel view synthesis 定性对比。MATCH 在极端表情（如吐舌）下仍保持最佳重建质量（来源：Prinzler et al., 2026, Fig.4）。</div>
+  </div>
+
+  <h3 class="section-title">Avatar 质量对比</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>重建时间</th><th>Self-Reenactment LPIPS↓</th><th>PSNR↑</th><th>Cross CSIM↑</th><th>EmoL1↓</th></tr></thead>
+      <tbody>
+        <tr><td>GaussianAvatars</td><td>15.5h</td><td>0.233</td><td>21.248</td><td>0.629</td><td>10.618</td></tr>
+        <tr><td>RGBAvatar</td><td>11.4h</td><td>0.233</td><td>22.185</td><td>0.657</td><td>10.333</td></tr>
+        <tr><td>GEM</td><td>45.3h</td><td>0.214</td><td>21.761</td><td>0.800</td><td>9.866</td></tr>
+        <tr><td><strong>Ours</strong></td><td><strong>4.6h</strong></td><td><strong>0.174</strong></td><td><strong>24.122</strong></td><td><strong>0.813</strong></td><td><strong>9.837</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  MATCH 在 self-reenactment 上显著优于所有 baseline（LPIPS 从 GEM 的 0.214 降至 0.174），cross-reenactment 与 GEM 持平，而重建时间仅为 GEM 的 1/10。
+
+  <h3 class="section-title">消融实验</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>LPIPS↓</th><th>PSNR↑</th><th>关键发现</th></tr></thead>
+      <tbody>
+        <tr><td>Dense Attention（替代 registration-guided）</td><td>0.221</td><td>20.364</td><td>==最大幅度掉点==，LPIPS +0.034, PSNR −2.668</td></tr>
+        <tr><td>w/o Sapiens features</td><td>0.202</td><td>22.104</td><td>第二大影响，泛化变差</td></tr>
+        <tr><td>w/o Skip connections</td><td>0.192</td><td>23.075</td><td>轻微下降</td></tr>
+        <tr><td>Orig. TEMPEH（非 adapted 版本）</td><td>0.190</td><td>22.775</td><td>轻微下降</td></tr>
+        <tr><td><strong>Ours (full)</strong></td><td><strong>0.187</strong></td><td><strong>23.032</strong></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>最重要的消融发现</strong>：registration-guided attention 是最关键的组件。用 dense attention 替代后，LPIPS 从 0.187 恶化到 0.221（+18%），PSNR 从 23.032 降到 20.364（−2.668 dB）。这不仅影响质量，还影响推理速度：对于 16 张输入图像，registration-guided attention 比 dense attention 快 1.8 倍。</div>
+
+  额外消融还发现：(1) MATCH 从仅 4 张输入图像就能产生合理重建（假设 TEMPEH 几何质量足够）；(2) $k_{\mathcal{T},\text{img}}$ 从 100 降到 25 时性能反而略有提升（LPIPS 0.184 vs 0.187）；(3) image token self-attention 可以跳过而不影响性能，推理速度提升 8%。
+
+  <h3 class="section-title">几何重建</h3>
+
+  MATCH 预测的 3D 位置纹理可以转换为 mesh，使其成为推理式头部 tracker。在 Ava-256 上，MATCH 的全头 P2P 距离为 6.69mm，优于 TEMPEH（7.84mm）和 adapted TEMPEH global（7.34mm）。在嘴部和眼部，MATCH 与 TEMPEH 表现相当，因为 ground truth mesh 用平面近似口腔和眼睛，而 MATCH 为了渲染质量会偏离这种粗略近似。
+
+  <h3 class="section-title">失败案例与局限性</h3>
+
+  <div class="photo">
+    <img src="media/images/match-2026/limitations.webp" alt="Limitations" loading="lazy">
+    <div class="cap">图 7：MATCH 的局限性。(a) 表情迁移在差异较大的身份间可能泄漏身份信息；(b) 从位置纹理提取的 mesh 可能出现自相交；(c) Avatar 仅限于训练表情的插值，不追踪眼部运动（来源：Prinzler et al., 2026, Fig.6）。</div>
+  </div>
+
+  论文承认的主要局限性：(1) 依赖 mesh registration 监督，完全去除仍是 future work；(2) 直接表情迁移在差异大的身份间会产生外观泄漏；(3) 几何重建可能出现自相交表面；(4) Avatar 受限于训练表情的插值空间，不追踪眼部运动。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：前馈重建的新范式</div>
+
+  <h3 class="section-title">MATCH 在技术地图上的位置</h3>
+
+  MATCH 代表了头部 Avatar 创建从==优化范式==到==前馈范式==的转变。在此之前，推理式方法（LAM、FastAvatar）虽然快，但质量不足且缺乏跨帧对应；优化式方法（GEM）质量高但太慢。MATCH 首次在前馈框架中同时实现了高质量重建和密集语义对应，弥合了这两条路线。
+
+  <h3 class="section-title">Registration-Guided Attention 的启发</h3>
+
+  MATCH 的 registration-guided attention 对更广泛的 3D 重建领域有方法论启发：当你有一个==粗略的几何先验==时，不要忽视它。Dense attention 不是万能的——通过将 attention 限制在语义相关区域，可以同时获得更好的效率和质量。这一思路可以推广到其他有几何先验的重建任务，如人体重建、物体重建等。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      工程实践启发
+    </div>
+    <div class="admonition-content">
+      <p>1. <strong>跨数据集训练时关闭缺失监督</strong>：MATCH 对没有 geometry annotation 的 NeRSemble 样本关闭 $\mathcal{L}_\text{geometry}$，这种"选择性损失"策略可以推广到任何多数据集训练场景。</p>
+      <p>2. <strong>LPIPS warmup</strong>：感知损失在训练早期可能导致不稳定，延迟引入（150k 步后从 0 线性增加到 1.0）是一个实用的训练 trick。</p>
+      <p>3. <strong>联合 PCA 优于分模态 PCA</strong>：当不同属性间存在关联（如表情皱纹的颜色变化），联合建模能捕捉这些关联。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">开放问题</h3>
+
+  - MATCH 仍然依赖 Ava-256 的 mesh registrations 作为训练监督。能否在完全无 geometry supervision 的情况下训练（例如仅用合成数据训练 geometry 部分）？
+  - Avatar 的表情空间受限于训练数据中的表情，无法泛化到未见表情。MATCH 的跨身份/跨表情对应能否用于学习跨身份和表情的 prior，以提升泛化？
+  - 表情迁移目前使用简单的算术残差方法，对极端表情和差异大的身份会产生不自然结果。学习式方法（如 conditional VAE）可能是更好的选择。
+
+  <h3 class="section-title">代码与可复现性</h3>
+
+  MATCH 的推理代码和模型权重已在 GitHub 开源（MIT 协议）。#Prinzler et al., 2026# 训练代码标注为"Coming soon"。论文提供了完整的超参数表、三阶段训练 loss weights 表和详细的消融实验，可复现性较好。主要障碍是训练需要 4× H100 80GB 运行 11.8 天，以及 Ava-256 数据集的获取（该数据集需要申请）。
+
+  <div class="callout"><strong>一句话总结</strong>：MATCH 通过 registration-guided attention 将头部 Avatar 创建从"优化驱动"转变为"前馈驱动"，在保持高质量的同时实现 10× 加速，为可扩展的数字人资产生产铺平了道路。</div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Prinzler-et-al.-2026">Prinzler, M. et al. (2026). "Feed-forward Gaussian Registration for Head Avatar Creation and Editing." <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2603.15811" target="_blank">arXiv:2603.15811</a> · <a href="https://malteprinzler.github.io/projects/match/" target="_blank">项目页</a> · <a href="https://github.com/malteprinzler/MATCH" target="_blank">GitHub</a></li>
+    <li data-cite-key="Zielonka-et-al.-2025">Zielonka, W. et al. (2025). "Gaussian Eigen Models for Human Heads." <em>CVPR 2025</em>. <a href="https://arxiv.org/abs/2503.07733" target="_blank">arXiv:2503.07733</a></li>
+    <li data-cite-key="Bolkart-et-al.-2023">Bolkart, T. et al. (2023). "Instant Multi-View Head Capture through Learnable Registration." <em>CVPR 2023</em>.</li>
+    <li data-cite-key="Kirschstein-et-al.-2025">Kirschstein, T. et al. (2025). "Avat3r: Large Animatable Gaussian Reconstruction Model for Three-dimensional Heads." <a href="https://arxiv.org/abs/2504.07156" target="_blank">arXiv:2504.07156</a></li>
+    <li data-cite-key="Lyu-et-al.-2025">Lyu, T. et al. (2025). "FaceLift: Physics-aware 3D Face Synthesis with Diffusion-guided Denoising." (FaceLift GS-LRM)</li>
+    <li data-cite-key="Kerbl-et-al.-2023">Kerbl, B. et al. (2023). "3D Gaussian Splatting for Real-Time Radiance Field Rendering." <em>ACM TOG</em>. <a href="https://arxiv.org/abs/2308.14737" target="_blank">arXiv:2308.14737</a></li>
+    <li data-cite-key="Huang-et-al.-2024">Huang, B. et al. (2024). "2D Gaussian Splatting for Geometrically Accurate Radiance Fields." <em>SIGGRAPH 2024</em>.</li>
+    <li data-cite-key="Khirodkar-et-al.-2024">Khirodkar, R. et al. (2024). "Sapiens: Foundation for Human Vision Models." <a href="https://arxiv.org/abs/2408.12569" target="_blank">arXiv:2408.12569</a></li>
+    <li data-cite-key="Zhang-et-al.-2024">Zhang, K. et al. (2024). "GS-LRM: Large Reconstruction Model for 3D Gaussian Splatting." <em>CVPR 2024</em>.</li>
+    <li data-cite-key="Tang-et-al.-2024">Tang, J. et al. (2024). "LGM: Large Multi-View Gaussian Model for High-Resolution 3D Content Creation." <em>ICLR 2024</em>.</li>
+    <li data-cite-key="Taubner-et-al.-2025">Taubner, T. et al. (2025). "CAP4D: Consistent Avatar Generation with Panoptic 4D Diffusion." <a href="https://arxiv.org/abs/2505.16378" target="_blank">arXiv:2505.16378</a></li>
+    <li data-cite-key="He-et-al.-2025">He, Z. et al. (2025). "LAM: Large Avatar Model for One-shot Animatable Gaussian Head." <a href="https://arxiv.org/abs/2504.05515" target="_blank">arXiv:2504.05515</a> · <a href="lam-2025.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Wu-et-al.-2025">Wu, Y. et al. (2025). "FastAvatar: Towards Unified Fast High-Fidelity 3D Avatar Reconstruction." <a href="https://arxiv.org/abs/2508.19754" target="_blank">arXiv:2508.19754</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="lhm-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">LHM，前馈 Transformer 秒级生成可动画 3D 人体</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <a class="nav-card nav-next" href="hypergaussians-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">HyperGaussians，高维高斯泼溅的高保真人脸虚拟人</span></a>
+</div>
