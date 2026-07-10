@@ -1,0 +1,578 @@
+---
+title: "数字人论文精读（四十七）：HyperGaussians，高维高斯泼溅的高保真人脸虚拟人"
+description: "通过将 3D Gaussian Splatting 扩展为高维多元高斯，HyperGaussians 以即插即用方式提升人脸虚拟人的高频细节渲染"
+created_at: 2026-07-10T14:33:40
+updated_at: 2026-07-10T14:33:40
+tags: [数字人, 3DGS, 高维高斯, 人脸虚拟人]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 460
+hub: digital-human-hub
+papers: ["https://arxiv.org/abs/2507.02803"]
+repos: ["https://github.com/gserifi/HyperGaussians"]
+mathjax: true
+hero_title: "HyperGaussians"
+hero_sub: "CVPR 2026 · ETH Zurich"
+hero_tagline: "用高维高斯泼溅跨越人脸虚拟人的恐怖谷"
+paper_title: "HyperGaussians: High-Dimensional Gaussian Splatting for High-Fidelity Animatable Face Avatars"
+paper_authors: "Gent Serifi, Marcel C. Buehler"
+paper_affiliation: "ETH Zurich, Switzerland"
+paper_venue: "CVPR 2026"
+paper_url: "https://arxiv.org/abs/2507.02803"
+paper_code: "https://github.com/gserifi/HyperGaussians"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">300</span><span class="label">FPS (512²)</span></div>
+  <div class="stat"><span class="num b">29.99</span><span class="label g">PSNR↑ (单目)</span></div>
+  <div class="stat"><span class="num">29</span><span class="label">Subjects</span></div>
+  <div class="stat"><span class="num b">O(m²n)</span><span class="label l">条件化复杂度</span></div>
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 1 · 引言 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：恐怖谷问题，是渲染问题还是表示问题？</div>
+
+  数字人面部虚拟人（face avatar）技术正经历从"能看"到"耐看"的跨越。当 3D Gaussian Splatting（3DGS）#Kerbl et al., 2023# 成为三维场景表示的事实标准后，一系列工作将高斯基元绑定到 FLAME #Li et al., 2017# 等可变形人脸模型上，从单目视频即可快速重建可动画驱动的人脸虚拟人。FlashAvatar #Xiang et al., 2024# 实现了 15-20 分钟训练、347 FPS 渲染的轻量级方案，GaussianHeadAvatar #Xu et al., 2024# 则在多视角设置下追求 2K 分辨率的超高保真。
+
+  然而，当我们仔细审视这些方法渲染的人脸时，一个关键问题浮现：==眼镜镜片上的反射无法随头部姿态正确变化==，==牙齿间隙模糊成一团白色==，==眨眼时眼睑无法完全闭合==，==微笑时鼻翼两侧的皱纹消失不见==。这些高频细节的缺失让虚拟人始终停留在"恐怖谷"的边缘——看起来很逼真，但总觉得哪里不对。
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/teaser.webp" alt="HyperGaussians teaser" loading="lazy">
+    <div class="cap">HyperGaussians 渲染效果对比：上排为 FlashAvatar baseline，下排为 HyperGaussians（n=8）。注意牙齿间隙、眼镜反射和皮肤纹理的细节提升。</div>
+  </div>
+
+  大多数改进工作选择从网络架构或训练策略入手：加深 MLP、引入注意力机制、增加正则化项。但本文作者提出了一个不同的视角——<strong>恐怖谷问题本质上不是渲染问题，而是表示问题</strong>#Serifi and Buehler, 2026#。现有方法使用 MLP 从表情参数直接预测每个高斯基元的属性偏移量（offsets），这种"点对点"的映射缺乏局部上下文感知能力：空间上邻近但语义不同的区域（如眼镜框与上脸颊）被迫共享同一套变形参数，导致改善一处往往恶化另一处。
+
+  HyperGaussians 的核心洞察是：与其在网络层面打补丁，不如从底层重新思考高斯基元的参数化方式。论文将标准 3D Gaussian 扩展为 $(m+n)$ 维的多元高斯分布，其中 $m$ 为属性维度（位置 $m=3$、旋转 $m=4$、缩放 $m=3$），$n$ 为可学习的潜在维度。通过"条件化"操作从高维高斯中提取 3D 属性用于渲染，每个高斯基元获得了独立的局部嵌入（per-Gaussian latent embedding），从而可以表达更丰富的形变模式。
+
+  <div class="callout"><strong>核心贡献预告</strong>：HyperGaussians 的三项贡献——(1) 高维高斯表示及其概率论解释；(2) Inverse Covariance Trick，将条件化复杂度从 $O(n^3+mn^2)$ 降至 $O(m^3+m^2n)$，结合 Cholesky 分解进一步降至 $O(m^2n)$；(3) 即插即用集成到 FlashAvatar 和 GaussianHeadAvatar，在 29 个被试上验证，不改架构、不改损失、不改超参数即获得全面提升。</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 2 · 问题剖析 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：为什么直接预测 offsets 不够？</div>
+
+  <h3 class="section-title">2.1 FlashAvatar 的 offset 范式及其瓶颈</h3>
+
+  要理解 HyperGaussians 解决了什么问题，我们需要先看清现有方法的瓶颈。以 FlashAvatar 为例，其变形管线如下：一个 MLP $F_\theta$ 接收 FLAME 表情参数 $\psi$ 和规范网格位置的位置编码 $\gamma(x_T)$，输出每个高斯基元的位置、旋转、缩放偏移量 $\Delta\mu$、$\Delta r$、$\Delta s$。
+
+  这种"直接预测偏移量"的方式看似直观，却存在一个根本性的问题：<strong>MLP 是全局共享的</strong>。空间上邻近的高斯基元通过同一个 MLP 产生偏移，导致它们的行为相互耦合。想象一个戴眼镜的人脸：眼镜框和上脸颊在空间上紧邻，但语义截然不同——眼镜框是刚体，随头部旋转；上脸颊是软组织，随表情变形。当共享 MLP 试图同时拟合两种截然不同的形变模式时，必然需要在两者之间妥协，导致眼镜框对齐失败或上脸颊出现伪影。
+
+  <h3 class="section-title">2.2 NDGS 的尝试及其三大缺陷</h3>
+
+  NDGS #Diolatzis et al., 2024# 是首个将高斯扩展到 $N$ 维的工作，用于静态场景的高维函数拟合。一个自然的疑问是：能否将 NDGS 直接用于人脸虚拟人？论文在补充材料中进行了这一实验，发现了 NDGS 的三个致命缺陷：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>缺陷</th><th>根本原因</th><th>表现</th></tr></thead>
+      <tbody>
+        <tr><td>无法条件性旋转</td><td>条件协方差 $\Sigma_{a|b}$ 不依赖 $\mathbf{z}$ 的取值</td><td>Gaussian 的大小和形状在所有表情下固定不变</td></tr>
+        <tr><td>Gaussian 消失</td><td>用联合概率密度 $p(\mathbf{A},\mathbf{z})$ 调制不透明度</td><td>大形变时 $\mathbf{z}$ 偏离均值，密度下降导致 Gaussian 透明</td></tr>
+        <tr><td>计算不可扩展</td><td>naïve 条件化需对 $n \times n$ 矩阵求逆</td><td>复杂度 $O(n^3+mn^2)$，高维时无法实时</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键 Insight</strong>：NDGS 用条件协方差做 splatting（决定 Gaussian 的形状），而条件协方差 $\Sigma_{a|b} = \Sigma_{aa} - \Sigma_{ab}\Sigma_{bb}^{-1}\Sigma_{ba}$ <strong>不依赖于</strong>潜在编码 $\mathbf{z}$ 的具体取值——它只由协方差矩阵的分块决定。这意味着无论表情如何变化，Gaussian 的大小和形状永远不变，只有位置在移动。这就像一个人只能平移脸部肌肉却不能拉伸或旋转它们，表达力严重受限。</div>
+
+  <h3 class="section-title">2.3 突破口：从表示层面而非架构层面改进</h3>
+
+  HyperGaussians 的突破口在于：==不要用条件协方差做 splatting，而是用条件均值来恢复位置、旋转和缩放==。这个看似简单的改变带来了表达力的质的飞跃——条件均值 $E[\mathbf{A}|\mathbf{z}]$ 依赖于 $\mathbf{z}$ 的具体取值，因此 Gaussian 可以随表情动态旋转和缩放。
+
+  同时，为了解决 NDGS 的计算瓶颈，论文提出了 Inverse Covariance Trick，将条件化从协方差域转换到精度矩阵域，把需要对 $n \times n$ 大矩阵求逆的问题转化为只需处理 $m \times m$ 小矩阵的问题。这使得即使 $n=128$ 也能实时渲染。
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/slicing.webp" alt="条件化切片示意" loading="lazy">
+    <div class="cap">条件化的几何直觉：从 (m+n) 维高斯中取一个 m 维"切片"。条件均值随切片位置（latent code z）变化而移动，而条件协方差与切片位置无关——这正是 NDGS 的局限所在。</div>
+  </div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 3 · 模型结构 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">HyperGaussians 架构详解</div>
+
+  <h3 class="section-title">3.1 从 3DGS 到 HyperGaussians：高维多元高斯</h3>
+
+  标准 3DGS 中，每个高斯基元由均值 $\mu_{3D} \in \mathbb{R}^3$、协方差 $\Sigma_{3D} \in \mathbb{R}^{3 \times 3}$、不透明度 $\alpha$ 和颜色 $c$ 定义。协方差通过旋转和缩放分解保证正定性：
+
+  $$
+  \Sigma_{3D} = R S S^\top R^\top
+  $$
+
+  其中 $R$ 由四元数 $q \in \mathbb{R}^4$ 参数化，$S = \text{diag}(s)$，$s \in \mathbb{R}^3$。渲染时通过 alpha blending 将高斯投影到相机平面混合。
+
+  HyperGaussians 的核心操作是将这个 3D 高斯扩展为 $(m+n)$ 维的多元高斯。具体来说，将随机向量 $\xi \sim \mathcal{N}(\mu, \Sigma)$ 分块：
+
+  $$
+  \mu = \begin{bmatrix} \mu_a \\ \mu_b \end{bmatrix}, \quad \Sigma = \begin{bmatrix} \Sigma_{aa} & \Sigma_{ab} \\ \Sigma_{ba} & \Sigma_{bb} \end{bmatrix}
+  $$
+
+  其中 $\mu_a \in \mathbb{R}^m$ 对应 3D Gaussian 属性（如位置 $\mu_{3D} \in \mathbb{R}^3$），$\mu_b \in \mathbb{R}^n$ 对应潜在编码 $\mathbf{z}$。每个高斯基元的位置、旋转、缩放各自独立建模为一个 HyperGaussian。
+
+  <div class="callout"><strong>直觉理解</strong>：可以把 HyperGaussian 想象成一个"属性生成器"。高维均值 $\mu_b$ 和协方差 $\Sigma_{bb}$ 定义了潜在编码的"默认分布"，而 $\Sigma_{ab}$（属性-潜在交叉协方差）建立了属性与潜在编码之间的概率依赖。当 MLP 生成一个具体的潜在编码 $\mathbf{z}$ 时，条件化操作就像"查询"这个生成器：给定这个 $\mathbf{z}$，最可能对应的 3D 属性是什么？</div>
+
+  <h3 class="section-title">3.2 条件化：从高维到 3D 的信息投影</h3>
+
+  给定 MLP 生成的潜在编码 $\mathbf{z} = b$，属性 $\xi_a$ 的条件分布为高斯分布，其闭式解为：
+
+  $$
+  \mu_{a|b} = \mu_a + \Sigma_{ab} \Sigma_{bb}^{-1}(b - \mu_b)
+  $$
+
+  $$
+  \Sigma_{a|b} = \Sigma_{aa} - \Sigma_{ab} \Sigma_{bb}^{-1} \Sigma_{ba}
+  $$
+
+  条件均值 $\mu_{a|b}$ 即为恢复的 3D Gaussian 属性（位置、旋转四元数或缩放向量）。这个公式的关键问题在于需要对 $n \times n$ 的 $\Sigma_{bb}$ 求逆，复杂度为 $O(n^3 + mn^2)$。当 $n$ 较大时（如 $n=128$），这个计算极其昂贵。
+
+  <h3 class="section-title">3.3 Inverse Covariance Trick：精度矩阵重参数化</h3>
+
+  这是论文最核心的技术贡献。将协方差 $\Sigma$ 重参数化为精度矩阵 $\Lambda = \Sigma^{-1}$，利用分块矩阵的逆性质，条件分布在精度矩阵形式下变为：
+
+  <div class="def-box">
+    <h3>Inverse Covariance Trick — 条件分布</h3>
+    <p>条件均值（精度矩阵版）：</p>
+    $$
+    \mu_{a|b} = \mu_a - \Lambda_{aa}^{-1}\Lambda_{ab}(b - \mu_b)
+    $$
+    <p>条件协方差（精度矩阵版）：</p>
+    $$
+    \Sigma_{a|b} = \Lambda_{aa}^{-1}
+    $$
+    <p>其中 $\Lambda_{aa} \in \mathbb{R}^{m \times m}$，$m$ 通常仅为 3 或 4。新公式只需对小矩阵 $\Lambda_{aa}$ 求逆，复杂度从 $O(n^3+mn^2)$ 降至 $O(m^3+m^2n)$，即从 $n$ 的立方降为 $n$ 的一次方。不需要参数化 $\Lambda_{bb}$，因为条件分布不依赖它。</p>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/benchmark.webp" alt="Inverse Covariance Trick 性能基准" loading="lazy">
+    <div class="cap">Inverse Covariance Trick 的效果：naïve 条件化的内存和速度随 n 三次方增长，而精度矩阵版本几乎线性增长。n=128 时速度提升 15,000%，内存减少 >90%。</div>
+  </div>
+
+  <h3 class="section-title">3.4 Cholesky 分解进一步简化</h3>
+
+  对精度矩阵进行分块 Cholesky 分解 $\Lambda = LL^\top$：
+
+  $$
+  \begin{bmatrix} \Lambda_{aa} & \Lambda_{ab} \\ \Lambda_{ba} & \Lambda_{bb} \end{bmatrix} = \begin{bmatrix} L_{11} & 0 \\ L_{21} & L_{22} \end{bmatrix} \begin{bmatrix} L_{11}^\top & L_{21}^\top \\ 0 & L_{22}^\top \end{bmatrix}
+  $$
+
+  展开后得到 $\Lambda_{aa} = L_{11}L_{11}^\top$，$\Lambda_{ab} = L_{11}L_{21}^\top$。代入条件均值公式中的关键项：
+
+  $$
+  \Lambda_{aa}^{-1}\Lambda_{ab} = (L_{11}L_{11}^\top)^{-1} \cdot L_{11}L_{21}^\top = L_{11}^{-\top}L_{21}^\top
+  $$
+
+  因此条件均值最终简化为：
+
+  $$
+  \mu_{a|b} = \mu_a - L_{11}^{-\top}L_{21}^\top(b - \mu_b)
+  $$
+
+  <div class="callout"><strong>关键优势</strong>：$L_{11} \in \mathbb{R}^{m \times m}$ 是小尺寸三角矩阵（$m$ 通常为 3 或 4），其逆可通过前向/后向代入（forward/backward substitution）高效且数值稳定地计算，与潜在维度 $n$ 无关。仅需参数化 $L_{11}$ 和 $L_{21}$，总参数量为 $\frac{m(m+1)}{2} + mn = O(m^2 + mn)$，计算复杂度进一步降至 $O(m^2n)$。</div>
+
+  为保证正定性，Cholesky 因子的对角元素通过指数激活 $L_{i,i} = \exp(\tilde{L}_{i,i})$ 确保。这一技巧同时用于协方差矩阵和精度矩阵参数化。
+
+  <h3 class="section-title">3.5 Bayesian 解释：MAP 估计与隐式正则化</h3>
+
+  HyperGaussians 不仅是工程上的改进，还有清晰的概率论基础。3D Gaussian 属性 $\mathbf{A}$ 被建模为随机变量，与随机潜在向量 $\mathbf{z}$ 通过联合多元正态分布 $p(\mathbf{A}, \mathbf{z})$ 耦合。对于高斯分布，条件均值等于 MAP 估计：
+
+  $$
+  E[\mathbf{A}|\mathbf{z}] = \arg\max_{\mathbf{A}} p(\mathbf{A}|\mathbf{z})
+  $$
+
+  这意味着条件化本质上是对 3D Gaussian 属性的后验估计。边缘分布 $p(\mathbf{A}) = \mathcal{N}(\mu_a, \Sigma_{aa})$ 充当高斯先验，在训练时约束属性值在合理范围内，在测试时（如交叉重演）即使输入表情参数偏离训练分布，先验也能帮助保持合理的属性值——这是一种<strong>隐式正则化</strong>。
+
+  <h3 class="section-title">3.6 Case Study：FlashAvatar 与 GaussianHeadAvatar 集成</h3>
+
+  HyperGaussians 的集成方式极其简洁——<strong>即插即用</strong>。以 FlashAvatar 为例：
+
+  <div class="code-tabs">
+    <div class="code-tabs-header">
+      <button class="code-tab-btn active" data-tab="fa-flow">FlashAvatar 集成流程</button>
+      <button class="code-tab-btn" data-tab="gha-flow">GHA 集成流程</button>
+    </div>
+    <div class="code-tab-content active" data-panel="fa-flow">
+      {{< mermaid >}}
+      flowchart TD
+        A["FLAME 表情参数 ψ + 位置编码 γ(x_T)"] --> B["Deformation MLP\n(唯一修改：输出 latent z 而非 offset)"]
+        B --> C["per-Gaussian latent z_i ∈ ℝ^n"]
+        C --> D["HyperGaussian Conditioning\nμ_a|b = μ_a - L₁₁⁻ᵀL₂₁ᵀ(z - μ_b)"]
+        D --> E["条件化的 3D Gaussian 属性\n(位置 μ_3D, 旋转 q, 缩放 s)"]
+        E --> F["标准 3DGS 光栅化器"]
+        F --> G["渲染图像"]
+        G --> H["继承 FlashAvatar 全部损失"]
+      {{< /mermaid >}}
+    </div>
+    <div class="code-tab-content" data-panel="gha-flow">
+      {{< mermaid >}}
+      flowchart TD
+        A["表情 ψ + 姿态 β + Canonical Gaussians"] --> B["Dynamic Generator Ψ\n(修改：输出 per-Gaussian latents)"]
+        B --> C["z_X, z_C, z_Q, z_S, z_A"]
+        C --> D["HyperGaussian Conditioning\n(5 组属性分别条件化)"]
+        D --> E["条件化 Gaussian 属性"]
+        E --> F["3DGS 渲染特征图"]
+        F --> G["超分辨率模块 → 2K RGB"]
+      {{< /mermaid >}}
+    </div>
+  </div>
+
+  <strong>唯一改动</strong>：MLP 输出从 offsets 变为 latent code，中间插入 HyperGaussian conditioning 模块。模型架构、损失函数、超参数全部保持不变。最优潜在维度 $n=8$，但 $n=1$ 即可超过基线。
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/method.webp" alt="HyperGaussians 方法架构图" loading="lazy">
+    <div class="cap">HyperGaussians 整体架构。左侧为变形 MLP 生成 per-Gaussian latent code，中间为 Inverse Covariance Trick 条件化模块，右侧为标准 3DGS 渲染管线。</div>
+  </div>
+
+  <h3 class="section-title">3.7 不确定性量化：免费获得语义感知</h3>
+
+  条件协方差 $\Sigma_{a|b} = \Lambda_{aa}^{-1}$ 表示每个 Gaussian 在不同表情下的方差，可直观解释为不确定性。定义不确定性度量：
+
+  $$
+  \mathcal{U} = |\Lambda_{aa}^{-1}| = |L_{11}|^{-2} = \exp\left(-2\sum_{i=1}^{m}\tilde{L}_{11,i,i}\right)
+  $$
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/uncertainty.webp" alt="不确定性可视化" loading="lazy">
+    <div class="cap">不确定性量化无需额外监督即可涌现语义结构：嘴唇（表情变化大）、眼镜反射（视角依赖性强）、眼镜框架（受底层网格变形影响产生位移）、颈部（前景 mask 不稳定）区域高不确定性，刚性皮肤区域低不确定性。</div>
+  </div>
+
+  这一特性无需额外训练即可获得，可用于指导自适应密度控制或标记需要更多训练数据的区域。
+
+  <h3 class="section-title">3.8 与 NDGS 的关键区别</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>HyperGaussians</th><th>NDGS</th></tr></thead>
+      <tbody>
+        <tr><td>条件化对象</td><td>位置、旋转、缩放的条件<strong>均值</strong></td><td>仅位置的条件均值；旋转/缩放用条件协方差</td></tr>
+        <tr><td>Gaussian 形状</td><td>随 $\mathbf{z}$ 动态变化（条件旋转+缩放）</td><td>固定不变（条件协方差不依赖 $\mathbf{z}$）</td></tr>
+        <tr><td>不透明度调制</td><td>不使用概率密度调制</td><td>用 $p(\mathbf{A},\mathbf{z})$ 调制，大形变时 Gaussian 消失</td></tr>
+        <tr><td>条件化复杂度</td><td>$O(m^2n)$（inverse cov trick + Cholesky）</td><td>$O(n^3+mn^2)$（naïve）</td></tr>
+        <tr><td>参数量</td><td>$O(m^2+mn)$ per Gaussian</td><td>$O((m+n)^2)$ per Gaussian</td></tr>
+        <tr><td>概率解释</td><td>MAP 估计 + 高斯先验正则化</td><td>部分概率解释</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 4 · Training Pipeline -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：继承一切，只换表示</div>
+
+  <h3 class="section-title">4.1 损失函数：零新增</h3>
+
+  HyperGaussians <strong>不引入任何新的损失函数</strong>，完全继承所集成方法的原始损失。FlashAvatar 集成继承 FlashAvatar 的全部损失项（光度损失 + 正则化项），GHA 集成继承 GHA 的全部损失项（含超分辨率模块相关损失）。论文原文明确声明："We inherit all losses and hyperparameters" #Serifi and Buehler, 2026#。
+
+  这种设计是刻意的：论文要证明性能提升完全来自表示层面的改进（3DGS → HyperGaussians），而非损失函数或超参数调优。如果引入了新损失或调了超参数，就无法排除"提升来自训练策略改进"这一替代解释。
+
+  <h3 class="section-title">4.2 训练配置披露表</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>单目：5 数据集 19 subjects（INSTA, IMAvatar, Neural Head Avatar, NeRF-Blendshapes, Dynamic NeRF），2000 训练帧/500 测试帧，25 FPS，512×512；多视角：NeRSemble 10 subjects，2500 训练帧/300 测试帧×16 cameras，2048×2048</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>FlashAvatar：NVIDIA RTX 4090（单卡）；GHA：原文未明确型号</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>继承 FlashAvatar / GHA 的优化器设置，论文未明确列出</td></tr>
+        <tr><td>学习率</td><td>部分披露</td><td>HyperGaussian 参数 lr = 10⁻⁴；其他继承 baseline，schedule 和 warmup 未披露</td></tr>
+        <tr><td>Batch size</td><td>未披露</td><td>原文未明确给出</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>FlashAvatar：30,000 iterations；GHA：600,000 iterations</td></tr>
+        <tr><td>训练时长</td><td>已披露</td><td>FlashAvatar：15-20 min；GHA：>2 days；GHA + HyperGaussians 额外开销仅 +30 min（约 1%）</td></tr>
+        <tr><td>模型参数量</td><td>已披露</td><td>FA baseline 375K；FA + HGS (n=8) 2.6M；MLP 配置 256×6，15K Gaussians</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未明确给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未明确给出</td></tr>
+        <tr><td>初始化来源</td><td>已披露</td><td>继承 FlashAvatar / GHA 的初始化，HyperGaussian 参数从零学习</td></tr>
+        <tr><td>潜在维度选择</td><td>已披露</td><td>消融 n=1,2,4,8,16,32,64，推荐 n=8</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.3 预处理管线</h3>
+
+  HyperGaussians 继承了基线方法的预处理流程，本身不增加额外步骤：
+
+  <ul>
+    <li><strong>单目（FlashAvatar 路线）</strong> :: MICA 用于 FLAME tracking，RVM 用于前景 matting，BiSeNet 用于头部/颈部及嘴部分割</li>
+    <li><strong>多视角（GHA 路线）</strong> :: 背景移除，2D landmark 检测，BFM tracking</li>
+  </ul>
+
+  <h3 class="section-title">4.4 训练收敛特性</h3>
+
+  论文在补充材料中展示了训练时间 vs 结果的对比：HyperGaussians 从训练初期就展现出更锐利的结果。在相同时间预算下，HyperGaussians 达到更高的渲染质量，表明高维表示不仅提升最终质量，还加速了优化收敛。这可以理解为：高维参数空间提供了更丰富的搜索方向，使得优化器能更快找到好的解。
+
+  <div class="callout"><strong>训练成本增量极小</strong>：GHA + HyperGaussians 相比原始 GHA 仅增加 30 分钟训练（约 1%），而 FlashAvatar 集成的额外开销几乎可以忽略。这使得 HyperGaussians 成为一种近乎"免费"的升级。</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 5 · Inference Pipeline -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：条件化 → 光栅化 → 渲染</div>
+
+  <h3 class="section-title">5.1 推理流程全链路</h3>
+
+  HyperGaussians 的推理流程与训练时几乎完全一致，区别仅在于输入来源：
+
+  1. <strong>输入准备</strong>：测试表情参数（自重演 self-reenactment 或交叉重演 cross-reenactment），通过 FLAME tracking 从测试视频提取，或从其他源人脸迁移
+  2. <strong>Latent 生成</strong>：Deformation MLP 接收测试表情参数和位置编码，输出 per-Gaussian latent $\mathbf{z}_i \in \mathbb{R}^n$
+  3. <strong>条件化</strong>：对每个 Gaussian 的每种属性（位置、旋转、缩放），计算条件均值 $\mu_{a|b} = \mu_a - L_{11}^{-\top}L_{21}^\top(\mathbf{z} - \mu_b)$，恢复 vanilla 3D Gaussian 属性
+  4. <strong>协方差构建</strong>：使用条件化的旋转 $q = E[\mathbf{A}_q|\mathbf{z}]$ 和缩放 $S = \text{diag}(E[\mathbf{A}_s|\mathbf{z}])$ 构建 splatting 协方差 $\Sigma_{3D} = R(q)SS^\top R(q)^\top$
+  5. <strong>光栅化</strong>：标准 3DGS 可微光栅化器（Kerbl et al.），alpha blending 渲染
+  6. <strong>超分辨率</strong>（仅 GHA）：渲染特征图通过超分辨率模块得到最终 2K RGB
+  7. <strong>不确定性输出</strong>（可选）：计算 $\text{tr}(\Lambda_{aa}^{-1})$ 作为不确定性图，无需额外训练
+
+  <h3 class="section-title">5.2 条件化的计算效率</h3>
+
+  推理时，条件化操作是唯一的额外计算。得益于 Inverse Covariance Trick，条件化只涉及 $m \times m$ 三角矩阵的求解（$m$ 通常为 3 或 4），与潜在维度 $n$ 成线性关系。在 15K 个 HyperGaussians、$n=8$、$m=3$ 的配置下，条件化的额外内存仅 22 MB（naïve 实现需 42 MB），速度提升 150%。当 $n=128$ 时，速度提升达 15,000%。
+
+  <h3 class="section-title">5.3 渲染性能</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>FPS</th><th>参数量</th><th>硬件</th></tr></thead>
+      <tbody>
+        <tr><td>FlashAvatar baseline (3DGS)</td><td>347</td><td>375K</td><td>RTX 2080 Ti, 512×512</td></tr>
+        <tr><td>FlashAvatar + HGS (n=8)</td><td><strong>300</strong></td><td>2.6M</td><td>RTX 2080 Ti, 512×512</td></tr>
+        <tr><td>更深 MLP (256×40, 同参数量)</td><td>158</td><td>2.6M</td><td>RTX 2080 Ti, 512×512</td></tr>
+        <tr><td>更宽 MLP (512×11, 同参数量)</td><td>178</td><td>2.7M</td><td>RTX 2080 Ti, 512×512</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：HyperGaussians (n=8) 相比 baseline FPS 仅下降约 14%（347→300），而将 MLP 扩大到同等参数量（256×40）FPS 暴跌 54%（347→158）。这说明 HyperGaussians 的参数效率远高于纯 MLP 扩展——高维条件化比深层 MLP 更能利用 GPU 并行性。</div>
+
+  <h3 class="section-title">5.4 交叉重演与泛化能力</h3>
+
+  交叉重演（cross-reenactment）是检验虚拟人泛化能力的关键测试：用一个人的表情参数驱动另一个人的虚拟人。由于 HyperGaussians 的高斯先验 $p(\mathbf{A})$ 充当隐式正则化器，即使输入的表情参数偏离训练分布，先验也能帮助保持合理的属性值，避免外推导致的伪影。
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/cross_reenactment.webp" alt="交叉重演结果" loading="lazy">
+    <div class="cap">交叉重演定性对比：HyperGaussians 在跨身份驱动时保持更锐利的细节，特别是牙齿和眼镜反射区域。</div>
+  </div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 6 · 实验配置与验证 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <h3 class="section-title">6.1 实验配置表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>单目：5 数据集 19 subjects；多视角：NeRSemble 10 subjects；总计 29 subjects, 6 datasets</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>PSNR↑ / SSIM↑ / LPIPS↓（VGG backbone）</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>SplattingAvatar, MonoGaussianAvatar, FlashAvatar, GaussianHeadAvatar, NDGS</td></tr>
+        <tr><td>推理硬件</td><td>已披露</td><td>NVIDIA GeForce RTX 2080 Ti（FPS benchmark）；RTX 4090（训练）</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>单目 512×512；多视角 2048×2048</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未明确给出框架/版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 主实验结果</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR↑</th><th>SSIM(×10⁻¹)↑</th><th>LPIPS(×10⁻²)↓</th><th>设置</th></tr></thead>
+      <tbody>
+        <tr><td>SplattingAvatar</td><td>28.58</td><td>9.396</td><td>9.021</td><td>单目</td></tr>
+        <tr><td>MonoGaussianAvatar</td><td>29.94</td><td>9.456</td><td>6.545</td><td>单目</td></tr>
+        <tr><td>FlashAvatar (FA)</td><td>29.43</td><td>9.466</td><td>5.107</td><td>单目</td></tr>
+        <tr><td><strong>Ours (FA, n=8)</strong></td><td><strong>29.99</strong></td><td><strong>9.510</strong></td><td><strong>4.978</strong></td><td>单目</td></tr>
+        <tr><td>GaussianHeadAvatar (GHA)</td><td>24.10</td><td>8.819</td><td>20.273</td><td>多视角</td></tr>
+        <tr><td><strong>Ours (GHA, n=8)</strong></td><td><strong>24.38</strong></td><td>8.819</td><td><strong>19.768</strong></td><td>多视角</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：在单目设置中，HyperGaussians 在所有三个指标上全面领先，PSNR 从 29.43 提升至 29.99（+0.56 dB），LPIPS 从 5.107 改善至 4.978（-2.5%）。注意 MonoGaussianAvatar 虽然使用 >100K Gaussians 和 >12h 训练，PSNR (29.94) 仍低于仅用 15K Gaussians 和 15-20 min 训练的 HyperGaussians (29.99)。在多视角设置中，PSNR 从 24.10 提升至 24.38，但 SSIM 持平（8.819）——论文承认这是局限性之一。</div>
+
+  <h3 class="section-title">6.3 消融实验</h3>
+
+  <h4 class="ch-section">潜在维度消融</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>HGS-Dim</th><th>参数量</th><th>FPS</th><th>PSNR↑</th><th>SSIM(×10⁻¹)↑</th><th>LPIPS(×10⁻²)↓</th></tr></thead>
+      <tbody>
+        <tr><td>— (baseline)</td><td>375K</td><td>347</td><td>29.43</td><td>9.466</td><td>5.107</td></tr>
+        <tr><td>1D</td><td>1.2M</td><td>291</td><td>29.73</td><td>9.492</td><td>5.066</td></tr>
+        <tr><td>2D</td><td>1.4M</td><td>304</td><td>29.92</td><td>9.503</td><td>5.000</td></tr>
+        <tr><td>4D</td><td>1.8M</td><td>293</td><td>29.89</td><td>9.507</td><td>4.994</td></tr>
+        <tr><td><strong>8D</strong></td><td>2.6M</td><td>300</td><td><strong>29.99</strong></td><td><strong>9.510</strong></td><td><strong>4.978</strong></td></tr>
+        <tr><td>16D</td><td>4.1M</td><td>298</td><td>29.92</td><td>9.511</td><td>4.978</td></tr>
+        <tr><td>32D</td><td>7.2M</td><td>281</td><td>29.89</td><td>9.511</td><td>4.976</td></tr>
+        <tr><td>64D</td><td>13.4M</td><td>273</td><td>29.91</td><td>9.512</td><td>5.020</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>消融发现一</strong>：$n=1$ 即可超过 baseline（PSNR 29.73 vs 29.43），说明即使只增加 1 个潜在维度也能带来显著提升。$n=8$ 是 PSNR 最优点，$n=16$ 后 PSNR 开始回落，$n=64$ 时 LPIPS 退化至 5.020（相比 $n=8$ 的 4.978 有所退化，但仍优于 baseline 的 5.107），暗示过大 latent 维度可能过拟合。HyperGaussians 对 latent 维度鲁棒。值得注意的是 $n=1$ 的 FPS（291）反而低于 $n=2$（304），论文推测是内存瓶颈导致——由缓存和向量加载/存储局部性差引起。</div>
+
+  <h4 class="ch-section">MLP 扩展消融：增大参数量无法替代表示改进</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>MLP (width×depth)</th><th>HGS-Dim</th><th>参数量</th><th>FPS</th><th>PSNR↑</th><th>LPIPS(×10⁻²)↓</th></tr></thead>
+      <tbody>
+        <tr><td>256×6</td><td>—</td><td>375K</td><td>347</td><td>29.43</td><td>5.107</td></tr>
+        <tr><td>256×40</td><td>—</td><td>2.6M</td><td>158</td><td>28.10</td><td>5.720</td></tr>
+        <tr><td>512×11</td><td>—</td><td>2.7M</td><td>178</td><td>29.50</td><td>5.122</td></tr>
+        <tr><td>256×6</td><td>8D</td><td>2.6M</td><td>300</td><td><strong>29.99</strong></td><td><strong>4.978</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>消融发现二（反直觉）</strong>：将 MLP 从 256×6 扩大到 256×40（同等参数量 2.6M），PSNR 不升反降（29.43→28.10），LPIPS 恶化 15%，FPS 暴跌 54%。增大 MLP 宽度（512×11, 2.7M）也远不及 HyperGaussians。<strong>单纯增加模型容量无法替代表示层面的改进</strong>——这是论文最有说服力的消融结果之一。</div>
+
+  <h3 class="section-title">6.4 NDGS 对比</h3>
+
+  论文在补充材料中提供了 NDGS 集成到 GHA 的定量对比：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>PSNR↑</th><th>SSIM(×10⁻¹)↑</th><th>LPIPS(×10⁻²)↓</th></tr></thead>
+      <tbody>
+        <tr><td>GHA (baseline)</td><td>24.10</td><td>8.819</td><td>20.273</td></tr>
+        <tr><td>NDGS (GHA)</td><td>24.22</td><td><strong>8.820</strong></td><td>20.235</td></tr>
+        <tr><td><strong>Ours (GHA)</strong></td><td><strong>24.38</strong></td><td>8.819</td><td><strong>19.768</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  NDGS 在 SSIM 上仅微弱优于 HyperGaussians（8.820 vs 8.819，差距 0.001），但在 PSNR 和 LPIPS 上均不及。定性对比中，NDGS 在眼镜框对齐和镜面反射上存在明显伪影。
+
+  <h3 class="section-title">6.5 定性分析</h3>
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/main_qualitative.webp" alt="单目定性对比" loading="lazy">
+    <div class="cap">单目定性对比（FlashAvatar baseline vs Ours）。注意 HyperGaussians 在牙齿间隙、眼镜镜片反射和皮肤纹理上的显著改善。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/gha_qualitative.webp" alt="多视角定性对比" loading="lazy">
+    <div class="cap">多视角定性对比（GHA baseline vs Ours）。在 2K 分辨率下，HyperGaussians 的细节优势更为明显。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/hypergaussians-2025/qualitative_ablation.webp" alt="消融定性对比" loading="lazy">
+    <div class="cap">消融定性对比：从左到右依次为 Ground Truth、FlashAvatar baseline、更深 MLP (256×40)、HyperGaussians (n=8)。更深 MLP 反而产生模糊，HyperGaussians 最接近 GT。</div>
+  </div>
+
+  <h3 class="section-title">6.6 局限性</h3>
+
+  论文明确承认以下局限：
+
+  <ul>
+    <li><strong>GHA 集成的 SSIM 无提升</strong> :: 多视角设置中 SSIM 与 baseline 完全持平（8.819），表明在某些指标上 HyperGaussians 未带来改进</li>
+    <li><strong>FPS 下降</strong> :: 虽然 n=8 保持 300 FPS，但相比 baseline 的 347 FPS 仍有约 14% 下降</li>
+    <li><strong>仍依赖 3DMM 先验</strong> :: 构建在 FlashAvatar/GHA 之上，3DMM 追踪质量直接影响最终效果</li>
+    <li><strong>社会影响</strong> :: 高逼真度人脸 avatar 可能被滥用于 deepfakes，论文在补充材料中讨论了这一问题</li>
+  </ul>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- Part 7 · 讨论与启发 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：在地图上的位置</div>
+
+  <h3 class="section-title">7.1 正交性贡献：表示层面的改进</h3>
+
+  HyperGaussians 最独特的定位是其<strong>正交性</strong>声明——与所有改进 MLP 架构、训练方案、损失函数的工作正交，可以作为 plug-and-play 模块叠加到任何使用 3DGS 的管线中 #Serifi and Buehler, 2026#。这意味着 HyperGaussians 的收益可以与架构改进的收益叠加，而非相互竞争。
+
+  <div class="callout"><strong>核心启发</strong>：当一类方法的架构改进遇到瓶颈时（如增大 MLP 反而有害），问题可能不在"网络不够大"，而在"表示不够丰富"。HyperGaussians 证明了从底层表示入手可以获得比堆叠网络参数更好的效果——这一思路可以推广到其他 3DGS 应用领域。</div>
+
+  <h3 class="section-title">7.2 技术演进脉络</h3>
+
+  HyperGaussians 在技术演进中的位置可以从两条线索理解：
+
+  <ul>
+    <li><strong>表示演进链</strong> :: NeRFies（连续变形场，拓扑变化有伪影）→ HyperNeRF #Park et al., 2021#（高维空间切片，解决拓扑变化）→ 3DGS（实时显式表示）→ NDGS（N 维 Gaussian，但计算昂贵且表达受限）→ <strong>HyperGaussians</strong>（高维 + inverse cov trick + 条件旋转/缩放）</li>
+    <li><strong>应用集成链</strong> :: 3DGS + FLAME mesh 绑定 → SplattingAvatar #Shao et al., 2024#（无 expression-dependent appearance）→ FlashAvatar/GHA（expression-dependent offsets，但薄结构和镜面反射模糊）→ <strong>HyperGaussians</strong>（替换底层表示，不改架构即提升）</li>
+  </ul>
+
+  HyperNeRF 的"高维切片"思想是 HyperGaussians 的直接灵感来源。论文明确指出："Inspired by HyperNeRF, we propose an extension to 3D Gaussian Splatting by modeling Gaussians in a higher-dimensional space" #Serifi and Buehler, 2026#。
+
+  <h3 class="section-title">7.3 可操作启发</h3>
+
+  <ol>
+    <li><strong>在任何 3DGS 管线中尝试 HyperGaussians</strong>：由于即插即用设计，只需将 MLP 输出从 offsets 改为 latent code，插入条件化模块即可。`pip install git+https://github.com/gserifi/HyperGaussians.git` 一行安装。</li>
+    <li><strong>精度矩阵重参数化可推广</strong>：Inverse Covariance Trick 不限于高斯条件化——任何需要对大矩阵分块求逆的场景（如高斯过程、变分推断）都可能受益。</li>
+    <li><strong>不确定性量化是免费午餐</strong>：条件协方差自然涌现语义结构，可用于主动学习（标注不确定性最高的样本）或自适应渲染（对高不确定性区域增加采样）。</li>
+    <li><strong>先验正则化提升泛化</strong>：高斯先验 $p(\mathbf{A})$ 在交叉重演中帮助保持合理属性值，这一思路可推广到其他需要 out-of-distribution 泛化的场景。</li>
+  </ol>
+
+  <h3 class="section-title">7.4 未来方向</h3>
+
+  <ul>
+    <li><strong>全身虚拟人</strong>：论文聚焦人脸，但 HyperGaussians 理论上可应用于任何 3DGS 场景。手部、身体等更高自由度区域可能受益更大。</li>
+    <li><strong>可重光照</strong>：将 HyperGaussians 与可重光照头部虚拟人（如 HRAvatar）结合，用高维高斯建模材质属性。</li>
+    <li><strong>前馈集成</strong>：当前 HyperGaussians 用于优化型方法，能否集成到前馈型方法（<a href="lam-2025.html">LAM</a>、GAGAvatar）中是一个开放问题。</li>
+    <li><strong>更高分辨率</strong>：单目实验在 512×512 下进行，4K 分辨率的效果尚未验证。</li>
+  </ul>
+
+  <div class="callout"><strong>一句话总结</strong>：HyperGaussians 告诉我们，恐怖谷的解药不在更深的网络，而在更丰富的表示。一个 $(m+n)$ 维高斯，一次精度矩阵重参数化，就让 3DGS 的人脸渲染跨越了恐怖谷的边缘。</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- 参考来源 -->
+<!-- ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Serifi-and-Buehler-2026">Serifi, G. & Buehler, M.C. (2026). <strong>HyperGaussians: High-Dimensional Gaussian Splatting for High-Fidelity Animatable Face Avatars</strong>. CVPR 2026. <a href="https://arxiv.org/abs/2507.02803" target="_blank">arXiv:2507.02803</a> · <a href="https://github.com/gserifi/HyperGaussians" target="_blank">GitHub</a> · <a href="https://gserifi.github.io/HyperGaussians" target="_blank">Project Page</a></li>
+      <li data-cite-key="Kerbl-et-al.-2023">Kerbl, B. et al. (2023). <strong>3D Gaussian Splatting for Real-Time Radiance Field Rendering</strong>. SIGGRAPH 2023 (Best Paper). <a href="https://arxiv.org/abs/2308.04079" target="_blank">arXiv:2308.04079</a></li>
+      <li data-cite-key="Xiang-et-al.-2024">Xiang, J. et al. (2024). <strong>FlashAvatar: High-fidelity Head Avatar with Efficient Gaussian Embedding</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2312.02214" target="_blank">arXiv:2312.02214</a></li>
+      <li data-cite-key="Xu-et-al.-2024">Xu, Y. et al. (2024). <strong>Gaussian Head Avatar: Ultra High-fidelity Head Avatar via Dynamic Gaussians</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2312.03029" target="_blank">arXiv:2312.03029</a> · <a href="paper-vasa1.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Diolatzis-et-al.-2024">Diolatzis, S. et al. (2024). <strong>N-Dimensional Gaussians for Fitting of High Dimensional Functions</strong>. SIGGRAPH 2024. <a href="https://arxiv.org/abs/2405.20067" target="_blank">arXiv:2405.20067</a></li>
+      <li data-cite-key="Li-et-al.-2017">Li, T. et al. (2017). <strong>Learning a Model of Facial Shape and Expression from 4D Scans</strong>. SIGGRAPH Asia 2017. <a href="https://flame.is.tue.mpg.de/" target="_blank">Project Page</a></li>
+      <li data-cite-key="Park-et-al.-2021">Park, K. et al. (2021). <strong>HyperNeRF: A Higher-Dimensional Representation for Topologically Varying Neural Radiance Fields</strong>. SIGGRAPH Asia 2021. <a href="https://arxiv.org/abs/2106.13228" target="_blank">arXiv:2106.13228</a></li>
+      <li data-cite-key="Chen-et-al.-2024">Chen, Y. et al. (2024). <strong>MonoGaussianAvatar: Monocular Gaussian Point-based Head Avatar</strong>. SIGGRAPH 2024. <a href="https://arxiv.org/abs/2312.04558" target="_blank">arXiv:2312.04558</a> · <a href="dsl-fiqa-2024.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Shao-et-al.-2024">Shao, Z. et al. (2024). <strong>SplattingAvatar: Realistic Real-Time Human Avatars with Mesh-Embedded Gaussian Splatting</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2403.05087" target="_blank">arXiv:2403.05087</a></li>
+    </ul>
+  </div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="match-2026.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">MATCH，前馈式高斯配准实现 10× 加速头部 Avatar 创建</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <a class="nav-card nav-next" href="smartavatar-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">SmartAvatar，VLM 智能体驱动的 3D 人体头像生成</span></a>
+</div>

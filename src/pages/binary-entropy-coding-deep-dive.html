@@ -1,0 +1,831 @@
+---
+title: "二进制熵编码深度解析：从 Huffman 到 CABAC，以及它们在 H.264、ZIP 和 7z 中的应用"
+description: "系统讲解传统二进制编码算法的原理与工程实现：Huffman 编码、Golomb/Rice 编码、指数哥伦布编码、算术编码、Range Coding、DEFLATE（ZIP）、LZMA（7z），以及 CABAC/CAVLC 在 H.264 中的具体应用"
+created_at: 2026-07-10T13:00:45
+updated_at: 2026-07-10T13:00:45
+tags: [熵编码, CABAC, 指数哥伦布编码, DEFLATE, LZMA]
+aliases: ["categories/AI/图像压缩/图像压缩基础系列"]
+sub_id: 80
+mathjax: true
+hero_title: "二进制熵编码深度解析"
+hero_sub: "图像压缩基础系列 · 深度补充"
+hero_tagline: "从 Huffman 到 CABAC：理解比特流背后的编码逻辑"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">7</span><span class="label">编码算法</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">H.264 熵模式</span></div>
+  <div class="stat"><span class="num">267</span><span class="label">CABAC 上下文</span></div>
+  <div class="stat"><span class="num b">9-14%</span><span class="label l">CABAC 增益</span></div>
+</div>
+
+<!-- ============================================================
+  引言
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">引言</div>
+<div class="ch-title">为什么需要理解二进制编码？</div>
+
+<p>当你在手机上拍摄一段视频、将照片保存为 JPEG、或者将文件压缩成 ZIP 时，背后都运行着同一类核心算法——<strong>二进制熵编码</strong>。这些算法决定了最终比特流中每一个比特的取值，是压缩效率的"最后一公里"。</p>
+
+<p>在图像和视频压缩管线中，原始像素首先经过<strong>变换</strong>（如 DCT）和<strong>量化</strong>，将连续的像素值转换为离散的整数系数。这些整数系数随后需要被转换为二进制比特流以便存储或传输——这正是<strong>熵编码</strong>的职责。熵编码的目标是：用尽可能少的比特数表示这些离散符号，使平均码长尽可能接近信源的信息熵 #Richardson-2010#。</p>
+
+<p>不同的编码算法在复杂度和压缩效率之间存在权衡。Huffman 编码简单但无法达到熵极限；算术编码可以无限逼近熵极限但计算复杂度更高；CABAC 在此基础上引入上下文自适应机制，成为 H.264/HEVC 的核心熵编码器。与此同时，通用文件压缩工具如 ZIP（使用 DEFLATE）和 7z（使用 LZMA）虽然不服务于视频编码，但它们的编码原理与视频编码中的熵编码一脉相承——都建立在"高频符号用短码、低频符号用长码"这一信息论基本思想之上。</p>
+
+<p>本文将系统讲解以下内容：Huffman 编码、Golomb/Rice 编码、指数哥伦布编码（Exp-Golomb）、算术编码、Range Coding、DEFLATE 算法（ZIP）、LZMA 算法（7z），以及 CABAC 和 CAVLC 在 H.264 中的具体应用。每个算法将从<strong>直觉</strong>出发，给出<strong>构造规则</strong>，最后说明其<strong>工程应用</strong>。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 1 · 信息论基础
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 1</div>
+<div class="ch-title">信息论基础：熵与最优编码</div>
+
+<h3 class="section-title">Shannon 熵：信息的数学度量</h3>
+
+<p>1948 年，Claude Shannon 在《通信的数学理论》中定义了<strong>信息熵</strong>（Information Entropy），为所有压缩算法提供了理论基础。对于一个离散信源，其符号集为 \(\{s_1, s_2, \ldots, s_n\}\)，各符号出现概率为 \(p(s_i)\)，则信源的熵定义为：</p>
+
+\[H(S) = -\sum_{i=1}^{n} p(s_i) \log_2 p(s_i) \quad \text{(bits/symbol)}\]
+
+<p>熵的含义是：平均而言，编码该信源的每个符号<strong>至少</strong>需要 \(H(S)\) 个比特。这是所有无损压缩算法的理论下界——无论你设计多么精巧的编码方案，都无法将平均码长压缩到熵以下 #Shannon-1948#。</p>
+
+<h3 class="section-title">前缀码与 Kraft 不等式</h3>
+
+<p>在实际编码中，我们使用<strong>前缀码</strong>（Prefix Code）——没有任何一个码字是另一个码字的前缀。这保证了编码的<strong>即时可解码性</strong>：解码器可以在读到每个码字的最后一位时立即识别出对应的符号，无需回溯。</p>
+
+<p>前缀码的存在性由 <strong>Kraft 不等式</strong>保证：若码字长度为 \(l_1, l_2, \ldots, l_n\)，则存在对应前缀码的充要条件是：</p>
+
+\[\sum_{i=1}^{n} 2^{-l_i} \leq 1\]
+
+<p>这意味着，如果我们为高频符号分配短码、低频符号分配长码，且码字长度满足 Kraft 不等式，就能构造出有效的前缀码。Huffman 编码正是这一思想的最优实现。</p>
+
+<h3 class="section-title">从整数到比特流：编码的输入</h3>
+
+<p>在图像和视频压缩中，熵编码的输入不是原始像素值，而是经过<strong>预测 → 变换 → 量化</strong>后得到的<strong>量化系数</strong>和<strong>语法元素</strong>（如运动向量、宏块类型等）。这些元素的值都是整数，但它们的统计分布各不相同：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>语法元素</th><th>典型分布</th><th>H.264 中的编码方式</th></tr>
+</thead>
+<tbody>
+<tr><td>宏块类型（mb_type）</td><td>少数几个值高频出现</td><td>Exp-Golomb（ue(v)）</td></tr>
+<tr><td>运动向量差（MVD）</td><td>集中在 0 附近，指数衰减</td><td>Exp-Golomb（se(v)）或 CABAC</td></tr>
+<tr><td>量化系数（residual）</td><td>稀疏，大量 0 和 ±1</td><td>CAVLC 或 CABAC</td></tr>
+<tr><td>coded_block_pattern</td><td>有限离散值</td><td>Exp-Golomb（me(v)）或 CABAC</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>不同分布特征需要不同的编码策略。H.264 为此设计了<strong>两套熵编码方案</strong>——CAVLC（轻量级）和 CABAC（高效率），并用 Exp-Golomb 编码覆盖所有方案中的公共语法元素。这种分层设计是理解 H.264 熵编码的关键。</p>
+
+<div class="photo">
+  <img src="media/images/binary-entropy-coding-deep-dive/h264-encoding-parameters.webp" alt="H.264 需编码的语法元素参数表" loading="lazy">
+  <div class="cap">H.264 中需要编码的主要语法元素参数表（来源：Vcodex, Table 21）</div>
+</div>
+
+</div>
+
+<!-- ============================================================
+  Section 2 · Huffman 编码
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 2</div>
+<div class="ch-title">Huffman 编码：最优前缀码的经典构造</div>
+
+<h3 class="section-title">构造算法：自底向上的树构建</h3>
+
+<p>Huffman 编码由 David Huffman 在 1952 年提出，是一种构造<strong>最优前缀码</strong>的贪心算法。"最优"的含义是：在所有可能的前缀码中，Huffman 编码的平均码长最短，且不会超过熵 + 1 bit #Huffman-1952#。</p>
+
+<p>构造过程非常直观：</p>
+
+<ol>
+<li>统计每个符号的出现频率（权重）。</li>
+<li>将所有符号视为叶节点，放入一个按权重排序的优先队列。</li>
+<li>取出权重最小的两个节点，创建一个父节点，其权重 = 两子节点权重之和。</li>
+<li>左子节点编码为 0，右子节点编码为 1（或反之）。</li>
+<li>将父节点放回优先队列。</li>
+<li>重复步骤 3-5，直到队列中只剩一个节点——这就是 Huffman 树的根。</li>
+</ol>
+
+<p>从根到每个叶节点的路径就是该符号的 Huffman 码字。高频符号路径短，低频符号路径长。</p>
+
+<h3 class="section-title">一个具体例子</h3>
+
+<p>假设有 5 个符号，权重为 A:16, B:32, C:32, D:8, E:8：</p>
+
+<pre><code>第 1 步：取 D(8) 和 E(8)，合并为 DE(16)
+第 2 步：取 A(16) 和 DE(16)，合并为 ADE(32)
+第 3 步：取 B(32) 和 C(32)，合并为 BC(64)
+         （或取 ADE(32) 和 B(32)，取决于实现）
+第 4 步：取 ADE(32) 和 BC(64)，合并为根节点(96)
+
+最终编码：
+  B → 00 (2 bits)
+  C → 01 (2 bits)
+  A → 10 (2 bits)
+  D → 110 (3 bits)
+  E → 111 (3 bits)
+
+平均码长 = (32×2 + 32×2 + 16×2 + 8×3 + 8×3) / 96 = 2.17 bits</code></pre>
+
+<h3 class="section-title">Huffman 编码的局限</h3>
+
+<p>Huffman 编码虽然最优，但它有一个根本性的局限：<strong>每个符号的码长必须是整数比特</strong>。这意味着，如果一个符号的概率为 0.4，其最优码长应为 \(-\log_2(0.4) \approx 1.32\) bits，但 Huffman 编码只能给它 1 bit 或 2 bits。</p>
+
+<p>具体来说，Huffman 编码每个符号的码长只能是 \(1, 2, 3, \ldots\) bits，即概率必须是 \(1/2, 1/4, 1/8, \ldots\) 的形式才能达到最优。当符号概率不是 2 的负幂次时，Huffman 编码会浪费最多 1 bit/symbol。这就是<strong>算术编码</strong>的动机——它突破了整数比特的限制。</p>
+
+<h3 class="section-title">在 DEFLATE 中的应用</h3>
+
+<p>Huffman 编码是 DEFLATE 算法（ZIP 的核心）的两大组件之一。DEFLATE 将 LZ77 的输出（字面量 + 距离/长度对）再通过 Huffman 编码进一步压缩。DEFLATE 使用两种 Huffman 树：一棵编码字面量/长度符号，一棵编码距离符号。树的编码通过<strong>码长序列</strong>传输——只需传输每个符号的码长，解码器即可重建完全相同的 Huffman 树 #Feldspar-DEFLATE#。</p>
+
+<p>DEFLATE 对 Huffman 编码做了一个关键优化：限制码长不超过 15 bits。这一约束使得解码器可以用固定大小的查找表高效解码，同时通过特殊的码长排列顺序（16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15）来最小化树本身的存储开销。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 3 · Golomb/Rice 编码
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 3</div>
+<div class="ch-title">Golomb/Rice 编码：几何分布的最优码</div>
+
+<h3 class="section-title">为什么需要 Golomb 编码？</h3>
+
+<p>Huffman 编码需要预先知道符号的概率分布并构建码树。但在某些场景中，符号的取值范围很大（甚至无限），但分布呈现<strong>几何分布</strong>——即值 \(n\) 出现的概率为 \(p(n) = (1-p)^n \cdot p\)。例如，运动向量的差值在 0 附近最密集，向两侧指数衰减。</p>
+
+<p>对于几何分布，Solomon Golomb 在 1960 年代证明了一种特殊的编码方式可以达到最优：<strong>Golomb 编码</strong>。其核心思想是将整数 \(n\) 分解为商 \(q\) 和余数 \(r\)，分别用<strong>一元码</strong>和<strong>定长二进制码</strong>编码 #Golomb-1966#。</p>
+
+<h3 class="section-title">编码构造</h3>
+
+<p>给定参数 \(m\)，Golomb 编码将非负整数 \(n\) 编码为：</p>
+
+<ol>
+<li>计算 \(q = \lfloor n / m \rfloor\)，\(r = n \bmod m\)</li>
+<li>商 \(q\) 用<strong>一元码</strong>编码：\(q\) 个 0 后跟一个 1（或反之）</li>
+<li>余数 \(r\) 用 \(\lceil \log_2 m \rceil\) bits 的二进制码编码</li>
+</ol>
+
+<p>当 \(m = 2^k\) 时，Golomb 编码退化为 <strong>Rice 编码</strong>，余数部分可以用简单的位操作实现，非常适合硬件加速。参数 \(k\) 的选择取决于分布的"陡峭程度"——分布越集中（\(p\) 越大），\(k\) 越小。</p>
+
+<h3 class="section-title">在 JPEG-LS 中的应用</h3>
+
+<p>JPEG-LS（ISO/IEC 14495-1）是一种无损/近无损图像压缩标准，其熵编码核心正是 Rice 编码。JPEG-LS 对预测残差使用自适应 Rice 编码：编码器根据已编码残差的统计特性动态调整参数 \(k\)，使其始终匹配当前的分布 #JPEG-LS-Standard#。这种自适应机制无需传输码表，同时保持了低计算复杂度。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 4 · 指数哥伦布编码
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 4</div>
+<div class="ch-title">指数哥伦布编码（Exp-Golomb）：H.264 的通用语法编码</div>
+
+<h3 class="section-title">设计动机</h3>
+
+<p>Golomb/Rice 编码虽然对几何分布最优，但需要选择合适的参数 \(m\) 或 \(k\)。在视频编码中，不同语法元素的分布差异很大，为每种元素设计专用参数会增加复杂度。<strong>指数哥伦布编码</strong>（Exponential-Golomb Coding）是一种<strong>通用码</strong>（Universal Code），无需预知分布参数即可对任意非负整数进行编码，同时保持良好的编码效率。</p>
+
+<p>Exp-Golomb 编码在 H.264/AVC 和 H.265/HEVC 中被广泛用于编码各种语法元素：宏块类型、参考帧索引、运动向量差、量化参数增量等 #Vcodex-CAVLC#。</p>
+
+<h3 class="section-title">编码构造</h3>
+
+<p>0 阶 Exp-Golomb 编码（H.264 默认使用）将非负整数 \(n\) 编码为：</p>
+
+\[\text{codeword} = \underbrace{M \text{ 个 } 0}_{\text{前缀}} \; 1 \; \underbrace{M \text{-bit INFO}}_{\text{后缀}}\]
+
+<p>其中：</p>
+
+\[M = \lfloor \log_2(n + 1) \rfloor\]
+\[\text{INFO} = n + 1 - 2^M\]
+
+<p>码字总长度为 \(2M + 1\) bits。解码过程为：</p>
+
+<ol>
+<li>数前导零的个数 \(M\)，读到 1 停止</li>
+<li>读取 \(M\) bits 的 INFO 字段</li>
+<li>计算 \(n = 2^M + \text{INFO} - 1\)</li>
+</ol>
+
+<p>前几个码字为：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>code_num (n)</th><th>码字</th><th>结构</th><th>长度</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td>1</td><td>0 zeros + 1 + 0-bit INFO</td><td>1 bit</td></tr>
+<tr><td>1</td><td>010</td><td>1 zero + 1 + 1-bit INFO</td><td>3 bits</td></tr>
+<tr><td>2</td><td>011</td><td>1 zero + 1 + 1-bit INFO</td><td>3 bits</td></tr>
+<tr><td>3</td><td>00100</td><td>2 zeros + 1 + 2-bit INFO</td><td>5 bits</td></tr>
+<tr><td>4</td><td>00101</td><td>2 zeros + 1 + 2-bit INFO</td><td>5 bits</td></tr>
+<tr><td>5</td><td>00110</td><td>2 zeros + 1 + 2-bit INFO</td><td>5 bits</td></tr>
+<tr><td>6</td><td>00111</td><td>2 zeros + 1 + 2-bit INFO</td><td>5 bits</td></tr>
+<tr><td>7</td><td>0001000</td><td>3 zeros + 1 + 3-bit INFO</td><td>7 bits</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="photo">
+  <img src="media/images/binary-entropy-coding-deep-dive/exp-golomb-codewords.webp" alt="Exp-Golomb 码字表" loading="lazy">
+  <div class="cap">Exp-Golomb 码字表：code_num 与码字的对应关系（来源：Vcodex, Table 31）</div>
+</div>
+
+<p>可以看到，Exp-Golomb 编码的结构非常规律：每个"码长组"（1 bit, 3 bits, 5 bits, 7 bits, ...）恰好容纳 \(2^M\) 个码字。值 0 最短（1 bit），值越大码越长，但增长率仅为 \(2\log_2(n)\)。这种结构使得 Exp-Golomb 对<strong>小值密集、大值稀疏</strong>的分布（即近似几何分布）特别有效。</p>
+
+<h3 class="section-title">阶数 k 的推广</h3>
+
+<p>0 阶 Exp-Golomb 等价于 Elias Gamma 码。通过引入阶数 \(k\)，可以推广为 \(k\) 阶 Exp-Golomb 编码：</p>
+
+<ol>
+<li>计算 \(q = \lfloor (n + 2^k - 1) / 2^k \rfloor\)（等效于先加偏移再除以 \(2^k\)）</li>
+<li>商 \(q\) 用一元码编码</li>
+<li>余数 \(r = (n + 2^k - 1) \bmod 2^k\) 用 \(k\) bits 二进制码编码</li>
+</ol>
+
+<p>阶数 \(k\) 越高，对小值的编码效率越低，但对大值的编码效率越高。H.264 主要使用 0 阶 Exp-Golomb，CABAC 中的某些 binarization 方案使用 \(k\) 阶 Exp-Golomb。</p>
+
+<h3 class="section-title">H.264 中的三种映射方式</h3>
+
+<p>在 H.264 中，Exp-Golomb 编码的实际值通过三种映射方式与 code_num 关联 #Vcodex-CAVLC#：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>映射</th><th>公式</th><th>适用场景</th><th>示例</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>ue(v)</strong> — 无符号直接映射</td><td>code_num = v</td><td>宏块类型、参考帧索引</td><td>Pred_L0_16x16 → code_num=0</td></tr>
+<tr><td><strong>se(v)</strong> — 有符号映射</td><td>code_num = 2\|v\| - 1 (v≥0)<br>code_num = 2\|v\| (v&lt;0)</td><td>运动向量差、delta QP</td><td>MVD=0 → code_num=0<br>MVD=-3 → code_num=6</td></tr>
+<tr><td><strong>me(v)</strong> — 表映射</td><td>查标准中的映射表</td><td>coded_block_pattern</td><td>根据 Inter/Intra 不同</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>ue(v) 的设计使得最常见的宏块类型（如 Pred_L0_16x16）获得最短的码字（1 bit），而较少见的类型（如 Pred_8x8）获得更长的码字。se(v) 的设计则让 MVD=0 映射到 code_num=0（1 bit），正值和负值交替排列，保证小绝对值的运动向量差获得短码。</p>
+
+<h3 class="section-title">为什么 H.264 选择 Exp-Golomb 而非 Huffman？</h3>
+
+<p>H.264 选择 Exp-Golomb 编码而非 Huffman 编码有三个关键原因：</p>
+
+<p><strong>第一，无需码表传输</strong>。Huffman 编码需要将码树随数据一起传输（或使用预定义表），而 Exp-Golomb 的构造规则是确定的——编码器和解码器只需约定使用 0 阶 Exp-Golomb，无需任何额外信息。这在视频流传输中尤为重要，因为每个 slice 都可能使用不同的统计特性。</p>
+
+<p><strong>第二，硬件实现极简</strong>。Exp-Golomb 的解码只需要前导零计数器 + 移位寄存器，无需查找表。这使得解码器可以在极低的硬件复杂度下实现高吞吐率。</p>
+
+<p><strong>第三，对未知分布的鲁棒性</strong>。Huffman 编码依赖于精确的概率估计，当实际分布与估计不符时效率急剧下降。Exp-Golomb 作为通用码，对任意几何-like 分布都能保持合理的编码效率——虽然不是最优，但"永远不差"。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 5 · 算术编码
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 5</div>
+<div class="ch-title">算术编码：突破整数比特的限制</div>
+
+<h3 class="section-title">核心思想：用区间表示消息</h3>
+
+<p>算术编码（Arithmetic Coding）由 Peter Elias 在 1960 年代提出，由 Jorma Rissanen 在 1976 年完善。其核心思想与 Huffman 编码有本质区别：<strong>Huffman 为每个符号分配一个独立的码字，而算术编码将整个符号序列映射到一个数值区间</strong>。</p>
+
+<p>具体来说，算术编码维护一个当前区间 \([low, high)\)，初始为 \([0, 1)\)。每编码一个符号，根据该符号的概率将当前区间分为若干子区间，选择对应符号的子区间作为新的当前区间。编码完所有符号后，最终区间内的任意一个数都可以唯一地表示整个符号序列。</p>
+
+<h3 class="section-title">编码过程示例</h3>
+
+<p>假设有三个符号 A(概率 0.5)、B(概率 0.3)、C(概率 0.2)，编码序列 "BAC"：</p>
+
+<pre><code>初始区间：[0, 1)
+
+编码 B (概率 0.3，区间 [0.5, 0.8))：
+  [0.5, 0.8)
+
+编码 A (概率 0.5，区间 [0, 0.5) 占据当前区间的左半)：
+  [0.5, 0.5 + 0.3×0.5) = [0.5, 0.65)
+
+编码 C (概率 0.2，区间 [0.8, 1.0) 占据当前区间的最后 20%)：
+  [0.5 + 0.15×0.8, 0.5 + 0.15×1.0) = [0.62, 0.65)
+
+最终区间 [0.62, 0.65) 中的任意值（如 0.625 = 0.101₂）
+都可以唯一解码出 "BAC"</code></pre>
+
+<p>关键洞察是：<strong>区间的宽度决定了需要多少比特来表示</strong>。如果最终区间宽度为 \(w\)，则需要约 \(-\log_2(w)\) bits 来表示。这与 Huffman 编码的根本区别在于：算术编码<strong>不要求每个符号独立占用整数比特</strong>——一个概率为 0.4 的符号理论上需要 1.32 bits，算术编码可以精确地"累积"这些小数比特。</p>
+
+<h3 class="section-title">与 Huffman 编码的定量对比</h3>
+
+<p>考虑一个符号 A 概率 0.99、B 概率 0.01 的信源。信息熵为：</p>
+
+\[H = -0.99 \log_2 0.99 - 0.01 \log_2 0.01 \approx 0.081 \text{ bits/symbol}\]
+
+<p>Huffman 编码只能给 A 分配 1 bit、B 分配 1 bit（因为只有两个符号），平均码长 = 1.0 bit。而算术编码可以接近 0.081 bits/symbol——<strong>12 倍的压缩效率差距</strong>。这就是为什么高偏分布场景下算术编码远优于 Huffman 编码。</p>
+
+<h3 class="section-title">二进制算术编码</h3>
+
+<p>在视频编码中，实际使用的是<strong>二进制算术编码</strong>（Binary Arithmetic Coding）——只编码 0 和 1 两个符号。这简化了实现：每次只需要将当前区间分为两部分，根据概率 \(p\) 分配子区间宽度。</p>
+
+<p>对于二进制算术编码，给定当前区间 \([low, high)\)，宽度 \(R = high - low\)，编码符号 0（概率 \(p_0\)）时：</p>
+
+\[\text{new\_range} = R \times p_0 \quad \text{(符号 0)}
+\]
+\[\text{new\_range} = R \times (1 - p_0) \quad \text{(符号 1)}\]
+
+<p>每次编码后区间变窄。为了用有限精度整数实现，需要定期进行<strong>重归一化</strong>（Renormalization）：当区间宽度低于某个阈值时，将 low 和 R 左移若干位（等效于乘以 2 的幂次），同时输出相应的比特到码流。</p>
+
+<h3 class="section-title">精度问题与工程实现</h3>
+
+<p>纯算术编码的一个工程挑战是<strong>有限精度</strong>：在实际实现中，low 和 range 用有限位宽的整数表示（如 16 bits 或 32 bits），当区间不断缩小但尚未输出比特时可能发生溢出。解决方案是重归一化机制——每当 range 小于阈值时，将其左移并补充比特，同时处理进位传播（carry propagation）问题。</p>
+
+<p>CABAC 使用了一个精巧的<strong>无乘法</strong>方案：将 range 量化为 4 个区间，通过查找表（LUT）预计算乘法结果，避免了实时乘法运算。概率状态用 64 个离散状态表示，通过状态转移表更新——这使得 CABAC 可以在硬件中高效实现 #Vcodex-CABAC#。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 6 · Range Coding（LZMA 的熵引擎）
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 6</div>
+<div class="ch-title">Range Coding：LZMA 的算术编码变体</div>
+
+<h3 class="section-title">Range Coding 与算术编码的关系</h3>
+
+<p>Range Coding（区间编码）由 G. Nigel N. Martin 在 1979 年提出，其数学本质与算术编码<strong>完全等价</strong>，但工程实现不同。关键区别在于：传统算术编码使用二进制（base-2）运算，每次输出一个 bit；Range Coding 使用<strong>任意进制</strong>（通常 base-256，即字节级）运算，每次输出一个字节。这使得 Range Coding 在软件实现中更高效，因为字节级操作比位级操作更适合现代 CPU 架构 #NigelTao-LZMA#。</p>
+
+<p>Range Coding 的另一个优势是<strong>无专利限制</strong>。算术编码曾受多项专利保护（尤其是 IBM 的 Rissanen 专利），而 Range Coding 的实现方式成功规避了这些专利，使其在开源软件中被广泛采用。</p>
+
+<h3 class="section-title">LZMA 中的 Range Coding</h3>
+
+<p>LZMA（Lempel-Ziv-Markov chain Algorithm）由 Igor Pavlov 于 1998 年开始开发，是 7z 格式的默认压缩算法。其熵编码部分使用 Range Coding 处理<strong>二进制符号流</strong>（binary symbol stream，LZMA 中称为 "bym"）。</p>
+
+<p>LZMA 的 Range Coding 工作原理可以用一个"寻宝"类比来理解 #NigelTao-LZMA#：</p>
+
+<ol>
+<li><strong>初始状态</strong>：一个覆盖范围 \([0, 0xFFFF)\) 的区间（用 16-bit 整数表示），以及一个从压缩流中读取的"代码值"（code value），它指向区间内的一个位置。</li>
+<li><strong>解码每个符号</strong>：根据当前概率 \(p\)（符号 0 的概率），将区间分为两部分。如果 code 落在左半（宽度 = range × p），解码为 0；否则解码为 1，并从 code 中减去左半的宽度。</li>
+<li><strong>重归一化</strong>：当 range 太小时，将其左移（乘以 256），同时从输入流中读取下一个字节加入 code。这等效于"放大地图"——range 回到足够大的尺寸，但精度（map 的粒度）变细了。</li>
+</ol>
+
+<h3 class="section-title">自适应概率模型</h3>
+
+<p>LZMA 的 Range Coding 不是使用固定概率，而是<strong>自适应</strong>的：每编码一个符号后，根据实际值更新概率估计。LZMA 为每个二进制决策维护一个概率计数器，初始值为 0.5（等概率），随着编码的进行逐渐收敛到真实分布。</p>
+
+<p>这种自适应机制使得 LZMA 无需预扫描数据即可适应不同类型的数据——文本、代码、二进制数据都能获得不错的压缩率。与 DEFLATE 的固定 Huffman 树（或每个 block 重建一次）相比，LZMA 的概率模型在每个符号级别都在更新，因此对局部统计变化更敏感。</p>
+
+<h3 class="section-title">LZMA 的 Markov 链上下文建模</h3>
+
+<p>LZMA 名称中的"Markov chain"指的是其<strong>上下文建模</strong>策略：概率不仅自适应，还<strong>依赖于之前编码的符号</strong>。具体来说，LZMA 为不同类型的二进制决策（字面量匹配/不匹配、距离编码的高/中/低位等）维护不同的概率表，形成一个简单的 Markov 链——当前决策的概率取决于之前若干个决策的结果。</p>
+
+<p>这种上下文建模是 LZMA 相比 DEFLATE 获得更高压缩率的核心原因之一。DEFLATE 的 Huffman 编码是"无记忆"的——每个符号的概率不依赖于前文；而 LZMA 的 Range Coding 配合 Markov 链建模，可以利用符号间的条件概率进一步压缩。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 7 · DEFLATE 算法
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 7</div>
+<div class="ch-title">DEFLATE 算法：ZIP 的心脏</div>
+
+<h3 class="section-title">LZ77 + Huffman 的经典组合</h3>
+
+<p>DEFLATE 由 Phil Katz 在 1990 年代初设计，是 ZIP、gzip、zlib 等广泛使用的压缩工具的核心算法。它的设计哲学是<strong>简单高效</strong>：将两种经典算法——LZ77 字典压缩和 Huffman 编码——串联使用，前者消除重复数据，后者消除统计冗余 #Feldspar-DEFLATE#。</p>
+
+<div class="callout">
+<strong>DEFLATE 管线</strong>：原始数据 → <strong>LZ77</strong>（滑动窗口匹配，输出字面量 + 距离/长度对）→ <strong>Huffman 编码</strong>（将 LZ77 输出的符号进一步压缩）→ 比特流
+</div>
+
+  {{< mermaid >}}
+  flowchart LR
+    A["原始数据"] --> B["LZ77 滑动窗口"]
+    B --> C["字面量 + 距离/长度对"]
+    C --> D["Huffman 编码"]
+    D --> E["压缩比特流"]
+  {{< /mermaid >}}
+
+<h3 class="section-title">LZ77：滑动窗口字典压缩</h3>
+
+<p>LZ77 算法（由 Lempel 和 Ziv 在 1977 年提出）的核心思想是<strong>用指针替代重复数据</strong>。它维护一个<strong>滑动窗口</strong>（DEFLATE 中为 32KB），在窗口中查找与当前位置匹配的最长字符串。如果找到匹配，就输出一个 (distance, length) 对，指向之前出现过的相同数据；如果没找到，就输出当前字节作为字面量（literal）。</p>
+
+<p>一个经典例子：</p>
+
+<pre><code>输入：Blah blah blah blah blah!
+
+LZ77 输出：
+  B, l, a, h, ' ', b        ← 字面量
+  [D=5, L=18]               ← 距离=5, 长度=18 的回引
+  !                         ← 字面量</code></pre>
+
+<p>注意 LZ77 允许<strong>重叠匹配</strong>——当 length > distance 时，匹配的数据部分来自正在被编码的区域本身。这种机制使得 "Blah blah blah..." 这样的重复模式可以被高效压缩。</p>
+
+<h3 class="section-title">Huffman 编码：消除统计冗余</h3>
+
+<p>LZ77 的输出包含三种符号：字面量（0-255）、长度码（3-258）和距离码（1-32768）。DEFLATE 使用两棵 Huffman 树对这些符号进行编码：</p>
+
+<ul>
+<li><strong>字面量/长度树</strong>：将字面量（0-255）和长度码（256-285）合并为一个字母表，使用同一棵 Huffman 树编码。</li>
+<li><strong>距离树</strong>：距离码（0-29）使用单独的 Huffman 树编码。每个距离码后面可能跟额外的定长 bits 来表示精确距离。</li>
+</ul>
+
+<p>同样，长度码后面也可能跟额外 bits 表示精确长度。这种"码 + 额外 bits"的设计避免了为每个精确值分配独立的 Huffman 码字，保持码表规模可控。</p>
+
+<h3 class="section-title">三种压缩模式</h3>
+
+<p>DEFLATE 数据被分为若干<strong>块</strong>（block），每个块可以使用以下三种模式之一：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>模式</th><th>说明</th><th>适用场景</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>不压缩</strong></td><td>原始数据直接存储，只加 5 字节头</td><td>已压缩数据、随机数据</td></tr>
+<tr><td><strong>固定 Huffman</strong></td><td>使用标准预定义的 Huffman 树</td><td>小数据块（树本身的开销不值得）</td></tr>
+<tr><td><strong>动态 Huffman</strong></td><td>根据块内数据统计构建最优 Huffman 树，将码长序列随数据一起传输</td><td>大数据块（最常用模式）</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>动态 Huffman 模式中，树的传输本身就是一种压缩：不是传输完整的码树结构，而是只传输每个符号的<strong>码长</strong>（codelength），解码器根据 DEFLATE 规范的特定排列规则重建树。码长序列再经过一次<strong>游程编码</strong>（RLE）压缩——连续相同的码长用特殊符号表示，然后对 RLE 后的序列再做一次 Huffman 编码。这种"Huffman 编码 Huffman 树"的设计精巧地最小化了元数据开销。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 8 · LZMA 算法
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 8</div>
+<div class="ch-title">LZMA 算法：7z 的压缩利器</div>
+
+<h3 class="section-title">LZMA 与 DEFLATE 的对比</h3>
+
+<p>LZMA（Lempel-Ziv-Markov chain Algorithm）由 Igor Pavlov 开发，是 7z 格式的默认压缩算法。与 DEFLATE 一样，LZMA 也是 LZ77 + 熵编码的架构，但在两个方面做出了关键改进：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>特性</th><th>DEFLATE</th><th>LZMA</th></tr>
+</thead>
+<tbody>
+<tr><td>字典压缩</td><td>LZ77, 32KB 窗口</td><td>LZ77, 最大 4GB 窗口</td></tr>
+<tr><td>熵编码</td><td>Huffman 编码（整数 bits）</td><td>Range Coding（小数 bits）</td></tr>
+<tr><td>概率模型</td><td>每 block 重建 Huffman 树（块级自适应）</td><td>逐符号自适应概率 + Markov 链上下文</td></tr>
+<tr><td>压缩率</td><td>基准</td><td>通常比 DEFLATE 好 10-30%</td></tr>
+<tr><td>速度</td><td>较快</td><td>较慢（尤其压缩速度）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">更大的滑动窗口</h3>
+
+<p>DEFLATE 的滑动窗口固定为 32KB，这意味着它只能在 32KB 范围内寻找重复数据。LZMA 将窗口大小扩展到最高 4GB，可以捕获远距离的数据重复——这在压缩大型文件（如源代码库、文档集合）时尤为有效。</p>
+
+<h3 class="section-title">Range Coding 替代 Huffman</h3>
+
+<p>LZMA 用 Range Coding 替代 Huffman 编码作为熵编码器，这带来了两方面的改进：</p>
+
+<p><strong>第一，突破整数比特限制</strong>。Huffman 编码每个符号至少需要 1 bit，而 Range Coding 可以用不到 1 bit 表示高频符号。例如，如果一个字面量 'e' 在文本中出现概率为 0.15，Huffman 编码至少需要 3 bits，而 Range Coding 只需约 \(-\log_2(0.15) \approx 2.74\) bits。</p>
+
+<p><strong>第二，逐符号自适应概率</strong>。DEFLATE 的 Huffman 树在每个 block 开始时重建，block 内概率固定不变。LZMA 的 Range Coding 在每个符号编码后更新概率，能够跟踪局部统计变化。配合 Markov 链上下文建模，LZMA 可以利用符号间的条件概率——例如，字母 'q' 后面几乎总是跟着 'u'，LZMA 可以学到这种模式并给出极低的码率。</p>
+
+<h3 class="section-title">LZMA 的完整管线</h3>
+
+<div class="callout">
+<strong>LZMA 管线</strong>：原始数据 → <strong>LZ77</strong>（大窗口匹配，输出字面量/匹配对）→ <strong>Markov 链上下文分类</strong>（决定每个决策的概率表）→ <strong>Range Coding</strong>（二进制符号流 → 压缩字节流）
+</div>
+
+<p>LZMA 将 LZ77 的输出转换为一系列二进制决策（bym stream），每个决策由 Range Coding 编码。上下文建模决定了每个决策使用哪个概率表——这是 LZMA 名称中 "Markov chain" 的含义。概率表在编码过程中不断自适应更新，使得 LZMA 可以动态适应数据分布的变化。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 9 · CABAC
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 9</div>
+<div class="ch-title">CABAC：H.264/HEVC 的核心熵编码器</div>
+
+<h3 class="section-title">设计动机：上下文自适应 + 算术编码</h3>
+
+<p>CABAC（Context-Adaptive Binary Arithmetic Coding）是 H.264/AVC 标准中两种熵编码模式之一（entropy_coding_mode = 1），也是 H.265/HEVC 中<strong>唯一的</strong>熵编码器。CABAC 由 Fraunhofer HHI 的 Detlev Marpe 和 Heiko Schwarz 团队设计，其核心创新是将<strong>上下文自适应概率建模</strong>与<strong>二进制算术编码</strong>结合 #Marpe-2003#。</p>
+
+<p>CABAC 相比 CAVLC 提供了 <strong>9-14% 的码率节省</strong>（在相同视觉质量下），代价是更高的计算复杂度 #Sze-2013#。这个数字在视频编码领域是非常显著的——每节省 10% 的码率意味着同样的带宽可以传输更高质量的视频。</p>
+
+<h3 class="section-title">三步编码流程</h3>
+
+<p>CABAC 编码一个语法元素需要经历三个阶段：</p>
+
+<div class="callout">
+<strong>CABAC 编码流程</strong>：
+<strong>(1) Binarization</strong> → 将非二进制语法元素转换为二进制串（bins）
+<strong>(2) Context Model Selection</strong> → 为每个 bin 选择概率模型
+<strong>(3) Binary Arithmetic Coding</strong> → 用选定的概率模型对每个 bin 进行算术编码
+</div>
+
+  {{< mermaid >}}
+  flowchart LR
+    A["语法元素"] --> B["Binarization 二值化"]
+    B --> C["bins 序列"]
+    C --> D{"Context Model"}
+    D --> E["概率模型选择"]
+    E --> F["Binary Arithmetic Coder"]
+    F --> G["压缩比特流"]
+    F -->|"概率更新"| D
+  {{< /mermaid >}}
+
+<h4 class="ch-section">Step 1: Binarization（二值化）</h4>
+
+<p>二进制算术编码只能编码 0 和 1，因此需要先将非二进制的语法元素（如运动向量差、量化系数）转换为二进制串。CABAC 支持四种二值化方案：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>二值化方案</th><th>构造方式</th><th>适用语法元素</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Unary（一元码）</strong></td><td>n → n 个 1 后跟 0（或 n 个 0 后跟 1）</td><td>小的非负整数，如 mb_type 的某些 bin</td></tr>
+<tr><td><strong>Truncated Unary (TU)</strong></td><td>一元码但最大值截断</td><td>coded_block_pattern 等</td></tr>
+<tr><td><strong>k-th order Exp-Golomb (EGk)</strong></td><td>与 H.264 中的 Exp-Golomb 相同</td><td>motion vector difference 的后缀 bin</td></tr>
+<tr><td><strong>Fixed-Length (FL)</strong></td><td>定长二进制码</td><td>有限范围的值，如某些 bin 的后缀</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>一个常见的组合是 <strong>TU + EGk</strong>：前缀用截断一元码编码小值部分，后缀用 Exp-Golomb 编码大值部分。这种组合充分利用了一元码对小值的高效性和 Exp-Golomb 对大值的可扩展性。</p>
+
+<div class="photo">
+  <img src="media/images/binary-entropy-coding-deep-dive/cabac-mvd-binarization.webp" alt="CABAC 中 MVD 的二值化方案" loading="lazy">
+  <div class="cap">CABAC 中运动向量差 MVDx 的二值化方案：小值用一元码，大值用 Exp-Golomb（来源：Vcodex）</div>
+</div>
+
+<h4 class="ch-section">Step 2: Context Model Selection（上下文模型选择）</h4>
+
+<p>二值化后的每个 bin 需要一个概率模型来告诉算术编码器该 bin 为 0 或 1 的概率。CABAC 的关键创新是：<strong>概率模型不是固定的，而是根据上下文自适应选择的</strong>。</p>
+
+<p>H.264/AVC 中共定义了 <strong>267 个上下文模型</strong>（编号 0-266），覆盖各种语法元素 #Vcodex-CABAC#。选择哪个模型取决于<strong>已编码的邻近语法元素的值</strong>。以运动向量差 MVDx 为例，其第一个 bin 的上下文模型根据之前两个已编码 MVD 的 L1 范数 \(e_k = |MVD_{k-1}| + |MVD_{k-2}|\) 来选择：</p>
+
+<ul>
+<li>如果 \(e_k\) 很小 → 选择 Model 0（偏向 MVDx=0 的概率更高）</li>
+<li>如果 \(e_k\) 中等 → 选择 Model 1</li>
+<li>如果 \(e_k\) 很大 → 选择 Model 2（MVDx 非零的概率更高）</li>
+</ul>
+
+<p>这种设计基于一个经验观察：<strong>空间上邻近的运动向量往往相似</strong>。如果前两个块的 MVD 都很小，当前块的 MVD 也可能很小。</p>
+
+<div class="photo">
+  <img src="media/images/binary-entropy-coding-deep-dive/cabac-context-models.webp" alt="CABAC 上下文模型选择机制" loading="lazy">
+  <div class="cap">CABAC 上下文模型选择：根据邻近块 MVD 的 L1 范数 ek 选择概率模型，不同 bin 映射到不同上下文模型编号（来源：Vcodex）</div>
+</div>
+
+<h4 class="ch-section">Step 3: Binary Arithmetic Coding（二进制算术编码）</h4>
+
+<p>选定上下文模型后，该模型提供了 bin 为 0 或 1 的概率估计。算术编码器使用这个概率将当前区间分为两个子区间，选择对应的子区间作为新区间。</p>
+
+<p>CABAC 的算术编码引擎有三个关键设计：</p>
+
+<p><strong>(a) 64 状态概率表示</strong>：概率不是用浮点数表示，而是用 64 个离散状态表示<strong>最不可能符号</strong>（Least Probable Symbol, LPS）的概率。每个状态对应一个 LPS 概率值，从 \(0.5\)（等概率）到接近 \(0\)（极偏分布）。</p>
+
+<p><strong>(b) 量化 range + 查找表</strong>：当前区间宽度 \(R\) 被量化为 4 个区间，配合 64 个概率状态，形成一个 \(4 \times 64 = 256\) 项的查找表。这使得 range × probability 的乘法运算可以用一次表查找替代——在硬件实现中意义重大 #Vcodex-CABAC#。</p>
+
+<p><strong>(c) 旁路模式</strong>：对于概率接近 0.5 的 bin（即近等概率分布），CABAC 跳过上下文建模和概率估计，直接使用简化版的算术编码。这避免了为近随机数据浪费计算资源。</p>
+
+<h3 class="section-title">概率更新机制</h3>
+
+<p>每个上下文模型在编码完一个 bin 后会更新其概率估计：如果实际编码的 bin 是 LPS，则 LPS 的概率估计增加（向更不偏的方向移动）；如果是 MPS（Most Probable Symbol），则 LPS 概率减少。这种更新通过<strong>状态转移表</strong>实现——给定当前状态和编码结果，查表得到下一个状态。</p>
+
+<p>当某个模型的累计计数超过阈值时，频率计数会被<strong>缩放</strong>（右移一位），等效于给最近的观测更高的权重——这是一种<strong>指数加权移动平均</strong>（EWMA）策略，使 CABAC 能快速适应局部统计变化。</p>
+
+<h3 class="section-title">Slice 初始化</h3>
+
+<p>在每个 slice 开始时，所有 267 个上下文模型会根据<strong>量化参数 QP</strong> 初始化为不同的概率状态。这是因为 QP 直接影响量化系数的分布——QP 越大，量化系数越稀疏（更多 0），因此初始概率应该偏向 "零系数" 更常见。QP 相关的初始化确保了 CABAC 在不同质量级别下都能快速收敛到正确的概率分布。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 10 · CAVLC
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 10</div>
+<div class="ch-title">CAVLC：H.264 的轻量级熵编码方案</div>
+
+<h3 class="section-title">CAVLC 的设计定位</h3>
+
+<p>当 H.264 的 entropy_coding_mode 设置为 0 时，使用 <strong>CAVLC</strong>（Context-Adaptive Variable Length Coding）编码残差数据，用 <strong>Exp-Golomb</strong> 编码其他语法元素。CAVLC 是 CABAC 的轻量级替代方案，适用于计算资源受限的场景（如移动设备解码）。</p>
+
+<p>CAVLC 的"上下文自适应"体现在：VLC 查找表的选择依赖于已编码的邻近块信息。这与 CABAC 的上下文建模思想一致，但实现更简单——用查表替代算术编码 #Vcodex-CAVLC#。</p>
+
+<h3 class="section-title">CAVLC 编码残差系数的五个步骤</h3>
+
+<p>CAVLC 专门针对量化后的 4×4 DCT 系数块的统计特性进行了优化。编码一个 4×4 块的残差系数包括以下五个步骤：</p>
+
+<h4 class="ch-section">Step 1: 编码系数数量和尾随 1 的个数（COEFF_TOKEN）</h4>
+
+<p>第一个 VLC 同时编码两个信息：非零系数总数（TotalCoeffs，0-16）和尾随 ±1 的个数（T1s，0-3）。VLC 表的选择依赖于邻近块的非零系数数量——如果上下文块中非零系数少，选择偏向小 TotalCoeffs 的表（Num-VLC0）；如果多，选择偏向大 TotalCoeffs 的表。共有 4 种表：Num-VLC0、Num-VLC1、Num-VLC2 和 Num-FLC（定长 6-bit）。</p>
+
+<h4 class="ch-section">Step 2: 编码每个 T1 的符号</h4>
+
+<p>每个尾随 ±1 的符号用 1 bit 编码（0 = +，1 = -），从最高频的 T1 开始逆序编码。</p>
+
+<h4 class="ch-section">Step 3: 编码非 T1 系数的幅值（Level）</h4>
+
+<p>剩余非零系数的幅值（符号 + 绝对值）从最高频向 DC 方向逆序编码。VLC 表的选择是<strong>自适应</strong>的：初始使用 Level_VLC0（偏向小幅值），每编码一个系数后，如果其幅值超过预设阈值，就切换到更大的 VLC 表。共有 7 个 Level VLC 表（Level_VLC0 到 Level_VLC6），从小到大排列。这种设计利用了量化系数"低频大幅值、高频小幅值"的统计特性。</p>
+
+<h4 class="ch-section">Step 4: 编码最后一个非零系数前的零总数（TotalZeros）</h4>
+
+<p>TotalZeros 是 zig-zag 扫描序列中最后一个非零系数之前的所有零的总数。单独编码 TotalZeros 的好处是：如果块中只有少量非零系数（常见情况），后续的 run_before 编码可以更高效——因为解码器已经知道总共有多少零需要分配。</p>
+
+<h4 class="ch-section">Step 5: 编码每个非零系数前的零游程（run_before）</h4>
+
+<p>每个非零系数前面的零的个数用 VLC 编码，VLC 表的选择依赖于<strong>剩余待编码的零数量</strong>（ZerosLeft）。如果只剩 2 个零，run_before 最多为 2，VLC 只需 1-2 bits；如果剩 6 个零，可能需要更多 bits。</p>
+
+<h3 class="section-title">CAVLC 对量化块特性的利用</h3>
+
+<p>CAVLC 的设计深度利用了量化 4×4 块的四个统计特性：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>统计特性</th><th>CAVLC 的应对策略</th></tr>
+</thead>
+<tbody>
+<tr><td>块通常稀疏（大量零）</td><td>用 run-level 编码紧凑表示零串</td></tr>
+<tr><td>高频系数常为 ±1</td><td>用 T1s 计数 + 1-bit 符号编码</td></tr>
+<tr><td>邻近块的非零系数数相关</td><td>VLC 表选择依赖上下文（context-adaptive）</td></tr>
+<tr><td>低频系数幅值大、高频小</td><td>Level VLC 表自适应从小到大切换</td></tr>
+</tbody>
+</table>
+</div>
+
+</div>
+
+<!-- ============================================================
+  Section 11 · 综合对比与 H.264 中的应用
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 11</div>
+<div class="ch-title">综合对比：编码算法全景与 H.264 中的应用</div>
+
+<h3 class="section-title">编码算法演进路线</h3>
+
+<p>从 Huffman 到 CABAC，二进制编码算法的演进遵循一条清晰的路线：<strong>越来越逼近熵极限，但计算复杂度也越来越高</strong>。</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>算法</th><th>逼近熵极限</th><th>自适应</th><th>上下文建模</th><th>复杂度</th><th>典型应用</th></tr>
+</thead>
+<tbody>
+<tr><td>Huffman 编码</td><td>≤ 熵 + 1 bit</td><td>块级重建</td><td>无</td><td>低</td><td>DEFLATE/ZIP</td></tr>
+<tr><td>Golomb/Rice 编码</td><td>几何分布最优</td><td>参数自适应</td><td>无</td><td>低</td><td>JPEG-LS</td></tr>
+<tr><td>Exp-Golomb 编码</td><td>通用码（次优）</td><td>无</td><td>无</td><td>极低</td><td>H.264 语法元素</td></tr>
+<tr><td>算术编码</td><td>≈ 熵</td><td>可选</td><td>可选</td><td>中</td><td>JPEG (扩展)</td></tr>
+<tr><td>Range Coding</td><td>≈ 熵</td><td>逐符号</td><td>Markov 链</td><td>中-高</td><td>LZMA/7z</td></tr>
+<tr><td>CABAC</td><td>≈ 熵</td><td>逐 bin</td><td>267 上下文模型</td><td>高</td><td>H.264/HEVC</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 class="section-title">H.264 熵编码架构总览</h3>
+
+<p>H.264 的熵编码系统采用分层设计，不同类型的语法元素使用不同的编码方案：</p>
+
+<div class="callout">
+<p><strong>H.264 熵编码架构</strong>：</p>
+<p><strong>模式 0（CAVLC 模式）</strong>：</p>
+<p>• 所有非残差语法元素 → <strong>Exp-Golomb</strong>（ue/se/me 映射）</p>
+<p>• 残差 4×4 系数块 → <strong>CAVLC</strong>（5 步上下文自适应 VLC）</p>
+<p><strong>模式 1（CABAC 模式）</strong>：</p>
+<p>• 所有语法元素 → <strong>CABAC</strong>（Binarization + Context + Binary Arithmetic Coding）</p>
+<p>• Binarization 内部使用 Unary、TU、EGk、FL 等方案（包括 Exp-Golomb）</p>
+</div>
+
+<p>可以看到，<strong>Exp-Golomb 在两种模式中都扮演重要角色</strong>：在 CAVLC 模式中直接编码语法元素，在 CABAC 模式中作为二值化方案之一。而 CABAC 的算术编码引擎取代了 CAVLC 的 VLC 查表，通过逐 bin 的概率自适应获得了额外的压缩增益。</p>
+
+  {{< mermaid >}}
+  flowchart TD
+    subgraph MODE0["模式 0: CAVLC"]
+      A1["非残差语法元素"] --> B1["Exp-Golomb 编码"]
+      C1["残差 4x4 系数块"] --> D1["CAVLC 5步编码"]
+    end
+    subgraph MODE1["模式 1: CABAC"]
+      A2["所有语法元素"] --> B2["Binarization"]
+      B2 --> C2["Context Model"]
+      C2 --> D2["Binary Arithmetic Coding"]
+    end
+    B1 --> OUT["比特流"]
+    D1 --> OUT
+    D2 --> OUT
+  {{< /mermaid >}}
+
+<h3 class="section-title">CABAC vs CAVLC：定量对比</h3>
+
+<p>根据 Sze et al. 在 IEEE SIPS 2013 上的系统评估，CABAC 相比 CAVLC 在 H.264/AVC 中提供了 9-14% 的码率节省（BDBitrate 测试），但 CAVLC 的吞吐率显著更高 #Sze-2013#：</p>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>指标</th><th>CAVLC</th><th>CABAC</th></tr>
+</thead>
+<tbody>
+<tr><td>码率节省（vs CAVLC）</td><td>基准</td><td>9-14% ↓</td></tr>
+<tr><td>吞吐率</td><td>较高</td><td>较低（约 CAVLC 的 1/2 到 1/3）</td></tr>
+<tr><td>硬件复杂度</td><td>低（查表）</td><td>高（算术编码 + 上下文管理）</td></tr>
+<tr><td>概率模型</td><td>块级上下文（4 表选择）</td><td>267 个逐 bin 上下文模型</td></tr>
+<tr><td>熵编码引擎</td><td>VLC（整数 bits）</td><td>二进制算术编码（小数 bits）</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>正是由于 CABAC 的计算复杂度较高，H.264 保留了 CAVLC 作为 Baseline profile 的可选方案。但在 H.265/HEVC 中，CABAC 已成为<strong>唯一的</strong>熵编码器——随着硬件性能的提升，CABAC 的压缩优势使其成为不可替代的选择。</p>
+
+<h3 class="section-title">从 MPEG-4 CAE 到 CABAC：技术传承</h3>
+
+<p>CABAC 的设计并非凭空出现。它的"上下文自适应 + 算术编码"范式直接继承了 MPEG-4 Visual 中的 <strong>CAE</strong>（Context-based Arithmetic Encoding）——用于二值形状编码的熵编码器。CAE 使用 10 像素的上下文模板捕获二值形状的局部空间相关性，CABAC 将这一思想推广到了所有语法元素 #MPEG4-Shape-Coding#。</p>
+
+<p>从 CAE 的 10-pel 模板到 CABAC 的 267 个上下文模型，核心思想一脉相承：<strong>上下文自适应建模是压缩效率的核心来源</strong>。无论是 1997 年的二值形状编码，还是 2020 年代的神经视频编码，上下文建模都是压缩效率提升的关键路径。</p>
+
+</div>
+
+<!-- ============================================================
+  Section 12 · 开放问题与展望
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">Section 12</div>
+<div class="ch-title">开放问题与展望</div>
+
+<h3 class="section-title">1. CABAC 的吞吐率瓶颈</h3>
+
+<p>CABAC 的串行特性——每个 bin 的编码依赖于前一个 bin 更新后的概率状态——使得它难以并行化。在 4K/8K 超高清视频编码中，CABAC 的吞吐率成为编码速度的主要瓶颈。HEVC 通过引入<strong>波前并行处理</strong>（Wavefront Parallel Processing, WPP）部分缓解了这一问题，但 CABAC 引擎本身仍是串行的。未来的研究方向包括<strong>概率状态并行化</strong>和<strong>近似算术编码</strong>（允许少量精度损失以换取吞吐率提升）。</p>
+
+<h3 class="section-title">2. 神经网络驱动的熵编码</h3>
+
+<p>近年来，学习式图像压缩（Learned Image Compression）引入了<strong>神经网络熵模型</strong>，如 Ballé 的 Scale Hyperprior、Minnen 的 Joint Context Model 等。这些方法使用神经网络替代手工设计的上下文模型，自动学习符号间的条件概率分布。在超低码率场景下，神经熵模型已经超越了 CABAC 的编码效率。然而，神经熵模型通常仍依赖传统的算术编码引擎（如 ranged coder）作为后端——CABAC 的工程智慧并未过时，只是前端建模被神经网络替代。</p>
+
+<h3 class="section-title">3. 专用硬件中的编码选择</h3>
+
+<p>在移动设备和嵌入式系统中，编码器的功耗和面积预算极为有限。Exp-Golomb 编码因其"无需查找表、仅需前导零计数"的极简实现，仍然是资源受限场景下的首选。而 Range Coding 因其在软件实现中的高效性，被广泛应用于嵌入式 Linux 系统的文件压缩。编码算法的选择本质上是一个<strong>效率-复杂度-适应性</strong>的三维权衡，没有"一刀切"的最优解。</p>
+
+<h3 class="section-title">4. 通用压缩与领域压缩的融合</h3>
+
+<p>ZIP/DEFLATE 和 LZMA/7z 是面向<strong>通用数据</strong>的压缩工具，而 CABAC 是面向<strong>视频编码</strong>的专用熵编码器。两者的设计哲学不同：通用工具追求"对任何数据都不差"，领域编码器追求"对特定数据最优"。但随着 AI 驱动的<strong>语义压缩</strong>兴起，这条界限正在模糊——未来的压缩系统可能将通用字典压缩、领域特定建模和神经网络概率估计融合为统一框架。</p>
+
+</div>
+
+<!-- ============================================================
+  总结
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">总结</div>
+<div class="ch-title">编码算法的核心洞察</div>
+
+<p>回顾本文覆盖的七种编码算法，我们可以提炼出几条贯穿始终的核心洞察：</p>
+
+<p><strong>第一，编码效率的上界是信息熵</strong>。无论算法多么精巧，平均码长不可能低于信源的熵。Huffman 编码浪费在"整数比特限制"上的冗余最多 1 bit/symbol，而算术编码和 Range Coding 可以无限逼近熵极限。CABAC 通过上下文建模进一步降低了<strong>条件熵</strong>——即利用符号间的相关性进一步压缩。</p>
+
+<p><strong>第二，自适应是效率的关键</strong>。固定概率模型无法适应数据分布的变化。CAVLC 的块级 VLC 表切换、CABAC 的逐 bin 概率更新、LZMA 的 Markov 链上下文——这些自适应机制是现代编码器超越早期固定 Huffman 编码的核心。适应速度（LZMA 的逐符号更新 vs DEFLATE 的块级重建）是压缩效率差距的重要来源。</p>
+
+<p><strong>第三，复杂度决定适用场景</strong>。Exp-Golomb 的极简实现使其适合 H.264 中大量低频语法元素的编码；DEFLATE 的 Huffman 编码使其在通用文件压缩中保持高速；CABAC 的 267 个上下文模型和二进制算术编码使其在视频编码中达到最高效率。没有"通用最优"的编码算法——每种方法都是特定约束下的最优选择。</p>
+
+<p><strong>第四，编码算法的演进是"加法"而非"替代"</strong>。H.264 同时使用 Exp-Golomb（简单语法元素）、CAVLC（残差系数，轻量级）和 CABAC（残差系数，高效率）。CABAC 内部的二值化方案本身又包含 Unary、TU 和 Exp-Golomb。这种"洋葱式"的分层设计使得编码系统可以灵活地在不同粒度上选择最合适的工具——这正是工程实践的智慧。</p>
+
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+
+<div class="sources">
+<h3>参考来源</h3>
+<ul>
+<li data-cite-key="Shannon-1948">C. E. Shannon, "A Mathematical Theory of Communication," Bell System Technical Journal, vol. 27, pp. 379-423, 1948.</li>
+<li data-cite-key="Huffman-1952">D. A. Huffman, "A Method for the Construction of Minimum-Redundancy Codes," Proceedings of the IRE, vol. 40, no. 9, pp. 1098-1101, 1952.</li>
+<li data-cite-key="Golomb-1966">S. W. Golomb, "Run-Length Encodings," IEEE Transactions on Information Theory, vol. 12, no. 3, pp. 399-401, 1966.</li>
+<li data-cite-key="Marpe-2003">D. Marpe, H. Schwarz, and T. Wiegand, "Context-based adaptive binary arithmetic coding in the H.264/AVC video compression standard," IEEE Transactions on Circuits and Systems for Video Technology, vol. 13, no. 7, pp. 620-636, 2003.</li>
+<li data-cite-key="Sze-2013">V. Sze, "A comparison of CABAC throughput for HEVC/H.265 vs. AVC/H.264," IEEE Workshop on Signal Processing Systems (SiPS), 2013.</li>
+<li data-cite-key="Richardson-2010">I. E. Richardson, "The H.264 Advanced Video Compression Standard," John Wiley & Sons, 2010.</li>
+<li data-cite-key="Vcodex-CABAC">I. Richardson (Vcodex), "H.264/AVC Context Adaptive Binary Arithmetic Coding (CABAC)," https://www.vcodex.com/h264avc-context-adaptive-binary-arithmetic-coding-cabac</li>
+<li data-cite-key="Vcodex-CAVLC">I. Richardson (Vcodex), "H.264/AVC Context Adaptive Variable Length Coding (CAVLC)," https://www.vcodex.com/h264avc-context-adaptive-variable-length-coding</li>
+<li data-cite-key="Feldspar-DEFLATE">A. Feldspar, "An Explanation of the DEFLATE Algorithm," https://zlib.net/feldspar.html</li>
+<li data-cite-key="NigelTao-LZMA">N. Tao, "XZ/LZMA Worked Example Part 1: Range Coding," https://nigeltao.github.io/blog/2024/xz-lzma-part-1-range-coding.html</li>
+<li data-cite-key="JPEG-LS-Standard">ISO/IEC 14495-1, "Information technology — Lossless and near-lossless compression of continuous-tone still images: Baseline," 1999.</li>
+<li data-cite-key="MPEG4-Shape-Coding">J. Ostermann et al., "Coding of arbitrarily shaped video objects in MPEG-4," PCS 1997. 站内精读：<a href="/mpeg4-shape-coding-1997">MPEG-4 二值形状编码</a></li>
+</ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="video-compression-h264.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">视频压缩基础：从 MPEG-1 到 H.264/AVC</span></a>
+  <a class="nav-card nav-hub" href="compression-hub.html"><span class="nav-label">系列总览</span><span class="nav-title">图像压缩基础系列</span></a>
+  <a class="nav-card nav-next" href="hevc-av1-nextgen-video.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">H.265/HEVC、AV1 与下一代视频编码</span></a>
+</div>

@@ -1,108 +1,437 @@
 ---
 title: "数字人论文精读（三十五）：GenEAva，首个 135 类细粒度表情卡通头像数据集"
-description: "深读 GenEAva：SDXL + LoRA (rank=4) + Emo135 表情数据集 + DCTNet 3D cartoon 风格化的完整管线，分析 GenEAva 1.0 数据集（13,230 张/135 种表情/7 种族均衡）的构建方法，解读 AMT User Study（9 人、表情 96%/身份 93% 保留率）和 CLIP/DINO/LPIPS 指标体系。"
+description: "深读 GenEAva：SDXL + LoRA (rank=4) + Emo135 表情数据集 + DCTNet 3D cartoon 风格化的完整管线，分析 GenEAva 1.0 数据集（13,230 张/135 种表情/7 种族均衡）的构建方法，解读表情引导微调（一步逆公式 + POSTER 表情损失）的训练目标，以及 AMT User Study（9 评估者、945 对、表情 96%/身份 93% 保留率）和 CLIP/DINO/LPIPS/Expression Error 指标体系。"
 date: 2026-07-06T20:00:00
 created_at: 2026-07-06T20:00:00
-updated_at: 2026-07-08T11:32:45
+updated_at: 2026-07-10T16:30:00
 tags: ["数字人", "Cartoon Avatar", "GenEAva", "数据集", "表情生成"]
 aliases: ["categories/AI/数字人/数字人论文精读"]
 sub_id: 350
 toc: true
-hub: digital-human-hub
 mathjax: true
 notify: true
+papers: ["https://arxiv.org/abs/2504.07945"]
 hero_title: "GenEAva：卡通头像数据集"
 hero_sub: "135 种表情 × 7 种族 × 13,230 张——卡通数字人的数据基础设施"
-hero_tagline: "论文精读（三十五）· Cartoon Avatar · Emo135 · DCTNet · Dataset"
+hero_tagline: "论文精读（三十五）· FG 2025 · SDXL + LoRA · DCTNet · Dataset"
+paper_title: "GenEAva: Generating Cartoon Avatars with Fine-Grained Facial Expressions from Realistic Diffusion-based Faces"
+paper_authors: "Hao Yu, Rupayan Mallick, Margrit Betke, Sarah Adel Bargal"
+paper_affiliation: "Boston University; Georgetown University"
+paper_venue: "IEEE FG 2025"
+paper_url: "https://arxiv.org/abs/2504.07945"
+paper_code: "未开源（截至 2026.07 未找到官方仓库）"
 ---
 
 <div class="ch fade-in">
   <div class="ch-label">Part 1</div>
   <div class="ch-title">卡通头像缺的不是模型，是数据</div>
 
-  <p>生成式 AI 已经能轻松创建高质量的真实人脸表情图像，但卡通头像的生成面临一个独特挑战：<strong>缺乏带有细粒度表情标注的卡通数据集</strong>。现有的卡通头像要么没有表情标注，要么只有粗略的几种情绪分类（happy/sad/angry）。</p>
+  <p>卡通头像在社交媒体、在线辅导、视频会议和游戏中的应用日益普及 #nowak2018avatars#。然而，当我们想让一个卡通头像表达"同情"（compassion）或"嫉妒"（jealousy）这样的细粒度表情时，会发现一个尴尬的现实：==现有卡通头像数据集要么没有表情标注，要么只有 happy/sad/angry 等粗略分类== #cartoonset#。生成式 AI 虽然能轻松创建高质量真实人脸，但卡通头像的细粒度表情生成一直缺乏数据支撑。</p>
 
-  <p>GenEAva #Yu-et-al.-2025# 来自 Boston University 和 Georgetown University，贡献了第一个专为细粒度表情设计的卡通头像数据集：<strong>GenEAva 1.0</strong>，包含 13,230 张卡通头像、135 种表情、平衡性别和 7 个种族群体。</p>
+  <p>更深层的问题还有两个。一是<strong>身份记忆风险</strong>：扩散模型可能复制训练数据中的真实人脸身份，引发隐私担忧 #somepalli2022diffusion# #carlini_usenix#。二是<strong>人口统计学偏差</strong>：现有卡通数据集（如 Manga109）偏向年轻、浅肤色角色 #fujimoto2016manga109#，无法代表多元人群。</p>
+
+  <p>GenEAva #Yu-et-al.-2025# 来自 Boston University 和 Georgetown University，针对上述三重困境提出了一个完整方案：<strong>微调 SDXL 扩散模型学习 135 种细粒度表情分布 → 用 GPT-4o 生成人口均衡的提示词 → 生成真实人脸 → DCTNet 风格化为卡通头像</strong>。最终产出 GenEAva 1.0 数据集——13,230 张卡通头像，覆盖 135 种表情，平衡性别和 7 个种族群体，并通过 ArcFace 定量分析和 AMT 用户研究双重验证了身份新颖性。</p>
+
+  <div class="callout"><strong>核心贡献预告：</strong>GenEAva 的创新不在于提出新模型架构，而在于将"表情分布学习"范式引入卡通头像生成——不依赖参考图像进行表情迁移，而是直接从学习的分布中采样。配合表情引导损失（POSTER + 一步逆公式）和隐私优先设计（LoRA rank=4 + 小数据 + 8 epoch 上限），构建了第一个面向 135 类细粒度表情的卡通头像数据集。</div>
 </div>
 
 <div class="ch fade-in">
   <div class="ch-label">Part 2</div>
-  <div class="ch-title">三步管线：真实表情生成 → 风格化 → 数据集构建</div>
+  <div class="ch-title">为什么 135 类表情这么难生成</div>
 
-  <h3 class="section-title">2.1 SDXL + LoRA 微调生成真实人脸表情</h3>
+  <h3 class="section-title">2.1 已有方法的三重瓶颈</h3>
 
-  <p>在 SDXL 扩散模型上，使用 Emo135 数据集（每类表情 8 张参考图像，共 1,080 张）进行 LoRA 微调（rank=4），并加入 expression loss 辅助损失增强表情控制精度。</p>
+  <p>面部表情生成经历了从 GAN 到扩散模型的演进 #choi2018stargan# #ho2020denoising#。StarGAN #Choi-et-al.-2018# 开创了多域人脸编辑，但仅支持基本表情。Pikoulis et al. 用 CLIP 潜在引导微调 Stable Diffusion，将表情类别扩展到 7 种基本情绪。Liu et al. #Liu-et-al.-2024# 虽然同样使用 135 类表情，但需要选择参考图像进行表情迁移（expression transfer），生成受限于参考图的多样性。</p>
 
-  <p>提示词由 GPT-4o 生成，确保包含平衡的人口属性信息（性别、种族、年龄）。</p>
-
-  <h3 class="section-title">2.2 DCTNet 3D Cartoon 风格化</h3>
-
-  <p>使用 DCTNet 的预训练 3D cartoon 风格模型，将生成的高质量真实人脸表情图像转换为卡通头像。这是一个现成的风格迁移模块。</p>
-
-  <h3 class="section-title">2.3 GenEAva 1.0 数据集</h3>
+  <p>我们可以将已有方法面临的困境归纳为三个层面：</p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>属性</th><th>值</th></tr></thead>
+      <thead><tr><th>瓶颈</th><th>具体表现</th><th>影响</th></tr></thead>
       <tbody>
-        <tr><td>总图像数</td><td>13,230</td></tr>
-        <tr><td>表情类别数</td><td>135</td></tr>
-        <tr><td>每类图像数</td><td>98</td></tr>
-        <tr><td>种族群体</td><td>7 个（均衡分布）</td></tr>
-        <tr><td>性别分布</td><td>均衡</td></tr>
+        <tr><td>表情粒度不足</td><td>多数方法仅覆盖 6-7 种基本表情 #he2024synfer#</td><td>无法生成 compassion、jealousy 等复杂情绪</td></tr>
+        <tr><td>参考图依赖</td><td>Liu et al. 需要选取参考图像做表情迁移 #Liu-et-al.-2024#</td><td>表情多样性受限于数据集中参考图的覆盖</td></tr>
+        <tr><td>身份记忆风险</td><td>扩散模型被证实会复制训练数据 #somepalli2022diffusion#</td><td>生成人脸可能泄露真实身份，不适合公开数据集</td></tr>
       </tbody>
     </table>
   </div>
+
+  <h3 class="section-title">2.2 GenEAva 的突破口：从"迁移"到"分布学习"</h3>
+
+  <p>GenEAva 的核心 insight 可以用一个类比来理解：Liu et al. 的方法像是"给画师一张表情参考图让他临摹"，而 GenEAva 则是"让画师系统学习 135 种表情的画法，然后凭理解直接画"。前者受限于参考图，后者可以从学习到的分布中自由采样。</p>
+
+  <p>具体来说，GenEAva 通过在 Emo135 #Chen-et-al.-2022# 数据集上微调 SDXL #Podell-et-al.-2023#，让模型直接学习 135 类表情的潜在分布。推理时只需文本提示（包含表情、种族、性别、年龄信息），即可从分布中采样生成全新的人脸图像——无需任何参考图像。这种"表情分布学习"范式使得表情生成不再受限于参考图像的可用性和多样性。</p>
+
+  <p>但这里有一个技术挑战：标准扩散模型的训练目标（噪声预测损失）对表情这一语义属性的约束是间接的。文本条件虽然包含表情信息，但对于 compassion 和 sympathy 这样微妙的表情差异，仅靠文本条件难以精确控制。GenEAva 的解决方案是引入<strong>表情引导损失</strong>——我们将在 Part 3 详细展开。</p>
 </div>
 
 <div class="ch fade-in">
   <div class="ch-label">Part 3</div>
-  <div class="ch-title">评测：AMT 众包 + 感知指标</div>
+  <div class="ch-title">两阶段管线：从文本到卡通头像</div>
 
-  <h3 class="section-title">3.1 Amazon Mechanical Turk User Study</h3>
+  <p>GenEAva 的完整管线分为两个阶段：<strong>微调阶段</strong>（让 SDXL 学会 135 类表情）和<strong>推理阶段</strong>（生成真实人脸 → 风格化为卡通头像）。图 1 展示了整体架构。</p>
+
+  <div class="photo">
+    <img src="media/images/geneava-2025/avatar_pipeline_latest.webp" alt="GenEAva 管线架构图" loading="lazy">
+    <div class="cap">图 1：GenEAva 管线架构。微调阶段：在 Emo135 表情图像上微调 SDXL，使用 DM loss + expression loss 联合优化。推理阶段：通过文本提示生成真实人脸，再经 DCTNet 风格化为卡通头像（来源：GenEAva, Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">3.1 微调阶段：表情引导的扩散模型微调</h3>
+
+  <p>微调阶段的核心问题是：如何让扩散模型不仅学会"去噪"，还学会"画准表情"？GenEAva 的答案是<strong>双损失联合训练</strong>——标准扩散模型损失保证图像质量，表情损失保证表情准确性。</p>
+
+  <h4 class="ch-section">扩散模型损失（DM Loss）</h4>
+
+  <p>SDXL 作为潜在扩散模型，在 VAE 编码后的潜空间中进行去噪训练。给定真实图像 $\mathbf{x}_0$ 经编码器 $\mathcal{E}$ 得到潜变量 $\mathbf{z}_0$，前向过程逐步添加高斯噪声，任意时间步 $t$ 的噪声潜变量可由闭合形式直接计算：</p>
+
+  \[\mathbf{z}_t = \sqrt{\bar{\alpha}_t}\mathbf{z}_0 + (1 - \bar{\alpha}_t)\epsilon, \quad \bar{\alpha}_t = \prod_{s=1}^{t}\alpha_s, \quad \epsilon \sim \mathcal{N}(0,1)\]
+
+  <div class="callout"><strong>公式注记：</strong>原文此处噪声项系数写作 $(1 - \bar{\alpha}_t)$，而标准 DDPM 公式中应为 $\sqrt{1 - \bar{\alpha}_t}$。从后文的一步逆公式反推，噪声系数应为 $\sqrt{1 - \bar{\alpha}_t}$，因此此处很可能存在排版笔误。本精读保留原文写法。</div>
+
+  <p>U-Net $\epsilon_\theta$ 接收噪声潜变量 $\mathbf{z}_t$、时间步 $t$ 和文本条件 $\tau(p)$，预测添加的噪声。DM 损失就是预测噪声与真实噪声之间的平方误差：</p>
+
+  \[\mathcal{L}_{\text{dm}} = \|\epsilon - \epsilon_\theta(\mathbf{z}_t, t, \tau(p))\|_2^2\]
+
+  <p>但仅靠 DM 损失，表情信息只能通过文本条件间接传入。对于 135 种细粒度表情（如 compassion vs sympathy），文本到表情的映射非常复杂，标准 DM 损失难以充分约束。</p>
+
+  <h4 class="ch-section">表情损失（Expression Loss）</h4>
+
+  <p>GenEAva 引入了一个额外的表情损失，使用 POSTER #Zheng-et-al.-2023# 作为表情编码器 $\mathcal{E}_{\text{exp}}$。POSTER 是一个基于 Transformer 的 SOTA 面部表情识别模型，能将面部表情编码为具有语义区分度的特征向量。</p>
+
+  <p>表情损失的核心思想很直观：让生成图像和真实图像在 POSTER 的表情特征空间中对齐：</p>
+
+  \[\mathcal{L}_{\text{exp}} = \text{MSE}(\mathcal{E}_{\text{exp}}(\mathbf{x}_0), \mathcal{E}_{\text{exp}}(\hat{\mathbf{x}}_0))\]
+
+  <p>但这里有一个工程难题：训练时无法直接获得生成图像 $\hat{\mathbf{x}}_0$（需要完整的多步去噪链，计算上不可行且无法反向传播）。GenEAva 采用了一个巧妙的解决方案——<strong>一步逆公式近似</strong>：</p>
+
+  \[\hat{\mathbf{z}}_0 = \frac{\mathbf{z}_t - \sqrt{1 - \bar{\alpha}_t}\epsilon_\theta}{\sqrt{\bar{\alpha}_t}}, \quad \hat{\mathbf{x}}_0 = \mathcal{D}(\hat{\mathbf{z}}_0)\]
+
+  <p>从闭合形式反解出 $\mathbf{z}_0$ 的近似值 $\hat{\mathbf{z}}_0$，再通过 VAE 解码器 $\mathcal{D}$ 转回像素空间得到 $\hat{\mathbf{x}}_0$。由于 $\epsilon_\theta$ 是模型参数的可微函数，整条梯度链 $\mathcal{L}_{\text{exp}} \to \hat{\mathbf{x}}_0 \to \hat{\mathbf{z}}_0 \to \epsilon_\theta$ 都可以反向传播。这意味着表情损失可以直接更新 U-Net 的参数，让模型在去噪的同时学习表情语义。</p>
+
+  <div class="callout"><strong>关键设计直觉：</strong>一步逆公式就像在训练过程中给模型一个"快速预览"——不需要等完整去噪链跑完，只用当前预测的噪声一步估算生成结果，然后让 POSTER 编码器当"裁判"判断表情对不对。随着 DM 损失改善模型预测，这个估算也越来越准。</div>
+
+  <p>总训练目标是两个损失的等权组合（$\alpha = 1.0$）：</p>
+
+  \[\mathcal{L} = \mathcal{L}_{\text{dm}} + \alpha \mathcal{L}_{\text{exp}}\]
+
+  <p>这里 $\alpha = 1.0$ 意味着 DM 损失和表情损失被赋予同等权重。论文未报告不同 $\alpha$ 值的消融实验，这是一个可复现性缺陷。</p>
+
+  <h3 class="section-title">3.2 推理阶段：文本 → 真实人脸 → 卡通头像</h3>
+
+  <p>微调完成后，推理阶段的流程是：(1) GPT-4o 生成平衡人口属性的文本提示词 → (2) 微调后的 SDXL 从噪声中采样生成真实人脸 → (3) 质量过滤 → (4) DCTNet 风格化为 3D 卡通头像。</p>
+
+  <p>提示词由 GPT-4o #Hurst-et-al.-2024# 生成，确保覆盖 7 个种族群体（White、Black、Indian、East Asian、Southeast Asian、Middle East、Latino #Karkkainen-et-al.-2021#）、均衡的性别分布和从青少年到老年的年龄范围。示例提示词：<em>"A photorealistic face of a middle-aged Indian woman with shoulders visible, displaying a facial expression of delight, plain white background."</em></p>
+
+  <p>风格化使用 DCTNet #Men-et-al.-2022# 的预训练 3D cartoon 风格模型。DCTNet 是一种域校准翻译（Domain-Calibrated Translation）架构，仅需约 100 张风格样本即可实现高质量风格迁移。论文框架设计允许替换为其他风格化方法，评估管线仍可适用。</p>
+
+  <p>图 2 展示了 GenEAva 1.0 数据集中的生成示例——每对图像展示同一种表情在真实风格和卡通风格下的呈现：</p>
+
+  <div class="photo">
+    <img src="media/images/geneava-2025/exp_cartoon_one.webp" alt="GenEAva 1.0 数据集示例：真实人脸与卡通头像对比" loading="lazy">
+    <div class="cap">图 2：GenEAva 1.0 数据集中的真实人脸（上行）与卡通头像（下行）对比。展示了 glee、shock、grouchiness、torment、triumph、grumpiness、delight 等 7 种细粒度表情，涵盖多种族、多年龄段（来源：GenEAva, Fig.2）</div>
+  </div>
+
+  <h3 class="section-title">3.3 与 Liu et al. 的范式差异</h3>
+
+  <p>GenEAva 与最相关工作 Liu et al. #Liu-et-al.-2024# 的核心差异不在于模型规模或数据量，而在于<strong>问题范式</strong>：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>Liu et al. (CVPR 2024)</th><th>GenEAva (FG 2025)</th></tr></thead>
+      <tbody>
+        <tr><td>问题范式</td><td>表情迁移（Expression Transfer）</td><td>表情分布学习（Distribution Learning）</td></tr>
+        <tr><td>输入需求</td><td>目标身份 + 参考表情图像</td><td>仅文本提示</td></tr>
+        <tr><td>表情来源</td><td>从 135 类数据集中选取参考图</td><td>从微调模型学习的分布中采样</td></tr>
+        <tr><td>身份控制</td><td>保留特定身份</td><td>生成全新身份（验证无记忆化）</td></tr>
+        <tr><td>训练损失</td><td>标准条件扩散损失</td><td>DM 损失 + 表情损失（POSTER MSE）</td></tr>
+        <tr><td>风格化</td><td>无</td><td>DCTNet 3D 卡通风格</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这种范式差异使得 GenEAva 能够生成更多样化的表情表现，而不受限于参考图像的多样性。但代价是 GenEAva 不支持给定身份的多表情生成——同一身份在不同表情下可能不一致。这一问题由后续工作 Gen-AFFECT（WACV 2026）解决。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：表情感知的扩散模型微调</div>
+
+  <h3 class="section-title">4.1 训练数据准备</h3>
+
+  <p>GenEAva 的微调数据来自 Emo135 #Chen-et-al.-2022# 数据集——一个包含 135 类细粒度表情、共 696,168 张人脸图像的大规模数据集。但 GenEAva 并未使用全部数据，而是经过三步预处理构建了一个极小的均衡子集：</p>
+
+  <ol>
+    <li><strong>RetinaFace 人脸检测裁剪</strong> #Deng-et-al.-2019retinaface#：统一输入格式，去除无关背景</li>
+    <li><strong>水印过滤</strong>：使用水印检测算法移除含水印的图像，防止模型学习到水印特征</li>
+    <li><strong>平衡采样</strong>：从原始不均衡数据集中为 135 类各采等量样本，最终仅保留 <strong>1,080 张</strong>（每类约 8 张）</li>
+  </ol>
+
+  <p>1,080 张是一个极小的训练集。这个规模的选择并非偶然——它配合 LoRA 低秩微调，有意限制模型的学习能力，防止对训练身份的过度记忆。论文明确指出："More epochs lead to overfitting and worse image quality"——超过 8 个 epoch 后图像质量下降。</p>
+
+  <h3 class="section-title">4.2 微调策略与优化配置</h3>
+
+  <p>GenEAva 使用 LoRA #Hu-et-al.-2021#（rank=4）微调 SDXL，而非全参数微调。LoRA 的核心思想是将权重更新 $\Delta W = BA$ 分解为两个低秩矩阵（$A \in \mathbb{R}^{4 \times d}$, $B \in \mathbb{R}^{d \times 4}$），大幅减少可训练参数。rank=4 是一个极低的秩，意味着只引入最少量的可训练参数，进一步降低过拟合和身份记忆风险。</p>
+
+  <p>训练使用 HuggingFace 官方 SDXL base 1.0 checkpoint。以下为完整的训练配置披露表：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>Emo135 均衡子集，1,080 张（135 类 × ~8 张/类）</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>4 × NVIDIA RTX A6000（每块 48GB 显存为外部信息，原文仅提及型号和数量）</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>Adam（β₁=0.9, β₂=0.999, weight decay=1e-2）</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>1e-6（未提及 schedule 和 warmup）</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>1</td></tr>
+        <tr><td>训练步数 / 轮数</td><td>已披露</td><td>8 epochs（>8 epoch 过拟合）</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>模型参数量</td><td>部分披露</td><td>基座 SDXL（~2.6B 为外部估计，原文未明确给出），LoRA rank=4（具体可训练参数量未给出）</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>LoRA rank</td><td>已披露</td><td>4</td></tr>
+        <tr><td>表情损失权重 α</td><td>已披露</td><td>1.0（与 DM loss 等权）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>训练发现：</strong>"More epochs lead to overfitting and worse image quality"——这是论文通过实验摸索得到的关键经验。在 1,080 张小数据集上，8 个 epoch 是最佳训练点。超过此阈值，模型开始记忆训练身份而非学习表情分布，导致生成图像质量退化。这表明在数据受限场景下，LoRA 微调需要非常谨慎地控制训练轮数。</div>
+
+  <p>训练稳定性通过四重机制保障：(1) LoRA rank=4 极低秩限制可训练参数；(2) 学习率 1e-6 极低，确保参数更新幅度小而稳定；(3) 仅 8 个 epoch 防止过拟合；(4) weight decay=0.01 提供 L2 正则化。这些措施共同确保模型在 1,080 张小数据集上不发生身份记忆。</p>
+
+  <h3 class="section-title">4.3 训练成本</h3>
+
+  <p>论文使用 4 块 NVIDIA RTX A6000 GPU，batch size=1，8 个 epoch，训练数据仅 1,080 张。总训练步数约 8,640 步（1,080 × 8 / 1），但论文未报告具体训练时间和并行策略。考虑到数据量极小且训练轮数少，预计训练时间在数小时内可完成，但论文未给出精确数字。推理速度（单张生成时间）也未报告。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：从文本提示到卡通头像</div>
+
+  <h3 class="section-title">5.1 GPT-4o 提示词生成</h3>
+
+  <p>推理阶段的第一步是生成平衡人口属性的文本提示词。GenEAva 利用 GPT-4o #Hurst-et-al.-2024# 根据以下约束系统性生成大量提示词：</p>
+
+  <ul>
+    <li><strong>性别均衡</strong>：男性和女性等比例</li>
+    <li><strong>7 个种族群体</strong>：White、Black、Indian、East Asian、Southeast Asian、Middle East、Latino（参考 FairFace #Karkkainen-et-al.-2021# 的种族定义）</li>
+    <li><strong>多年龄段</strong>：从青少年到老年</li>
+    <li><strong>135 种表情</strong>：每种表情生成约 98 张图像</li>
+  </ul>
+
+  <p>提示词结构为：<code>[风格] + [年龄] + [种族] + [性别] + [附加特征] + [表情类别] + [背景]</code>。例如：<em>"A photorealistic face of a middle-aged Indian woman with shoulders visible, displaying a facial expression of delight, plain white background."</em></p>
+
+  <p>论文仅提供了一个示例提示词，未公开全部 13,230 张图像对应的完整提示词列表。GPT-4o 的具体 prompt 生成策略描述也不够详细，这是可复现性的主要缺陷之一。</p>
+
+  <h3 class="section-title">5.2 采样与质量过滤</h3>
+
+  <p>微调后的 SDXL 从标准高斯噪声 $\mathbf{z}_T \sim \mathcal{N}(0,1)$ 出发，通过文本条件 $\tau(p)$ 引导的逐步去噪过程生成真实风格人脸图像。论文未说明推理时的采样步数、guidance scale 和采样器类型（如 DDIM/DPM++等），这些参数对生成质量有显著影响。</p>
+
+  <p>生成后的图像经过两步质量过滤：</p>
+  <ol>
+    <li><strong>去除面部过近的图像</strong>：面部过于靠近镜头导致面部特征不完整的图像被移除</li>
+    <li><strong>去除多人脸图像</strong>：包含多个面部的图像被移除</li>
+  </ol>
+
+  <p>这两步过滤确保数据集中每张图像都是清晰的单人面部图像，适合后续风格化处理和下游应用。</p>
+
+  <h3 class="section-title">5.3 DCTNet 风格化</h3>
+
+  <p>质量过滤后的真实人脸图像通过 DCTNet #Men-et-al.-2022# 的预训练 3D cartoon 风格模型转换为卡通头像。DCTNet（Domain-Calibrated Translation Network）是一种少样本人像风格化架构，仅需约 100 张风格样本即可实现高质量风格迁移。它通过域校准机制将源域（真实人脸）与目标域（风格化人脸）对齐，具有高保真内容合成能力和良好的泛化性。</p>
+
+  <p>风格化是管线的最后一步，也是表情和身份保持的关键环节。DCTNet 是独立训练的现成模型，论文未对风格化过程中表情保持的机制进行深入分析，而是通过 AMT 用户研究来验证效果（见 Part 6）。论文的 .tex 源码中曾包含一个风格化定量分析表（身份相似度 0.55 vs baseline 0.49，表情误差 7.5 vs baseline 12.6），但最终被注释删除，作者可能认为定量基线"not ideal"。</p>
+
+  <div class="callout"><strong>风格化模块的可替换性未验证：</strong>论文声称框架允许替换风格化方法，但仅使用 DCTNet 一种方法，未提供对比实验。风格化保留率并非 100%（表情 96%、身份 93%），意味着约 4% 的表情和 7% 的身份在风格化过程中丢失。作者承诺将移除未能保留的图像。</div>
+
+  <h3 class="section-title">5.4 GenEAva 1.0 数据集产出</h3>
+
+  <p>最终产出的 GenEAva 1.0 数据集包含 13,230 张卡通头像，覆盖 135 种表情，每种表情 98 张，性别均衡，7 个种族群体均衡分布，年龄从青少年到老年，背景为纯白。这是第一个同时覆盖细粒度表情（135 类）和人口属性均衡（7 种族）的卡通头像数据集。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：四维评估体系</div>
+
+  <p>GenEAva 设计了涵盖四个维度的评估管线：(1) 表情生成质量、(2) 身份记忆化检测、(3) 风格化保持验证、(4) 与 ChatGPT 的定性对比。</p>
+
+  <h3 class="section-title">6.1 实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>Emo135 评估子集（每类 50 张，共 6,750 张）</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>CLIP↑ / DINO↑ / LPIPS↓ / Expression Error↓</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>SDXL（原始未微调模型）</td></tr>
+        <tr><td>推理硬件</td><td>已披露</td><td>4 × NVIDIA RTX A6000</td></tr>
+        <tr><td>推理分辨率</td><td>未披露</td><td>原文未给出（SDXL 默认 1024×1024）</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未给出</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 表情生成质量</h3>
+
+  <p>GenEAva 与原始 SDXL 在四个指标上进行对比。评估集从 Emo135 中每种表情随机采样 50 张，共 6,750 张。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>CLIP ↑</th><th>DINO ↑</th><th>LPIPS ↓</th><th>Exp. ↓</th></tr></thead>
+      <tbody>
+        <tr><td>SDXL #Podell-et-al.-2023#</td><td>0.780</td><td>0.738</td><td>0.658</td><td>13.1</td></tr>
+        <tr><td><strong>GenEAva (Ours)</strong></td><td><strong>0.799</strong></td><td><strong>0.742</strong></td><td><strong>0.648</strong></td><td><strong>12.6</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>各指标含义：CLIP 为 CLIP 嵌入余弦相似度；DINO 为 DINOv2 嵌入相似度；LPIPS 为基于 AlexNet 的感知距离；Expression Error 为 POSTER 表情嵌入的欧氏距离 #Chen-et-al.-2022#。</p>
+
+  <p>GenEAva 在所有 4 个指标上均优于 SDXL。CLIP 提升最大（+2.4%），表明微调后模型在语义一致性上有明显改善。Expression Error 改善 3.8%，说明 POSTER 引导的表情损失确实提升了表情准确性。</p>
+
+  <div class="callout"><strong>但需要注意：</strong>DINO 仅提升 0.004，LPIPS 仅改善 0.010，Expression Error 仅改善 0.5——部分指标提升幅度有限。此外，Expression Error 使用 POSTER 计算，而 POSTER 同时是训练时的表情编码器，存在"自评估"偏差。论文缺少与 Liu et al. #Liu-et-al.-2024# 等直接竞争方法的定量对比。</div>
+
+  <h3 class="section-title">6.3 身份记忆化检测</h3>
+
+  <p>身份记忆化是 GenEAva 关注的核心隐私问题。论文通过 ArcFace #Deng-et-al.-2019arcface# 提取身份嵌入，计算生成图像与训练数据中图像的余弦相似度。验证阈值通过最大化信息增益的算法确定为 0.68。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>比较对象</th><th>验证阈值</th><th>平均余弦相似度</th><th>超过阈值数</th></tr></thead>
+      <tbody>
+        <tr><td>GenEAva vs. Emo135（微调数据）</td><td>0.68</td><td>0.39</td><td>0</td></tr>
+        <tr><td>GenEAva vs. CelebA（SDXL 预训练数据近似）</td><td>0.68</td><td>0.47</td><td>0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>两组对比中，没有任何生成面孔超过验证阈值，平均相似度远低于 0.68。在用户研究中，5 名参与者对 100 对图像进行判断，虽然部分参与者识别出少量与 CelebA 名人相似的面孔（1-5 对/人），但所有相似面孔均来自 CelebA 而非微调数据 Emo135。作者将此归因于 SDXL 在大规模公开数据集上的预训练中名人被过度代表，并承诺在最终数据集中移除这些图像，同时应用机器遗忘算法。</p>
+
+  <h3 class="section-title">6.4 风格化保持：AMT 用户研究</h3>
+
+  <p>风格化保持通过 Amazon Mechanical Turk (AMT) 用户研究验证。研究设计如下：</p>
+
+  <div class="photo">
+    <img src="media/images/geneava-2025/amt_interface.webp" alt="AMT 用户研究界面" loading="lazy">
+    <div class="cap">图 3：AMT 用户研究界面。每个评估者看到 15 对图像（含 1 个测试题），需判断身份和表情是否保持（来源：GenEAva, Fig.5）</div>
+  </div>
 
   <div class="table-wrap">
     <table>
       <thead><tr><th>设计要素</th><th>具体设置</th></tr></thead>
       <tbody>
         <tr><td>平台</td><td>Amazon Mechanical Turk</td></tr>
-        <tr><td>被试数</td><td>9 名 Turkers / HIT</td></tr>
-        <tr><td>评测维度</td><td>身份保持 & 表情保持（二分类）</td></tr>
-        <tr><td>质量控制</td><td>15 示例 + 1 测试题，无效 HIT 丢弃</td></tr>
-        <tr><td>结果</td><td>表情保持 <strong>96%</strong>，身份保持 <strong>93%</strong></td></tr>
+        <tr><td>样本数</td><td>945 对（135 类 × 7 对/类）</td></tr>
+        <tr><td>评估者/HIT</td><td>9 名</td></tr>
+        <tr><td>每 HIT 图片对数</td><td>15（含 1 测试题）</td></tr>
+        <tr><td>最大完成时间</td><td>9 分钟</td></tr>
+        <tr><td>评估者资质</td><td>≥500 HITs，approval rating ≥95%</td></tr>
+        <tr><td>评估维度</td><td>身份保持 & 表情保持（二分类）</td></tr>
+        <tr><td>质量控制</td><td>测试题答错则 HIT 丢弃（论文 .tex 源码注释提及约 42% 的 HIT 被丢弃，此数据来自源码注释，非发表正文）</td></tr>
+        <tr><td><strong>表情保持率</strong></td><td><strong>96%</strong></td></tr>
+        <tr><td><strong>身份保持率</strong></td><td><strong>93%</strong></td></tr>
       </tbody>
     </table>
   </div>
 
-  <h3 class="section-title">3.2 客观指标体系</h3>
+  <div class="photo">
+    <img src="media/images/geneava-2025/exp_id_cartoon_vs_real.webp" alt="风格化保持用户研究结果" loading="lazy">
+    <div class="cap">图 4：风格化保持用户研究结果。表情保持率 96%，身份保持率 93%（来源：GenEAva, Fig.3）</div>
+  </div>
+
+  <h3 class="section-title">6.5 与 ChatGPT 的定性对比</h3>
+
+  <p>论文还将 GenEAva 与 ChatGPT（GPT-4o + DALL-E 3）进行定性对比，展示了 4 种微妙表情的生成差异：</p>
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>指标</th><th>SDXL Baseline</th><th>GenEAva</th><th>含义</th></tr></thead>
+      <thead><tr><th>表情</th><th>ChatGPT 生成</th><th>GenEAva 生成</th><th>语义正确性</th></tr></thead>
       <tbody>
-        <tr><td>CLIP ↑</td><td>0.780</td><td><strong>0.799</strong></td><td>CLIP 嵌入余弦相似度</td></tr>
-        <tr><td>DINO ↑</td><td>0.738</td><td><strong>0.742</strong></td><td>DINOv2 嵌入相似度</td></tr>
-        <tr><td>LPIPS ↓</td><td>0.658</td><td><strong>0.648</strong></td><td>AlexNet 感知距离</td></tr>
-        <tr><td>Expression Error ↓</td><td>13.1</td><td><strong>12.6</strong></td><td>POSTER 表情嵌入距离</td></tr>
+        <tr><td>compassion（同情）</td><td>微笑（不符合语义）</td><td>轻微皱眉（更准确）</td><td>GenEAva ✓</td></tr>
+        <tr><td>desire（渴望）</td><td>中性面孔（完全失败）</td><td>正确捕捉微妙表情</td><td>GenEAva ✓</td></tr>
+        <tr><td>sympathy（同情）</td><td>中性面孔（完全失败）</td><td>正确捕捉微妙表情</td><td>GenEAva ✓</td></tr>
+        <tr><td>jealousy（嫉妒）</td><td>过度夸张</td><td>更适度</td><td>GenEAva ✓</td></tr>
       </tbody>
     </table>
   </div>
 
-  <p><strong>记忆化检查</strong>：生成图像与 Emo135 最高 ArcFace 相似度均值 0.39，与 CelebA 最高均值 0.47，均远低于验证阈值，确认模型没有"记住"训练图像。</p>
+  <p>这表明即使是商用多模态 LLM，也难以准确生成某些微妙面部表情。GenEAva 通过表情引导微调，在细粒度表情生成上具有明显优势。但此对比仅为定性展示（4 个表情类别），缺乏定量评估。</p>
+
+  <div class="photo">
+    <img src="media/images/geneava-2025/compassion.webp" alt="ChatGPT vs GenEAva 定性对比：compassion" loading="lazy">
+    <div class="cap">图 5：compassion 表情对比。ChatGPT 生成微笑（不符合同情语义），GenEAva 生成轻微皱眉（更准确）（来源：GenEAva, Fig.4）</div>
+  </div>
+
+  <h3 class="section-title">6.6 消融实验评估</h3>
+
+  <p>论文的主要消融发现是训练轮数的影响：超过 8 个 epoch 导致过拟合和图像质量下降。这是通过实验摸索得到的关键经验性结论。但论文缺少以下消融实验：表情损失的单独贡献（仅 DM loss vs DM + expression loss）、不同 $\alpha$ 权重的效果、LoRA rank 的影响、不同风格化方法的对比。这些缺失限制了我们对各组件贡献的理解。</p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">Part 4</div>
-  <div class="ch-title">局限与展望</div>
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：数据基础设施的价值与边界</div>
 
-  <p>GenEAva 只处理<strong>静态图像</strong>生成，不涉及视频/动画。风格化模块使用现成的 DCTNet，较为简单。未来方向包括：进一步改善表情控制的细粒度、跨表情的身份一致性、以及将数据集扩展为视频格式以支持 talking head 训练。</p>
+  <h3 class="section-title">7.1 在技术地图上的位置</h3>
 
-  <p>但作为卡通数字人的<strong>数据基础设施</strong>，GenEAva 1.0 的价值不可忽视：它是第一个同时覆盖细粒度表情（135 类）和人口属性均衡（7 种族）的卡通头像数据集。</p>
+  <p>GenEAva 的贡献定位明确：它不是一个新模型架构，而是一个<strong>数据基础设施</strong>。在面部表情生成领域，从 StarGAN #Choi-et-al.-2018# 的 6 类基本表情到 GenEAva 的 135 类细粒度表情，表情粒度提升了一个数量级。GenEAva 1.0 是第一个同时覆盖细粒度表情和人口属性均衡的卡通头像数据集，为卡通 FER 训练、社交媒体头像生成和教育虚拟形象等下游应用提供了数据基础。</p>
+
+  <p>但 GenEAva 也有明确的能力边界：它只处理静态图像生成，不涉及视频/动画；不支持给定身份的多表情一致性生成；风格化模块固定为 DCTNet 的 3D cartoon 风格；推理速度未优化，不适合实时应用。</p>
+
+  <h3 class="section-title">7.2 局限性分析</h3>
+
+  <p>从方法论角度，GenEAva 存在以下局限：</p>
+
+  <ul>
+    <li><strong>训练数据极小</strong>：仅 1,080 张图像（每类约 8 张），虽有助于防止身份记忆，但可能限制表情多样性</li>
+    <li><strong>一步逆近似精度</strong>：$\hat{\mathbf{x}}_0$ 是粗略近似，尤其在训练初期，可能引入噪声到表情损失中</li>
+    <li><strong>自评估偏差</strong>：Expression Error 使用 POSTER 计算，而 POSTER 同时是训练编码器</li>
+    <li><strong>两阶段管线误差累积</strong>：表情生成和风格化独立进行，风格化可能导致表情信息损失（4% 表情丢失）</li>
+    <li><strong>缺少关键消融</strong>：未报告表情损失、$\alpha$ 权重、LoRA rank 的消融实验</li>
+  </ul>
+
+  <p>论文在伦理声明中指出，GenEAva 1.0 数据集仅用于研究目的，生成的人脸图像不 depict real individuals。对于 AMT 用户研究中识别出的少量与 CelebA 名人相似的面孔，作者承诺在最终数据集中移除并应用机器遗忘算法 #Yu-et-al.-2025#。</p>
+
+  <h3 class="section-title">7.3 后续工作与启发</h3>
+
+  <p>同一团队的后续工作 Gen-AFFECT（WACV 2026）直接解决了 GenEAva 的身份一致性问题：基座模型从 SDXL 升级到 SD 3.5（Rectified Flow + MM-DiT），引入身份条件化和一致注意力机制，实现给定身份在 135 种表情下的身份一致生成。这可以看作 GenEAva 的"升级版"。</p>
+
+  <p>GenEAva 给我们的启发包括：</p>
+
+  <ol>
+    <li><strong>分布学习优于迁移学习</strong>：当参考图像有限时，微调模型学习分布并直接采样，比依赖参考图迁移更灵活</li>
+    <li><strong>一步逆公式是实用的训练技巧</strong>：在扩散模型训练中引入额外语义损失时，一步逆近似提供了计算可行的梯度通路</li>
+    <li><strong>隐私优先设计有效</strong>：LoRA rank=4 + 小数据 + 少量 epoch 的三重控制，配合 ArcFace 验证，建立了身份新颖性的可信度</li>
+    <li><strong>GPT-4o 可用于数据集平衡</strong>：利用 LLM 生成平衡人口属性的提示词，从源头解决数据集偏差</li>
+  </ol>
+
+  <p>对于想构建类似数据集的研究者，GenEAva 的管线可以直接复用：选择基座扩散模型 → 在目标属性数据集上 LoRA 微调（配合属性引导损失）→ GPT-4o 生成平衡提示词 → 风格化后处理 → 多维评估。框架的模块化设计使得每个组件都可以独立替换和改进。</p>
 </div>
 
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
-    <li data-cite-key="Yu-et-al.-2025">Yu, H. et al. (2025). GenEAva: Generating Cartoon Avatars with Fine-Grained Facial Expressions from Realistic Diffusion-based Faces. <a href="https://arxiv.org/abs/2504.07945" target="_blank">arXiv:2504.07945</a></li>
+    <li data-cite-key="Yu-et-al.-2025">Yu, H. et al. (2025). GenEAva: Generating Cartoon Avatars with Fine-Grained Facial Expressions from Realistic Diffusion-based Faces. <em>IEEE FG 2025</em>. <a href="https://arxiv.org/abs/2504.07945" target="_blank">arXiv:2504.07945</a></li>
+    <li data-cite-key="Podell-et-al.-2023">Podell, D. et al. (2023). SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis. <em>ICLR 2024</em>. <a href="https://arxiv.org/abs/2307.01952" target="_blank">arXiv:2307.01952</a></li>
+    <li data-cite-key="Chen-et-al.-2022">Chen, K. et al. (2022). Semantic-Rich Facial Emotional Expression Recognition. <em>IEEE Transactions on Affective Computing</em>, 13(4), 1906–1916.</li>
+    <li data-cite-key="Zheng-et-al.-2023">Zheng, C. et al. (2023). POSTER: A Pyramid Cross-Fusion Transformer Network for Facial Expression Recognition. <em>ICCV Workshop 2023</em>. <a href="https://arxiv.org/abs/2204.04083" target="_blank">arXiv:2204.04083</a></li>
+    <li data-cite-key="Men-et-al.-2022">Men, Y. et al. (2022). DCT-Net: Domain-Calibrated Translation for Portrait Stylization. <em>ACM TOG (SIGGRAPH 2022)</em>, 41(4), 1–9. <a href="https://arxiv.org/abs/2207.02426" target="_blank">arXiv:2207.02426</a></li>
+    <li data-cite-key="Liu-et-al.-2024">Liu, R. et al. (2024). Towards a Simultaneous and Granular Identity-Expression Control in Personalized Face Generation. <em>CVPR 2024</em>, 2114–2123. <a href="https://arxiv.org/abs/2401.01207" target="_blank">arXiv:2401.01207</a></li>
+    <li data-cite-key="Hu-et-al.-2021">Hu, E. J. et al. (2021). LoRA: Low-Rank Adaptation of Large Language Models. <a href="https://arxiv.org/abs/2106.09685" target="_blank">arXiv:2106.09685</a></li>
+    <li data-cite-key="Choi-et-al.-2018">Choi, Y. et al. (2018). StarGAN: Unified Generative Adversarial Networks for Multi-Domain Image-to-Image Translation. <em>CVPR 2018</em>, 8789–8797. <a href="https://arxiv.org/abs/1711.09020" target="_blank">arXiv:1711.09020</a></li>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J. et al. (2020). Denoising Diffusion Probabilistic Models. <em>NeurIPS 2020</em>. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a></li>
+    <li data-cite-key="Hurst-et-al.-2024">Hurst, A. et al. (2024). GPT-4o System Card. OpenAI.</li>
+    <li data-cite-key="Karkkainen-et-al.-2021">Kärkkäinen, K. & Joo, J. (2021). FairFace: Face Attribute Dataset for Balanced Race, Gender, and Age for Face Recognition. <em>IEEE TPAMI 2021</em>.</li>
+    <li data-cite-key="somepalli2022diffusion">Somepalli, G. et al. (2022). Diffusion Models Already Have a Semantic Latent Space. <em>ICLR 2023</em>. <a href="https://arxiv.org/abs/2210.10960" target="_blank">arXiv:2210.10960</a></li>
+    <li data-cite-key="carlini_usenix">Carlini, N. et al. (2023). Extracting Training Data from Diffusion Models. <em>USENIX Security 2023</em>.</li>
+    <li data-cite-key="he2024synfer">He, Z. et al. (2024). SynFER: Synthesizing Facial Expressions for Facial Expression Recognition. <em>NeurIPS 2024</em>.</li>
+    <li data-cite-key="cartoonset">Google. Cartoon Set. <a href="https://google.github.io/cartoonset/" target="_blank">google.github.io/cartoonset</a></li>
+    <li data-cite-key="fujimoto2016manga109">Fujimoto, A. et al. (2016). Manga109 Dataset. <a href="https://arxiv.org/abs/1511.08345" target="_blank">arXiv:1511.08345</a></li>
+    <li data-cite-key="nowak2018avatars">Nowak, K. L. & Fox, J. (2018). Avatars and Computer-Mediated Communication. <em>Review of Communication Research</em>.</li>
+    <li data-cite-key="Deng-et-al.-2019arcface">Deng, J. et al. (2019). ArcFace: Additive Angular Margin Loss for Deep Face Recognition. <em>CVPR 2019</em>, 4690–4699. <a href="https://arxiv.org/abs/1801.07698" target="_blank">arXiv:1801.07698</a></li>
+    <li data-cite-key="Deng-et-al.-2019retinaface">Deng, J. et al. (2020). RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild. <em>CVPR 2020</em>. <a href="https://arxiv.org/abs/1905.00641" target="_blank">arXiv:1905.00641</a></li>
   </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="theval-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">THEval：卡通数字人评测框架</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <a class="nav-card nav-next" href="4dhumanqa-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">4DHumanQA：3D 动画质量评估</span></a>
 </div>
