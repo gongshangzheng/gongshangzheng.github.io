@@ -7,6 +7,8 @@ description: 每日 arXiv 论文追踪。Python-only pipeline：抓取 cs.AI + c
 
 本 skill 是 `~/gongshangzheng.github.io/.agents/skills` 下的独立 submodule。代码已经扁平化，爬虫直接位于本目录，不再使用嵌套爬虫目录。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ## Python 环境
 
 必须使用本 skill 自带虚拟环境：

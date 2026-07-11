@@ -29,6 +29,8 @@ metadata:
 > **最终交付**：HTML 深度解读长文 + 博客发布链接 + 可选邮件通知。
 > **保留的中间产出**：raw 素材 + synthesis 综合分析。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ---
 
 ## 模式

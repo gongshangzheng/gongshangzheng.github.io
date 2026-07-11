@@ -19,6 +19,8 @@ tags: [course, notes, ppt, homework, web-research, html-blog, template, docling,
 
 把课程材料重写成真正可读的学习笔记。目标读者是"课上半懂不懂、复习时需要完整链条"的学生：从问题动机进入，先讲清概念本身，再给出定义、推导和例子，配合图示、速查表和后续衔接。写作主线必须从概念和问题出发，避免以"作业要求/题目要求/老师要求"为叙述主线；作业和实验应作为例子落地概念。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ## 执行规则
 
 1. 读本文后，立即用 `todo_write` 创建全阶段 todo 清单。

@@ -27,6 +27,8 @@ tags: [book, pdf, epub, translation, chinese, html-blog, review, series, hub]
 > **核心理念**：忠实于原书的事实与结构，但用干净中文转写，不逐字硬译、不继承 OCR 噪声。宁可分篇也不要单篇臃肿。
 > **最终交付**：Hub 总览页 + 若干中文文章 + 博客发布链接。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ## 何时使用
 
 **使用**：
