@@ -26,11 +26,18 @@ FMT_MAP = {'md': 'markdown', 'org': 'org'}
 
 
 def convert_body(body: str, src_ext: str, tgt_ext: str) -> str:
-    """用 pandoc 把 body 从 src 格式转到 tgt 格式（禁 auto_identifiers 避免 :PROPERTIES: 噪声）。"""
+    """用 pandoc 把 body 从 src 格式转到 tgt 格式。
+    - 禁 auto_identifiers 避免 :PROPERTIES: 噪声
+    - md 源启用 tex_math_single_backslash，正确识别 \\[...\\] / \\(...\\) 数学（否则被当转义括号→坏的 [...]）
+    """
     src_fmt = FMT_MAP[src_ext.lstrip('.')]
     tgt_fmt = FMT_MAP[tgt_ext.lstrip('.')]
+    if src_fmt == 'markdown':
+        src_arg = 'markdown+tex_math_single_backslash-auto_identifiers'
+    else:  # org reader 原生支持 \[...\] 数学，禁 auto_identifiers 即可
+        src_arg = 'org-auto_identifiers'
     res = subprocess.run(
-        ['pandoc', '-f', f'{src_fmt}-auto_identifiers', '-t', tgt_fmt, '--wrap=none'],
+        ['pandoc', '-f', src_arg, '-t', tgt_fmt, '--wrap=none'],
         input=body, capture_output=True, text=True, encoding='utf-8')
     if res.returncode != 0:
         sys.exit(f'❌ pandoc 转换失败 ({src_fmt}→{tgt_fmt}): {res.stderr}')
