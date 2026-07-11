@@ -1,5 +1,5 @@
 ---
-slug: "__SLUG__"
+slug: __SLUG__
 title: "__TITLE__"
 type: original              # paper-reading | survey-chapter | original | hub | translation | course-note
 status: idea               # idea → outlining → drafting → review-ready → published

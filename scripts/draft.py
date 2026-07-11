@@ -51,7 +51,11 @@ def parse_fm(text):
     for line in m.group(1).splitlines():
         if ':' in line:
             k, v = line.split(':', 1)
-            fm[k.strip()] = v.strip()
+            v = v.strip()
+            # strip inline YAML comment (' #...' — space then hash, not '#' inside a token)
+            if ' #' in v:
+                v = v.split(' #', 1)[0].rstrip()
+            fm[k.strip()] = v
     return fm, text[m.end():]
 
 
