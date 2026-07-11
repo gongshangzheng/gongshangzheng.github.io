@@ -7,12 +7,12 @@ progress: 20
 target_alias: categories/杂识
 target_sub_id: auto
 pin: false
-source_url:
+source_url: 
 tags: []
 created_at: 2026-07-11T22:34:28
-updated_at: 2026-07-11T23:19:50
-published_at:
-published_file:
+updated_at: 2026-07-11T23:22:32
+published_at: 
+published_file: 
 ---
 
 # 模型训练
@@ -49,6 +49,28 @@ published_file:
 那还有一些像是 Group Norm 之类的模型，我就呃的的的层我就不太了解了，所以我们主要就来区分 Batch Norm、Layer Norm 还有 RMS Norm 这三个归一化的层.
 
 其中 BatchNorm 在 CNN/视觉里最常见，它在一个 Batch 的各个样本内做归一化；LayerNorm 用于基于 Transformer 的模型，在单个 token 的特征维度内做归一化（不是跨 token 聚合），好处是不受 Batch 大小影响，适合复现。第三个是 RMS Norm，特点是去掉了计算均值的过程，减少了计算量，且效果不错。
+
+#### 公式
+
+设输入 x 形状为 (B, H)：B = batch 内样本数，H = 特征维（隐藏单元数）。下标 i 是样本，j 是特征。
+
+**BatchNorm**——统计量下标是 **j（特征）**，沿 **batch 维 B** 聚合：
+
+$$\mu_j = \frac{1}{B}\sum_{i=1}^{B} x_{i,j},\quad \sigma_j^2 = \frac{1}{B}\sum_{i=1}^{B}(x_{i,j}-\mu_j)^2$$
+
+$$\hat{x}_{i,j} = \gamma_j \cdot \frac{x_{i,j}-\mu_j}{\sqrt{\sigma_j^2+\epsilon}} + \beta_j$$
+
+**LayerNorm**——统计量下标是 **i（样本）**，沿 **特征维 H** 聚合：
+
+$$\mu_i = \frac{1}{H}\sum_{j=1}^{H} x_{i,j},\quad \sigma_i^2 = \frac{1}{H}\sum_{j=1}^{H}(x_{i,j}-\mu_i)^2$$
+
+$$\hat{x}_{i,j} = \gamma_j \cdot \frac{x_{i,j}-\mu_i}{\sqrt{\sigma_i^2+\epsilon}} + \beta_j$$
+
+**RMSNorm**——= LayerNorm 砍掉减均值和 β，只除以 RMS：
+
+$$\text{RMS}_i = \sqrt{\frac{1}{H}\sum_{j=1}^{H} x_{i,j}^2},\quad \hat{x}_{i,j} = \gamma_j \cdot \frac{x_{i,j}}{\text{RMS}_i}$$
+
+> **关键区别**：BN 和 LN 公式形状一模一样，差只在"沿哪个轴算统计量"——BN 沿 batch 维（跨样本，下标 j），LN 沿特征维（单样本内，下标 i）。所以 BN 依赖 batch、推理要 running stats；LN 单样本自给自足。RMSNorm 是 LN 的简化（去均值、去 bias）。
 
 ### 损失函数
 
