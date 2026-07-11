@@ -5,16 +5,21 @@
 
 ## 模板
 
-模板在 `.agents/skills/blog-drafts/templates/`：
+模板在 `.agents/skills/blog-drafts/templates/`，每种风格各有 `.org` 和 `.md` 两版：
 
-| 模板 | 用途 | 风格 |
+| 模板 | 风格 | 用途 |
 |---|---|---|
-| `brainstorm.md` | **默认**，自由 brainstorming | 几乎空白（frontmatter + 标题 + 空白正文），不限制思考 |
-| `plan.md` | 规划文章结构 | 详细分节（核心问题/大纲/关键素材/TODO），适合内容规划 |
+| `brainstorm.org` / `brainstorm.md` | 几乎空白（frontmatter + 标题 + 空白正文） | **默认**，自由 brainstorming |
+| `plan.org` / `plan.md` | 详细分节（核心问题/大纲/关键素材/TODO） | 规划文章结构 |
+
+两种格式：`.org`（**默认**，`#+` 属性行 + org 正文）、`.md`（YAML `---` frontmatter + markdown 正文）。脚本按扩展名自动解析对应格式，所有命令混合处理两种文件。
 
 ```bash
-# 用空白 brainstorm 模板建草稿（默认）
+# 默认 org 格式 + brainstorm 模板
 ~/.venv/bin/python3 scripts/draft.py new <slug> --title "标题"
+
+# 明确用 md
+~/.venv/bin/python3 scripts/draft.py new <slug> --title "标题" --format md
 
 # 用详细 plan 模板
 ~/.venv/bin/python3 scripts/draft.py new <slug> --title "标题" --template plan
@@ -23,7 +28,7 @@
 ## 管理脚本 `scripts/draft.py`
 
 ```bash
-~/.venv/bin/python3 scripts/draft.py new <slug> [--title T] [--type T] [--alias A] [--pin] [--source URL] [--tags t1,t2] [--template brainstorm|plan]
+~/.venv/bin/python3 scripts/draft.py new <slug> [--title T] [--type T] [--alias A] [--pin] [--source URL] [--tags t1,t2] [--template brainstorm|plan] [--format org|md]
 ~/.venv/bin/python3 scripts/draft.py list [fields] [--status S]      # 默认显示 slug,status,progress,pin,title
 ~/.venv/bin/python3 scripts/draft.py show <slug>
 ~/.venv/bin/python3 scripts/draft.py set <slug> field=value [field=value ...]
@@ -31,6 +36,7 @@
 ~/.venv/bin/python3 scripts/draft.py archive <slug>                  # 移到 drafts/archive/，标 status=archived
 ~/.venv/bin/python3 scripts/draft.py unarchive <slug>
 ~/.venv/bin/python3 scripts/draft.py delete <slug> [-y]
+~/.venv/bin/python3 scripts/draft.py factcheck <slug>                # 打印草稿 + 候选事实陈述
 ```
 
 ## YAML 字段

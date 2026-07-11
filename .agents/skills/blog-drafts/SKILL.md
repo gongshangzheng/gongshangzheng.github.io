@@ -36,12 +36,17 @@ src/pages/<slug>.html  (已发布，build 部署到 gh-pages)
 
 ## 模板
 
-模板在 `.agents/skills/blog-drafts/templates/`（不在 `drafts/` 里）：
+模板在 `.agents/skills/blog-drafts/templates/`（不在 `drafts/` 里），每种风格各有 `.org` 和 `.md` 两版：
 
-| 模板 | 用途 | 风格 |
+| 模板 | 风格 | 用途 |
 |---|---|---|
-| `brainstorm.md` | **默认**，自由 brainstorming | 几乎空白（frontmatter + 标题 + 空白正文），不限制思考 |
-| `plan.md` | 规划文章结构 | 详细分节（核心问题/大纲/关键素材/TODO） |
+| `brainstorm.org` / `brainstorm.md` | **默认**，几乎空白（frontmatter + 标题 + 空白正文） | 自由 brainstorming，不限制思考 |
+| `plan.org` / `plan.md` | 详细分节（核心问题/大纲/关键素材/TODO） | 规划文章结构 |
+
+**两种格式**：
+- `.org`（**默认**）：用 `#+TITLE:` / `#+SLUG:` 等 `#+` 属性行做 frontmatter，正文是 org（`*` 标题、`**` 子节）。
+- `.md`：用 YAML `---` frontmatter，正文是 markdown（`#` 标题、`##` 子节）。
+- 脚本自动按扩展名解析对应 frontmatter 格式；`list/show/set/archive` 等都能混合处理 `.org` 和 `.md`。
 
 > **设计理念**：brainstorm 模板刻意几乎空白——草稿正文由**用户自己写**，模板只提供 frontmatter
 > 骨架，不预设章节结构以免限制思考。需要结构化规划时用 `plan` 模板。
@@ -51,8 +56,8 @@ src/pages/<slug>.html  (已发布，build 部署到 gh-pages)
 所有草稿操作走脚本：
 
 ```bash
-# 新建草稿（默认用空白 brainstorm 模板）
-~/.venv/bin/python3 scripts/draft.py new <slug> [--title T] [--type T] [--alias A] [--pin] [--source URL] [--tags t1,t2] [--template brainstorm|plan]
+# 新建草稿（默认 org 格式 + brainstorm 模板）
+~/.venv/bin/python3 scripts/draft.py new <slug> [--title T] [--type T] [--alias A] [--pin] [--source URL] [--tags t1,t2] [--template brainstorm|plan] [--format org|md]
 
 # 列出草稿（默认显示 slug,status,progress,pin,title；可指定字段；可按 status 过滤）
 ~/.venv/bin/python3 scripts/draft.py list [fields] [--status S]
