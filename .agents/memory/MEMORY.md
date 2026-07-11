@@ -1,0 +1,4 @@
+- [gh-pages deploys from tracked files](gh-pages-deploy-from-tracked-files.md) — untracked media/pages render locally but 404 on remote; always git-add new src/pages + media/images
+- [book-to-blog 内容审核](book-to-blog-content-moderation.md) — 转写犯罪/暴力题材子代理易触发 API 审核，用历史研究框架重新派发可绕过
+- [read-article cite-key 碰撞](read-article-cite-key-collision.md) — 主 cite-key 可能与既有精读文章同 key，用第一作者初始消歧 (Chen B. et al.)
+- [直接在 main 分支工作](work-on-main-branch.md) — 本仓库所有工作直接在 main 上完成，不建分支、不切换分支
