@@ -84,6 +84,8 @@ published_file:
 - **有监督 loss**（对比 ground truth）：CE loss、MSE loss、L1 loss。
 - **无监督/无参考 loss**（不直接对比 GT，如对抗损失、感知损失）。
 
+**分类任务用 CE 不用 MSE**：MSE + sigmoid 输出时，梯度 $\partial L/\partial z = (\sigma(z)-y)\cdot\sigma(z)(1-\sigma(z))$，带了个 $\sigma(z)(1-\sigma(z))$ 因子——预测越自信（$\sigma(z)\to 0$ 或 $1$）它越趋零。于是"自信地错"时误差大但梯度趋零，模型学不动（sigmoid 饱和）。而且 MSE 把 $\sigma(z)$ 往 0/1 推，正好踩进饱和区。CE 的梯度化简后是 $\sigma(z)-y$，饱和因子被对数项抵消，错得越狠学得越快。所以**分类配 sigmoid/softmax 用 CE，回归用 MSE**。
+
 还有正则化（控制损失输出）。
 
 ### 反向传播
