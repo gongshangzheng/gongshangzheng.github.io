@@ -10,7 +10,7 @@ pin: false
 source_url:
 tags: []
 created_at: 2026-07-11T22:34:28
-updated_at: 2026-07-11T22:42:00
+updated_at: 2026-07-11T23:19:50
 published_at:
 published_file:
 ---
@@ -34,15 +34,27 @@ published_file:
 
 ## 各组件
 
+### 初始化
+
+在模型初始化的过程中，我们首先肯定要完成模型的网络结构设计，这个是大部分工作的主要集中点。
+
 ### 前向传播
 
 激活函数；CNN（卷积层 + 激活层 + 池化层轮流堆放，最简单的 CNN 就是这三层堆叠）；Transformer；还有 Dropout、归一化。
 
+#### 归一化
+
+归一化的作用是让每一层输出的激活值不要乱飘，能够更加稳定。值更稳就可以使用更大的学习率，得到更好的学习结果。但事实上，关于归一化为什么能起效果，其实还有很多讨论，没有完全确定它为什么能够生效（如 Santurkar 2018 指出 BN 的作用未必是原论文说的"internal covariate shift"）。归一化的话，现在比较常见的可能就是 BatchNorm 和 LayerNorm。而更近的 decoder-only LLM 里（LLaMA/Qwen/Mistral 等），LayerNorm 已被 RMSNorm 取代（BERT/GPT-2/T5 等仍用 LayerNorm）。
+
+那还有一些像是 Group Norm 之类的模型，我就呃的的的层我就不太了解了，所以我们主要就来区分 Batch Norm、Layer Norm 还有 RMS Norm 这三个归一化的层.
+
+其中 BatchNorm 在 CNN/视觉里最常见，它在一个 Batch 的各个样本内做归一化；LayerNorm 用于基于 Transformer 的模型，在单个 token 的特征维度内做归一化（不是跨 token 聚合），好处是不受 Batch 大小影响，适合复现。第三个是 RMS Norm，特点是去掉了计算均值的过程，减少了计算量，且效果不错。
+
 ### 损失函数
 
 分两种：
-- **有参 loss**：输出和 ground truth 比较。典型：CE loss、MSE loss、L1 loss。
-- **无参 loss**。
+- **有监督 loss**（对比 ground truth）：CE loss、MSE loss、L1 loss。
+- **无监督/无参考 loss**（不直接对比 GT，如对抗损失、感知损失）。
 
 还有正则化（控制损失输出）。
 
