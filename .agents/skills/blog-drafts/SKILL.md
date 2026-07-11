@@ -61,6 +61,7 @@ drafts/
 - `.org`（**默认**）：用 `#+TITLE:` / `#+SLUG:` 等 `#+` 属性行做 frontmatter，正文是 org（`*` 标题、`**` 子节）。
 - `.md`：用 YAML `---` frontmatter，正文是 markdown（`#` 标题、`##` 子节）。
 - 脚本自动按扩展名解析对应 frontmatter 格式；`list/show/set/archive` 等都能混合处理 `.org` 和 `.md`。
+- **格式互转**：`scripts/draft-convert.py <slug> --to org|md [--replace]` 用 pandoc 转 body + 保留 frontmatter（YAML↔#+），资产路径不变。详见下文「格式互转」。
 
 > **设计理念**：brainstorm 模板刻意几乎空白——草稿正文由**用户自己写**，模板只提供 frontmatter
 > 骨架，不预设章节结构以免限制思考。需要结构化规划时用 `plan` 模板。

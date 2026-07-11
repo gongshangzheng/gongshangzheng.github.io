@@ -90,7 +90,13 @@ def serialize_frontmatter(fm, ext):
         lines.append('---')
         return '\n'.join(lines) + '\n'
     else:  # .org
-        lines = [f'#+{k.upper()}: {v}' for k, v in fm.items()]
+        lines = []
+        for k, v in fm.items():
+            v = str(v)
+            # 去掉首尾引号（md title 带引号转 org 时清理掉）
+            if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+                v = v[1:-1]
+            lines.append(f'#+{k.upper()}: {v}')
         return '\n'.join(lines) + '\n'
 
 
