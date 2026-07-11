@@ -45,7 +45,8 @@ Slug：<slug>
      "<url>" --format markdown --table-mode accurate \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.md
 
-   # JSON（结构化：tables/formulas/layout；可用于 figure 页码/bbox 定位）
+   # JSON（结构化：tables/formulas/layout；pictures[].prov 含 figure 页码+bbox，
+   #   是优先级 D 脚本 scripts/crop-figures-from-docling.py 的输入）
    ~/.venv/bin/python3 ~/.agents/skills/docling/scripts/convert.py \
      "<url>" --format json \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.json
@@ -145,20 +146,32 @@ PY
    done
    ```
 
-   **优先级 D：PDF 高 DPI 裁图（兜底）**
+   **优先级 D：PDF 高 DPI bbox 裁图（脚本化兜底）**
    - 只有当 arXiv source tarball、arXiv/官方 HTML、官方仓库/项目页都拿不到可用图片时，才允许 PDF crop。
    - 使用前必须记录 fallback 原因。
+   - bbox 来自 Docling JSON 的 `pictures[].prov[0].bbox`（layout 模型 `docling-layout-heron` 的 `picture` 检测结果），渲染由 PyMuPDF 按 bbox 在源 PDF 上 300-400 DPI clip 完成。
+   - **与 ❌ Docling referenced 图片的区别**：本脚本只借 Docling 的 bbox 坐标，**不使用** Docling 自家 `--image-export-mode referenced` 产出的 144 DPI 整页/区域截图（那玩意遇到矢量 figure 会空白，PerformRecast 踩过坑）。PyMuPDF 在源 PDF 上 clip 渲染矢量内容是正确的。
 
    ```bash
-   PDF="$RAW_DIR/sources/${SLUG}.pdf"
-   curl -L "<pdf-url>" -o "$PDF"
+   # 1. 先跑 Docling 出 JSON（若 Phase 1 步骤 2 已产出 sources/<slug>.json 则跳过）
+   ~/.venv/bin/python3 ~/.hanako/skills/docling/scripts/convert.py \
+     "<pdf-url 或本地 PDF>" -f json \
+     --output ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.json
 
-   # 先 300-400 DPI 渲染目标页；页码从 Docling JSON / caption / 人工检查确定
-   pdftocairo -png -r 300 -f <page> -l <page> "$PDF" "$RAW_DIR/page"
+   # 2. 用脚本按 picture bbox 高清裁图 → PNG 到 figures/，再链式转 WebP 到 media/images/
+   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/crop-figures-from-docling.py \
+     ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.json \
+     --pdf ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.pdf \
+     -o ~/gongshangzheng.github.io/raw/${SLUG}/figures/${SLUG}/ \
+     --media-dir ~/gongshangzheng.github.io/media/images/${SLUG}/ \
+     --dpi 300
 
-   # 再用 magick 裁剪，geometry 由人工检查或 PyMuPDF bbox 转换得到
-   magick "$RAW_DIR/page-<page>.png" -crop <WxH+X+Y> +repage "$FIG_DIR/figN.png"
+   # 可选：只裁指定页（1-based，如 3,5,7-9）
+   #   --pages 3,5,7-9
+   # 可选：只出 PNG 不转 WebP
+   #   --no-convert
    ```
+   脚本同时写 `figures/<slug>/figures-manifest.json`，记录每张图的 page_no / bbox / self_ref / caption / 尺寸 / 空白嫌疑，供后续 HTML 配 `cap` 使用。如某张 `blank_suspect: true`，说明矢量渲染可能失败，需人工复核或回退到更高 DPI。
 
    **优先级 E：blog-images 搜到的可靠公开图片（补充来源）**
    - 当论文原始来源图不足，或需要背景配图/作者照片/机构示意图时，先读取并遵循 `~/.agents/skills/blog-images/SKILL.md`。
