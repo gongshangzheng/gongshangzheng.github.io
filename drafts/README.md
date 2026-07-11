@@ -22,6 +22,7 @@ progress: 10                 # 0-100，主观进度
 target_alias: categories/AI/图像压缩/图像压缩论文精读
 target_sub_id: auto          # 数字（如 180）或 "auto"（发布前用 check-sub-id.py 分配）
 target_hub: image-compression-hub   # 系列枢纽页 slug，非系列文章省略
+pin: false                   # 发布后是否首页 Pinned 置顶（true/false）
 source_url: https://arxiv.org/abs/XXXX.XXXXX   # 论文/资料来源，非论文省略
 tags: [tag1, tag2]           # 3-5 个，与未来 frontmatter 一致
 created_at: 2026-07-11T20:00:00

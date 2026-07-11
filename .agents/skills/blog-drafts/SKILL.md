@@ -64,6 +64,7 @@ src/pages/<slug>.html  (已发布，build 部署到 gh-pages)
 | `target_alias` | ✅ | 目标分类路径，如 `categories/AI/图像压缩/图像压缩论文精读` |
 | `target_sub_id` | ✅ | 数字或 `auto`（发布前用 `scripts/check-sub-id.py --category <关键词>` 分配） |
 | `target_hub` | 系列 ✅ | 系列枢纽页 slug，独立文章省略 |
+| `pin` | 可选 | `true`/`false`，发布后是否首页 Pinned 置顶（对应 html-blog 的 `pin` 字段） |
 | `source_url` | 论文 ✅ | arXiv/DOI 链接，非论文省略 |
 | `tags` | ✅ | 3-5 个，与未来 frontmatter 一致 |
 | `created_at` / `updated_at` | ✅ | ISO 时间戳，精确到秒 |
