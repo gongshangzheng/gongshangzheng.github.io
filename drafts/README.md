@@ -12,12 +12,17 @@ drafts/
 ├── model-training.md
 ├── assets/
 │   └── model-training/
-│       └── initialization.png      # 草稿正文里 ![alt](assets/model-training/initialization.png) 引用
+│       └── standard-flow.webp   # ![alt](assets/model-training/standard-flow.webp)
 ```
 
-- 草稿正文用相对路径引用：`![描述](assets/<slug>/<file>.png)`（.md）或直接 `[[file:assets/<slug>/<file>.png]]`（.org 用 `[[file:...]]` 链接）。
-- 草稿发布时，资产移到 `media/images/<slug>/` 并转 webp，HTML 用 `<div class="photo">` 包裹。
-- 资产 git 跟踪（和草稿一致）；大图建议先压一下再放进来。
+- 草稿正文用相对路径引用：.md 用 `![描述](assets/<slug>/<file>.webp)`；.org 用 `[[file:assets/<slug>/<file>.webp]]`。
+- **图片尽量转 webp**（体积小、和站点 `media/images/` 一致）：剪贴板粘的 png/jpg 先放进 `drafts/assets/<slug>/`，再跑
+  ```bash
+  ~/.venv/bin/python3 scripts/draft-assets-webp.py --slug <slug>   # 转 webp + 更新草稿引用 + 删原图
+  ~/.venv/bin/python3 scripts/draft-assets-webp.py                 # 全部草稿资产
+  ```
+- 草稿发布时，资产移到 `media/images/<slug>/`，HTML 用 `<div class="photo">` 包裹。
+- 资产 git 跟踪（和草稿一致）。
 
 ## 模板
 

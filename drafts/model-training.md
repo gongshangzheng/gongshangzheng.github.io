@@ -17,7 +17,7 @@ published_file:
 
 # 模型训练
 
-![标准完整训练流程](assets/model-training/standard-flow.png)
+![标准完整训练流程](assets/model-training/standard-flow.webp)
 
 说实话，我之前还真没有意识到，我没有理解模型到底要怎么去做训练。我肯定知道它的大概的一个过程，但是我没有能够去很好地表述它，如果问我这个问题的话我没办法说出来。
 
@@ -40,15 +40,17 @@ published_file:
 
 在模型初始化的过程中，我们首先肯定要完成模型的网络结构设计，这个是大部分工作的主要集中点。
 
-![模型初始化流程](assets/model-training/initialization.png)
+![模型初始化流程](assets/model-training/initialization.webp)
 
 ### 前向传播
 
 激活函数；CNN（卷积层 + 激活层 + 池化层轮流堆放，最简单的 CNN 就是这三层堆叠）；Transformer；还有 Dropout、归一化。
 
-![激活函数演示](assets/model-training/activation.png)
+![激活函数演示](assets/model-training/activation.webp)
 
 #### 归一化
+
+![归一化](assets/model-training/normalization.webp)
 
 归一化的作用是让每一层输出的激活值不要乱飘，能够更加稳定。值更稳就可以使用更大的学习率，得到更好的学习结果。但事实上，关于归一化为什么能起效果，其实还有很多讨论，没有完全确定它为什么能够生效（如 Santurkar 2018 指出 BN 的作用未必是原论文说的"internal covariate shift"）。归一化的话，现在比较常见的可能就是 BatchNorm 和 LayerNorm。而更近的 decoder-only LLM 里（LLaMA/Qwen/Mistral 等），LayerNorm 已被 RMSNorm 取代（BERT/GPT-2/T5 等仍用 LayerNorm）。
 
