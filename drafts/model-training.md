@@ -88,6 +88,8 @@ published_file:
 
 还有正则化（控制损失输出）。
 
+![正则化对模型效果的影响](assets/model-training/regularization.webp)
+
 ### 反向传播
 
 链式法则，逐层求梯度。没什么好说的。
