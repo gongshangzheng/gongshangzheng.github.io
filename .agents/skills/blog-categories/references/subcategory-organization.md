@@ -226,6 +226,37 @@ Hub 页（`image-compression-hub.html`）使用 `sub_id: 0`。
 **编号**：27 篇文章，暂无系列前缀和 sub_id 编号体系。文章按发布时间排列。
 **新建规则**：若积累到 5+ 篇同类文章，应考虑建立系列组织并更新本文件。
 
+### categories/读书笔记/美国职业罪犯
+
+**描述**：Thomas Byrnes 1886 年《Professional Criminals of America》全书中文转写系列。每篇 = Part I 一类犯罪手法讲解（转写）+ Part II 该类型罪犯名录（中文转写）。补充篇覆盖著名伪造团伙、悬案谋杀、冒险家、鸦片习性等专题。
+**谱段与系列组织**：
+
+| 谱段 | sub_id 区间 | 标题格式 |
+|------|------------|---------|
+| Hub 总览 | 0 | 《美国职业罪犯》系列总览 |
+| 手法/类型篇 | 10–90（步长 10） | 美国职业罪犯系列（N）：<类型> |
+| 补充篇 | 100–120（步长 10） | 美国职业罪犯系列（N）：<主题> |
+
+**已发布文章清单**：
+
+| sub_id | 文件 | 标题 |
+|--------|------|------|
+| 0 | professional-criminals-of-america-hub.html | 《美国职业罪犯》系列总览 |
+| 10 | pca-bank-burglars.html | 银行窃贼 |
+| 20 | pca-bank-sneaks.html | 银行潜入贼 |
+| 30 | pca-forgers.html | 伪造犯 |
+| 40 | pca-hotel-thieves.html | 旅店与公寓贼 |
+| 50 | pca-sneak-house-thieves.html | 潜入与入户贼 |
+| 60 | pca-store-safe-burglars.html | 商店与保险箱窃贼 |
+| 70 | pca-shoplifters-pickpockets.html | 商店扒手与扒手 |
+| 80 | pca-confidence-banco.html | 诈骗犯与骗局党 |
+| 90 | pca-receivers-sawdust.html | 赃物收买者与锯末骗子 |
+| 100 | pca-notable-forgers-international.html | 著名伪造犯与国际伪造团伙 |
+| 110 | pca-other-criminals-murders.html | 其他著名罪犯与悬案谋杀 |
+| 120 | pca-adventurers-opium.html | 冒险家、鸦片习性与为何给贼拍照 |
+
+**新增文章规则**：本系列已完整覆盖原书，一般不再新增。若后续补写配图注解或某类型深读，沿用同级编号（130, 140...），标题前缀保持"美国职业罪犯系列（N）："。
+
 ---
 
 ## 未建系列分类
