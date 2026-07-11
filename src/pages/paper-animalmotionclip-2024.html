@@ -1,0 +1,572 @@
+---
+title: "动作识别论文精读（八）：AnimalMotionCLIP，在 CLIP 空间中嵌入运动表征"
+description: "深度解读 CVPR 2024 CV4Animals Workshop Best Paper：AnimalMotionCLIP 通过 RAFT 光流 + 帧间交错在 CLIP 空间嵌入运动信息；提出 dense/semi-dense/sparse 三种时间聚合策略；无需 Kinetics-400 预训练，在 Animal Kingdom 上达到 74.63% mAP（比 MSQNet + 预训练还高 1.53%）。"
+created_at: 2026-07-09T10:40:00
+updated_at: 2026-07-09T10:40:00
+tags: ["AnimalMotionCLIP", "CLIP-for-animal", "光流", "RAFT", "XCLIP"]
+aliases: ["categories/AI/动作识别/动作识别论文精读", "categories/AI/动作识别/index"]
+sub_id: 80
+mathjax: true
+paper_title: "AnimalMotionCLIP: Embedding Motion in CLIP for Animal Behavior Analysis"
+paper_authors: "Enmin Zhong, Carlos R. del-Blanco, Daniel Berjón, Fernando Jaureguizar, Narciso García"
+paper_affiliation: "Grupo de Tratamiento de Imágenes (GTI), Information Processing and Telecommunications Center, Universidad Politécnica de Madrid"
+paper_venue: "CVPR 2024 Workshop (CV4Animals) · Best Paper"
+paper_url: "https://arxiv.org/abs/2505.00569"
+paper_code: "未开源（截至 2026.07 未找到官方仓库）"
+hero_title: "AnimalMotionCLIP 论文精读"
+hero_sub: "CVPR 2024 CV4Animals · Best Paper"
+hero_tagline: "在 CLIP 空间中嵌入运动表征：光流 + 三种时间聚合，74.63% mAP 拿下 Animal Kingdom 新 SOTA。"
+papers: ["https://arxiv.org/abs/2505.00569"]
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">74.63<span class="num-suffix">%</span></span><span class="label"><a href="paper-animal-kingdom-2022.html">Animal Kingdom</a> mAP</span></div>
+  <div class="stat"><span class="num b">+19.27<span class="num-suffix">%</span></span><span class="label g">vs MSQNet (无预训练)</span></div>
+  <div class="stat"><span class="num">+1.53<span class="num-suffix">%</span></span><span class="label">vs MSQNet+预训练</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label l">时间聚合策略</span></div>
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 1 · 引言</div>
+<div class="ch-title">CLIP 遇到动物行为识别：一个必须解决的真空地带</div>
+
+在视觉-语言基础模型（VLM）的版图里，CLIP #radford2021learning# 是绕不开的起点——它在 4 亿图文对上做对比学习，把图像和文本塞进同一个语义空间，零样本 ImageNet 就能拿到 76.2% Top-1。这个范式在人类动作识别领域被迅速放大：ActionCLIP #wang2021actionclip#、XCLIP #ni2022expanding#、Vita-CLIP #wasim2023vitaclip# 沿着"用文本 prompt 当分类器"的路径，把 Kinetics-400 上的 Top-1 推到 87.7%。
+
+但动物行为识别（Animal Behavior Recognition）几乎是被遗忘的真空地带。#Zhong2024# 的核心观察很直接：CLIP 在人类动作上的成功公式，在动物领域水土不服。原因有三：
+
+第一，**数据规模与多样性极端不匹配**。#Zhong2024# 指出当前公开动物行为数据集要么极小（KABR 仅 3 类动物 × 7 种行为 #Kholiavchenko2024KABRID#），要么物种单一（<a href="paper-mammalnet-2023.html">MammalNet</a> 覆盖 12 类哺乳动物行为 #chen2023mammalnet#）。相比之下，#ng2022animal# 发布的 Animal Kingdom 数据集覆盖 850 个物种、140 个动作类，规模扩大了一个数量级。
+
+第二，**运动信息被普遍忽略**。人类动作识别里"光流是标配"的常识，在 CLIP+video 系列工作中几乎不存在——ActionCLIP/XCLIP/Vita-CLIP 都只在 RGB 帧上微调。#Zhong2024# 强调动物行为比人类动作更依赖微妙的运动模式（攻击、探索、求偶），仅靠 RGB 静态外观很难区分。
+
+第三，**时间聚合方式粗糙**。prompt-based CLIP 类方法要么简单平均所有帧的 score，要么用全局 temporal attention，没有系统比较过不同时间采样策略对最终识别精度的影响。
+
+<div class="callout"><strong>核心矛盾</strong>：CLIP 的视觉-语言对齐空间强大但缺乏运动信号；动物行为依赖运动但又需要 CLIP 级别的语义先验——两者必须桥接，但既有的"prompt-based learning" 路线没能完成这个桥接。</div>
+
+#Zhong2024# 提出的 AnimalMotionCLIP（CVPR 2024 CV4Animals Workshop **Best Paper**）直接同时解决这两个问题：
+
+1. **把 RAFT 光流 #teed2020raft# 通过帧间交错嵌入 CLIP 视觉编码器**，让 RGB 与运动在同一空间联合对齐
+2. **系统比较 dense / semi-dense / sparse 三种时间聚合策略**，证明 sparse quasi-random 采样显著优于固定窗口
+
+实验结果是 74.63% mAP——比无预训练 MSQNet #Mondal_2023#（55.59%）高 19 个百分点，比 **MSQNet + Kinetics-400 预训练**（73.10%）还高 1.53 个百分点，且完全不需要 Kinetics-400 这种额外的大规模人类动作预训练。
+
+这篇精读会沿着"问题 → 架构 → 训练 → 推理 → 实验 → 讨论"的顺序，把 AnimalMotionCLIP 的核心设计、关键技术选择、实验结论和落地价值讲透。读完你应该能回答：为什么显式光流嵌入是关键？为什么 sparse 采样比 dense 强这么多？为什么它能摆脱 Kinetics-400 预训练？
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 2 · 问题剖析</div>
+<div class="ch-title">CLIP 在动物行为识别上失败的三个结构性原因</div>
+
+在进入 AnimalMotionCLIP 的具体架构之前，我们需要先看清楚：现有 CLIP 类方法到底在动物领域"差"在哪里？这个问题定义清楚了，方案的针对性才能理解到位。
+
+### 2.1 三类已有方法的"硬伤"清单
+
+#Zhong2024# 在 Introduction 中逐一点名批评：
+
+**第一类：传统 CNN 视频分类器（I3D #carreira2018quo# / SlowFast #feichtenhofer2019slowfast# / X3D #feichtenhofer2020x3d#）。**
+这些方法在 Animal Kingdom 上分别只有 16.48% / 20.46% / 25.25% mAP。#Zhong2024# 批评它们"trained on a predefined and closed set of behaviors"，只能识别在训练集出现过的物种+行为组合——无法迁移到新物种、新场景。
+
+**第二类：基于 prompt-based CLIP 的 video adaptation（ActionCLIP #wang2021actionclip# / Vita-CLIP #wasim2023vitaclip#）。**
+这些方法沿用人类动作识别的成功路径：冻结 CLIP backbone，设计可学习 prompt vector，输入文本端做对齐。#Zhong2024# 指出"the results are often difficult to interpret and tend to be affected by noisy labels"——手工设计的 prompt template 对噪声标签很敏感。
+
+**第三类：动物专用的 CLIP 扩展（Category-CLIP #Jing-et-al.-2023# / MSQNet #Mondal_2023#）。**
+这是 AnimalMotionCLIP 最直接的竞品，也是设计上最有借鉴意义的两篇工作。
+
+<div class="info-box">
+<h3>Category-CLIP：类别特定 prompt 的局限</h3>
+
+Jing 等人在 ACM MM 2023 提出 Category-CLIP，给 CLIP 增加一个**预测动物类别**的辅助分支，让 prompt 带上类别先验。在 Animal Kingdom 上达到 55.36% mAP。#Zhong2024# 明确指出其局限："animal category specialization may be biased towards specific animal classes and can hinder the model's ability to accurately recognize behaviors from unseen or underrepresented classes"——类别分支会偏向训练集中占主导的物种，对长尾类别和未见物种的行为识别能力受限。
+</div>
+
+<div class="info-box">
+<h3>MSQNet：多模态 query 的"昂贵"代价</h3>
+
+Mondal 等人在 ICCVW 2023 提出 MSQNet（Actor-Agnostic Multi-Label Action Recognition with Multi-Modal Query）。在 Animal Kingdom 上无预训练时只有 55.59% mAP，**必须**在 Kinetics-400（~140k 视频、400 类人类动作）上做大规模预训练才能达到 73.10%。#Zhong2024# 把这条路径的核心问题讲得很透："the approach adopted in MSQNet requires a computationally intensive pre-training on the massive Kinetics-400 dataset, followed by fine-tuning on the target Animal Kingdom dataset"——既依赖人类动作预训练，又牺牲了"动物专用"的定位。
+</div>
+
+### 2.2 已有方法的失败模式：一个具体的例子
+
+光看数值还不够直观，我们用论文 Section 4（Error Analysis）的几个具体例子看清 AnimalMotionCLIP 的失败模式——这部分后面也会成为讨论局限性的素材：
+
+**跳跃（jumping）的过渡段误识别**：当 ground truth 是 `jumping`，模型预测 `keeping still + moving` 的组合。原因：动物在跳跃前后是静止的，模型把"前静 → 跳 → 后静"分解成多个独立段，无法整体识别"这是一个跳跃行为"。这暴露出**时间边界建模**的弱点。
+
+**感知（sensing）的子动作合并失败**：ground truth 是 `sensing`，模型预测 `attending + keeping still + sensing`。模型能识别相关的子动作，但缺乏把它们**合并为单一高层标签**的能力。
+
+**梳理（grooming）的多标签扩散**：grooming 由多个子动作组成（舔、挠等），模型会输出 `attending + eating + keeping still + moving` 这种"全包"预测，而不是聚焦在 grooming 上。
+
+**ground-truth 标注本身的不完整**：#Zhong2024# 明确承认："a video showing a frog, first keeping still, and then jumping is annotated only as `jumping', ignoring the initial stationary phase"。换句话说，标注问题本身就让模型学到了错误的关联。
+
+### 2.3 AnimalMotionCLIP 的核心 Insight
+
+把这些失败模式摆在一起，AnimalMotionCLIP 的两个核心 Insight 就清楚了：
+
+<div class="callout"><strong>Insight 1：动物行为识别必须显式引入运动信号</strong>
+
+#Zhong2024# 在 Introduction 中写道："Optical flow can obtain the required fine dynamic information from a video, capturing subtle nuances in animal movements that may not be evident from still frames alone"。RAFT 光流（ECCV 2020 Best Paper #teed2020raft#）在 KITTI 上的 F1-all 误差仅 5.10%（比之前最佳减少 16%），Sintel final pass 端点误差 2.855 像素（减少 30%）——这种 near-motion-boundary 的精度对小位移的运动模式至关重要，论文专门解释了选型理由。
+</div>
+
+<div class="callout"><strong>Insight 2：时间聚合方式比想象中重要得多</strong>
+
+固定窗口（dense / semi-dense）的隐含假设是"行为在窗口内集中发生"，但动物视频里的行为是稀疏、跨尺度、不等时长发生的。quasi-random 全局采样（sparse）反而能更好地覆盖全局上下文。这点 Part 6 会有消融实验直接证明。
+</div>
+
+带着这两个 Insight，我们进入 AnimalMotionCLIP 的架构设计。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 3 · 模型结构</div>
+<div class="ch-title">AnimalMotionCLIP 架构详解</div>
+
+### 3.1 整体 Pipeline：三模块、两阶段
+
+#Zhong2024# 把 AnimalMotionCLIP 拆成三个模块：Optical Flow、Video Recognition、Score Aggregation。整体数据流是"视频 → RAFT → 交错 → M 个 XCLIP → 平均+阈值 → 多标签预测"。
+
+<div class="photo">
+  <img src="media/images/animalmotionclip-2024/block_diagram_final.webp" alt="AnimalMotionCLIP 整体架构" loading="lazy">
+  <div class="cap">图 1：AnimalMotionCLIP 整体架构。视频帧经 RAFT 提取光流后，与 RGB 帧交错成 IF 序列；M 个共享权重的 XCLIP classifier 从不同的 main window + contextual window 中采样；最后 score aggregation 输出多标签预测。来源：#Zhong2024# Figure 1</div>
+</div>
+
+下面这张 mermaid 图是同样的数据流，用文字重画一遍，方便后续讨论：
+
+{{< mermaid >}}
+flowchart TD
+  V["输入视频 I = [I₁, I₂, ..., I_N]"] --> OF["Optical Flow 模块<br>RAFT"]
+  OF --> F["光流场 F = [F₁, F₂, ..., F_{N-1}]"]
+  V --> SAMP["采样策略选择<br>Dense / Semi-dense / Sparse"]
+  SAMP --> IF["帧间交错<br>IF = [I_t₁, F_t₁, I_t₂, F_t₂, ...]"]
+  F --> IF
+  IF --> X1["XCLIP Classifier #1<br>（共享权重）"]
+  IF --> X2["XCLIP Classifier #2<br>（共享权重）"]
+  IF --> XM["... XCLIP Classifier M<br>（共享权重）"]
+  X1 --> S1["S₁"]
+  X2 --> S2["S₂"]
+  XM --> SM["S_M"]
+  S1 --> AGG["Score Aggregation<br>S̄ = (1/M) Σ Sᵢ"]
+  S2 --> AGG
+  SM --> AGG
+  AGG --> THR["阈值筛选"]
+  THR --> OUT["多标签预测<br>140 类 Animal Kingdom 行为"]
+{{< /mermaid >}}
+
+### 3.2 Optical Flow 模块：为什么是 RAFT
+
+输入是 $N$ 帧视频 $I = [I_1, I_2, \ldots, I_N]$，输出是 $N-1$ 个稠密光流场 $F = [F_1, F_2, \ldots, F_{N-1}]$。每个 $F_i \in \mathbb{R}^{H \times W \times 2}$，对应相邻帧 $(I_i, I_{i+1})$ 的二通道位移场。
+
+#Zhong2024# 选择 RAFT 而不是 PWC-Net、FlowNet 等替代方案的理由很明确（论文 Section 3）：
+
+> "RAFT has been chosen because of its high accuracy in near-motion boundaries and precision for small displacements, which is essential for capturing nuanced motion patterns in animal behaviors."
+
+具体而言：
+- **near-motion boundary 精度**：动物轮廓边缘的微小运动（眼动、耳动、尾动）是行为区分的关键，RAFT 的 4D 相关体 + 迭代 GRU 更新在这种细节上远超两帧方法
+- **small displacement 精度**：KITTI F1-all 5.10% / Sintel final pass EPE 2.855 像素两个 SOTA 指标说明了这一点
+
+### 3.3 帧间交错：让运动在数据层融入 CLIP
+
+#Zhong2024# 提出的关键创新是把 RGB 帧和光流场**在帧级直接交错**：
+
+\[
+IF = [I_{t_1}, F_{t_1}, I_{t_2}, F_{t_2}, \ldots]
+\]
+
+其中 $t_i$ 是采样得到的时刻索引。这样做有几个重要后果：
+
+1. **patch embedding 同时处理 RGB 和 Flow**：CLIP 的 patch embedding 不需要修改，就能把光流当作"另一种通道"——避免双流网络的复杂后期融合
+2. **end-to-end 联合学习**：运动信息和静态外观在 ViT #dosovitskiy2021image# 的早期层就开始融合，而不是在高层特征空间才汇合
+3. **MHSA 看到完整的"动-静"序列**：帧内 MHSA 会自动学习到"同一时刻的 RGB 块和光流块之间的强关联"，这种关联对识别行为至关重要
+
+<div class="callout"><strong>设计哲学</strong>：把运动信息在数据层注入模型，而不是 feature level 后期融合，这是 AnimalMotionCLIP 与 ActionCLIP/XCLIP 等"只改输入侧 prompt"路线的根本区别。</div>
+
+### 3.4 Video Recognition 模块：M 个共享权重的 XCLIP
+
+每个 classifier 内部就是 XCLIP #ni2022expanding#，包含两个核心子模块：
+
+#### 3.4.1 Video Encoder（三阶段）
+
+**Stage 1 · Patch Embedding + Positional Encoding**
+把每帧分成 $P \times P$ 不重叠 patches，每个 patch 投影到 $D$ 维 embedding，加 positional encoding。
+
+**Stage 2 · Frame-level MHSA**
+标准的 Vision Transformer #dosovitskiy2021image# 思路：对单帧 patch 序列做 Multi-Head Self-Attention，输出每帧的高层语义 embedding。这是 XCLIP 与原始 CLIP 共用的视觉编码器。
+
+**Stage 3 · Temporal Attention**
+跨帧 Transformer：对帧级 embedding 序列做 temporal attention，输出**单一视频 embedding** $V \in \mathbb{R}^{D}$。这是 XCLIP 在 CLIP 基础上新加的"跨帧 attention"模块（见 #ni2022expanding# 论文）。
+
+#### 3.4.2 Video-Guided Text Encoder（两阶段）
+
+**Stage 1 · Text Encoder**
+用 CLIP B/16 预训练的 text encoder（12 层、512 维 embedding、77 context length）处理多标签文本。每个 word 经 token embedding + positional encoding。
+
+**Stage 2 · Video-Text Alignment**
+#Zhong2024# 这里做了一个重要的范式选择：**用 cross-attention 让 text embedding 在 video embedding 的引导下动态调整**。视频特征 $V$ 作为 K/V，文本特征 $T_c^{(0)}$ 作为 Q：
+
+\[
+\bar{T}_c = \text{CrossAttn}(T_c^{(0)}, V)
+\]
+
+论文明确说："This strategy substitutes the manual designed fixed prompt template used in other approaches for the input of the text encoder and provides dynamic adaptability to varying video content and contexts"。这是一个比手工 prompt / CoOp #Zhou_2022# 更灵活的设计——prompt 由视频内容动态生成。
+
+<div class="photo">
+  <img src="media/images/animalmotionclip-2024/MotionCLIP_final.webp" alt="Video Recognition 模块详细架构" loading="lazy">
+  <div class="cap">图 2：Video Recognition 模块的 Classifier 内部架构，左侧是 Video Encoder（patch → frame-level MHSA → temporal attention），右侧是 Video-Guided Text Encoder（CLIP text encoder → video-text alignment cross-attention）。来源：#Zhong2024# Figure 2</div>
+</div>
+
+### 3.5 三种时间聚合策略：dense / semi-dense / sparse
+
+这是 #Zhong2024# 在方法论上最系统的贡献之一。我们把每个 classifier 看成"看一段子视频的专家"，M 个 expert 的视角应该怎么分配？
+
+论文给出三种方案：
+
+**Dense（密集采样）**
+所有 $P$ 帧都从 main window $W_m$ 中均匀采样。Main window 是该 classifier 负责的固定视频片段。
+
+**Semi-dense（半密集采样）**
+$P/2$ 帧从 main window $W_m$ 均匀采样，$P/2$ 帧从 contextual window $W_c$（$W_m$ 的补集）均匀采样。这样每个 classifier 既看到自己负责的局部，又有全局上下文。
+
+**Sparse（稀疏采样）**
+不区分 main window 和 contextual window，从整个视频 quasi-random 采样 $P$ 帧。每个 classifier 的采样集合都不同 → 多样性更高。
+
+#Zhong2024# 通过 $M$ 个 classifier 的设置保证了"无论哪种采样方案，每个 classifier 都看到不同的视角"，最后用 Score Aggregation 把所有视角融合。
+
+### 3.6 Score Aggregation：两阶段融合
+
+M 个 classifier 输出 M 个 score vector $S = [S_1, S_2, \ldots, S_M]$，每个 $S_i \in \mathbb{R}^{140}$。Aggregation 策略分两步：
+
+1. **平均**：$\bar{S} = \frac{1}{M} \sum_{i=1}^{M} S_i$
+2. **阈值**：超过阈值的 label 被选为最终多标签预测
+
+这种简单 ensemble 的好处：M 个 classifier 共享权重（不增加参数），但通过不同的输入采样实现数据增强效果，类似于 dropout 的正则化机制。
+
+### 3.7 多标签对比损失
+
+训练目标是 multi-label binary cross entropy：
+
+\[
+L = -\sum_{c=1}^{140} y_{i,c} \log\left(\sigma(\text{sim}(v_i, \bar{t}_c))\right)
+\]
+
+每个标签独立的 sigmoid 概率，支持 multi-label 输出。$\text{sim}(\cdot, \cdot)$ 是 video embedding 和 text embedding 之间的 cosine similarity。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 4 · Training Pipeline</div>
+<div class="ch-title">如何训练 AnimalMotionCLIP</div>
+
+### 4.1 数据与划分
+
+**训练数据**：Animal Kingdom #ng2022animal#，按官方 guideline 划分。850 species × 140 action classes，规模远大于 MammalNet（12 行为）和 KABR（3 类 × 7 行为）。
+
+**关键观察**：与 MSQNet 不同，#Zhong2024# 不需要 Kinetics-400 #kay2017kinetics# 预训练。论文明确说："without relying on the computationally expensive pre-training strategies on additional Kinetic-400 dataset"。这意味着训练流程直接从 CLIP + XCLIP + RAFT 预训练权重开始微调。
+
+### 4.2 训练目标
+
+多标签二元交叉熵损失（论文 Section 3）：
+
+\[
+L = -\sum_{c=1}^{140} y_{i,c} \log(\sigma(\text{sim}(v_i, \bar{t}_c)))
+\]
+
+Sigmoid per label 设计天然支持 multi-label，与 Animal Kingdom 的多标签标注一致。
+
+### 4.3 训练配置披露表
+
+#Zhong2024# 是一篇 8 页 workshop 论文（CV4Animals），没有 supplementary material 提供额外训练细节。以下表格严格按 10 项必含字段标注，**未披露字段一律标记**：
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+<tbody>
+<tr><td>训练数据</td><td>已披露</td><td>Animal Kingdom 数据集（850 species × 140 action classes）</td></tr>
+<tr><td>训练硬件</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>优化器</td><td>未披露</td><td>原文未给出（基于 XCLIP 实践推测为 AdamW）</td></tr>
+<tr><td>学习率</td><td>未披露</td><td>原文未给出（基于 XCLIP 实践推测在 1e-5 ~ 1e-4 量级）</td></tr>
+<tr><td>Batch size</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>训练步数 / 轮数</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>模型参数量</td><td>部分披露</td><td>CLIP B/16 text encoder：12 层、512 维 embedding、77 context length；其他组件未明确</td></tr>
+<tr><td>精度格式</td><td>未披露</td><td>原文未给出（CLIP 微调工作常用 FP16 / BF16）</td></tr>
+<tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td colspan="3" style="text-align:center;background:#f5f5f5;"><strong>方法特定参数</strong></td></tr>
+<tr><td>视频总帧数 N</td><td>未明确披露</td><td>论文符号 [I₁, ..., I_N] 中提到但未给数值</td></tr>
+<tr><td>Classifier 数 M</td><td>未明确披露</td><td>"a set of M classifiers"，未给具体值</td></tr>
+<tr><td>每 classifier 帧数 P</td><td>未明确披露</td><td>提到 "P/2 frames for the main window, P/2 frames for the contextual window"</td></tr>
+<tr><td>Patch size</td><td>已披露（符号冲突）</td><td>"patches of size P × P"（P 在论文中既表示帧数又表示 patch size，需结合上下文判断）</td></tr>
+<tr><td>Embedding 维度 D</td><td>未明确披露</td><td>提到 D 但未给数值（CLIP B/16 标准为 768）</td></tr>
+<tr><td>RAFT 权重来源</td><td>已披露</td><td>使用预训练 RAFT，不在 Animal Kingdom 上微调</td></tr>
+<tr><td>XCLIP 权重来源</td><td>已披露</td><td>使用预训练 XCLIP 权重</td></tr>
+<tr><td>CLIP backbone</td><td>已披露</td><td>CLIP B/16 text encoder（12 层、512 维、77 context）</td></tr>
+</tbody>
+</table>
+</div>
+<p><em>表 1：AnimalMotionCLIP 训练配置披露表。必含基础项 10 项中，仅"训练数据"一项完整披露；其余 9 项全部缺失。方法特定项显示出关键的设计选择（光流注入在数据层、采样方案可选、CLIP B/16 backbone）。</em></p>
+
+<div class="callout"><strong>复现门槛警告</strong>：#Zhong2024# 是 8 页 workshop 论文，超参数严重缺失。复现者需要基于 XCLIP 经验自行调试所有训练相关参数，且 M、P 等关键超参需要搜索最优值。</div>
+
+### 4.4 训练成本与 MSQNet 的对比
+
+虽然具体训练时长未披露，但我们可以从结构性差异推断：
+
+**MSQNet 的训练成本**：
+1. 先在 Kinetics-400（约 14 万视频 × 400 类）上做大规模预训练
+2. 然后在 Animal Kingdom 上 fine-tune
+3. 整个流程需要数天到数周的多卡训练
+
+**AnimalMotionCLIP 的训练成本**：
+1. 直接从 CLIP + XCLIP + RAFT 预训练权重开始
+2. 在 Animal Kingdom 上微调
+3. 不依赖 Kinetics-400 等额外数据集
+
+论文明确指出："the proposed strategy still overcomes the accuracy of MSQNet + pre-training"——更少的训练数据依赖 + 更高的精度。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 5 · Inference Pipeline</div>
+<div class="ch-title">如何在线跑起来</div>
+
+### 5.1 输入准备
+
+**Step 1：视频帧采样**
+给定一段待预测视频 $I = [I_1, I_2, \ldots, I_N]$，按 Animal Kingdom 官方 guideline 采样。
+
+**Step 2：RAFT 光流估计**
+对相邻帧对 $(I_i, I_{i+1})$ 计算光流场 $F_i$。N 帧视频生成 N-1 个光流场。这一步是 inference 的额外开销，可以用 RAFT 在 GPU 上并行处理。
+
+**Step 3：采样方案选择**
+按训练时的采样策略（Dense / Semi-dense / Sparse）对帧做采样，得到 $P$ 个时刻索引 $\{t_1, t_2, \ldots, t_P\}$。
+
+**Step 4：帧间交错**
+把 RGB 帧和对应的光流场交错成 IF 序列。这是 inference 阶段的预处理核心。
+
+### 5.2 M 个 XCLIP Forward Pass
+
+每个 classifier 对 IF 序列独立做 forward：
+- 输出视频 embedding $V_i \in \mathbb{R}^{D}$
+- 通过 video-text alignment 与 140 个行为类别的 text embedding 做相似度计算
+- 输出 score vector $S_i \in \mathbb{R}^{140}$
+
+M 个 classifier 共享权重，所以实际加载的参数只有 1×XCLIP，但需要 M 次 forward pass。这是 inference 的主要瓶颈。
+
+### 5.3 Score Aggregation
+
+**平均阶段**：$\bar{S} = \frac{1}{M} \sum_{i=1}^{M} S_i$
+
+**阈值阶段**：按 Animal Kingdom 标注 guideline 选择阈值，得到 multi-label 预测。
+
+#Zhong2024# 在 Section 3 提到另一种推理选项："a K-Nearest Neighbor strategy is applied to infer the behavior in a video by comparing the resulting video embedding with a set of text embeddings (everyone describing the potential behaviors of interest)"。K-NN 是 Score Aggregation 的替代方案，直接基于 embedding 距离。
+
+### 5.4 推理开销分析
+
+| 步骤 | 主要开销 | 优化空间 |
+|------|---------|---------|
+| RAFT 光流 | O(N) 帧对推理 | 可离线缓存（一次计算，多次复用） |
+| XCLIP M 次 forward | M × 1×XCLIP | 共享权重但 forward 不能合并 |
+| Score Aggregation | 几乎无开销 | — |
+| 总开销 | ≈ M × XCLIP + RAFT | RAFT 可缓存 |
+
+与单 classifier 的 CLIP 类方法相比，AnimalMotionCLIP 的 inference 是 **M 倍 XCLIP 推理 + 一次性 RAFT**。如果 M 比较大（比如 8 或 16），latency 会显著上升——这是方法的一个落地挑战。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 6 · 实验验证</div>
+<div class="ch-title">74.63% mAP 是怎么来的</div>
+
+### 6.1 数据集与指标
+
+**Animal Kingdom 数据集** #ng2022animal#：
+
+<div class="photo">
+  <img src="media/images/animalmotionclip-2024/ak_bbdd.webp" alt="Animal Kingdom 数据集示例" loading="lazy">
+  <div class="cap">图 3：Animal Kingdom 数据集中的不同物种、不同环境、不同行为示例。覆盖 850 species × 140 action classes。来源：#Zhong2024# Figure 3</div>
+</div>
+
+数据集统计：
+- **850 个物种**：哺乳动物、鱼类、两栖类、爬行类、鸟类、昆虫
+- **140 个动作类**：生命周期（molting）、日常活动（feeding）、社交互动（playing）
+- **规模**：远超 MammalNet（12 行为）和 KABR（3 类 × 7 行为）
+
+**评估指标**：mAP（mean Average Precision），公式：
+
+\[
+\text{mAP} = \frac{1}{n}\sum_n (R_n - R_{n-1}) P_n
+\]
+
+其中 $R_n$ 和 $P_n$ 是第 $n$ 个阈值处的 recall 和 precision。#Zhong2024# 引用 #Su-et-al.-2015# 说明 mAP 即 precision-recall 曲线下面积的平均。
+
+### 6.2 主实验结果：与 SOTA 对比
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>类别</th><th>mAP (%)</th><th>vs 本文 Δ</th><th>来源</th></tr></thead>
+<tbody>
+<tr><td>I3D</td><td>CNN baseline</td><td>16.48</td><td>-58.15</td><td>#carreira2018quo#</td></tr>
+<tr><td>SlowFast</td><td>CNN baseline</td><td>20.46</td><td>-54.17</td><td>#feichtenhofer2019slowfast#</td></tr>
+<tr><td>X3D</td><td>CNN baseline</td><td>25.25</td><td>-49.38</td><td>#feichtenhofer2020x3d#</td></tr>
+<tr><td>Category-CLIP</td><td>CLIP-for-animal (prompt)</td><td>55.36</td><td>-19.27</td><td>#Jing-et-al.-2023#</td></tr>
+<tr><td>MSQNet</td><td>CLIP-for-animal (query)</td><td>55.59</td><td>-19.04</td><td>#Mondal_2023#</td></tr>
+<tr><td>MSQNet + pre-training</td><td>+ Kinetics-400 预训练</td><td>73.10</td><td>-1.53</td><td>#Mondal_2023#</td></tr>
+<tr><td><strong>AnimalMotionCLIP (本文)</strong></td><td><strong>CLIP + 光流 + sparse ensemble</strong></td><td><strong>74.63</strong></td><td><strong>—</strong></td><td>#Zhong2024#</td></tr>
+</tbody>
+</table>
+</div>
+<p><em>表 2：AnimalMotionCLIP 与 SOTA 在 Animal Kingdom 上的 mAP 对比。本文以 74.63% mAP 拿下新 SOTA，且不依赖 Kinetics-400 预训练。数据来源：#Zhong2024# Table 1。</em></p>
+
+**关键观察**：
+
+1. **CLIP 类方法对 CNN 的代际超越**：从 X3D（25.25%）到 Category-CLIP（55.36%）直接翻倍，说明视觉-语言预训练在动物领域是质变而非量变
+2. **AnimalMotionCLIP 相对 MSQNet 的超越**：74.63% vs 73.10%（MSQNet + 预训练），且**不需要 Kinetics-400 预训练**——这是论文最关键的卖点
+3. **跨数据集迁移优势**：Category-CLIP / MSQNet 都需要在 Animal Kingdom 上从头训练，AnimalMotionCLIP 借助 CLIP 的零样本能力 + 光流的物理意义泛化能力更强
+
+### 6.3 消融实验 1：时间聚合策略
+
+#Zhong2024# 用单一 RGB 模态系统比较了三种采样方案：
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>采样策略</th><th>mAP (%)</th><th>Δ vs Sparse</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td>Dense</td><td>68.00</td><td>-5.93</td><td>所有帧来自 main window</td></tr>
+<tr><td>Semi-dense</td><td>68.49</td><td>-5.44</td><td>P/2 帧 main + P/2 帧 contextual</td></tr>
+<tr><td><strong>Sparse</strong></td><td><strong>73.93</strong></td><td>—</td><td>全视频 quasi-random 采样</td></tr>
+</tbody>
+</table>
+</div>
+<p><em>表 3：三种时间采样策略的消融。仅 RGB 模态下，Sparse 比 Dense / Semi-dense 高 5.4+ mAP。数据来源：#Zhong2024# Table 2。</em></p>
+
+<div class="callout"><strong>关键发现</strong>：Sparse >> Semi-dense ≈ Dense。+5.4% mAP 的差距证明：动物行为的"时间分布稀疏且不等长"，固定窗口采样严重限制了模型对全局上下文的访问能力。Quasi-random 全局采样让每个 classifier 看到不同的时间子集，ensemble 时自然覆盖更广。</div>
+
+### 6.4 消融实验 2：模态组合
+
+#Zhong2024# 在 sparse 策略下做了模态消融：
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>模态</th><th>mAP (%)</th><th>Δ vs RGB+Flow</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td>RGB only</td><td>73.93</td><td>-0.70</td><td>纯 RGB 帧（sparse 采样）</td></tr>
+<tr><td>Optical flow only</td><td>65.10</td><td>-9.53</td><td>纯光流（去掉 RGB）</td></tr>
+<tr><td><strong>RGB + Optical flow</strong></td><td><strong>74.63</strong></td><td>—</td><td>交错融合</td></tr>
+</tbody>
+</table>
+</div>
+<p><em>表 4：模态消融。RGB + Flow 互补，比单 RGB 高 0.70% mAP；纯 Flow 损失最大（-9.53%）。数据来源：#Zhong2024# Table 3。</em></p>
+
+**关键发现**：
+
+1. **RGB > Flow（单模态）**：纯 RGB（73.93%）远优于纯光流（65.10%）——CLIP 的视觉先验极强，丢弃 RGB 是巨大损失
+2. **RGB + Flow 互补**：融合后达到 74.63%（+0.70% vs 单 RGB），证明光流确实提供了 RGB 缺少的运动信息
+3. **绝对增益不大但方向正确**：+0.70% 在 mAP 上是显著提升（mAP 越接近 100%，提升越难），且模态融合路径本身是"零成本"的数据层操作
+4. **回到主结果**：当 RGB + Flow 配合 sparse 策略时，最终达到 74.63% mAP，超越所有 baseline
+
+### 6.5 失败案例分析
+
+#Zhong2024# 在 Section 4（Error Analysis）给出了几个具体的失败模式，我们已经在 Part 2.2 概述过，这里再展开它们的定量含义：
+
+**复合行为分散预测**：grooming 行为被预测为 attending + eating + keeping still + moving 的组合——模型倾向于把复合行为拆成多个原子行为，缺乏 hierarchical 抽象。
+
+**过渡段误识别**：jumping 行为前后是静止段，模型把整个序列识别为 keeping still + moving——时间边界建模弱。
+
+**多标签合并失败**：sensing 行为被预测为 attending + keeping still + sensing——模型能识别子动作，但无法合并为高层标签。
+
+**标注噪声**：ground-truth 本身不全面（例如青蛙"先静后跳"只标注 jumping），让模型学到错误的关联。
+
+这些失败模式不是 AnimalMotionCLIP 独有的，而是当前整个 Animal Kingdom benchmark 的共性挑战。#Zhong2024# 的 Error Analysis 为未来工作提供了明确的改进方向。
+
+</div>
+
+<div class="ch fade-in">
+<div class="ch-label">Part 7 · 讨论与启发</div>
+<div class="ch-title">在地图上的位置</div>
+
+### 7.1 与竞品的全面对比
+
+| 维度 | AnimalMotionCLIP | Category-CLIP | MSQNet | WildCLIP | ActionCLIP / XCLIP / Vita-CLIP |
+|------|------------------|---------------|--------|----------|-------------------------------|
+| **基础模型** | CLIP + XCLIP + RAFT | CLIP | CLIP + Query Network | CLIP + Adapter | CLIP + Prompt / Temporal Attn |
+| **运动信息** | **显式光流（RAFT）** | 无 | 无 | 无 | 无 |
+| **时间聚合** | **Dense/Semi/Sparse ensemble** | 简单平均 | Query-based | N/A（图像级） | Prompt-based / Temporal Attn |
+| **多标签支持** | 是（sigmoid per label） | 是 | 是 | 否 | 否 |
+| **预训练需求** | **无** | 无 | **Kinetics-400（必需）** | 无 | 无 |
+| **Patch Embedding 输入** | RGB + Flow 交错 | RGB only | RGB only | RGB only | RGB only |
+| **mAP (Animal Kingdom)** | **74.63%** | 55.36% | 55.59% / 73.10% | N/A | N/A |
+
+AnimalMotionCLIP 的差异化优势集中在三点：**显式运动嵌入**、**多采样策略 ensemble**、**零额外预训练**。
+
+### 7.2 局限性
+
+虽然论文取得了 SOTA，但 AnimalMotionCLIP 仍然存在以下局限：
+
+**1. 推理开销大**
+M 个 XCLIP classifier 共享权重但需要 M 次 forward pass，latency 显著上升。如果 M=8 或 16，推理时间会比单 classifier 方法长一个数量级。
+
+**2. 训练超参数缺失**
+论文是 8 页 workshop paper，几乎所有训练相关参数（学习率、batch size、optimizer、训练时长等）都未明确披露。复现门槛较高。
+
+**3. RAFT 光流的额外开销**
+虽然 RAFT 推理可以离线缓存，但仍然是预处理的额外步骤。比起纯 RGB 方法，端到端 pipeline 更长。
+
+**4. 复合行为预测分散**
+grooming 这类由多个子动作组成的复合行为，模型倾向于输出多个原子标签而不是聚焦于高层标签。
+
+**5. ground-truth 标注质量限制**
+Animal Kingdom 自身的标注存在不完整（青蛙先静后跳只标 jumping），这是 benchmark 的固有问题，而非方法本身的缺陷。
+
+**6. CLIP 域外泛化能力**
+对 CLIP 训练集中完全没出现过的行为类别，识别能力受限。
+
+### 7.3 可操作启发
+
+读完 AnimalMotionCLIP，至少有三点启发值得带走：
+
+**1. CLIP 跨域迁移，运动信号是必要补充**
+CLIP 在人类动作上成功主要靠"动作类别的人类语言描述对齐"，但在动物领域，光流这种**跨语言、与视觉强耦合的物理信号**成为必要补充。"CLIP + 物理信号"可能是一条值得探索的范式。
+
+**2. 时间聚合策略比想象中重要**
+sparse quasi-random 比固定窗口高 5.4% mAP——这个数字告诉我们，**全局随机采样 + ensemble**可能是比固定窗口更适合动物/长视频的策略。这个 insight 可以推广到任何"行为时长不等、跨尺度"的视频理解任务。
+
+**3. Kinetics-400 预训练不是免费的午餐**
+MSQNet 借助 Kinetics-400 把 mAP 从 55.59% 拉到 73.10%，看起来很诱人，但 AnimalMotionCLIP 用更"克制"的设计（不依赖 Kinetics）反而达到更高的 74.63%。这提醒我们：**预训练的迁移不是越多越好，方法设计的优雅性比堆数据更重要**。
+
+### 7.4 推荐阅读
+
+如果想沿着 AnimalMotionCLIP 继续深入：
+
+- **基础**：[CLIP 原文](https://arxiv.org/abs/2103.00020) #radford2021learning# 和 [XCLIP 原文](https://arxiv.org/abs/2208.02816) #ni2022expanding# 必读
+- **直接竞品**：[Category-CLIP](https://doi.org/10.1145/3581783.3612551) #Jing-et-al.-2023# 和 [MSQNet](https://arxiv.org/abs/2207.12497) #Mondal_2023# 是必须对比的两篇
+- **数据集**：[Animal Kingdom](https://arxiv.org/abs/2204.08186) #ng2022animal# 是这个领域的标准 benchmark
+- **运动基础**：[RAFT](https://arxiv.org/abs/2003.12039) #teed2020raft# 仍然是事实标准的稠密光流算法
+
+<div class="callout"><strong>回顾要点</strong>：AnimalMotionCLIP 的核心是"在数据层嵌入运动 + 系统比较时间聚合"。RAFT 光流通过帧间交错进入 CLIP 视觉编码器；dense/semi-dense/sparse 三种采样策略的对比直接改变了 5.4% mAP；最终 74.63% mAP 在不依赖 Kinetics-400 预训练的前提下超越所有 baseline，是 CLIP-for-animal 范式的一次优雅推进。</div>
+
+</div>
+
+<div class="sources">
+<h3>参考来源</h3>
+<ul>
+<li data-cite-key="Zhong2024">Zhong, E., del-Blanco, C. R., Berjón, D., Jaureguizar, F., & García, N. (2024). AnimalMotionCLIP: Embedding Motion in CLIP for Animal Behavior Analysis. <em>CVPR 2024 Workshop CV4Animals (Best Paper)</em>. <a href="https://arxiv.org/abs/2505.00569" target="_blank">arXiv:2505.00569</a></li>
+<li data-cite-key="radford2021learning">Radford, A. et al. (2021). Learning Transferable Visual Models from Natural Language Supervision. <em>ICML 2021</em>. <a href="https://arxiv.org/abs/2103.00020" target="_blank">arXiv:2103.00020</a></li>
+<li data-cite-key="ni2022expanding">Ni, B. et al. (2022). Expanding Language-Image Pretrained Models for General Video Recognition. <em>ECCV 2022</em>. <a href="https://arxiv.org/abs/2208.02816" target="_blank">arXiv:2208.02816</a></li>
+<li data-cite-key="wang2021actionclip">Wang, M., Xing, J., & Liu, Y. (2021). ActionCLIP: A New Paradigm for Video Action Recognition. <a href="https://arxiv.org/abs/2109.08472" target="_blank">arXiv:2109.08472</a></li>
+<li data-cite-key="wasim2023vitaclip">Wasim, S. T. et al. (2023). Vita-CLIP: Video and Text Adaptive CLIP via Multimodal Prompting. <em>CVPR 2023</em>. <a href="https://arxiv.org/abs/2304.03307" target="_blank">arXiv:2304.03307</a></li>
+<li data-cite-key="Jing-et-al.-2023">Jing, Y., Wang, C., Zhang, R., Liang, K., & Ma, Z. (2023). Category-Specific Prompts for Animal Action Recognition with Pre-trained Vision-Language Models. <em>ACM MM 2023</em>. <a href="https://doi.org/10.1145/3581783.3612551" target="_blank">DOI: 10.1145/3581783.3612551</a></li>
+<li data-cite-key="Mondal_2023">Mondal, A., Nag, S., Prada, J. M., Zhu, X., & Dutta, A. (2023). Actor-Agnostic Multi-Label Action Recognition with Multi-Modal Query. <em>ICCVW 2023</em>. <a href="https://arxiv.org/abs/2207.12497" target="_blank">arXiv:2207.12497</a></li>
+<li data-cite-key="Gabeff2024">Gabeff, V., Rußwurm, M., Tuia, D., & Mathis, A. (2024). WildCLIP: Scene and Animal Attribute Retrieval from Camera Trap Data with Domain-Adapted Vision-Language Models. <em>International Journal of Computer Vision (IJCV)</em>. <a href="https://arxiv.org/abs/2304.00142" target="_blank">arXiv:2304.00142</a></li>
+<li data-cite-key="ng2022animal">Ng, X. L., Ong, K. E., Zheng, Q., Ni, Y., Yeo, S. Y., & Liu, J. (2022). Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2204.08186" target="_blank">arXiv:2204.08186</a></li>
+<li data-cite-key="chen2023mammalnet">Chen, J. et al. (2023). MammalNet: A Large-Scale Video Benchmark for Mammal Recognition and Behavior Understanding. <a href="https://arxiv.org/abs/2306.00520" target="_blank">arXiv:2306.00520</a></li>
+<li data-cite-key="Kholiavchenko2024KABRID">Kholiavchenko, M. et al. (2024). KABR: In-situ Dataset for Kenyan Animal Behavior Recognition from Drone Videos. <em>WACVW 2024</em>. <a href="https://arxiv.org/abs/2401.10973" target="_blank">arXiv:2401.10973</a></li>
+<li data-cite-key="teed2020raft">Teed, Z. & Deng, J. (2020). RAFT: Recurrent All-Pairs Field Transforms for Optical Flow. <em>ECCV 2020 (Best Paper)</em>. <a href="https://arxiv.org/abs/2003.12039" target="_blank">arXiv:2003.12039</a></li>
+<li data-cite-key="carreira2018quo">Carreira, J. & Zisserman, A. (2018). Quo Vadis, Action Recognition? A New Model and the Kinetics Dataset. <em>CVPR 2018</em>. <a href="https://arxiv.org/abs/1705.07750" target="_blank">arXiv:1705.07750</a></li>
+<li data-cite-key="feichtenhofer2019slowfast">Feichtenhofer, C., Fan, H., Malik, J., & He, K. (2019). SlowFast Networks for Video Recognition. <em>ICCV 2019</em>. <a href="https://arxiv.org/abs/1812.03982" target="_blank">arXiv:1812.03982</a></li>
+<li data-cite-key="feichtenhofer2020x3d">Feichtenhofer, C. (2020). X3D: Expanding Architectures for Efficient Video Recognition. <em>CVPR 2020</em>. <a href="https://arxiv.org/abs/2004.04730" target="_blank">arXiv:2004.04730</a></li>
+<li data-cite-key="dosovitskiy2021image">Dosovitskiy, A. et al. (2021). An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale. <em>ICLR 2021</em>. <a href="https://arxiv.org/abs/2010.11929" target="_blank">arXiv:2010.11929</a></li>
+<li data-cite-key="kay2017kinetics">Kay, W. et al. (2017). The Kinetics Human Action Video Dataset. <a href="https://arxiv.org/abs/1705.06950" target="_blank">arXiv:1705.06950</a></li>
+<li data-cite-key="Zhou_2022">Zhou, K., Yang, J., Loy, C. C., & Liu, Z. (2022). Learning to Prompt for Vision-Language Models. <em>International Journal of Computer Vision (IJCV)</em>. <a href="https://arxiv.org/abs/2109.01134" target="_blank">arXiv:2109.01134</a></li>
+<li data-cite-key="ju2022prompting">Ju, C. et al. (2022). Prompting Visual-Language Models for Efficient Video Understanding. <a href="https://arxiv.org/abs/2112.04478" target="_blank">arXiv:2112.04478</a></li>
+<li data-cite-key="rasheed2023finetuned">Rasheed, H. et al. (2023). Fine-tuned CLIP Models are Efficient Video Learners. <a href="https://arxiv.org/abs/2212.04040" target="_blank">arXiv:2212.04040</a></li>
+<li data-cite-key="Su-et-al.-2015">Su, W., Yuan, Y., & Zhu, M. (2015). A Relationship between the Average Precision and the Area under the ROC Curve. <em>ICTIR 2015</em>. <a href="https://doi.org/10.1145/2808194.2809481" target="_blank">DOI: 10.1145/2808194.2809481</a></li>
+<li data-cite-key="CHENG2022107010">Cheng, M. et al. (2022). Application of Deep Learning in Sheep Behaviors Recognition and Influence Analysis of Training Data Characteristics on the Recognition Effect. <em>Computers and Electronics in Agriculture</em>. <a href="https://doi.org/10.1016/j.compag.2022.107010" target="_blank">DOI: 10.1016/j.compag.2022.107010</a></li>
+<li data-cite-key="MALOY2019105087">Måløy, H., Aamodt, A., & Misimi, E. (2019). A Spatio-Temporal Recurrent Network for Salmon Feeding Action Recognition from Underwater Videos in Aquaculture. <em>Computers and Electronics in Agriculture</em>. <a href="https://doi.org/10.1016/j.compag.2019.105087" target="_blank">DOI: 10.1016/j.compag.2019.105087</a></li>
+</ul>
+</div>

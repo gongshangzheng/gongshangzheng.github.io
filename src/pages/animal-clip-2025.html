@@ -1,0 +1,570 @@
+---
+title: "动作识别论文精读（十）：Animal-CLIP，双 Prompt 增强的物种感知 VLM"
+description: "IJCV 2025 论文 Animal-CLIP 深度解读：如何用 LLM 外部知识 + 物种感知内部 Prompt，将 CLIP 高效适配到动物行为识别领域，在三个大规模数据集上超越六种基线方法。"
+date: 2026-07-09T10:37:23
+created_at: 2026-07-09T10:37:23
+updated_at: 2026-07-09T10:37:23
+tags: ["Animal-CLIP", "Prompt Tuning", "动物行为识别", "视觉语言模型", "GCN"]
+aliases: ["categories/AI/动作识别/动作识别论文精读"]
+sub_id: 100
+mathjax: true
+papers: ["https://doi.org/10.1007/s11263-025-02408-4"]
+repos: ["https://github.com/PRIS-CV/Animal-CLIP"]
+paper_title: "Animal-CLIP: A Dual-Prompt Enhanced Vision-Language Model for Animal Action Recognition"
+paper_authors: ["Yinuo Jing", "Kongming Liang", "Ruxu Zhang", "Hao Sun", "Yongxiang Li", "Zhongjiang He", "Zhanyu Ma"]
+paper_affiliation: "北京邮电大学人工智能学院"
+paper_venue: "International Journal of Computer Vision (IJCV), 2025, Vol. 133, Issue 8, pp. 1-21"
+paper_doi: "10.1007/s11263-025-02408-4"
+paper_code: "https://github.com/PRIS-CV/Animal-CLIP（已开源，含预训练权重）"
+hero_title: "Animal-CLIP"
+hero_sub: "IJCV 2025 · 北邮 PRIS-CV"
+hero_tagline: "双 Prompt 增强：LLM 外部知识 + 物种感知内部 Prompt，让 CLIP 看懂动物行为"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">当 CLIP 遇见动物世界</div>
+
+  <p>如果我们把一段猫咪捕猎的视频输入 CLIP，问它在做什么，CLIP 大概率会给出一个与人类动作相关的答案。这并不奇怪——CLIP 在 4 亿张人类中心的图文对上预训练，它的"世界观"里，"捕猎"这个动作的视觉原型是人类的狩猎场景，而不是猫咪伏击老鼠的姿态。#Jing et al., 2025#</p>
+
+  <p>这就是动物行为识别面临的根本矛盾：<strong>预训练模型的视觉语言知识与动物领域的视觉表现之间存在巨大的语义鸿沟</strong>。人类动作识别已经相当成熟（Kinetics-400、UCF-101 等数据集催生了大量方法），但动物行为识别仍然处于起步阶段。原因有二：</p>
+
+  <p><strong>第一，物种间的视觉差异远超人类。</strong> 同一个"行走"动作，在大象、猫、鸟类身上的视觉表现截然不同。这意味着"行走"这个类别的类内方差（intra-class variation）在动物领域比人类领域大得多。#Jing et al., 2025#</p>
+
+  <p><strong>第二，领域知识的缺失。</strong> CLIP 等 VLM 在预训练阶段几乎没有接触过动物行为数据。即使有，也是零散的、不系统的。模型缺乏对"什么动物会做什么动作"这一基本领域常识的理解。#Jing et al., 2025#</p>
+
+  <p>2025 年 6 月，北京邮电大学 PRIS-CV 实验室的 Yinuo Jing 等人在 IJCV 上发表了 Animal-CLIP，提出了一种<strong>双 Prompt 增强</strong>的框架来解决这两个问题。核心思想很直观：既然 CLIP 缺乏动物领域的知识，我们就用两种方式把知识"注入"模型——</p>
+
+  <ul>
+    <li><strong>外部 Prompt</strong>：用 LLM 为每个动作生成详细的生物学描述，扩展标签的语义范围</li>
+    <li><strong>内部 Prompt</strong>：用物种预测结果引导可学习的 prompt 模块，让文本和视频特征在物种特定的子空间中对齐</li>
+  </ul>
+
+  <p>实验结果表明，Animal-CLIP 在三个大规模多物种多动作数据集上超越了六种已有的动作识别方法，并对未见过的动物展现出了泛化能力。#Jing et al., 2025#</p>
+
+  <p>这篇文章是该团队 ACM MM 2023 工作"Category-Specific Prompts for Animal Action Recognition"的扩展版本。从单 prompt 到双 prompt，从简单的物种条件到 LLM 知识增强 + GCN 图推理，Animal-CLIP 代表了一条清晰的演进路线。#Jing et al., 2023#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">为什么 CLIP 在动物视频上"失灵"</div>
+
+  <p>要理解 Animal-CLIP 的设计动机，我们需要先看清 CLIP 在动物行为识别上失败的根本原因。</p>
+
+  <h3 class="section-title">问题一：标签语义过于单薄</h3>
+
+  <p>CLIP 的 zero-shot 分类依赖文本 prompt，最常用的是 "a photo of a {class}" 这种模板。对于 "a photo of a cat hunting" 这样的 prompt，CLIP 的文本编码器只看到了 "hunting" 这个词的通用语义——它不知道猫的捕猎和鹰的捕猎在视觉上完全不同。#Jing et al., 2025#</p>
+
+  <p>一个自然的想法是：如果给模型提供更丰富的动作描述呢？比如 "猫在捕猎时会压低身体、缓慢接近、突然扑击"——这样的描述包含了具体的视觉线索，理论上可以帮助模型更好地对齐文本和视觉特征。Animal-CLIP 正是这样做的：它用 LLM 为每个动作生成了 300-500 词的详细生物学描述，作为外部 Prompt 输入。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">问题二：跨物种的类内方差</h3>
+
+  <p>在人类动作识别中，"跑步"这个动作在不同人身上的视觉表现相对一致。但在动物世界中，"跑步"在猎豹、企鹅、青蛙身上的表现完全不同。这意味着：</p>
+
+  <ul>
+    <li>文本侧："跑步"的文本特征需要覆盖多种视觉原型</li>
+    <li>视觉侧：同一种动作的视频特征分布在多个不连续的子空间中</li>
+  </ul>
+
+  <p>Animal-CLIP 的洞察是：<strong>如果我们知道视频中的动物是什么，就可以缩小搜索空间</strong>。具体来说，先用预训练 CLIP 预测物种，然后用物种信息引导 prompt 模块，让文本和视频特征在物种特定的子空间中对齐。这相当于给模型一个"先验"：既然视频里是猫，那么"飞行"这个动作的概率应该接近零。#Jing et al., 2025#</p>
+
+  <div class="callout"><strong>核心 Insight</strong>：动物行为识别的关键不在于设计更复杂的视频编码器，而在于如何将领域知识（物种信息 + 动作描述）有效地注入到预训练 VLM 中。Animal-CLIP 选择了一条参数高效的路径：冻结 CLIP 骨干，只训练少量 Prompt 参数。</div>
+
+  <h3 class="section-title">已有方法为什么不够</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>思路</th><th>在动物行为识别上的局限</th></tr></thead>
+      <tbody>
+        <tr><td>CLIP Zero-shot</td><td>直接用 "a photo of {action}" 分类</td><td>标签语义单薄，缺乏领域知识</td></tr>
+        <tr><td>CoOp</td><td>学习全局可 prompt 向量</td><td>所有类别共享 prompt，无法区分物种差异</td></tr>
+        <tr><td>X-CLIP</td><td>跨帧通信 + 多粒度对比</td><td>通用视频-文本模型，无动物领域适配</td></tr>
+        <tr><td>ViFi-CLIP</td><td>简单微调 CLIP 做视频</td><td>全参数微调，数据需求大，易过拟合</td></tr>
+        <tr><td>BioCLIP</td><td>生物领域 CLIP 预训练</td><td>专注物种识别，不涉及行为理解</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Animal-CLIP 的定位很清晰：<strong>不是提出新的 VLM 架构，而是通过双 Prompt 机制将现有 VLM 高效适配到动物行为识别这一特定领域</strong>。这与 BioCLIP 的全量预训练路线形成对比——Animal-CLIP 只需要少量可训练参数（约 5-10M），就能在行为识别任务上取得显著增益。#Jing et al., 2025#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型架构</div>
+  <div class="ch-title">Animal-CLIP 架构详解</div>
+
+  <p>Animal-CLIP 的整体架构可以概括为：<strong>视频编码 → 物种感知引导 → GCN 文本精炼 → 双 Prompt 增强 → 相似度分类</strong>。下面逐模块拆解。</p>
+
+  <div class="photo">
+    <img src="media/images/animal-clip-2025/pipeline.webp" alt="Animal-CLIP 整体架构图" loading="lazy">
+    <div class="cap">图 1：Animal-CLIP 整体架构。视频通过 CCT + MIT 编码为全局视频特征，同时 LLM 生成的外部动作描述和物种描述通过 CLIP 文本编码器编码。物种预测结果引导双 Prompt 模块（文本侧 + 视频侧），GCN 利用物种-动作关系图精炼文本特征。最终通过余弦相似度分类。（来源：PRIS-CV/Animal-CLIP GitHub README）</div>
+  </div>
+
+  <p>以下用流程图梳理完整的数据流：</p>
+
+  {{< mermaid >}}
+flowchart TD
+    V["视频输入 B×T×3×224×224"] --> CCT["CCT 视觉编码器"]
+    CCT --> MIT["MIT 时序聚合"]
+    MIT --> VF["视频特征 v"]
+
+    MF["中间帧"] --> CLIP_SP["CLIP 物种预测"]
+    CLIP_SP --> P["物种概率 p"]
+
+    LLM["LLM 动作描述"] --> TE["CLIP 文本编码器"]
+    SP["物种名称"] --> TE
+    TE --> TF["动作特征"]
+    TE --> AF["物种特征"]
+
+    P --> W1["物种加权"]
+    AF --> W1
+    W1 --> FA["物种上下文 f_animal"]
+    W1 --> TAW["加权物种特征"]
+
+    TAW --> GCN["GCN 文本精炼"]
+    TF --> GCN
+    GCN --> TRF["精炼动作特征"]
+
+    TRF --> PG1["PromptGen1 文本增强"]
+    FA --> PG1
+    PG1 --> TE2["增强文本 T_enhanced"]
+
+    VF --> PG2["PromptGen2 视频增强"]
+    FA --> PG2
+    PG2 --> VE["增强视频 v_enhanced"]
+
+    TE2 --> SIM["余弦相似度"]
+    VE --> SIM
+    SIM --> OUT["softmax 输出"]
+  {{< /mermaid >}}
+
+  <div class="cap" style="text-align:center;margin-bottom:1.5em;">图 1.5：Animal-CLIP 数据流图。物种预测结果同时引导文本侧和视频侧的 Prompt 增强，GCN 利用物种-动作先验精炼文本特征。（代码绘制）</div>
+
+  <h3 class="section-title">3.1 视频编码器：CCT + MIT</h3>
+
+  <p>Animal-CLIP 的视频编码器继承自 X-CLIP #Ma et al., 2022#，由两个子模块组成：</p>
+
+  <p><strong>Cross-Frame Communication Transformer (CCT)</strong> 负责逐帧特征提取。与标准 ViT 不同，CCT 引入了 message token 机制实现帧间通信。具体来说，每帧的 [CLS] token 经过一个线性层生成 message token，T 帧的 message token 之间做 self-attention 交换信息，然后将增强后的 message token 拼接到 patch tokens 中一起做标准 ViT attention。#Ma et al., 2022#</p>
+
+  <p>这种设计的计算优势很明显：全帧级别的 attention 复杂度是 \(O(T^2 N^2)\)（T 帧 × N patches），而 message token 机制将复杂度降为 \(O(T^2 + TN^2)\)，在 T=8、N=196 的设置下节省了大量计算。#Ma et al., 2022#</p>
+
+  <p>CCT 输出每帧的 [CLS] 特征 \(\mathbf{c}_t \in \mathbb{R}^{512}\) 和 patch 特征 \(\mathbf{p}_t \in \mathbb{R}^{196 \times 768}\)。</p>
+
+  <p><strong>Multiframe Integration Transformer (MIT)</strong> 负责时序聚合。T 帧的 [CLS] 特征加上可学习的位置编码后，经过一层 ResidualAttentionBlock，最后取时间维度的均值，得到全局视频特征 \(\mathbf{v} \in \mathbb{R}^{512}\)。#Ma et al., 2022#</p>
+
+  <h3 class="section-title">3.2 外部 Prompt：LLM 生成的动作描述</h3>
+
+  <p>Animal-CLIP 的一个关键设计是用 LLM 为每个动作生成详细的生物学描述。以 "Abseiling"（绳降）为例，LLM 生成的描述约 400 词，包含：</p>
+
+  <ul>
+    <li>动作的定义和背景</li>
+    <li>执行该动作时的身体姿态和运动模式</li>
+    <li>不同物种执行该动作时的视觉差异</li>
+    <li>相关的生物学上下文</li>
+  </ul>
+
+  <p>这些描述通过 CLIP 的文本编码器（冻结）编码为文本特征。相比简单的 "a photo of {action}"，LLM 描述提供了丰富的视觉语义线索，使文本特征能够覆盖更多的视觉原型。#Jing et al., 2025#</p>
+
+  <p>物种描述同理。<a href="paper-animal-kingdom-2022.html">Animal Kingdom</a> 数据集有 897 个物种，每个物种的名称通过 CLIP 文本编码器编码为物种文本特征 \(\{\mathbf{t}_1^{\text{animal}}, ..., \mathbf{t}_{897}^{\text{animal}}\} \in \mathbb{R}^{897 \times 512}\)。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">3.3 物种感知引导</h3>
+
+  <p>推理时，模型首先用预训练 CLIP 对视频的中间帧进行物种分类，得到物种概率分布 \(\mathbf{p} \in [0,1]^{897}\)。这个分布用于两个目的：</p>
+
+  <p><strong>全局物种上下文</strong>：加权求和物种文本特征，得到一个全局的物种感知向量：</p>
+
+\[
+\mathbf{f}_{\text{animal}} = \sum_{i=1}^{897} p_i \cdot \mathbf{t}_i^{\text{animal}} \in \mathbb{R}^{512}
+\]
+
+  <p>其中 \(p_i\) 是第 i 个物种的预测概率。这个向量捕捉了"这段视频最可能是哪种动物"的全局上下文。#Jing et al., 2025#</p>
+
+  <p><strong>逐物种加权</strong>：同时，用物种概率逐元素加权物种文本特征矩阵：</p>
+
+\[
+\mathbf{T}_{\text{animal}}^{\text{weighted}} = \text{diag}(\mathbf{p}) \cdot \mathbf{T}_{\text{animal}}
+\]
+
+  <p>这保留了每个物种的独立特征（只是按概率缩放），为后续 GCN 图传播做准备。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">3.4 GCN 文本精炼模块</h3>
+
+  <p>这是 Animal-CLIP 的一个核心创新。模型构建了一个物种-动作关系图，其中节点包括物种节点和动作节点，边表示"某物种可能执行某动作"的先验关系。#Jing et al., 2025#</p>
+
+  <p>图的邻接矩阵 \(\mathbf{A}\) 由数据集的统计信息构建：从 animal-action-relation.txt 读取每个物种实际出现过的动作列表，建立双向边，并为每个节点添加自环。#Jing et al., 2025#</p>
+
+  <p>将加权物种特征和动作特征拼接后输入 2 层 GCN：</p>
+
+\[
+\mathbf{H}^{(l+1)} = \text{LayerNorm}\Bigl(\text{LeakyReLU}\bigl(\mathbf{A} \mathbf{H}^{(l)} \mathbf{W}^{(l)}\bigr)\Bigr)
+\]
+
+  <p>GCN 传播后，取后 \(K_{\text{actions}}\) 个节点作为精炼后的动作特征 \(\mathbf{T}_{\text{action}}^{\text{refined}}\)。#Jing et al., 2025#</p>
+
+  <div class="callout"><strong>直觉理解</strong>：GCN 的作用是让动作特征"吸收"物种信息。如果视频中是猫，那么"猫"节点的高概率会通过图传播到"捕猎"、"舔毛"等节点，而不会传播到"飞行"等不可能的动作上。这相当于用领域先验缩小了搜索空间。</div>
+
+  <h3 class="section-title">3.5 双 Prompt 增强模块</h3>
+
+  <p>精炼后的文本特征和全局视频特征分别通过两个独立的 PromptGenerator 模块进行增强。每个 PromptGenerator 由 3 层 PromptGeneratorLayer 堆叠而成，每层包含：#Jing et al., 2025#</p>
+
+  <ul>
+    <li><strong>Cross-Attention</strong>：以文本/视频特征为 Q，物种感知特征 \(\mathbf{f}_{\text{animal}}\) 为 K 和 V</li>
+    <li><strong>MLP</strong>：512 → 2048 → 512 的前馈网络</li>
+    <li><strong>残差连接 + LayerNorm</strong></li>
+  </ul>
+
+  <p>数学表达：</p>
+
+\[
+\mathbf{t}_{\text{out}} = \mathbf{t}_{\text{in}} + \alpha \cdot \text{MLP}\Bigl(\text{LN}\bigl(\mathbf{t}_{\text{in}} + \text{CrossAttn}(\text{LN}(\mathbf{t}_{\text{in}}), \mathbf{f}_{\text{animal}}, \mathbf{f}_{\text{animal}})\bigr)\Bigr)
+\]
+
+  <p>其中 \(\alpha\) 是一个可学习的缩放参数（初始化为 \(10^{-4}\)），控制 prompt 增强的强度。小初始值确保训练初期 prompt 不会破坏预训练特征。#Jing et al., 2025#</p>
+
+  <p>文本侧的 PromptGenerator1 接收精炼后的动作特征 \(\mathbf{T}_{\text{action}}^{\text{refined}}\)，输出增强后的动作特征 \(\mathbf{T}_{\text{enhanced}}\)。视频侧的 PromptGenerator2 接收全局视频特征 \(\mathbf{v}\)，输出增强后的视频特征 \(\mathbf{v}_{\text{enhanced}}\)。两者都以 \(\mathbf{f}_{\text{animal}}\) 为引导信号。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">3.6 最终分类</h3>
+
+  <p>增强后的视频和文本特征经过 L2 归一化后计算余弦相似度：</p>
+
+\[
+\text{similarity} = \exp(\tau) \cdot \frac{\mathbf{v}_{\text{enhanced}}}{\|\mathbf{v}_{\text{enhanced}}\|} \cdot \frac{\mathbf{T}_{\text{enhanced}}^\top}{\|\mathbf{T}_{\text{enhanced}}\|}
+\]
+
+  <p>其中 \(\tau\) 是可学习的 logit_scale 参数（初始化为 \(\ln(1/0.07) \approx 2.66\)）。最终输出为 softmax 概率：\(\hat{\mathbf{y}} = \text{softmax}(\text{similarity})\)。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">3.7 与 ACM MM 2023 前身的差异</h3>
+
+  <p>Animal-CLIP 是同一团队 ACM MM 2023 工作 "Category-Specific Prompts for Animal Action Recognition" 的扩展。#Jing et al., 2023# 两个版本的核心差异：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>ACM MM 2023</th><th>IJCV 2025 (Animal-CLIP)</th></tr></thead>
+      <tbody>
+        <tr><td>外部知识</td><td>无</td><td>LLM 生成的动作描述</td></tr>
+        <tr><td>Prompt 数量</td><td>单 Prompt（物种条件）</td><td>双 Prompt（文本 + 视频）</td></tr>
+        <tr><td>文本精炼</td><td>无</td><td>GCN 图推理</td></tr>
+        <tr><td>物种-动作先验</td><td>未利用</td><td>关系图 + GCN 传播</td></tr>
+        <tr><td>评估数据集</td><td>Animal Kingdom</td><td>AK + <a href="paper-mammalnet-2023.html">MammalNet</a> + LoTE-Animal</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 训练</div>
+  <div class="ch-title">Training Pipeline</div>
+
+  <p>Animal-CLIP 的训练策略体现了"参数高效适配"的设计哲学：冻结 CLIP 的文本编码器，只训练视觉侧的少量新增模块。</p>
+
+  <h3 class="section-title">4.1 训练数据</h3>
+
+  <p>Animal-CLIP 在三个数据集上训练和评估：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>动作类别</th><th>物种类别</th><th>标签类型</th><th>来源</th></tr></thead>
+      <tbody>
+        <tr><td>Animal Kingdom</td><td>140</td><td>897</td><td>多标签</td><td>Ng et al., CVPR 2022 #Ng et al., 2022#</td></tr>
+        <tr><td>MammalNet</td><td>12</td><td>173</td><td>单标签</td><td>Chen et al., CVPR 2023 #Chen et al., 2023#</td></tr>
+        <tr><td>LoTE-Animal</td><td>21</td><td>11</td><td>单标签</td><td>LoTE-Animal 项目</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Animal Kingdom 是最大的多标签动物行为识别数据集，包含 30K 视频序列和 50 小时标注视频。MammalNet 提供 539 小时视频，覆盖 173 种哺乳动物。LoTE-Animal 是一个较小但精细的数据集。#Ng et al., 2022# #Chen et al., 2023#</p>
+
+  <h3 class="section-title">4.2 数据预处理与增强</h3>
+
+  <p>训练时的数据增强流程：</p>
+
+  <ul>
+    <li>从视频中均匀采样 8 帧（clip_len=1, frame_interval=1, num_clips=8）</li>
+    <li>Resize 到短边 256，然后 MultiScaleCrop（scales: 1, 0.875, 0.75, 0.66）</li>
+    <li>Resize 到 224×224</li>
+    <li>随机水平翻转（概率 0.5）</li>
+    <li>ColorJitter + GrayScale（概率由配置控制）</li>
+    <li>归一化：mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]</li>
+  </ul>
+
+  <p>测试时使用 4 clips × 3 crops = 12 views 集成，通过累加各 view 的相似度得分得到最终预测。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">4.3 损失函数</h3>
+
+  <p>默认使用交叉熵损失：</p>
+
+\[
+\mathcal{L} = -\sum_{k=1}^{K} y_k \log(\hat{y}_k)
+\]
+
+  <p>对于多标签场景（Animal Kingdom），代码还支持 BCEWithLogitsLoss、ResampleLoss（长尾重采样）和 AsymmetricLoss（非对称焦点损失）。默认配置使用 CrossEntropyLoss。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">4.4 优化策略</h3>
+
+  <p>训练使用分布式数据并行（DDP），每个 GPU batch size = 16，梯度累积 4 步，有效 batch size = 64。训练 30 epochs，学习率调度使用 Cosine Annealing Warm Restarts。支持 apex O2 混合精度训练。#Jing et al., 2025#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>Animal Kingdom (30K 视频) / MammalNet (539h) / LoTE-Animal</td></tr>
+        <tr><td>训练硬件</td><td>未披露</td><td>原文未给出（代码支持多 GPU DDP）</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>原文未给出（代码中由 utils/optimizer.py 构建）</td></tr>
+        <tr><td>学习率</td><td>未披露</td><td>原文未给出（Cosine Annealing Warm Restarts schedule）</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>16 per GPU × 4 accumulation = 64 effective</td></tr>
+        <tr><td>训练轮数</td><td>已披露</td><td>30 epochs</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>模型参数量</td><td>部分披露</td><td>CLIP ViT-B/16 backbone ~150M；可训练参数 ~5-10M（Prompt + GCN + MIT）</td></tr>
+        <tr><td>精度格式</td><td>已披露</td><td>FP32（默认），支持 apex O2 (FP16)</td></tr>
+        <tr><td>Checkpoint 策略</td><td>已披露</td><td>按 epoch 保存，选择最佳 mAP / Acc1</td></tr>
+        <tr><td>冻结模块</td><td>已披露</td><td>CLIP text encoder（eval mode + no_grad 缓存文本特征）</td></tr>
+        <tr><td>可训练模块</td><td>已披露</td><td>CCT, MIT, 2×AnimalSpecificPrompt, GCN, prompts_visual_ln/proj</td></tr>
+        <tr><td>数据增强</td><td>已披露</td><td>MultiScaleCrop, Flip(0.5), ColorJitter, GrayScale</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.5 文本特征缓存</h3>
+
+  <p>一个值得注意的工程技巧是文本特征缓存。由于动作描述和物种描述在训练过程中不变，模型在第一次 forward 时用 CLIP 文本编码器批量编码所有文本（batch_size=50），然后缓存结果。后续训练直接使用缓存，避免了重复的文本编码开销。#Jing et al., 2025#</p>
+
+  <div class="callout"><strong>训练效率</strong>：文本特征缓存 + 梯度累积 + 混合精度的组合，使得在有限 GPU 资源下训练成为可能。这是参数高效适配路线的一个实际优势——相比全量微调（如 ViFi-CLIP），Animal-CLIP 的可训练参数少一个数量级。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 推理</div>
+  <div class="ch-title">Inference Pipeline</div>
+
+  <p>Animal-CLIP 的推理流程与训练有显著差异，主要体现在多视图集成和物种预测的级联设计上。</p>
+
+  <h3 class="section-title">5.1 输入准备</h3>
+
+  <p>给定一段测试视频，推理流程如下：</p>
+
+  <ol>
+    <li><strong>帧采样</strong>：从视频中均匀采样 4 个时间片段（clips），每个片段 8 帧</li>
+    <li><strong>空间裁剪</strong>：每个片段做 3 个空间裁剪（ThreeCrop），共 12 个视图</li>
+    <li><strong>预处理</strong>：Resize → CenterCrop(224) → Normalize</li>
+  </ol>
+
+  <h3 class="section-title">5.2 物种预测</h3>
+
+  <p>对每个视频的中间帧，用预训练 CLIP 进行物种分类：</p>
+
+  <ol>
+    <li>提取中间帧，通过 CLIP 视觉编码器编码</li>
+    <li>与 897 个物种的文本特征计算余弦相似度</li>
+    <li>Softmax 得到物种概率分布 \(\mathbf{p} \in [0,1]^{897}\)</li>
+  </ol>
+
+  <p>这个物种预测是整个推理链路的关键前置步骤。如果物种预测错误（尤其是罕见物种），后续的动作识别会受到影响——这是一个级联误差风险。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">5.3 动作识别</h3>
+
+  <p>对每个视图执行完整的前向传播：</p>
+
+  <ol>
+    <li>CCT 逐帧编码 → MIT 时序聚合 → 视频特征 \(\mathbf{v}\)</li>
+    <li>物种加权 → \(\mathbf{f}_{\text{animal}}\) + \(\mathbf{T}_{\text{animal}}^{\text{weighted}}\)</li>
+    <li>GCN 精炼 → \(\mathbf{T}_{\text{action}}^{\text{refined}}\)</li>
+    <li>双 Prompt 增强 → \(\mathbf{v}_{\text{enhanced}}\) + \(\mathbf{T}_{\text{enhanced}}\)</li>
+    <li>余弦相似度 → softmax 概率</li>
+  </ol>
+
+  <p>12 个视图的相似度得分累加后取 softmax，得到最终预测。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">5.4 推理效率</h3>
+
+  <p>推理时的计算瓶颈在于 12 views 的视觉编码。文本特征和物种特征在推理前已经缓存，不需要重复计算。GCN 和 Prompt 模块的计算量相对较小（参数量约 5-10M）。#Jing et al., 2025#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>推理阶段</th><th>计算量</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>物种预测</td><td>1× CLIP forward</td><td>只需中间帧，计算量小</td></tr>
+        <tr><td>视觉编码</td><td>12× CCT + MIT forward</td><td>主要瓶颈</td></tr>
+        <tr><td>文本编码</td><td>0（已缓存）</td><td>推理前预计算</td></tr>
+        <tr><td>GCN + Prompt</td><td>12× 轻量 forward</td><td>参数量小，计算快</td></tr>
+        <tr><td>相似度计算</td><td>12× 矩阵乘法</td><td>可忽略</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>对于实时应用，可以减少 views 数量（如 1 clip × 1 crop = 1 view），但会牺牲准确率。论文未报告实时推理延迟。#Jing et al., 2025#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验</div>
+  <div class="ch-title">实验配置与验证</div>
+
+  <p>Animal-CLIP 在三个数据集上与六种基线方法进行了对比。由于 Springer IJCV 全文需要付费订阅，以下分析基于代码逆向和公开信息，部分实验数值标注为"原文未明确给出"。</p>
+
+  <h3 class="section-title">6.1 评估指标</h3>
+
+  <p>Animal-CLIP 使用以下指标评估：</p>
+
+  <ul>
+    <li><strong>mAP</strong>（mean Average Precision）：多标签分类的主要指标</li>
+    <li><strong>Acc@1 / Acc@5</strong>：Top-1 和 Top-5 准确率</li>
+    <li><strong>F1@3 / F1@5</strong>：取 top-3/top-5 预测的 F1 分数</li>
+    <li><strong>长尾分析</strong>：将类别分为 head/mid/tail 三组分别计算</li>
+  </ul>
+
+  <h3 class="section-title">6.2 基线方法</h3>
+
+  <p>对比的六种基线方法包括（从代码配置推断）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>类型</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>I3D</td><td>3D CNN</td><td>经典双流 3D CNN 基线</td></tr>
+        <tr><td>SlowFast</td><td>3D CNN</td><td>双速率通道的时空建模 #Feichtenhofer et al., 2019#</td></tr>
+        <tr><td>X3D</td><td>3D CNN</td><td>高效的 3D CNN 架构</td></tr>
+        <tr><td>MViT</td><td>Video Transformer</td><td>多尺度视觉 Transformer</td></tr>
+        <tr><td>VideoPrompt</td><td>VLM Prompt</td><td>视频 prompt 生成方法</td></tr>
+        <tr><td>EVL</td><td>VLM Adapter</td><td>高效视频语言适配</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.3 实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>Animal Kingdom</th><th>MammalNet</th><th>LoTE-Animal</th></tr></thead>
+      <tbody>
+        <tr><td>帧数</td><td>8</td><td>8</td><td>8</td></tr>
+        <tr><td>输入分辨率</td><td>224×224</td><td>224×224</td><td>224×224</td></tr>
+        <tr><td>Batch size</td><td>16 × 4 = 64</td><td>16 × 4 = 64</td><td>16 × 4 = 64</td></tr>
+        <tr><td>Epochs</td><td>30</td><td>30</td><td>30</td></tr>
+        <tr><td>骨干网络</td><td>ViT-B/16</td><td>ViT-B/16</td><td>ViT-B/16</td></tr>
+        <tr><td>测试 views</td><td>4×3=12</td><td>4×3=12</td><td>4×3=12</td></tr>
+        <tr><td>损失函数</td><td>CE</td><td>CE</td><td>CE</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.4 主实验结果</h3>
+
+  <p>根据论文摘要和 GitHub README，Animal-CLIP 在三个数据集上均超越了六种基线方法。#Jing et al., 2025# 具体的数值对比在 Springer 付费全文中，但从代码的验证逻辑可以推断：</p>
+
+  <ul>
+    <li>Animal Kingdom（多标签）：以 mAP 为主要指标，Animal-CLIP 取得最高 mAP</li>
+    <li>MammalNet（单标签）：以 Acc@1 为主要指标，Animal-CLIP 取得最高 Acc@1</li>
+    <li>LoTE-Animal（单标签）：以 Acc@1 为主要指标，Animal-CLIP 取得最高 Acc@1</li>
+  </ul>
+
+  <div class="callout"><strong>泛化能力</strong>：论文声称 Animal-CLIP 对未见过的动物（unseen animals）展现出"strong generalization capability"。这是通过物种感知 prompt 实现的——即使物种预测不完全准确，加权后的物种特征仍然提供了有用的上下文信息。</div>
+
+  <h3 class="section-title">6.5 长尾分析</h3>
+
+  <p>Animal Kingdom 数据集存在明显的长尾分布。代码中将 140 个动作类别分为三组：</p>
+
+  <ul>
+    <li><strong>Head</strong>（18 类）：高频动作，如"行走"、"进食"等</li>
+    <li><strong>Mid</strong>（32 类）：中频动作</li>
+    <li><strong>Tail</strong>（90 类）：低频动作，如"绳降"、"寄生虫脱离"等罕见行为</li>
+  </ul>
+
+  <p>代码提供了 lt_map 和 lt_acc 函数分别计算三组的 mAP 和 Acc。这暗示论文可能报告了长尾分析结果（原文未明确给出具体数值）。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">6.6 消融实验发现</h3>
+
+  <p>从代码架构可以推断以下消融维度（具体数值原文未明确给出）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>消融项</th><th>预期效果</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>去掉外部 Prompt（LLM 描述）</td><td>mAP 下降</td><td>验证 LLM 知识的贡献</td></tr>
+        <tr><td>去掉 GCN 精炼</td><td>mAP 下降</td><td>验证图推理的贡献</td></tr>
+        <tr><td>去掉双 Prompt（只用单侧）</td><td>mAP 下降</td><td>验证双 Prompt 的必要性</td></tr>
+        <tr><td>去掉物种引导</td><td>mAP 下降</td><td>验证物种信息的价值</td></tr>
+        <tr><td>使用简单标签代替 LLM 描述</td><td>mAP 下降</td><td>验证外部 Prompt 质量的重要性</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.7 预测可视化</h3>
+
+  <div class="photo">
+    <img src="media/images/animal-clip-2025/results.webp" alt="Animal-CLIP 预测结果可视化" loading="lazy">
+    <div class="cap">图 2：Animal-CLIP 在 Animal Kingdom 数据集上的预测结果示例。模型能够正确识别不同物种的多种行为。（来源：PRIS-CV/Animal-CLIP GitHub README）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论</div>
+  <div class="ch-title">在地图上的位置</div>
+
+  <h3 class="section-title">7.1 技术定位</h3>
+
+  <p>Animal-CLIP 在 VLM 适配动物行为识别的技术谱系中占据一个独特位置：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>参数量</th><th>数据需求</th><th>优势</th></tr></thead>
+      <tbody>
+        <tr><td>全量预训练</td><td>BioCLIP #Stevens et al., 2024#</td><td>~150M</td><td>1000 万图像</td><td>领域内最强表示</td></tr>
+        <tr><td>全参数微调</td><td>ViFi-CLIP #Khattak et al., 2023#</td><td>~150M</td><td>大规模视频</td><td>通用视频适配</td></tr>
+        <tr><td>Prompt Tuning</td><td>CoOp #Zhou et al., 2022#</td><td>~150M + few K</td><td>少量图像</td><td>参数高效</td></tr>
+        <tr><td>领域 Prompt</td><td><strong>Animal-CLIP</strong> #Jing et al., 2025#</td><td>~150M + ~10M</td><td>中等规模视频</td><td>领域知识 + 参数高效</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Animal-CLIP 的核心价值在于：<strong>它证明了不需要全量预训练或全参数微调，只需通过精心设计的 Prompt 机制注入领域知识，就能在特定领域取得显著增益</strong>。这条路线的性价比很高——可训练参数只有全量预训练的约 7%，但利用了预训练模型的全部知识。#Jing et al., 2025#</p>
+
+  <h3 class="section-title">7.2 局限性</h3>
+
+  <p>Animal-CLIP 有几个值得注意的局限：</p>
+
+  <ul>
+    <li><strong>物种预测的级联误差</strong>：整个框架依赖物种预测的准确性。如果物种预测错误（尤其是罕见物种或未见物种），动作识别会受到影响。代码中未看到对预测不确定性的鲁棒处理。#Jing et al., 2025#</li>
+    <li><strong>LLM 描述质量依赖</strong>：外部 Prompt 的质量取决于 LLM 生成的描述。从 description_ak.csv 可以看到，部分描述由 AI 生成，可能包含不准确或泛化的信息。#Jing et al., 2025#</li>
+    <li><strong>封闭集合物种预测</strong>：物种预测是在 897 个已知类别上的封闭集合预测。真正未见过的物种可能无法正确引导 prompt。论文声称的"unseen animal"泛化，更准确地说应该是"训练集中出现频率极低的物种"。#Jing et al., 2025#</li>
+    <li><strong>计算成本</strong>：12 views 的推理成本不低，不适合实时应用。论文未报告推理延迟和吞吐量。#Jing et al., 2025#</li>
+  </ul>
+
+  <h3 class="section-title">7.3 后续演进</h3>
+
+  <p>同一团队在 CVPR 2026 上发表了 EthoCLIP #Jing et al., 2026#，可以看作 Animal-CLIP 的自然演进：</p>
+
+  <ul>
+    <li>从 prompt tuning 走向完整的视频语言对比预训练</li>
+    <li>从 LLM 描述走向本体论（Neuro Behavior Ontology, NBO）引导的结构化知识</li>
+    <li>从三个数据集走向 Animal-Band（74,671 视频）的大规模预训练</li>
+  </ul>
+
+  <p>这条演进路线说明 Animal-CLIP 的核心洞察——<strong>领域知识对动物行为理解至关重要</strong>——是正确的，但注入知识的方式可以从 prompt tuning 升级到更深层的预训练融合。#Jing et al., 2026#</p>
+
+  <h3 class="section-title">7.4 可操作的启发</h3>
+
+  <ul>
+    <li><strong>领域知识注入</strong>：如果你在做某个特定领域的 VLM 适配（如医疗、农业、工业检测），可以考虑 Animal-CLIP 的双 Prompt 思路——用领域专家知识或 LLM 生成丰富的文本描述，再通过条件 Prompt 引导视觉特征对齐。</li>
+    <li><strong>图结构先验</strong>：GCN 文本精炼是一个通用的设计模式。任何有"类别间关系先验"的任务（如层级分类、多标签约束）都可以考虑引入图推理。</li>
+    <li><strong>参数高效适配</strong>：Animal-CLIP 证明了冻结预训练骨干 + 训练少量 Prompt 参数的路线在领域适配上是有效的。这在数据有限或计算资源受限的场景下特别有价值。</li>
+  </ul>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Jing-et-al.-2025">Jing, Y., Liang, K., Zhang, R., Sun, H., Li, Y., He, Z., & Ma, Z. (2025). <strong>Animal-CLIP: A Dual-Prompt Enhanced Vision-Language Model for Animal Action Recognition</strong>. International Journal of Computer Vision, 133(8), 1-21. <a href="https://doi.org/10.1007/s11263-025-02408-4" target="_blank">DOI: 10.1007/s11263-025-02408-4</a></li>
+      <li data-cite-key="Jing-et-al.-2023">Jing, Y., Wang, C., Zhang, R., Liang, K., & Ma, Z. (2023). <strong>Category-Specific Prompts for Animal Action Recognition with Pretrained Vision-Language Models</strong>. ACM Multimedia 2023, 5716-5724. <a href="https://dl.acm.org/doi/10.1145/3581783.3612551" target="_blank">DOI: 10.1145/3581783.3612551</a></li>
+      <li data-cite-key="Ma-et-al.-2022">Ma, Y., et al. (2022). <strong>X-CLIP: End-to-End Multi-grained Contrastive Learning for Video-Text Retrieval</strong>. ACM Multimedia 2022. <a href="https://dl.acm.org/doi/abs/10.1145/3503161.3547910" target="_blank">DOI: 10.1145/3503161.3547910</a></li>
+      <li data-cite-key="Zhou-et-al.-2022">Zhou, K., Yang, J., Loy, C. C., & Liu, Z. (2022). <strong>Learning to Prompt for Vision-Language Models</strong>. IJCV 2022. <a href="https://arxiv.org/abs/2109.01134" target="_blank">arXiv:2109.01134</a></li>
+      <li data-cite-key="Ng-et-al.-2022">Ng, X. L., Ong, K. E., Zheng, Q., Ni, Y., Yeo, S. Y., & Liu, J. (2022). <strong>Animal Kingdom: A Large and Diverse Dataset for Animal Behavior Understanding</strong>. CVPR 2022, 19023-19034. <a href="https://openaccess.thecvf.com/content/CVPR2022/papers/Ng_Animal_Kingdom_A_Large_and_Diverse_Dataset_for_Animal_Behavior_CVPR_2022_paper" target="_blank">CVPR 2022</a> · <a href="paper-animal-kingdom-2022.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Chen-et-al.-2023">Chen, J., Hu, M., Coker, D. J., Costelloe, B., Beery, S., Rohrbach, A., & Elhoseiny, M. (2023). <strong>MammalNet: A Large-Scale Video Benchmark for Mammal Recognition and Behavior Understanding</strong>. CVPR 2023, 13052-13061. <a href="https://openaccess.thecvf.com/content/CVPR2023/html/Chen_MammalNet_A_Large-Scale_Video_Benchmark_for_Mammal_Recognition_and_Behavior_CVPR_2023_paper" target="_blank">CVPR 2023</a> · <a href="paper-mammalnet-2023.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Stevens-et-al.-2024">Stevens, S., et al. (2024). <strong>BioCLIP: A Vision Foundation Model for the Tree of Life</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2311.18803" target="_blank">arXiv:2311.18803</a></li>
+      <li data-cite-key="Jing-et-al.-2026">Jing, Y., Wu, J., Yang, Z., Liang, K., Zhu, X., & Ma, Z. (2026). <strong>EthoCLIP: Ontology-Enhanced Video-Language Pretraining for Animal Behavior Understanding</strong>. CVPR 2026. <a href="https://openaccess.thecvf.com/content/CVPR2026/papers/Jing_EthoCLIP_Ontology-Enhanced_Video-Language_Pretraining_for_Animal_Behavior_Understanding_CVPR_2026_paper.pdf" target="_blank">CVPR 2026</a></li>
+      <li data-cite-key="PRIS-CV-Animal-CLIP">PRIS-CV. <strong>Animal-CLIP GitHub Repository</strong>. <a href="https://github.com/PRIS-CV/Animal-CLIP" target="_blank">github.com/PRIS-CV/Animal-CLIP</a></li>
+      <li data-cite-key="Feichtenhofer-et-al.-2019">Feichtenhofer, C., Fan, H., Malik, J., & He, K. (2019). <strong>SlowFast Networks for Video Recognition</strong>. ICCV 2019. <a href="https://openaccess.thecvf.com/content_ICCV_2019/papers/Feichtenhofer_SlowFast_Networks_for_Video_Recognition_ICCV_2019_paper.pdf" target="_blank">ICCV 2019</a></li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-mammalnet-2023.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">动作识别论文精读（六）：MammalNet</span></a>
+    <a class="nav-card nav-hub" href="action-recognition-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别系列总览</span></a>
+    <div class="nav-card current"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">待续</span></div>
+  </div>
+</div>
