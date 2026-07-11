@@ -34,6 +34,20 @@ src/pages/<slug>.html  (已发布，build 部署到 gh-pages)
 
 `drafts/` 不进 build.js（build 只读 `src/pages/`），不部署。`drafts/` 未被 gitignore，git 跟踪。
 
+## 资产文件夹
+
+草稿用到的图片等资产放 `drafts/assets/<slug>/`（每个草稿一个子目录，git 跟踪）：
+
+```
+drafts/
+├── model-training.md
+├── assets/model-training/initialization.png
+```
+
+- 草稿正文用相对路径引用：.md 用 `![描述](assets/<slug>/<file>.png)`；.org 用 `[[file:assets/<slug>/<file>.png]]`。
+- 草稿发布（交接给 html-blog）时，资产移到 `media/images/<slug>/` 并转 webp，HTML 用 `<div class="photo">` 包裹。
+- 大图建议先压缩再放（参考 `scripts/convert-figures.py`）。
+
 ## 模板
 
 模板在 `.agents/skills/blog-drafts/templates/`（不在 `drafts/` 里），每种风格各有 `.org` 和 `.md` 两版：
