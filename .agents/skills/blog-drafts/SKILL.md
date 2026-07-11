@@ -76,7 +76,29 @@ src/pages/<slug>.html  (已发布，build 部署到 gh-pages)
 
 # 删除（默认询问确认，-y 跳过）
 ~/.venv/bin/python3 scripts/draft.py delete <slug> [-y]
+
+# 事实性核查（打印草稿 + 启发式提取候选事实陈述，供 agent 核查）
+~/.venv/bin/python3 scripts/draft.py factcheck <slug>
 ```
+
+## 事实性核查（factcheck）
+
+对草稿里的事实性陈述做核查，参考 read-article 的 `review-fidelity` 思路（P0/P1/P2 分级、回权威来源
+核查），但对象是用户 brainstorming 草稿——可能含学习中的误解，所以要区分"事实陈述"与"个人笔记/疑问"。
+
+**流程**：
+
+1. 跑 `~/.venv/bin/python3 scripts/draft.py factcheck <slug>`——打印草稿全文 + 启发式提取的候选事实
+   陈述（含数字/URL/定义动词"是/为/叫做"等的行）。
+2. 派 **factcheck subagent**（模板 `subagents/factcheck.md`）：
+   - 逐句区分：事实陈述（定义/数值/归属/时间线/引用）需核查；个人笔记/观点/TODO 疑问跳过。
+   - 对每条事实陈述用 web_search 查权威来源（arXiv / 官方文档 / 教科书 / Wikipedia）核对。
+   - 分级 P0（错误）/ P1（不精确）/ P2（可改进）/ ✅正确 / 未核实。
+   - 报告按 P0→P1→P2→未核实 顺序，每条附原文+结果+来源 URL+修复建议。
+3. 默认在对话里报告（不污染 drafts/）；用户要存档再写 `drafts/<slug>.factcheck.md`。
+4. **不自动改草稿**——用户看完报告自己决定改不改（草稿正文由用户写）。
+
+触发场景："核查这篇草稿的事实"/"这篇草稿有没有写错"/"factcheck <slug>"。
 
 `set` 的 value 规则：标量直接写；`tags` 用逗号分隔（脚本转成 `[a, b, c]`）；`pin` 用 `true`/`false`。
 脚本每次修改会自动更新 `updated_at`。

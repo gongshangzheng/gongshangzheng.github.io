@@ -223,6 +223,34 @@ def cmd_unarchive(args):
     print(f'✅ restored: drafts/{args.slug}.md')
 
 
+def cmd_factcheck(args):
+    """Print draft + heuristically extracted candidate factual claims for agent verification."""
+    _, fm, body = read_draft(args.slug)
+    print(f'📄 factcheck: drafts/{args.slug}.md\n')
+    print('--- frontmatter (relevant) ---')
+    for k in ('slug', 'title', 'source_url', 'tags'):
+        if k in fm and fm[k]:
+            print(f'  {k}: {fm[k]}')
+    print('\n--- body ---')
+    print(body.rstrip())
+    # heuristic candidate claim extraction (agent refines + verifies)
+    claims = []
+    for line in body.splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or s.startswith('- ['):
+            continue
+        has_num = bool(re.search(r'\d', s))
+        has_url = 'http' in s
+        has_def = any(v in s for v in ('是', '为', '叫做', '称为', '指的是', '即', 'used', 'means', 'proposed'))
+        if has_num or has_url or has_def:
+            claims.append(s)
+    if claims:
+        print('\n--- candidate factual claims (heuristic — agent verifies each) ---')
+        for i, c in enumerate(claims, 1):
+            print(f'  [{i}] {c[:140]}')
+        print(f'\n{len(claims)} candidate(s). Dispatch factcheck subagent (subagents/factcheck.md) to verify.')
+
+
 def cmd_delete(args):
     p = draft_path(args.slug)
     arc = os.path.join(ARCHIVE, f'{args.slug}.md')
@@ -294,6 +322,10 @@ def main():
     d.add_argument('slug')
     d.add_argument('-y', '--yes', action='store_true')
     d.set_defaults(func=cmd_delete)
+
+    fc = sub.add_parser('factcheck', help='print draft + candidate factual claims for verification')
+    fc.add_argument('slug')
+    fc.set_defaults(func=cmd_factcheck)
 
     args = ap.parse_args()
     args.func(args)
