@@ -129,6 +129,7 @@ function main() {
   const args = process.argv.slice(2);
   const apply = args.includes('--apply');
   const noCompress = args.includes('--no-compress');
+  const deleteUnused = args.includes('--delete-unused');
 
   console.log('\n══════════════════════════════════════════════════════════');
   console.log('  PDF 清理');
@@ -156,12 +157,12 @@ function main() {
 
   if (apply) createBackupBranch();
 
-  // 1. Delete unreferenced PDFs
+  // 1. Delete unreferenced PDFs (only with explicit --delete-unused)
   let deletedBytes = 0;
   let deletedCount = 0;
-  if (unreferencedPdfs.length > 0) {
+  if (deleteUnused && unreferencedPdfs.length > 0) {
     console.log('──────────────────────────────────────────────────────────');
-    console.log('  删除未引用 PDF');
+    console.log('  删除未引用 PDF（--delete-unused）');
     console.log('──────────────────────────────────────────────────────────');
     for (const item of unreferencedPdfs) {
       const abs = path.join(ROOT, item.file);
