@@ -43,8 +43,36 @@ try:
 except ImportError:
     pass  # Only needed for figure conversion
 
+# Force UTF-8 stdout/stderr so emoji/CJK status output doesn't crash on
+# Windows GBK consoles (UnicodeEncodeError). Harmless on POSIX.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = Path(os.environ.get("HOME", "")) / "gongshangzheng.github.io"
+
+
+def _find_repo_root(start):
+    """Walk up from `start` to find the repo root (dir containing both
+    `scripts/` and `src/`). Robust to this script living under
+    `.agents/skills/read-article/scripts/`; falls back to start if not found.
+    Override with --root."""
+    p = start
+    for _ in range(10):
+        if (p / "scripts").is_dir() and (p / "src").is_dir():
+            return p
+        if p.parent == p:
+            break
+        p = p.parent
+    return start
+
+
+# Repo root inferred from script location (not from $HOME), so the script
+# works wherever the repo is checked out and after being relocated under the
+# read-article skill. convert-figures.py lives at <repo>/scripts/.
+PROJECT_ROOT = _find_repo_root(SCRIPT_DIR)
 
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.pdf', '.eps', '.svg', '.gif', '.bmp', '.tiff', '.tif'}
 NON_FIGURE_FILES = {'acmart.pdf', 'acmguide.pdf', 'acm-jdslogo.png'}
@@ -260,7 +288,9 @@ def download_pdf(arxiv_id, output_path):
 
 def run_convert_figures(fig_dir, media_dir, dpi=300, quality=90):
     """调用 convert-figures.py 转换图片"""
-    convert_script = SCRIPT_DIR / "convert-figures.py"
+    # convert-figures.py is a repo-level shared utility (also used by blog-drafts
+    # etc.), so it stays at <repo>/scripts/, located via PROJECT_ROOT.
+    convert_script = PROJECT_ROOT / "scripts" / "convert-figures.py"
     if not convert_script.exists():
         print(f"  ⚠️ convert-figures.py 不存在于 {convert_script}")
         return False
