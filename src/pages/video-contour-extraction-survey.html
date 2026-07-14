@@ -1,0 +1,477 @@
+---
+title: "视频轮廓提取模型全景综述：从边缘检测、视频分割到抠像基础模型"
+description: "系统调研视频轮廓提取的三大技术线：视频边缘/轮廓检测（含 VSOD）、视频目标分割（VOS, SAM 2 streaming memory）、视频抠像（matting, RVM/MatAnyone/SAM2Matting）。按产出轮廓表示做任务 taxonomy，按时序一致性机制做技术路线 taxonomy（recurrent / memory-bank / local-attention 三分），串联从 Canny/HED 到 SAM 2 基础模型的演进，收敛于 mask 边界→alpha 软轮廓的精度升级。"
+date: 2026-07-14T10:00:00
+created_at: 2026-07-14T10:00:00
+updated_at: 2026-07-14T10:00:00
+tags: ["视频轮廓提取", "VOS", "视频抠像", "matting", "SAM 2"]
+sub_id: 0
+aliases: ["视频轮廓提取", "Video Contour Extraction", "categories/AI/视觉模型/视频轮廓提取"]
+mathjax: true
+hero_title: "视频轮廓提取模型全景"
+hero_sub: "边缘检测 · 视频分割 · 抠像基础模型"
+hero_tagline: "三线交汇于轮廓：ODS / J&F / GRAD-CONN 都在量同一个量"
+---
+
+<div class="callout"><strong>本文范围：</strong>本文是<strong>视频轮廓提取系列</strong>的总览（Hub），系统调研"从视频中提取目标轮廓/边界"的模型。我们把一个常被混为一谈的问题拆成三条技术线——视频边缘/轮廓检测（含视频显著目标检测 VSOD）、视频目标分割（VOS）、视频抠像（matting）——并指出一个常被忽视的事实：纯"视频边缘检测"并未形成独立的模型线，真正满足"视频中稳定细轮廓"需求的，是 VOS 的 mask 边界和 matting 的 alpha 蒙版。三线最终在 <a href="paper-sam-2.html">SAM 2</a> 基础模型上交汇。本系列另有三篇核心 survey 参考页（<a href="paper-sam-video-review.html">VOS 全景综述</a>、<a href="deep-image-matting-survey.html">图像抠像综述</a>、<a href="segment-anything-survey.html">SAM 综述</a>）和三篇论文精读（SAM 2、<a href="paper-robust-video-matting.html">Robust Video Matting</a>、<a href="paper-track-anything.html">Track Anything</a>）。</div>
+
+<!-- ============================================================
+  Part 0 · 引言与问题定义
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 0 · 引言与问题定义</div>
+  <div class="ch-title">视频轮廓提取：一个被三条技术线共同回答的问题</div>
+
+  <p>"视频轮廓提取"听起来像一个单一任务，但它实际上被三条几乎互不引用的技术线分别回答。第一条是<strong>边缘检测</strong>——从 Canny 的梯度极值非极大值抑制 #Canny, 1986# 到 HED #Xie et al., 2015#、RCF #Liu et al., 2017#、PiDiNet #Su et al., 2021#、EDTER #Pu et al., 2022# 的深度全卷积与 Transformer 路线，产出的是逐帧二值边缘图。第二条是<strong>视频目标分割（VOS）</strong>——从 OSVOS、STM #Oh et al., 2019# 到 XMem #Cheng et al., 2022#、SAM 2 #Ravi et al., 2024#，产出的是逐帧对象 mask，其边界即轮廓。第三条是<strong>视频抠像（matting）</strong>——从 Deep Image Matting #Xu et al., 2017# 到 MODNet、Robust Video Matting #Lin et al., 2021#、MatAnyone、SAM2Matting #Shen et al., 2026#，产出的是 alpha 蒙版，即发丝级软轮廓。</p>
+
+  <p>这三条线为什么值得放在一起讲？因为它们其实都在回答同一个问题——<strong>"怎样从视频中拿到一条时序一致、精度足够的轮廓"</strong>——只是给出的"轮廓表示"不同：二值边缘、mask 边界、alpha 蒙版。更关键的是，三条线的评测指标都在量"轮廓质量"：边缘检测用 ODS/OIS/AP，VOS 用 J&amp;F（其中的 F 是 Boundary F1，直接量边界精度），matting 用 SAD/GRAD/CONN（GRAD 量梯度误差、CONN 量连通性，本质都是边界指标）。这是一个重要的观察：三套指标看似不相关，实际上共享同一个被测量对象。</p>
+
+  <p>本文要回答的核心问题是：<strong>这三条线各自的模型在做什么、它们用什么机制保证视频里的时序一致性、又为什么最终会在 SAM 2 这个基础模型上收敛？</strong>我们用一个统一的双 taxonomy 来组织答案：按"产出什么形式的轮廓"分任务（任务 taxonomy），按"如何保证时序一致"分技术路线（技术路线 taxonomy）。后者尤其重要——它是视频区别于静态图像的核心维度，且跨三线通用：recurrent 隐状态（RVM）、memory-bank 检索（XMem/MatAnyone/SAM 2）、无状态局部注意力（TAM #Zhang et al., 2021#）三种时序机制，恰好覆盖了三条线的主流方法。</p>
+
+  <p>还有一个必须诚实说明的结论：<strong>纯"视频边缘检测"并没有形成一条独立、成规模的模型线</strong>。逐帧边缘检测器（HED→RCF→PiDiNet→EDTER）的演进几乎完全发生在静态 BSDS500 #Arbeláez et al., 2011# 上，视频时序一致化更多是"事后补丁"（光流 warp、3D Conv、自监督时序损失）。业界真正需要"视频中稳定细线轮廓"的场景（影视抠像边缘、AR 描边、卡通化 line drawing 视频），实际由视频抠像和视频分割两条线满足。所以本文的"子方向一"实质是边缘检测 + 视频显著目标检测（VSOD，其显著图边界即轮廓）的拼合图景，并明确标注其不成线的事实——这本身就是一个值得记录的领域发现。</p>
+</div>
+
+<!-- ============================================================
+  Part 1 · 读者导读与术语
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 读者导读与术语</div>
+  <div class="ch-title">先建立心智模型：四种轮廓表示与三套指标</div>
+
+  <p>在进入具体模型之前，先建立两个心智模型。第一个是<strong>轮廓表示的四态</strong>——同一个物理对象边界，在不同任务里被表示成四种不同的数学量：</p>
+
+  <ul>
+    <li><strong>二值边缘图</strong>（edge detection）：每像素 0/1，所有梯度极值，不绑定特定对象。指标 ODS/OIS/AP。</li>
+    <li><strong>显著图</strong>（VSOD）：每像素 [0,1] 显著性，边界是显著区域的副产品，隐式对象。指标 S-measure/F-measure。</li>
+    <li><strong>mask 边界</strong>（VOS）：逐帧二值/软对象掩码，边界是阶跃。指标 J（区域 IoU）&amp; F（边界 F1）。</li>
+    <li><strong>alpha 蒙版</strong>（matting）：每像素 [0,1] 前景不透明度，0&lt;α&lt;1 为 transition area（发丝级软轮廓）。指标 SAD/GRAD/CONN。</li>
+  </ul>
+
+  <p>第二个心智模型是<strong>时序一致性的三种机制</strong>——视频区别于图像的核心。一条轮廓要在帧间不闪烁、不漂移，主流方法落到三种机制上：recurrent 隐状态（逐帧因果传播，如 RVM 的 ConvGRU）、memory-bank 检索（跨帧 query-key 全图检索，如 XMem/SAM 2）、无状态局部注意力（仅 t±1 局部 patch，如 TAM）。这三种机制不是互斥的——MatAnyone 把 memory-bank 延伸到 alpha，SAM 2 把 memory-bank 原生化进基础模型——但它们构成了理解所有视频轮廓模型的主轴。</p>
+
+  <div class="info-box">
+    <h3>核心术语速查</h3>
+    <p><strong>masklet</strong>：SAM 2 术语，指一个对象在多帧上的 mask 序列（对应 image 的 masklet）。<strong>trimap</strong>：matting 的传统辅助输入，把图分前景/背景/未知区三类。<strong>streaming memory</strong>：SAM 2 的核心机制，keyframe memory bank + object pointer 跨帧精修。<strong>transition area</strong>：alpha 在 0 与 1 之间的过渡区，即发丝/毛发等软轮廓所在。<strong>dtSSD/MESSDdt</strong>：视频 matting 的时序稳定性指标，但基于光流 warp 的 MESSDdt 在半透明处有噪声（TAM 实证弃用）。</p>
+  </div>
+
+  <p>带着这两个模型，本文的阅读路径是：先看任务 taxonomy（Part 2）和技术路线 taxonomy（Part 3）建立全局坐标，再按三条线分别深入（Part 4-6），最后用方法矩阵（Part 7）、时间线（Part 8）、数据集与指标（Part 9）做横向收束，开放问题（Part 10）指出三线共同的未解之处。</p>
+</div>
+
+<!-- ============================================================
+  Part 2 · 任务 Taxonomy
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 任务 Taxonomy</div>
+  <div class="ch-title">要提取什么形式的轮廓？</div>
+
+  <p>任务 taxonomy 按"产出什么形式的轮廓表示"分类，而非按模型分。同一模型可能产多种表示（例如 SAM 2 产 mask 边界，SAM2Matting 在其上加 alpha）。分类原则是输出空间，因为这决定了下游能用这条轮廓做什么、以及用哪套指标评测。</p>
+
+  <table>
+    <thead>
+      <tr><th>任务类型</th><th>典型输入</th><th>典型输出</th><th>代表工作</th><th>评测重点</th><th>不适用场景</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>二值边缘检测（视频化）</td><td>视频帧</td><td>逐帧二值边缘图</td><td>HED / RCF / PiDiNet / EDTER + 时序补丁</td><td>ODS / OIS / AP</td><td>需对象级语义、半透明软轮廓</td></tr>
+      <tr><td>视频显著目标检测（VSOD）</td><td>视频</td><td>逐帧显著图（边界即轮廓）</td><td>MGA #Li et al., 2019# / VSOD 系</td><td>S-measure / F-measure / E-measure</td><td>非显著目标、多等显著性场景</td></tr>
+      <tr><td>视频目标分割（VOS）</td><td>视频 + prompt（点/框/mask/首帧）</td><td>逐帧 mask（masklet 边界即轮廓）</td><td>OSVOS→STM→XMem→SAM 2</td><td>J &amp; F（F=边界精度）</td><td>无 prompt 全自动、发丝级软轮廓</td></tr>
+      <tr><td>视频抠像（matting）</td><td>视频（+trimap/背景/无）</td><td>逐帧 alpha 蒙版（软轮廓）</td><td>MODNet→RVM→MatAnyone→SAM2Matting</td><td>SAD / GRAD / CONN / dtSSD</td><td>非前景主体（动物/任意物）、长视频漂移</td></tr>
+    </tbody>
+  </table>
+
+  <p>这里有几条容易混淆的边界需要澄清。第一，<strong>"边缘检测"与"分割边界"的差别</strong>：前者不绑定对象语义，把所有梯度极值都标出来（一棵树的纹理也会产生边缘）；后者绑定特定对象，只在对象轮廓处出边界。VSOD 介于两者之间——"显著"隐式选了对象，但仍是"哪些区域显眼"而非"这是哪个对象"。第二，<strong>"mask 边界"与"alpha"的差别</strong>：mask 是二值阶跃，对发丝会出锯齿；alpha 是连续软透明，能表达发丝。SAM 2→SAM2Matting 的精度升级，本质就是 mask 边界→alpha 软轮廓。第三，<strong>"有 prompt"与"无 prompt"</strong>：VOS 需要用户给一个 prompt 指定对象（点/框/首帧 mask），而 SAM 的 automatic prompting 实证不佳 #Zhang et al., 2024#——"完全无显式 prompt 的全自动视频轮廓提取"是一个核心开放问题（见 Part 10）。</p>
+
+  <p>这个 taxonomy 还揭示了一个评测层面的缺口：四类任务各有自己的指标，但<strong>没有一套统一的"时序轮廓质量"评测</strong>。VOS 的 F 量边界但无紧致度/时序一致性 TCB；matting 的 GRAD/CONN 是静态的；dtSSD 是全图级、不分离对象。这条缺口我们在 Part 10 作为开放问题展开。</p>
+</div>
+
+<!-- ============================================================
+  Part 3 · 技术路线 Taxonomy + 时序机制三分
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 技术路线 Taxonomy</div>
+  <div class="ch-title">如何保证视频里的时序一致性：三种机制</div>
+
+  <p>技术路线 taxonomy 按"时序一致性机制"分——这是视频区别于静态图像的核心维度，且跨三线通用。这条分类轴是本文最重要的新增视角：三条线的模型几乎都能归入下列之一。</p>
+
+  <table>
+    <thead>
+      <tr><th>技术路线</th><th>核心表示</th><th>适配任务</th><th>代表工作</th><th>优势</th><th>限制</th><th>工程可得性</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>逐帧 + 事后时序补丁</td><td>独立帧边缘/分割</td><td>边缘检测视频化</td><td>HED + 光流 warp / 3D Conv</td><td>简单、可插拔</td><td>无端到端时序、闪烁</td><td>高</td></tr>
+      <tr><td>无状态局部注意力</td><td>t±1 局部 patch attention</td><td>视频 matting</td><td>TAM #Zhang et al., 2021#</td><td>轻量、可插入、显式监督对应</td><td>非流式（需 t+1）、短程无回溯</td><td>高</td></tr>
+      <tr><td>recurrent 隐状态</td><td>ConvGRU 逐帧因果传播</td><td>视频 matting / 分割</td><td>RVM #Lin et al., 2021#</td><td>流式长程、端到端、隐式场景模型</td><td>容量有限长视频 drift、单向无未来</td><td>高（3.749M 参数）</td></tr>
+      <tr><td>memory-bank 检索</td><td>跨帧 query-key 全图检索</td><td>VOS / 视频抠像</td><td>STM / XMem / MatAnyone / SAM 2</td><td>长程回溯、分层、可重识别</td><td>算力高（self/cross-attn）、FIFO 冗余/错误累积</td><td>中-高</td></tr>
+      <tr><td>基础模型 streaming memory</td><td>keyframe memory bank + object pointer</td><td>统一图像/视频 VOS</td><td>SAM 2 #Ravi et al., 2024#</td><td>统一、实时、大规模数据、遮挡头</td><td>二值硬边界、prompt 依赖、长视频漂移</td><td>高（开源 + 生态）</td></tr>
+      <tr><td>解耦 tracker-to-matting</td><td>冻结 VOS tracker + 图像训 matting</td><td>视频 matting zero-shot</td><td>SAM2Matting #Shen et al., 2026#</td><td>zero-shot 视频、不依赖视频 matting 数据</td><td>依赖 tracker 质量、两阶段</td><td>中（代码开源）</td></tr>
+    </tbody>
+  </table>
+
+  <p>这六条路线不是互斥的，它们之间有明确的组合与演化关系。memory-bank 与解耦 tracker-to-matting 可以组合——SAM2Matting 就是"冻结 SAM 2 的 memory-bank tracker + 图像训 matting head"。recurrent 与 memory-bank 互补——RVM 的 ConvGRU 是逐帧因果压缩，XMem 的 memory-bank 是全图检索回溯，MatAnyone 把 memory-bank 从 mask 延伸到 alpha。无状态局部注意力（TAM）是一个过渡形态，介于传统 affinity-based 视频抠像（Choi 2012、Eisemann 2009）与现代 recurrent/memory 机制之间，它甚至可以作为模块插入 recurrent/memory 架构。基础模型 streaming memory 则是 memory-bank 的原生化——把"外挂记忆"融合进基座（fusion-level 原生紧耦合 #Xu et al., 2025#）。</p>
+
+  <p>一个反直觉的发现值得专门指出：<strong>matting 的时序机制分化最彻底</strong>。RVM 选 recurrent、TAM 选局部注意力、MatAnyone 选 memory-bank、SAM2Matting 选解耦——四篇几乎覆盖了全部时序路线。这意味着在视频抠像这条线内部，就能完整观察"时序机制三分"的全部形态。这是本文把技术路线 taxonomy 作为主轴的实证理由。</p>
+
+  {{< mermaid >}}
+graph LR
+    A["逐帧+事后补丁<br/>(HED+光流)"] --> B["三种时序机制"]
+    B --> C["recurrent 隐状态<br/>RVM ConvGRU"]
+    B --> D["memory-bank 检索<br/>XMem/MatAnyone/SAM2"]
+    B --> E["无状态局部注意力<br/>TAM t±1"]
+    C --> F["基础模型 streaming memory<br/>SAM 2 (memory 原生化)"]
+    D --> F
+    F --> G["解耦 tracker-to-matting<br/>SAM2Matting (zero-shot)"]
+    G --> H["mask 边界 → alpha 软轮廓<br/>(精度升级)"]
+  {{< /mermaid >}}
+</div>
+
+<!-- ============================================================
+  Part 4 · 子方向 A：边缘检测 + VSOD
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 子方向 A</div>
+  <div class="ch-title">视频边缘/轮廓检测：一条没有独立模型线的拼合图景</div>
+
+  <p>我们先看最薄弱、也最需要诚实交代的一条线。视频边缘检测的"模型"主要由两类工作拼合而成：一类是把静态边缘检测器逐帧跑、再加时序补丁；另一类是视频显著目标检测（VSOD），它输出显著图、边界是副产品。</p>
+
+  <h3 class="section-title">静态边缘检测器的演进：HED → RCF → PiDiNet → EDTER</h3>
+
+  <p>深度学习边缘检测的范式起点是 HED #Xie et al., 2015#（ICCV 2015）——全卷积多尺度深度边缘检测，把边缘检测重新表述为像素级二分类。它的贡献是确立了"深度全卷积 + 多尺度融合 + BSDS500 评测"的范式，此后工作几乎都在这个框架内改进。RCF #Liu et al., 2017#（CVPR 2017）利用所有卷积层的富特征做更充分融合；BDCN（CVPR 2019）用双向级联强调层次化特征。</p>
+
+  <p>这条线近年两个最有代表性的工作是 PiDiNet 和 EDTER，它们代表了两极——<strong>轻量高效</strong>与<strong>重型 SOTA</strong>。PiDiNet #Su et al., 2021#（ICCV 2021）把 Sobel/LBP 的像素差分算子显式注入 CNN（像素差分卷积 PDC），核心公式是 $y=\sum_i w_i(x_i-x_i')$，让梯度算子成为可学习核的先验。它的惊人之处在于：仅用 710K 参数、3.43G MACs、92 FPS（Tiny-L 版仅 73K 参数、215 FPS），from-scratch 不用 ImageNet 预训练，在 BSDS500 上 ODS 达到 0.807——<strong>超过人类标注一致性 0.803</strong>。这打破了"高性能边缘检测必依赖大预训练骨干"的惯例。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-pidinet/arch.webp" alt="PiDiNet 架构" loading="lazy">
+    <div class="cap">图 1：PiDiNet 架构。像素差分卷积 PDC 把 Sobel/LBP 梯度算子显式注入 CNN，训练后可等价转为普通卷积，推理零额外开销（来源：PiDiNet, Fig.2）。</div>
+  </div>
+
+  <p>另一极是 EDTER #Pu et al., 2022#（CVPR 2022）——首个用于通用边缘检测的 Transformer。它用两阶段 ViT：Stage I 全局 16×16 patch + 24 block 捕获全局上下文，Stage II 不重叠滑窗 8×8 细粒度 patch + 12 block 精化，BiMLA 解码器做双向多尺度融合。EDTER 把 BSDS500 MS+VOC ODS 推到 0.848，是近年静态边缘最大跃升，但代价是 Stage II 470G FLOPs、仅 2.2 FPS，且<strong>没有任何时序机制</strong>——video object segmentation 在 EDTER 里只是作为下游被提及。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-edter/framework.webp" alt="EDTER 两阶段 Transformer 框架" loading="lazy">
+    <div class="cap">图 2：EDTER 两阶段 Transformer 框架。Stage I 全局 patch + Stage II 细粒度 patch，BiMLA 双向解码。BSDS500 ODS 0.848，但 470G FLOPs、2.2 FPS、无时序（来源：EDTER, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">为什么边缘检测没有独立的"视频线"</h3>
+
+  <p>把 HED/RCF/PiDiNet/EDTER 跑到视频上会发生什么？逐帧边缘会出现<strong>闪烁</strong>——相邻帧的微小像素扰动会让边缘位置抖动。学术界的应对是事后补丁：用光流 warp 做时序一致性损失、用 3D Conv 或 ConvLSTM 加时序头。但这些方案没有形成像 VOS 那样的独立模型线，原因有二：其一，<strong>没有公认的"视频边缘检测 benchmark"</strong>——BSDS500-Video、UCF50 受众小、更新停滞；其二，<strong>业界几乎不关心"纯边缘图"</strong>，关心的是抠像 alpha 和分割 mask 边界——即把轮廓需求外包给了 VOS/matting 两条线。</p>
+
+  <h3 class="section-title">VSOD：把"轮廓"转写成"显著对象分割"</h3>
+
+  <p>真正把"视频轮廓"做成独立任务的是<strong>视频显著目标检测（VSOD）</strong>。它的策略是：不直接出边缘图，而出显著图（显著区域的边界即轮廓），用"显著性"隐式选定对象。代表工作 MGA #Li et al., 2019#（ICCV 2019）是首个以 attention 机制建模"显著运动如何影响对象显著性"的视频 SOD 方法。它的双分支架构是：外观分支 ResNet-101 + 运动分支 ResNet-34（更轻，因为光流图无高层语义），用 FlowNet 2.0 前向光流，6 个 MGA 模块桥接编码器与解码器。</p>
+
+  <p>MGA 的核心模块是"乘法注意 + 残差 $+f_a$"——这个残差设计很重要，它避免运动为 0 时静止显著区域被抑制。最佳变体 MGA-tmc = 空间注意（Sigmoid）+ 通道注意（Softmax×C）+ 残差。MGA 在 DAVIS 上达到 S-m 0.913、maxF 0.902，较次优 PDB +3.4%/+4.0%；在 FBMS 上 +6.1%/+8.1%。值得注意的是 MGA <strong>仅用上一帧短程光流</strong>，不需 ConvLSTM 长程历史——这是一个强基线、易部署的设计，但也意味着它的时序一致性是"短程"的，长视频无回溯能力。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-mga-vsod/MotionGuidedAttention_v2.webp" alt="MGA 模块" loading="lazy">
+    <div class="cap">图 3：MGA（Motion Guided Attention）模块。乘法注意 + 残差 $+f_a$，避免运动为 0 时静止显著区被抑制。DAVIS S-m 0.913（来源：MGA, Fig.2）。</div>
+  </div>
+
+  <p>近 1-2 年 VSOD 的趋势是用基础模型（SAM/SAM 2）替换专用 VSOD 主干，把 VSOD 重新表述为 prompt-free video segmentation。这恰好印证了本文的主线：边缘/VSOD 这条线的终点，不是更精细的边缘检测器，而是汇入 VOS/matting 的基础模型。</p>
+</div>
+
+<!-- ============================================================
+  Part 5 · 子方向 B：VOS
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 子方向 B</div>
+  <div class="ch-title">视频目标分割：从 STM memory 到 SAM 2 基础模型</div>
+
+  <p>VOS 是三条线里最活跃、最成体系的一条。它的输出是逐帧对象 mask，masklet 边界即轮廓——给定一段视频、在第 1 帧点一下，整段视频的对象掩码边界就出来了。这条线的核心叙事是"<strong>memory 范式的演化与原生化</strong>"。</p>
+
+  <h3 class="section-title">memory 范式的起点：STM</h3>
+
+  <p>VOS 的深度学习起点是 OSVOS（CVPR 2017）的 one-shot 在线微调，但真正奠定后续路线的是 STM #Oh et al., 2019#（ICCV 2019）——Space-Time Memory Networks。STM 第一次把"跨帧 memory 检索"作为 VOS 的核心机制：当前帧的特征作为 query，去检索历史关键帧的 memory，用 attention 把历史信息融合回当前帧。这个范式如此成功，以至于此后 XMem、Cutie、DEVA、甚至 SAM 2 的 memory 都可以看作它的变体。<strong>STM 是 XMem/MatAnyone 的 memory 机制直系祖先</strong>，也作为 matting 那条线的 trimap 生成器被复用（见 Part 6 的 TAM）。</p>
+
+  <h3 class="section-title">多级 memory：XMem</h3>
+
+  <p>XMem #Cheng et al., 2022#（ECCV 2022）把 memory 范式推向长视频。它借鉴 Atkinson-Shiffrin 人类记忆模型，建立三级 memory——sensory（瞬时）、working（工作）、long-term（长期）——把"显存爆炸"与"精度"解耦：通过 consolidation 把 working memory 压缩进 long-term，实现压缩比 &gt;6000%，在 ≤1.4GB 显存下处理 34000 帧。XMem 的一个关键技术贡献是 anisotropic L2 相似度——用 shrinkage 编码置信度、selection 编码 channel 判别性，是对 STCN 普通 L2 的关键改进。<strong>这个 anisotropic L2 affinity 后被 MatAnyone 的 alpha memory query 直接沿用</strong>，是 XMem→MatAnyone 的实证技术传承点。</p>
+
+  <p>但 XMem 输出的是 mask 边界（二值/soft 分割 logit），不是 alpha 蒙版。它的局限正是后续 alpha 路线的起点：快速运动失败 + mask 边界精度不足。后续 Cutie（CVPR 2024）引入 object-level query memory 解决多同类目标混淆；DEVA #Cheng et al., 2023#（ICCV 2023）把图像分割与跟踪解耦、支持开放词表。这些 pre-SAM2 的工作都遵循"外挂 memory 模块"的范式。</p>
+
+  <h3 class="section-title">基础模型转折点：SAM 2 的 streaming memory</h3>
+
+  <p>2024 年 SAM 2 #Ravi et al., 2024#（Meta FAIR）把 VOS 从"专用模型"拉到"通用基础模型"，统一图像与视频的可提示分割。它的核心创新是 <strong>streaming memory architecture</strong>——把 memory 机制从"外挂模块"原生化进基座（fusion-level 原生紧耦合 #Xu et al., 2025#）。SAM 2 的数据流是：Hiera 分层 image encoder → memory attention（L=4 层：self-attn → cross-attn 到 memory bank + object pointer → MLP）→ mask decoder → memory encoder（轻量 conv）回写 memory bank。图像模式下记忆为空，即退化为 SAM。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-sam-2/model_diagram_zoomin_v3.webp" alt="SAM 2 streaming memory 架构" loading="lazy">
+    <div class="cap">图 4：SAM 2 streaming memory 架构。image encoder → memory attention（self+cross-attn 到 memory bank+object pointer）→ mask decoder → memory encoder 回写。图像模式记忆空即退化为 SAM（来源：SAM 2, Fig.模型图）。</div>
+  </div>
+
+  <p>SAM 2 的 memory bank 是双 FIFO + object pointer：最多 N 帧近期空间记忆 + M 帧提示帧空间记忆（始终保留第 1 帧），外加 256 维 object pointer 拆成 4×64 token；memory feature 投影到 64 维；GRU 被砍掉（消融显示无平均收益）。一个关键设计是 <strong>occlusion head</strong>——新增"对象是否可见"预测头（CE 损失，恒定监督），被遮挡帧的记忆加 learned occlusion embedding。这是 SAM 2 区别于 SAM 的关键：对象可以消失再出现（PVS, Promptable Video Segmentation）。</p>
+
+  <p>SAM 2 的数据规模是转折性的。SA-V 数据集含 50.9K 视频、190.9K 手工 masklet、10.0M 手工掩码，加自动标注共 642.6K masklet、<strong>35.5M 掩码</strong>——比此前最大的 VOS 数据集大一个数量级；196 小时、47 国、42.5% 消失率、&gt;88% 掩码归一化面积 &lt;0.1（小目标居多）。在如此规模的数据上，SAM 2.1（Hiera-L）取得：MOSE val 77.9、DAVIS17 val 90.7 / test 88.9、YouTube-VOS19 val 89.3、SA-V val/test 78.6/79.5、LVOSv2 val 80.6——在 SA-V 上比 Cutie-base+ 高 17 个点。速度上 Hiera-B+ 43.8 FPS、Hiera-L 30.2 FPS（单 A100），<strong>比 SAM 快 6× 且更准</strong>。训练用了 ~150k 步、batch 256、8 帧序列（16 帧微调 50k 冻结编码器），损失是 focal(20)+dice(1)+IoU-L1(1)+occ-CE(1)，启用 2d-RoPE 与 FlashAttention-2。</p>
+
+  <h3 class="section-title">post-SAM2：修补 streaming memory 的三大缺陷</h3>
+
+  <p>SAM 2 的 streaming memory 留下三大未解缺陷 #Xu et al., 2025#：<strong>memory redundancy</strong>（FIFO 固定数量冗余）、<strong>error accumulation</strong>（错误特征跨帧传播）、<strong>prompt inefficiency</strong>（自动 prompt + 外挂 tracker 低效）。post-SAM2 的工作分别修补：SurgSAM2 用 cosine 剪帧、SAMURAI 用 motion-aware 三分数 + Kalman、SAM2Long 用 training-free memory tree、MoSAM 用时空双级选择。这些本质上都是在保边界时序稳定性——FIFO 冗余会让边界抖动、错误累积会让边界漂移。</p>
+
+  <h3 class="section-title">组合派代表：Track Anything</h3>
+
+  <p>在 SAM 2 端到端训练路线之外，还有一个"组合派"代表——Track Anything #Yang et al., 2023#（详见精读三）。它不训练新模型，而是 training-free 编排 SAM 逐帧精化 + XMem 记忆传播 + 人在环纠错，四步 Pipeline：Step1 SAM click 初始化 → Step2 XMem 跟踪（保存 probes/affinities）→ Step3 SAM 用 probes/affinities 作点 prompt + XMem mask 作 mask prompt 精化，<strong>精化结果回灌 XMem 时序对应</strong>（双向耦合）→ Step4 人在环纠错。它用 click 初始化 + one-pass 在 DAVIS-16 达到 J&amp;F 88.4、DAVIS-17 73.1，逼近 mask-init 的 STM(89.3)，显著优于 box-init 的 SiamMask(69.8)，但低于 mask-init 上界 XMem(92.0/81.2)。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-track-anything/overview_4.webp" alt="Track Anything 四步 Pipeline" loading="lazy">
+    <div class="cap">图 8：Track Anything 四步 Pipeline。SAM click 初始化 → XMem 跟踪 → SAM+XMem 双向耦合精化 → 人在环纠错。training-free 把 SAM 静态 mask 边界变成视频时序一致轮廓（来源：Track Anything, Pipeline 图）。</div>
+  </div>
+
+  <p>Track Anything 的价值在于交互成本/性能权衡：click 比 scribble/mask 廉价得多，一轮推理 vs MiVOS 8 轮。它的失败案例——长视频 mask shrinkage、复杂孔洞结构——<strong>正好预示了 SAM 2 端到端记忆路线</strong>。XMem 是 TAM 的记忆引擎，TAM 是 XMem 的交互外壳；TAM 的 Step4 人在环 vs SAM 2 内建点击重置——同源不同实现。</p>
+</div>
+
+<!-- ============================================================
+  Part 6 · 子方向 C：视频抠像
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 子方向 C</div>
+  <div class="ch-title">视频抠像：从 recurrent 到解耦 zero-shot 的时序机制全谱</div>
+
+  <p>视频抠像（matting）输出 alpha 蒙版，是发丝级软轮廓的来源。它的数学基础是颜色合成方程：</p>
+
+  <p style="text-align:center;">\[ I_i = \alpha_i F_i + (1-\alpha_i) B_i \]</p>
+
+  <p>其中 $I$ 是观测像素，$F$ 前景、$B$ 背景、$\alpha\in[0,1]$ 是前景不透明度。3 个方程、7 个未知量（$\alpha$、$F$、$B$ 各 3 通道），严重 ill-posed。$\alpha\in\{0,1\}$ 是纯前/背景，$0<\alpha<1$ 是 transition area——发丝、毛发、半透明物体所在的软轮廓区。这条线的核心叙事是<strong>时序机制的完整分化</strong>——四篇代表恰好覆盖 recurrent、局部注意力、memory-bank、解耦全部四种。</p>
+
+  <h3 class="section-title">recurrent 路线：Robust Video Matting</h3>
+
+  <p>RVM #Lin et al., 2021#（详见精读二）是视频抠像的工业落地起点——首次做到 trimap-free、实时、高分辨率视频抠像。它的核心是 <strong>ConvGRU 单向 recurrent decoder</strong>：隐状态 $h_{t-1}\to h_t$ 因果传播，支持直播流。这与 XMem 的多级 memory+attention 互补，构成视频轮廓提取的两大时序机制分支——recurrent vs memory-bank。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/model_architecture.webp" alt="RVM recurrent 架构" loading="lazy">
+    <div class="cap">图 5：RVM 架构。ConvGRU 单向 recurrent decoder，$h_{t-1}\to h_t$ 因果传播，半通道 split-and-concatenation。3.749M 参数、HD 104 FPS（来源：RVM, Fig.架构）。</div>
+  </div>
+
+  <p>RVM 有几个精妙设计。其一，<strong>半通道 split-and-concatenation</strong>——ConvGRU 仅作用于半数通道，recurrent 半支聚时序、另一半直连当前帧空间特征，省算且信息流并行。其二，<strong>隐状态自动重建背景</strong>——网络自发学会重建被遮挡背景、跟踪运动、镜头切换时遗忘，recurrent state 实际是一个轻量可学习的场景模型。其三，<strong>联合 matting+segmentation 训练</strong>——同架构同时输出 α/F/S（5 通道），COCO 人像 mIOU 61.50，去掉分割目标降至 38.24，说明分割监督能防合成过拟合。</p>
+
+  <p>RVM 的数字很有说服力：3.749M 参数（MODNet 的 58%）、HD 104 FPS / 4K 76 FPS（1080Ti）；VideoMatte240K 低分 MAD 6.08 / MSE 1.47 / Grad 0.88 / dtSSD 1.36 全面 SOTA；高分辨率 1920×1080 SAD 6.57 vs MODNet 11.13。它的损失 $L^M = L^\alpha_{l1}+L^\alpha_{lap}+5L^\alpha_{tc}+L^F_{l1}+5L^F_{tc}$——时序一致性损失 ×5 权重 + recurrent 架构是时序稳定的双重保障。局限也明确：单向无未来帧、recurrent 容量有限（长视频 drift 风险）、多主体/背景人群歧义、发丝精度受限于 backbone 感受野 + DGF。</p>
+
+  <h3 class="section-title">局部注意力路线：TAM（Attention-guided Temporally Coherent）</h3>
+
+  <p>与 RVM 几乎同期的 TAM #Zhang et al., 2021#（ACM MM 2021）走了完全不同的时序路线——<strong>无状态局部注意力</strong>。帧 t 仅取 t±1 在 7×7 局部 patch 上做 scaled dot-product attention，双向、仅限未知区、步长 8。它<strong>不维护任何跨帧隐状态或记忆库</strong>——这是与 RVM（ConvGRU 隐状态压缩）和 XMem/MatAnyone（memory bank 检索）的根本分野。一个反直觉设计是：TAM 用 $L_{af}$ 直接 BCE 监督 attention 权重（来自 GT alpha）——少见的"教网络学正确时间对应"的设计。它是一个可插入 GCA/Index/DIM 的模块，而非全新端到端架构。</p>
+
+  <p>TAM 提供了一个重要的度量经验：它<strong>实证放弃了 MESSDdt</strong>（带光流 warp 的时间一致性损失）——因为即使 SOTA RAFT 光流，半透明像素处仍有严重运动噪声损害性能。主结果在 VideoMatting108 Medium trimap 上 dtSSD 31.64→27.28（-13.8%）、MESSDdt 2.15→1.48（-31.2%），时间相关指标提升最显著。TAM 还揭示了一条隐藏的演化链：它用 STM（VOS）逐帧产 trimap——<strong>STM 既是 matting 的 trimap 生成器，也是 VOS memory 机制的直系祖先</strong>，两条线在这里交汇。</p>
+
+  <h3 class="section-title">memory-bank 延伸到 alpha：MatAnyone</h3>
+
+  <p>MatAnyone 把 XMem 的 memory-bank 范式从 mask 延伸到 alpha——<strong>alpha memory bank</strong> 直接存 alpha 蒙版（非 mask/trimap），把 VOS memory 的稳定性延伸到 boundary 精度。它的核心是 CMP（Consistency-Modulated Propagation）region-adaptive memory fusion，用 change probability $U_t$ 把帧分 core/boundary 二分处理：</p>
+
+  <p style="text-align:center;">\[ P_t = V_t^m \cdot U_t + V_{t-1}\cdot(1-U_t) \]</p>
+
+  <p>core 区用记忆传播保稳定、boundary 区用当前帧细节保精度，并用 scaled DDC loss（修正 DDC 的 $|F-B|=1$ 假设）补 VOS 在 boundary 精度的 gap。效果显著：Real benchmark MAD 0.14 vs RVM-Large 0.95（降 85%+），dtSSD 全场最佳。MatAnyone 还贡献了 VM800 数据集（826 视频，2× VideoMatte240K）+ YouTubeMatte（32 视频，加 harmonization）。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-matanyone/pipeline.webp" alt="MatAnyone pipeline" loading="lazy">
+    <div class="cap">图 6：MatAnyone pipeline。alpha memory bank + CMP region-adaptive fusion，core 区记忆传播、boundary 区当前帧细节。Real MAD 0.14（来源：MatAnyone, Fig.pipeline）。</div>
+  </div>
+
+  <h3 class="section-title">解耦 zero-shot：SAM2Matting</h3>
+
+  <p>SAM2Matting #Shen et al., 2026# 提出了最新范式——<strong>decoupled tracker-to-matting (t2m)</strong>：保留既有 VOS tracker（SAM 2/SAM 3）的高层鲁棒性，仅在丰富多样的<strong>图像</strong>抠像数据上训练专用低层 matting 组件，video matting 做 <strong>zero-shot 评估</strong>，不依赖任何视频抠像数据训练。这挑战了"必须用视频抠像数据"的共识。它的关键发现来自一个反直觉的 ablation：<strong>video fine-tune 会削弱跟踪鲁棒性</strong>——即便无遮挡简单场景，video-FT 变体也削弱跟踪——反证 zero-shot decoupled 优于 fine-tune。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-sam2matting/overview.webp" alt="SAM2Matting overview" loading="lazy">
+    <div class="cap">图 7：SAM2Matting decoupled tracker-to-matting。冻结 VOS tracker 提供时间一致 mask → ROI Detector 识别 matting-critical 区 → Progressive Alpha Predictor 多尺度 cascade 生成 alpha（来源：SAM2Matting, Fig.2）。</div>
+  </div>
+
+  <p>SAM2Matting 的两个关键设计：ROI Detector 被重新表述为 pixel-wise 二分类（学习式替代 morphological/mask-only），能纠正 tracker 误差（补滑雪杖、删桌子）；构造 pseudo-trimap 桥接 mask→alpha。Progressive Alpha Predictor 用 coarse-to-fine cascade + 全尺度 deep supervision，配 matte-mask consistency loss + smoothness loss。SAM2.1-T 变体做到 1080p 40 FPS / &lt;5GB VRAM，VRAM 不随分辨率爆炸。dtSSD 全场最低，实证时序一致性源自冻结 tracker。</p>
+
+  <p>至此视频抠像的演化链完整浮现：<strong>XMem（mask 边界 + 多级 memory）→ MatAnyone（alpha + memory 传播改造）→ SAM2Matting（解耦 zero-shot）</strong>，而 RVM（recurrent）、TAM（局部注意力）分别代表了另两种时序机制。三种时序机制 + 解耦，在 matting 这一条线内部全部呈现——这是本文把"时序机制三分"作为技术路线 taxonomy 主轴的实证依据。</p>
+</div>
+
+<!-- ============================================================
+  Part 7 · 方法矩阵
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 方法矩阵</div>
+  <div class="ch-title">跨线对比：轮廓表示 × 时序机制 × 数据 × 实时性</div>
+
+  <p>把三线代表方法放进同一张矩阵横向对比。这张表是本文的核心证据账本——所有数字都回溯到前述各篇 paper packet。</p>
+
+  <table>
+    <thead>
+      <tr><th>方法</th><th>轮廓表示</th><th>时序机制</th><th>驱动信号</th><th>训练数据</th><th>实时性</th><th>评测指标（关键数值）</th><th>代码</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>EDTER (2022)</td><td>二值边缘</td><td>无（下游提及VOS）</td><td>图像</td><td>BSDS500+VOC</td><td>2.2 FPS（470G FLOPs）</td><td>ODS 0.848</td><td>开源</td></tr>
+      <tr><td>PiDiNet (2021)</td><td>二值边缘</td><td>无</td><td>图像</td><td>BSDS500+VOC</td><td>92 FPS（710K 参数）</td><td>ODS 0.807（超人类）</td><td>开源</td></tr>
+      <tr><td>MGA (2019)</td><td>显著图边界</td><td>短程光流+注意力</td><td>视频</td><td>DAVIS/FBMS</td><td>-</td><td>S-m 0.913 / maxF 0.902</td><td>开源</td></tr>
+      <tr><td>XMem (2022)</td><td>mask 边界</td><td>memory-bank 三级</td><td>视频+prompt</td><td>DAVIS/YTVOS</td><td>-（≤1.4GB/34000帧）</td><td>J&amp;F（长视频 SOTA）</td><td>开源</td></tr>
+      <tr><td>Track Anything (2023)</td><td>mask 边界</td><td>SAM+XMem 外挂</td><td>视频+click</td><td>无（training-free）</td><td>one-pass</td><td>DAVIS-16 J&amp;F 88.4</td><td>开源</td></tr>
+      <tr><td>SAM 2 (2024)</td><td>mask 边界</td><td>streaming memory（原生）</td><td>视频+prompt</td><td>SA-V 35.5M mask</td><td>30.2 FPS（Hiera-L）</td><td>DAVIS17 90.7 / MOSE 77.9 / SA-V +17 vs Cutie</td><td>开源</td></tr>
+      <tr><td>TAM (2021)</td><td>alpha</td><td>无状态局部注意力</td><td>视频+trimap</td><td>VideoMatting108</td><td>-</td><td>dtSSD 27.28（-13.8%）</td><td>开源</td></tr>
+      <tr><td>RVM (2021)</td><td>alpha</td><td>ConvGRU recurrent</td><td>视频（trimap-free）</td><td>VideoMatte240K/D646/AIM</td><td>HD 104 / 4K 76 FPS</td><td>MAD 6.08 / 高分 SAD 6.57</td><td>开源</td></tr>
+      <tr><td>MatAnyone (2025)</td><td>alpha</td><td>memory-bank（alpha）</td><td>视频+reference</td><td>VM800/YouTubeMatte</td><td>-</td><td>Real MAD 0.14（vs RVM 0.95）</td><td>开源</td></tr>
+      <tr><td>SAM2Matting (2026)</td><td>alpha</td><td>解耦（冻结 tracker）</td><td>图像 matting（zero-shot 视频）</td><td>图像 matting 数据</td><td>1080p 40 FPS（&lt;5GB）</td><td>dtSSD 全场最低</td><td>开源</td></tr>
+    </tbody>
+  </table>
+
+  <p>从这张表可以提炼几个跨方法交叉发现。第一，<strong>"轮廓表示"与"时序机制"存在协同</strong>：二值边缘几乎不带时序（EDTER/PiDiNet 无）；mask 边界倾向于 memory-bank（XMem/SAM 2）；alpha 蒙版则时序机制最分化（recurrent/局部注意力/memory/解耦都有）。这背后的逻辑是——越软、越细的轮廓（alpha &gt; mask &gt; 边缘），对时序一致性的要求越高、可选机制越多。第二，<strong>基础模型同时拉高了数据规模与实时性门槛</strong>：SAM 2 的 SA-V 35.5M mask 比此前最大 VOS 数据集大一个数量级，但 Hiera-L 仍做到 30.2 FPS——大规模数据 + 高效架构让它同时赢了精度和速度。第三，<strong>解耦范式重新定义了"需要什么数据"</strong>：SAM2Matting 不依赖视频抠像数据（贵且窄），只用图像 matting 数据训 matting head，却靠冻结 tracker 拿到全场最低 dtSSD——这是数据策略上的反共识突破。</p>
+</div>
+
+<!-- ============================================================
+  Part 8 · 时间线
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 8 · 发展脉络</div>
+  <div class="ch-title">三阶段演进：手工 → 深度时序化 → 基础模型</div>
+
+  <h3 class="section-title">2015-2019：经典-深度过渡，per-frame 为主</h3>
+  <p>这一阶段的核心共识是：从手工梯度极值/水平集转向深度全卷积；视频侧仍以光流 + 手工特征为主。<strong>边缘</strong>：HED #Xie et al., 2015#（ICCV 2015）确立深度边缘范式，RCF #Liu et al., 2017#（CVPR 2017）富特征融合，BDCN（CVPR 2019）双向级联。<strong>VOS</strong>：OSVOS（CVPR 2017）one-shot 在线微调是深度学习起点，STM #Oh et al., 2019#（ICCV 2019）奠定 memory 范式——这是整条 VOS 线的范式起点。<strong>matting</strong>：Deep Image Matting #Xu et al., 2017#（CVPR 2017）首次深度学习抠像 + Composition-1k 数据集。<strong>VSOD</strong>：FCNS、DeepVS、MGA #Li et al., 2019#（ICCV 2019）把显著检测视频化。这一阶段尚未解决的核心问题是<strong>视频时序一致性无原生建模</strong>——边缘检测完全没有视频专用线，VOS/matting 还在 per-frame + 后处理阶段。</p>
+
+  <h3 class="section-title">2020-2022：深度时序化，三种机制成型</h3>
+  <p>这一阶段的核心共识是：时序机制三分成型——recurrent（RVM）、memory-bank（XMem）、局部注意力（TAM）；实时化落地。<strong>边缘</strong>：PiDiNet #Su et al., 2021#（ICCV 2021）像素差分轻量超人类，EDTER #Pu et al., 2022#（CVPR 2022）Transformer 重型 SOTA。<strong>VOS</strong>：MiVOS（CVPR 2021）模块化交互+传播，XMem #Cheng et al., 2022#（ECCV 2022）多级 memory 长视频，DEVA #Cheng et al., 2023#（ICCV 2023）图像-跟踪解耦。<strong>matting</strong>：MODNet（2020）实时 trimap-free 人像，RVM #Lin et al., 2021# recurrent 实时高分辨率（4K 76 FPS），BGMv2 背景辅助，TAM #Zhang et al., 2021# 局部注意力，VideoMatte240K 大规模合成数据，MatteFormer Transformer 抠像。这一阶段的关键能力是<strong>三种时序机制全部成型</strong>，但长视频 drift、细薄结构、合成→真实 gap 仍未解。</p>
+
+  <h3 class="section-title">2023-2026：基础模型时代，mask 边界→alpha 软轮廓</h3>
+  <p>这一阶段的核心共识是：SAM/SAM 2 统一图像+视频可提示分割；mask 边界向 alpha 软轮廓精度升级；解耦 zero-shot 兴起。<strong>VOS</strong>：SAM #Kirillov et al., 2023#（ICCV 2023）图像分割基础模型，Track Anything #Yang et al., 2023# SAM+XMem 交互式视频跟踪，SAM 2 #Ravi et al., 2024# streaming memory 原生化 + SA-V 35.5M mask，post-SAM2（SAMURAI/SAM2Long/MoSAM）修补三大缺陷。<strong>matting</strong>：MatAnyone（CVPR 2025）alpha memory bank + CMP，SAM2Matting #Shen et al., 2026# 解耦 tracker-to-matting zero-shot。这一阶段新增能力是基础模型级 VOS、streaming memory 原生时序、alpha memory bank、zero-shot 视频 matting；但无 prompt 全自动、轮廓级评估、长视频身份漂移、非人像通用 matting 仍是开放问题。</p>
+
+  <table>
+    <thead>
+      <tr><th>转变点</th><th>之前</th><th>之后</th><th>推动力</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>手工 → 深度</td><td>Canny / 水平集</td><td>HED/RCF 全卷积</td><td>BSDS500 + ImageNet 预训练</td></tr>
+      <tr><td>per-frame → 时序原生</td><td>独立帧 + 光流补丁</td><td>recurrent / memory / 局部注意力三机制</td><td>视频数据 + 时序损失</td></tr>
+      <tr><td>专用模型 → 基础模型</td><td>XMem/Cutie 专用 VOS</td><td>SAM 2 统一 streaming memory</td><td>SA-V 35.5M mask + 大规模训练</td></tr>
+      <tr><td>mask 边界 → alpha 软轮廓</td><td>二值 masklet</td><td>SAM2Matting alpha zero-shot</td><td>图像 matting 数据 + 冻结 tracker</td></tr>
+      <tr><td>端到端训练 → 解耦 zero-shot</td><td>fine-tune 视频 matting 数据</td><td>冻结 tracker + 图像训 matting</td><td>视频 matting 数据窄且贵</td></tr>
+    </tbody>
+  </table>
+
+  <p>这五个跨阶段转变里，最值得关注的是后两个——它们都发生在 2024-2026：<strong>mask 边界→alpha 软轮廓</strong>是精度升级（SAM 2 的二值硬边界对发丝无能为力，催生 SAM2Matting 的 alpha 精修）；<strong>端到端训练→解耦 zero-shot</strong>是数据策略转变（视频 matting 数据窄且贵，SAM2Matting 用图像数据 + 冻结 tracker 绕开）。这两个转变共同指向一个判断：<strong>未来的视频轮廓提取，很可能不是"更大的端到端模型"，而是"基础模型 tracker + 专用精修 head"的解耦组合</strong>。</p>
+</div>
+
+<!-- ============================================================
+  Part 9 · 数据集与指标
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 9 · 数据集与指标</div>
+  <div class="ch-title">三套评测体系与一个缺口</div>
+
+  <p>三条线各有自己的数据集与指标，但它们都在量"轮廓质量"。</p>
+
+  <table>
+    <thead>
+      <tr><th>数据集</th><th>覆盖对象</th><th>规模</th><th>常用任务</th><th>局限</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>BSDS500</td><td>边缘</td><td>500 图多人标</td><td>边缘检测</td><td>静态、无视频时序基准</td></tr>
+      <tr><td>DAVIS16/17</td><td>VOS</td><td>30/60 短视频</td><td>VOS</td><td>规模小</td></tr>
+      <tr><td>YouTube-VOS</td><td>VOS</td><td>4000+ 视频 85 类</td><td>VOS</td><td>-</td></tr>
+      <tr><td>MOSE</td><td>VOS</td><td>2023</td><td>复杂场景 VOS</td><td>-</td></tr>
+      <tr><td>LVOS/LVOSv2</td><td>VOS</td><td>长视频，目标消失重现</td><td>长 VOS</td><td>-</td></tr>
+      <tr><td>SA-V</td><td>VOS</td><td>50.9K 视频 / 35.5M mask / 196h</td><td>大规模 VOS</td><td>自动标注占比高</td></tr>
+      <tr><td>VideoMatte240K</td><td>matting</td><td>240K 合成人像视频</td><td>视频抠像</td><td>合成伪影</td></tr>
+      <tr><td>VM800</td><td>matting</td><td>826 视频（2× VideoMatte240K）</td><td>视频抠像</td><td>-</td></tr>
+      <tr><td>VideoMatting108</td><td>matting</td><td>108 视频</td><td>时序一致性评测</td><td>规模小</td></tr>
+      <tr><td>Composition-1k/AIM</td><td>matting</td><td>1000 合成图像</td><td>图像抠像标准</td><td>合成伪影</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead>
+      <tr><th>指标</th><th>衡量对象</th><th>适用任务</th><th>局限 / 常见误用</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ODS / OIS / AP</td><td>边缘 F-measure</td><td>边缘检测</td><td>静态、无时序</td></tr>
+      <tr><td>J（Region）</td><td>mask IoU 区域相似</td><td>VOS</td><td>对边界不敏感</td></tr>
+      <tr><td>F（Boundary）</td><td>mask 边界精度 F</td><td>VOS</td><td>直接量轮廓，但无紧致度/TCB</td></tr>
+      <tr><td>SAD / SAD-T</td><td>alpha 绝对差和</td><td>matting</td><td>对边界不敏感（SAD-T 限 transition 区）</td></tr>
+      <tr><td>GRAD</td><td>alpha 梯度误差</td><td>matting</td><td>量边界（轮廓质量）</td></tr>
+      <tr><td>CONN</td><td>alpha 连通性误差</td><td>matting</td><td>量区域一致性</td></tr>
+      <tr><td>dtSSD</td><td>时序稳定性</td><td>视频 matting</td><td>全图级，无对象/边界分离</td></tr>
+      <tr><td>MESSDdt</td><td>光流 warp 时序</td><td>视频 matting</td><td>半透明处光流噪声大（TAM 实证弃用）</td></tr>
+    </tbody>
+  </table>
+
+  <p>这里的关键洞察是<strong>三套指标共享同一个被测量对象</strong>：ODS（边缘 F）、F（VOS 边界 F1）、GRAD/CONN（alpha 边界）本质都在量"轮廓质量"，只是表示不同（二值边缘/mask 边界/alpha 梯度），数字不可直接比较。一个被忽视的度量经验来自 TAM：基于 RAFT 光流的 MESSDdt 在半透明像素处有严重运动噪声，TAM 实证弃用——这提醒我们，<strong>时序评测里"光流对齐"类指标要谨慎使用</strong>。</p>
+
+  <p>但三套指标有一个共同的缺口：<strong>没有一套统一的"时序轮廓质量"评测</strong>。VOS 的 F 量边界但无紧致度/TCB；matting 的 GRAD/CONN 是静态的；dtSSD 全图级、不分离对象。这意味着当我们说"SAM 2 的边界比 XMem好"或"MatAnyone 的 alpha 比 RVM 稳"，其实没有一个统一、可跨线比较的时序轮廓指标——这是 Part 10 的核心开放问题之一。</p>
+</div>
+
+<!-- ============================================================
+  Part 10 · 开放问题
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 10 · 开放问题</div>
+  <div class="ch-title">三线共同的未解之处</div>
+
+  <ol>
+    <li><strong>细薄/半透明结构（发丝/毛发/网状）的时序无闪烁</strong>。这是"轮廓"质量的核心感知，影视/直播刚需。当前三线各有短板：VOS mask 边界粗糙（二值），matting alpha 受 backbone 感受野 + DGF 限，VSOD 无细结构。仍缺统一的时序轮廓 benchmark 来量化"闪烁"。</li>
+    <li><strong>长视频身份漂移</strong>。长视频是真实场景刚需。SAM 2 的 object pointer / 16 帧微调在极长视频（数百帧以上）仍会身份漂移，post-SAM2（SAM2Long memory tree）在修补但仍未解决；RVM 的 recurrent 容量有限也有 drift 风险。LVOS 之外缺更极端基准。</li>
+    <li><strong>轮廓级评估缺失</strong>。现有指标不直接量"时序轮廓质量"。VOS F 量边界但无紧致度/TCB；matting GRAD/CONN 静态；dtSSD 全图级无对象分离；光流 warp 类（MESSDdt）半透明处噪声大。亟需公认时序轮廓 benchmark + 指标。</li>
+    <li><strong>无显式 prompt 的全自动视频轮廓提取</strong>。真实场景不愿逐对象标注，但 SAM 的 automatic prompting 实证不佳 #Zhang et al., 2024#——这是视频轮廓"无 prompt"场景的核心短板。Track Anything 用 click 降低成本但仍需人；强 zero-shot 对象发现 + 轮廓是开放方向。</li>
+    <li><strong>合成 → 真实 domain gap</strong>。视频 matting 数据窄贵，合成集（Composition-1k/VideoMatte240K）有分辨率/噪声/光照不匹配的伪影。缓解策略（RSSN、re-JPEG、RMat、MODNet 子目标一致性）部分有效，但 in-the-wild 大规模真实标注仍缺。</li>
+    <li><strong>三种时序机制未统一</strong>。recurrent（RVM）、memory-bank（XMem/SAM 2）、局部注意力（TAM）各有局限，统一或自适应路由是潜在突破。当前三机制并列，无统一模型；MatAnyone 把 memory 延伸到 alpha、SAM 2 把 memory 原生化，但机制选择缺理论指导。</li>
+    <li><strong>任意主体（非人像）通用 matting</strong>。人像之外（动物/透明物/通用）刚需。MODNet/RVM 人像为主，GFM 动物，SAM2Matting 任意（解耦）但受 tracker 质量限制。通用主体大规模评测仍缺。</li>
+  </ol>
+
+  <p>这七个问题里，最值得强调的是第 3 和第 4——它们是三线的共同瓶颈：评测层面缺统一时序轮廓指标（第 3），应用层面缺无 prompt 全自动（第 4）。前者让"进步难以量化"，后者让"落地难以去掉人"。两者合起来，恰恰是"视频轮廓提取"作为独立问题（区别于单纯 VOS 或单纯 matting）的存在理由——如果只看 VOS 或只看 matting，这两个问题都不够尖锐；只有把三线并置，评测缺口和无 prompt 短板才凸显为共性瓶颈。</p>
+</div>
+
+<!-- ============================================================
+  Part 11 · 小结与系列导航
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 11 · 小结与系列导航</div>
+  <div class="ch-title">三线交汇于 SAM 2，精度升级于 alpha</div>
+
+  <p>回到本文开头的问题：视频中目标轮廓怎么提、有哪些模型、为什么从边缘检测走到了基础模型 + alpha。答案是：三条技术线（边缘/VSOD、VOS、matting）各自演进，但都在量同一个量——轮廓质量，只是表示不同（二值边缘/mask 边界/alpha）。它们的时序一致性机制收敛到三种（recurrent / memory-bank / 局部注意力），其中 memory-bank 在 SAM 2 被原生化为基础模型的 streaming memory，成为 VOS 的地基。而 mask 边界→alpha 软轮廓的精度升级（SAM 2→SAM2Matting）与端到端→解耦 zero-shot 的数据策略转变（SAM2Matting），共同指向一个判断：未来的视频轮廓提取，很可能不是"更大的端到端模型"，而是"基础模型 tracker + 专用 alpha 精修 head"的解耦组合。</p>
+
+  <p>一个必须诚实重申的结论：纯"视频边缘检测"没有形成独立模型线。这不是边缘检测社区的失败，而是因为"视频中稳定细轮廓"的真实需求，被 VOS 的 mask 边界和 matting 的 alpha 蒙版更好地满足了——边缘检测的逐帧范式天然不适合时序一致。VSOD 作为桥梁把"轮廓"转写成"显著对象分割"，但它的终点也是汇入基础模型。三线最终在 SAM 2 交汇，这不是巧合——基础模型用 streaming memory 把时序一致性原生化，恰好同时满足了 VOS（mask 边界）和 matting（借 tracker 做 alpha 精修）的需要。</p>
+
+  <p>本系列的六篇子文为本综述提供完整证据层：三篇核心 survey 参考页建立了各线的 taxonomy 与指标体系，三篇论文精读深入了 must-read 的方法细节。建议阅读路径：先读本文建立全局坐标，再按兴趣选读子文——关心 VOS 全景读 <a href="paper-sam-video-review.html">VOS 综述参考</a>，关心基础模型读 <a href="segment-anything-survey.html">SAM 综述参考</a>，关心抠像 taxonomy 读 <a href="deep-image-matting-survey.html">图像抠像综述参考</a>；方法细节则读三篇精读（SAM 2、RVM、Track Anything）。</p>
+
+  <h3 class="section-title">系列目录</h3>
+  <ul class="chapter-list">
+    <li><span class="chapter-num">00</span><span class="chapter-title">视频轮廓提取模型全景综述（本文 · Hub）</span><span class="chapter-status done">✓ 总览</span></li>
+    <li><span class="chapter-num">10</span><span class="chapter-title"><a href="paper-sam-video-review.html">VOS 全景综述参考（2507.22792）</a></span><span class="chapter-status done">✓ 参考页</span></li>
+    <li><span class="chapter-num">20</span><span class="chapter-title"><a href="deep-image-matting-survey.html">图像抠像综述参考（2304.04672）</a></span><span class="chapter-status done">✓ 参考页</span></li>
+    <li><span class="chapter-num">30</span><span class="chapter-title"><a href="segment-anything-survey.html">SAM 综述参考（2306.06211）</a></span><span class="chapter-status done">✓ 参考页</span></li>
+    <li><span class="chapter-num">100</span><span class="chapter-title">论文精读（一）：SAM 2</span><span class="chapter-status done">✓ 精读</span></li>
+    <li><span class="chapter-num">110</span><span class="chapter-title">论文精读（二）：Robust Video Matting</span><span class="chapter-status done">✓ 精读</span></li>
+    <li><span class="chapter-num">120</span><span class="chapter-title">论文精读（三）：Track Anything</span><span class="chapter-status done">✓ 精读</span></li>
+  </ul>
+
+  {{< sortable-list "categories/AI/视觉模型/视频轮廓提取" >}}
+  {{< post-graph "categories/AI/视觉模型/视频轮廓提取" >}}
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Canny-1986">Canny, J. (1986). A Computational Approach to Edge Detection. <em>IEEE TPAMI</em>.</li>
+    <li data-cite-key="Arbeláez-et-al.-2011">Arbeláez, P. et al. (2011). Contour Detection and Hierarchical Image Segmentation (BSDS500). <em>IJCV</em>.</li>
+    <li data-cite-key="Xie-et-al.-2015">Xie, S. &amp; Tu, Z. (2015). Holistically-Nested Edge Detection (HED). <em>ICCV 2015</em>. <a href="https://arxiv.org/abs/1504.06375" target="_blank">arXiv:1504.06375</a></li>
+    <li data-cite-key="Liu-et-al.-2017">Liu, Y. et al. (2017). Richer Convolutional Features (RCF). <em>CVPR 2017</em>. <a href="https://arxiv.org/abs/1612.02103" target="_blank">arXiv:1612.02103</a></li>
+    <li data-cite-key="Xu-et-al.-2017">Xu, N. et al. (2017). Deep Image Matting. <em>CVPR 2017</em>. <a href="https://arxiv.org/abs/1703.03872" target="_blank">arXiv:1703.03872</a></li>
+    <li data-cite-key="Oh-et-al.-2019">Oh, S. W. et al. (2019). Video Object Segmentation Using Space-Time Memory Networks (STM). <em>ICCV 2019</em>. <a href="https://arxiv.org/abs/1904.08629" target="_blank">arXiv:1904.08629</a></li>
+    <li data-cite-key="Li-et-al.-2019">Li, Y. et al. (2019). Motion Guided Attention for Video Salient Object Detection (MGA). <em>ICCV 2019</em>. <a href="https://arxiv.org/abs/1909.07061" target="_blank">arXiv:1909.07061</a></li>
+    <li data-cite-key="Su-et-al.-2021">Su, Z. et al. (2021). Pixel Difference Networks for Efficient Edge Detection (PiDiNet). <em>ICCV 2021</em>. <a href="https://arxiv.org/abs/2108.07009" target="_blank">arXiv:2108.07009</a></li>
+    <li data-cite-key="Pu-et-al.-2022">Pu, M. et al. (2022). EDTER: Edge Detection with Transformer. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2203.08566" target="_blank">arXiv:2203.08566</a></li>
+    <li data-cite-key="Cheng-et-al.-2022">Cheng, H. K. &amp; Schwing, A. (2022). XMem: Long-Term Video Object Segmentation with an Atkinson-Shiffrin Memory Model. <em>ECCV 2022</em>. <a href="https://arxiv.org/abs/2207.07115" target="_blank">arXiv:2207.07115</a></li>
+    <li data-cite-key="Cheng-et-al.-2023">Cheng, H. K. et al. (2023). Tracking Anything with Decoupled Video Segmentation (DEVA). <em>ICCV 2023</em>. <a href="https://arxiv.org/abs/2309.03903" target="_blank">arXiv:2309.03903</a></li>
+    <li data-cite-key="Lin-et-al.-2021">Lin, S. et al. (2021). Robust High-Resolution Video Matting with Temporal Guidance (RVM). <a href="https://arxiv.org/abs/2108.11515" target="_blank">arXiv:2108.11515</a> · <a href="paper-robust-video-matting.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Zhang-et-al.-2021">Zhang, Y. et al. (2021). Attention-guided Temporally Coherent Video Object Matting (TAM). <em>ACM MM 2021</em>. <a href="https://arxiv.org/abs/2105.11427" target="_blank">arXiv:2105.11427</a> · <a href="flow-guided-talking-2021.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Yang-et-al.-2023">Yang, J. et al. (2023). Track Anything: Segment Anything Meets Videos. <a href="https://arxiv.org/abs/2304.11968" target="_blank">arXiv:2304.11968</a> · <a href="paper-track-anything.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Kirillov-et-al.-2023">Kirillov, A. et al. (2023). Segment Anything (SAM). <em>ICCV 2023</em>. <a href="https://arxiv.org/abs/2304.02643" target="_blank">arXiv:2304.02643</a></li>
+    <li data-cite-key="Ravi-et-al.-2024">Ravi, N. et al. (2024). SAM 2: Segment Anything in Images and Videos. <em>Meta AI</em>. <a href="https://arxiv.org/abs/2408.00714" target="_blank">arXiv:2408.00714</a> · <a href="paper-sam-2.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Zhang-et-al.-2024">Zhang, C. et al. (2024). A Survey on Segment Anything Model (SAM). <em>IEEE</em>. <a href="https://arxiv.org/abs/2306.06211" target="_blank">arXiv:2306.06211</a></li>
+    <li data-cite-key="Xu-et-al.-2025">Xu, G. et al. (2025). Segment Anything for Video: A Comprehensive Review of VOS and Tracking. <a href="https://arxiv.org/abs/2507.22792" target="_blank">arXiv:2507.22792</a></li>
+    <li data-cite-key="Shen-et-al.-2026">Shen, R. et al. (2026). SAM2Matting: Generalized Image and Video Matting. <a href="https://arxiv.org/abs/2606.27339" target="_blank">arXiv:2606.27339</a> · <a href="https://henghuiding.com/SAM2Matting" target="_blank">项目页</a></li>
+    <li data-cite-key="matting-survey-2023">Zhang, Y. et al. (2023). Deep Image Matting: A Comprehensive Survey. <a href="https://arxiv.org/abs/2304.04672" target="_blank">arXiv:2304.04672</a></li>
+    <li data-cite-key="MatAnyone-2025">Xi, R. et al. (2025). MatAnyone: Stable Video Matting with Consistent Memory Propagation. <em>CVPR 2025</em>. <a href="https://arxiv.org/abs/2501.14677" target="_blank">arXiv:2501.14677</a></li>
+  </ul>
+</div>
