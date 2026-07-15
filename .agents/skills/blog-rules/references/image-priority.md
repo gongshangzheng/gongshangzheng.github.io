@@ -24,7 +24,7 @@
 - AI 生图完全禁止，不得使用
 - 至少 3 张图，至少 1 张代码绘制（mermaid/jsxgraph）
 - 禁止 hotlink 远程 URL，所有图片必须下载到本地
-- 禁止 Docling `--image-export-mode referenced` / `docpage/dcoref` 的 144 DPI 渲染图作为配图（矢量会空白）；但允许脚本 `crop-figures-from-docling.py` 借 Docling JSON 的 picture bbox 做高清裁图
+- 禁止 Docling `--image-export-mode referenced` / `docpage/dcoref` 的 144 DPI 渲染图作为配图（矢量会空白）；但允许脚本 `scripts/crop-figures-from-docling.py` 借 Docling JSON 的 picture bbox 做高清裁图
 
 ### 非学术场景
 
