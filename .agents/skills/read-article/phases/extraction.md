@@ -73,15 +73,29 @@ Slug：<slug>
    - 对 arXiv 论文，必须先尝试 `https://arxiv.org/e-print/<arxiv-id>`。
    - **一键脚本**：`fetch-arxiv-paper.py` 自动完成下载→解压→提取图片→转 WebP→生成 extraction-log.md。
 
+   > 脚本位置：`.agents/skills/read-article/scripts/fetch-arxiv-paper.py`（read-article 私有，已挪入 skill）。
+   > 它从自身路径反推 repo root（无需 `--root`），调用 repo 级共享工具 `scripts/convert-figures.py`。
+   > 专属 venv：`.cache/read-article/.venv`（**不放 `.agents/skills/read-article/.venv`**——sandbox 会还原 `.agents/` 配置目录、清掉被 gitignore 的 `.venv/`；`.cache/` 持久且已忽略）。需装 `pymupdf pillow numpy`（numpy 供 `crop_whitespace`，缺则转换静默全失败）。
+
    ```bash
+   # 首次建专属 venv（持久、gitignored）
+   uv venv .cache/read-article/.venv
+   uv pip install --python .cache/read-article/.venv/Scripts/python.exe pymupdf pillow numpy
+   # Unix 路径下 python 在 .cache/read-article/.venv/bin/python
+
    # 一键完成：目录创建 + tarball 下载 + 解压 + 图片提取 + TeX→Markdown + WebP 转换
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
+   # Windows GBK 控制台需 PYTHONUTF8=1（脚本已内置 stdout 重配，env 仅为兜底）
+   PYTHONUTF8=1 .cache/read-article/.venv/Scripts/python.exe \
+     .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
 
    # 同时下载 HTML 和 PDF（备用）
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug> --html --pdf
+   PYTHONUTF8=1 .cache/read-article/.venv/Scripts/python.exe \
+     .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug> --html --pdf
 
-   # 如果已有 source.tar（手动下载或之前执行过），可只运行图片转换部分：
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/convert-figures.py raw/<slug>/figures/<slug>/ -o media/images/<slug>/
+   # 如果已有 source.tar（手动下载或之前执行过），可只运行图片转换部分
+   # convert-figures.py 是 repo 级共享工具（blog-drafts/crop-figures 也用），留在 scripts/
+   PYTHONUTF8=1 .cache/read-article/.venv/Scripts/python.exe \
+     scripts/convert-figures.py raw/<slug>/figures/<slug>/ -o media/images/<slug>/
    ```
 
    脚本输出目录结构：

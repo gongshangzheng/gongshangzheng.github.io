@@ -1,0 +1,441 @@
+---
+title: "YOSO：一次分割即得全景——实时全景分割的动态卷积统一框架"
+description: "YOSO 深度解读：用动态卷积在 panoptic kernel 与图像特征图之间一次分割同时得到 instance + semantic 结果，靠两招把全景分割推到实时——CFA（convolution-first 聚合，用双线性插值齐性-可加性证明与 IFA 等价，免重训 2.6× GPU 提速）和 SDCA（可分离动态卷积注意力，depthwise+pointwise 分解实现多头交叉注意力，+1.0 PQ）；COCO 46.4 PQ@45.6 FPS、Cityscapes 52.5 PQ@22.6 FPS、ADE20K 38.0 PQ@35.4 FPS、Mapillary 34.1 PQ@7.1 FPS。诚实的限定：它不是新范式，而是 K-Net/MaskFormer 统一 kernel 范式的工程高效化变体；SDCA 实测 GPU 延迟反比 DCA 慢，'实时'主要来自 CFA + 小尺度。"
+created_at: 2026-07-14T20:55:00
+updated_at: 2026-07-14T20:55:00
+tags: ["YOSO", "全景分割", "动态卷积", "实时分割", "论文精读"]
+aliases: ["categories/AI/视觉模型"]
+mathjax: true
+papers: ["https://arxiv.org/abs/2303.14651"]
+repos: ["https://github.com/hujiecpp/YOSO"]
+paper_title: "You Only Segment Once: Towards Real-Time Panoptic Segmentation"
+paper_authors: ["Jie Hu", "Linyan Huang", "Tianhe Ren", "Shengchuan Zhang", "Rongrong Ji", "Liujuan Cao"]
+paper_affiliation: "厦门大学 多媒体可信感知与高效计算教育部重点实验室"
+paper_venue: "arXiv:2303.14651, 2023（CVPR 投稿版）"
+paper_url: "https://arxiv.org/abs/2303.14651"
+paper_code: "https://github.com/hujiecpp/YOSO"
+hero_title: "YOSO"
+hero_sub: "arXiv 2023 · 厦门大学"
+hero_tagline: "一次分割即得全景：动态卷积统一 things/stuff，CFA + SDCA 两招把全景分割推到实时"
+---
+
+<div class="callout"><strong>一句话读懂</strong>：全景分割（panoptic segmentation）要给图里每个像素同时打上语义类别和实例身份，传统做法是 semantic 与 instance 两条重分支各跑一遍——又慢又重。YOSO #Hu et al., 2023# 把它收敛成<strong>一次动态卷积</strong>：一组 panoptic kernel 与一张图像特征图做卷积，<em>you only segment once</em>，things 和 stuff 同时出来。要做到实时，作者靠两招——<strong>CFA</strong>（卷积优先聚合，用双线性插值的齐次性 + 可加性数学证明它和插值优先的 IFA 完全等价，于是训练用 IFA、推理重参数化成 CFA，免重训白拿 2.6× GPU 提速）和 <strong>SDCA</strong>（把多头交叉注意力用 depthwise + pointwise 可分离动态卷积实现，+1.0 PQ、~1.2× 提速）。COCO 46.4 PQ@45.6 FPS、Cityscapes 52.5 PQ@22.6 FPS、ADE20K 38.0 PQ@35.4 FPS、Mapillary Vistas 34.1 PQ@7.1 FPS。<strong>一个诚实的限定</strong>：YOSO 不是新范式，而是 K-Net / MaskFormer <strong>统一 kernel × feature map</strong> 范式的工程高效化变体；而且 SDCA 在 GPU 实测延迟上反而比它要替代的 DCA 慢——"实时"主要来自 CFA + 小尺度，SDCA 的贡献更多在精度而非速度。</div>
+
+<div class="photo">
+  <img src="media/images/yoso-2023/fig1.webp" alt="YOSO 与四类全景分割 pipeline 对比 Overview" loading="lazy">
+  <div class="cap">图 1：通往实时全景分割的四条路线。(a) 双分支（semantic + instance 各一套，如 UPSNet）；(b) semantic-first 再用 box/point 定位 instance（如 PanopticDeepLab / LPSNet）；(c) 用动态卷积为 things + stuff 同时预测掩码（如 PanopticFCN / K-Net / MaskFormer）；(d) YOSO：高效的 feature pyramid aggregator + 轻量 separable dynamic decoder 一次出图。图中省略输入图像与 backbone（来源：Hu et al., 2023, Fig.1）。</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">实时全景分割的两难：要么准而慢，要么快而泛化差</div>
+
+  <p>全景分割是 Kirillov 等人 #Kirillov et al., 2019# 在 2019 年正式定义的任务：给输入图像的<strong>每个像素</strong>同时分配一个语义类别和一个实例身份。语义标签天然分两类——<em>stuff</em> 是摊开的、数不清的背景概念（天空、道路），<em>things</em> 是可数的物体（人、车）。这种划分自然把全景分割拆成两个子任务：stuff 走语义分割、things 走实例分割。#Hu et al., 2023# 任务的难度也由此而来：要让一个网络同时把"数不清的背景"和"数得清的物体"都切对，传统做法是 semantic 与 instance <strong>两条分支各跑一遍</strong>——两条分支都得重，于是实时就无望。</p>
+
+  <p>作者把这条赛道上的努力整理成图 1 的四象限：(a) 双分支（PanopticFPN/UPSNet #Xiong et al., 2019# 这类，semantic head + Mask R-CNN #He et al., 2017# 风格 instance head 并存）；(b) 先给所有类别生成 semantic mask，再用 box/point 定位 instance（PanopticDeepLab #Cheng et al., 2020#、LPSNet #Hong et al., 2021#、RealTimePan #Hou et al., 2020#）；(c) 用动态卷积为 things + stuff 同时预测掩码（PanopticFCN #Li et al., 2021#、K-Net #Zhang et al., 2021#、MaskFormer #Cheng et al., 2021#）；(d) YOSO 自己。#Hu et al., 2023#</p>
+
+  <p>这条路上有个长期未解的两难——也正是 YOSO 要打的靶子：一方面，要精度就得用<strong>重的 neck 和 head</strong>（多尺度 FPN、Transformer decoder，如 K-Net / MaskFormer #Zhang et al., 2021# #Cheng et al., 2021#），于是实时做不到；另一方面，把模型做小（FPSNet #De et al., 2020#、LPSNet #Hong et al., 2021#、RealTimePan #Hou et al., 2020#）能跑快，但泛化会掉。#Hu et al., 2023# <strong>准而慢</strong>与<strong>快而泛化差</strong>，是实时全景分割长期被卡住的二元困局。YOSO 的回答是：不必在范式上另起炉灶，而是在 (c) 路线（统一 kernel × feature map）上把每个模块都做工程级的提速——一次分割拿全景，且实时。</p>
+
+  <p>作者是厦门大学 Rongrong Ji / 刘娟娟团队（多媒体可信感知与高效计算教育部重点实验室），这条"高效视觉模型"线与他们对车载、嵌入式感知的兴趣一致。#Hu et al., 2023#</p>
+
+  <div class="callout"><strong>核心 Insight 预告</strong>：YOSO 的两个提速点都不是"换更猛的算子"，而是<strong>证明两件事数学等价后换更快的实现</strong>——CFA 证明"插值优先"与"卷积优先"等价，SDCA 证明多头交叉注意力可被可分离动态卷积等价实现。先把等价性钉死，再把推理换成快的那个版本，这是本文最值得带走的方法论。</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">两件事卡住了实时：(c) 路线哪里重，PQ 又在量什么</div>
+
+  <p>先说清评测量什么，才能理解"实时"的代价。全景分割的标准指标是 <strong>PQ（Panoptic Quality）</strong> #Kirillov et al., 2019#，对每个类别把预测掩码与真值做 IoU 匹配后</p>
+
+  \[ \mathrm{PQ} = \frac{\sum_{(p,g)\in TP} \mathrm{IoU}(p,g)}{\mathrm{|TP|} + \tfrac{1}{2}\mathrm{|FP|} + \tfrac{1}{2}\mathrm{|FN|}} = \frac{\Sigma\,\mathrm{TP}}{\Sigma\,\mathrm{TP} + \Sigma\,\mathrm{FP} + \Sigma\,\mathrm{FN}} \]
+
+  <p>它把分割质量（分子，匹配对的 IoU 之和）与检测召回（分母，漏检 FP/FN 都罚）合在一个数里，stuff 和 things 分开报 PQ<sup>s</sup> / PQ<sup>t</sup>。#Kirillov et al., 2019# 所以"46.4 PQ"是分割精度与召回的复合分数，不是单纯 mIoU 或 AP。</p>
+
+  <p>明确了指标，再看 (c) 路线为什么重。K-Net / MaskFormer 这类统一 kernel 范式 #Zhang et al., 2021# #Cheng et al., 2021# 把全景分割建模成<strong>一组 panoptic kernel 与一张特征图做动态卷积</strong>：每个 kernel 负责一个潜在实例或 stuff 类别，kernel × feature 出一张掩码，一次前向就把 things + stuff 都生成。范式本身很优雅——免 NMS、免两套分支。但它<strong>把两处算力开销留了下来</strong>：① <strong>特征提取端</strong>需要重的多尺度 FPN 把 backbone 各层特征聚成高分辨率特征图，插值-first 的聚合方式在 GPU 上又慢又费 FLOPs；② <strong>kernel 生成端</strong>需要多头交叉注意力（MHCA）让 kernel 与特征交互，标准 MHCA 复杂度随 query 数和特征维度二次膨胀。#Hu et al., 2023#</p>
+
+  <p>作者没有否定 (c) 范式，而是指出它的两个模块都"太重"，可以分别替换。突破口是两条等价性：插值-first 聚合与卷积-first 聚合<em>数学上等价</em>，多头交叉注意力<em>可被可分离动态卷积等价实现</em>。一旦等价，训练维持原样、推理换快版本即可——这正是 Part 3 两个核心模块的来路。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>路线</th><th>代表方法</th><th>things + stuff 怎么出</th><th>实时性</th></tr></thead>
+      <tbody>
+        <tr><td>(a) 双分支</td><td>UPSNet</td><td>semantic head + Mask R-CNN instance head 各一套</td><td>慢</td></tr>
+        <tr><td>(b) semantic-first</td><td>PanopticDeepLab / LPSNet / RealTimePan</td><td>先出全部 semantic mask，再用 box/point 定位 instance</td><td>较快但泛化弱</td></tr>
+        <tr><td>(c) 统一 kernel</td><td>PanopticFCN / K-Net / MaskFormer / Mask2Former</td><td>动态卷积为 things + stuff 同时出掩码，一次前向</td><td>准但重</td></tr>
+        <tr><td>(d) YOSO</td><td>本文</td><td>(c) 范式 + CFA 提速特征端 + SDCA 提速 kernel 端</td><td>实时 + 竞争精度</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 1：四条全景分割路线对照（据 Hu et al., 2023, Fig.1 与 Related Work 整理）。</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">backbone → aggregator → decoder → 一次动态卷积出全景</div>
+
+  <h3 class="section-title">3.1 整体 pipeline：从图像到一张张掩码的全链路</h3>
+
+  <p>YOSO 的前向是一条单阶段链路 #Hu et al., 2023#：ResNet-50 主干（ImageNet 预训练）抽多尺度特征 → <strong>Feature Pyramid Aggregator</strong>（含 CFA）把各层聚成一张高分辨率图像特征图 → <strong>Separable Dynamic Decoder</strong>（含 SDCA）生成一组 panoptic kernel → kernel 与特征图做<strong>2D 动态卷积</strong>一次出全部掩码 → 分类头给每个 kernel 一个类别 → 后处理把 stuff 合并、things 独立。整条路无 NMS、无两套分支，<em>you only segment once</em>。</p>
+
+  <p>这里有个建模关键：全景分割被写成<strong>端到端集合预测</strong>，输出 $\boldsymbol{M}\in\mathbb{B}^{n\times h\times w}$（$n$ 个二值掩码）+ $\boldsymbol{L}\in\mathbb{R}^{n\times l}$（每个掩码在 $l$ 个类别上的 logits），遵循 DETR #Carion et al., 2020# 的二分匹配训练、免 NMS。$n=100$ 个 proposal kernel 构成集合上界。#Hu et al., 2023# Part 3.2 与 3.3 分别在特征端和 kernel 端各做一次"等价换快"。</p>
+
+  {{< mermaid >}}
+graph TD
+    IMG["输入图像"] --> BB["ResNet-50 backbone (ImageNet 预训练)"]
+    BB --> AGG["Feature Pyramid Aggregator (CFA)<br/>多尺度特征 → 单张高分辨率特征图"]
+    AGG --> FEAT["图像特征图"]
+    BB --> DEC["Separable Dynamic Decoder (SDCA)<br/>生成 n=100 个 panoptic kernel"]
+    DEC --> KER["panoptic kernels"]
+    FEAT --> DC["2D 动态卷积 (kernel × feature)"]
+    KER --> DC
+    DC --> MASK["n 张掩码 M"]
+    MASK --> CLS["分类头 → 类别 L"]
+    CLS --> POST["后处理: stuff 并集 / things 独立 / 重叠取 max"]
+    POST --> OUT["全景分割输出"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">3.2 CFA：把"插值优先"重参数化成"卷积优先"</h3>
+
+  <div class="photo">
+    <img src="media/images/yoso-2023/fig2.webp" alt="Feature Pyramid Aggregator 与 CFA 模块结构" loading="lazy">
+    <div class="cap">图 2：Feature Pyramid Aggregator。多级特征先用 1×1 卷积压缩通道，再聚合；CFA 把"先双线性插值上采样、再 1×1 卷积"的 IFA 换成"先 1×1 卷积、再双线性插值"，二者数学等价但卷积优先在 GPU 上显著更快（来源：Hu et al., 2023, Fig.2）。</div>
+  </div>
+
+  <p><strong>动机</strong>：聚合器要把 backbone 的 $c_2,c_3,c_4,c_5$ 多级特征融合成一张高分辨率特征图。标准做法是 <em>Interpolation-First Aggregation (IFA)</em>：先把低分辨率特征双线性插值上采样到统一分辨率，再做 1×1 卷积（无 bias）融合通道。问题在于高分辨率上做卷积，FLOPs 和 GPU 延迟都大。#Hu et al., 2023#</p>
+
+  <p><strong>直觉</strong>：双线性插值是个线性算子，1×1 卷积也是线性算子，两个线性算子的<strong>顺序</strong>理论上可交换。如果把卷积挪到插值<em>之前</em>——在低分辨率上先卷积、再插值上采样——卷积就在小张量上做，FLOPs 大幅下降，而结果不变。这就是 <em>Convolution-First Aggregation (CFA)</em>。</p>
+
+  <p><strong>机制（等价性证明）</strong>：作者用双线性插值的两个性质给出证明。双线性插值对输入具有<strong>齐次性</strong>和<strong>可加性</strong>（任何线性算子都满足），这意味着它是一个线性算子。设双线性插值算子为 $\mathcal{U}(\cdot)$、1×1 卷积（无 bias）为 $\mathcal{W}(\cdot)=W\cdot$，则</p>
+
+  \[ \mathcal{U}\bigl(\mathcal{W}(x)\bigr) = \mathcal{W}\bigl(\mathcal{U}(x)\bigr) \tag{1} \]
+
+  <p>即"先卷积后插值"与"先插值后卷积"完全等价。#Hu et al., 2023# 但二者的 FLOPs 相差悬殊：IFA 在 $h\times w$ 高分辨率上做卷积，CFA 在低分辨率上做。其 FLOPs 比为</p>
+
+  \[ \frac{\mathrm{FLOPs}_{\mathrm{IFA}}}{\mathrm{FLOPs}_{\mathrm{CFA}}} = \frac{4(c_5+c_4+c_3)hw + (c_5+c_4+c_3+c_2)\,dhw}{\left(\tfrac{c_5}{64}+\tfrac{c_4}{16}+\tfrac{c_3}{4}+c_2\right)dhw + \tfrac{1}{2}\,dhw + 3\,dhw} > 1 \quad(\text{据原文 tex 注释，约 } 7.9\times) \tag{2} \]
+
+  <p>其中 $d$ 为通道维度，$n$ 为 proposal 数，$k$ 为动态卷积核大小。实测：聚合器单模块 FLOPs 从 16.6G 降到 2.1G、GPU 延迟从 4871µs 降到 1877µs——<strong>2.6× GPU 提速</strong>，且因为数学等价，性能无损失。#Hu et al., 2023#</p>
+
+  <div class="callout"><strong>最妙的工程技巧：训练 IFA、推理 CFA</strong>。等价性意味着两个模块可互换，于是训练时仍用表达更直接的 IFA，<em>推理时直接把 IFA 重参数化（re-parameterize）成 CFA</em>——既不用重训，又白拿 2.6× 提速。这是结构重参数化思想 #Ding et al., 2021#（RepVGG 系）在聚合器上的一次干净落地，但作者更进一步用双线性插值齐性-可加性给出了<em>数学等价证明</em>而非经验近似。</div>
+
+  <h3 class="section-title">3.3 SDCA：用可分离动态卷积等价实现多头交叉注意力</h3>
+
+  <div class="photo">
+    <img src="media/images/yoso-2023/fig3.webp" alt="Separable Dynamic Decoder 与 SDCA 模块结构" loading="lazy">
+    <div class="cap">图 3：Separable Dynamic Decoder。三子模块：pre-attention（用 hard sigmoid 二值门控生成 masked feature）、separable dynamic convolution（SDCA，用 depthwise + pointwise 可分离动态卷积实现多头交叉注意力）、post-attention（聚合输出）。SDCA 把标准 MHCA 的多头权重共享给一组动态卷积核（来源：Hu et al., 2023, Fig.3）。</div>
+  </div>
+
+  <p><strong>动机</strong>：kernel 生成端要让 panoptic kernel（$n=100$ 个 query）与图像特征做交互，标准做法是多头交叉注意力（MHCA），其复杂度随 query 数和维度二次膨胀，是 (c) 路线另一处重负担。#Hu et al., 2023#</p>
+
+  <p><strong>直觉</strong>：多头注意力本质是"多个并行的线性投影 + softmax 加权求和"。作者发现这一串操作可以被<strong>1D 动态卷积</strong>等价实现——卷积核的"通道维"对应"头"维，于是多头的并行性被卷积的通道并行吃下；再把动态卷积拆成 depthwise + pointwise（MobileNet #Howard et al., 2017# 的老把式），就得到 <em>Separable Dynamic Convolution Attention (SDCA)</em>。</p>
+
+  <p><strong>机制（演进链）</strong>：先用 1D 卷积等价实现多头注意力的三步操作（投影、加权、输出投影）#Hu et al., 2023#——即</p>
+
+  \[ \mathrm{MHCA}(Q,F) = \mathrm{Softmax}\!\left(\frac{Q K^{\top}}{\sqrt{d}}\right) V,\quad K=W_K F,\ V=W_V F \tag{3} \]
+
+  <p>的标准多头交叉注意力，可被一组<strong>核由 $Q$ 动态生成</strong>的 1D 卷积等价替代，得到 <em>Dynamic Convolution Attention (DCA)</em></p>
+
+  \[ \mathrm{DCA}(Q,F) = \mathrm{Conv1D}_{\,W(Q)}(F) \tag{4} \]
+
+  <p>其中卷积核 $W(Q)$ 由 query $Q$ 动态生成（而非固定参数）。再按 depthwise + pointwise 分解 $W(Q)$，就得到核心贡献 <strong>SDCA</strong>：</p>
+
+  \[ \mathrm{SDCA}(Q,F) = \mathrm{Pointwise}\!\bigl(\mathrm{Depthwise}_{\,W_{dw}(Q)}(F)\bigr) \tag{5} \]
+
+  <p>SDCA 相对标准 MHCA 的 FLOPs 比为</p>
+
+  \[ \frac{\mathrm{FLOPs}_{\mathrm{MHCA}}}{\mathrm{FLOPs}_{\mathrm{SDCA}}} = \frac{4nd^2+2n^2d}{2ndt+2n^2d} = \frac{2d+n}{t+n} > 1 \tag{6} \]
+
+  <p>其中 $d=256$ 为隐藏维度、$n=100$ 为 proposal 数、$t$ 为动态卷积核大小（消融最佳 $t=5$）。#Hu et al., 2023# <strong>一处记号修正</strong>：原文式 (6) 右侧写作 $\frac{2d+n}{k+n}$，其中 $k$ 应为 kernel size $t$（与左式及上下文一致，核查 .tex 源码第 499 行确认系记号笔误），本文统一用 $t$。</p>
+
+  <p>三个子模块串成 decoder：① <strong>pre-attention</strong> 用 hard sigmoid 二值门控从特征图生成 masked feature，给后续动态卷积一个聚焦的输入</p>
+
+  \[ \boldsymbol{V} = r\bigl(\sigma(\boldsymbol{S}*\boldsymbol{Q})\bigr)\, r(\boldsymbol{S})^{\top} = r\bigl(\sigma(\boldsymbol{A})\bigr)\, r(\boldsymbol{S})^{\top} \]
+
+  <p>其中 $\boldsymbol{S}$ 为聚合特征图、$\boldsymbol{Q}$ 为 proposal kernel、$\sigma$ 为阈值 0.5 的 hard sigmoid（二值门控）、$r$ 为 reshape；② <strong>separable dynamic convolution</strong>（SDCA 本体）做 kernel-feature 交互；③ <strong>post-attention</strong> 用 multi-head self-attention + FFN 聚合输出，生成最终的 panoptic kernel。#Hu et al., 2023# 整个 decoder 的 pre-attention 设计"Inspired by"K-Net #Zhang et al., 2021#，这是 YOSO 与 K-Net 最直接的血脉联系。</p>
+
+  <h3 class="section-title">3.4 一次动态卷积出全景：mask 生成与迭代精修</h3>
+
+  <p>kernel 与特征图就位后，<strong>2D 动态卷积</strong>把 $n$ 个 panoptic kernel 作用在图像特征图上，一次生成 $n$ 张掩码——things 的实例掩码和 stuff 的语义掩码同源同出，这是 "you only segment once" 的字面落点。#Hu et al., 2023# decoder 还支持<strong>迭代精修</strong>（cascade，$T$ 个 stage），每个 stage 用上一层输出更新 kernel 再做一次动态卷积，逐步锐化掩码边界。消融显示 $T=2$ 是速度-精度折中（见 Part 6 tab9）。</p>
+
+  <div class="callout"><strong>训练-推理两套实现</strong>：CFA 的"训练 IFA / 推理 CFA"重参数化是全文最值得复用的工程模式——<em>只要能证明等价，推理就能换快的版本而不动训练</em>。SDCA 则相反，它直接换掉 MHCA 的实现，训练推理同构，靠 weight-sharing 把多头开销压进卷积通道维。</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · Training Pipeline</div>
+  <div class="ch-title">四库分别训练，batch 16 / lr 1e-4，损失具体形式未披露</div>
+
+  <p>YOSO 在四个数据集上分别训练（非联合预训练），遵循 DETR 式端到端集合预测：一对一 Hungarian 二分匹配，无 NMS / anchor。#Hu et al., 2023# 训练用 stuff 并集合并、things 独立、重叠区取 max 的全景格式化策略。主干预用 ImageNet 预训练的 ResNet-50。</p>
+
+  <p><strong>损失函数</strong>：作者声明采用分类损失 + 掩码损失（含 dice 与 cross-entropy 这类全景分割常用项），<em>但原文未给出损失的具体数学形式与各项权重</em>——这是复现的一个明确缺口（详见文末披露表）。动态卷积分组方式、hard sigmoid 不可导处的处理、迭代更新的具体公式也未明确给出。#Hu et al., 2023#</p>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>超参</th><th>值</th><th>出处 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>Backbone</td><td>ResNet-50（ImageNet 预训练）</td><td>非 HGNetv2/Swin #Hu et al., 2023#</td></tr>
+        <tr><td>隐藏维度 $d$</td><td>256</td><td>#Hu et al., 2023#</td></tr>
+        <tr><td>聚合器通道 $c_{2..5}$</td><td>128 / 256 / 512 / 1024</td><td>tab5 单模块测速配置 #Hu et al., 2023#</td></tr>
+        <tr><td>proposal 数 $n$</td><td>100（消融饱和于 150）</td><td>tab10 #Hu et al., 2023#</td></tr>
+        <tr><td>动态卷积核大小 $t$</td><td>3（原文未显式声明主模型 t；据 tab6 测试配置与消融基线推断为 3，消融最佳 5 饱和）</td><td>tab6/tab8 #Hu et al., 2023#</td></tr>
+        <tr><td>attention block 数 $N$</td><td>2</td><td>tab7 #Hu et al., 2023#</td></tr>
+        <tr><td>迭代 stage 数 $T$</td><td>2</td><td>tab9 #Hu et al., 2023#</td></tr>
+        <tr><td>batch size</td><td>16</td><td>四库统一 #Hu et al., 2023#</td></tr>
+        <tr><td>学习率</td><td>1e-4</td><td>#Hu et al., 2023#</td></tr>
+        <tr><td>COCO 训练</td><td>370k iter（LSJ 数据增强）</td><td>large-scale jitter #Hu et al., 2023#</td></tr>
+        <tr><td>Cityscapes / Mapillary 训练</td><td>180k iter</td><td>#Hu et al., 2023#</td></tr>
+        <tr><td>ADE20K 训练</td><td>30k iter</td><td>#Hu et al., 2023#</td></tr>
+        <tr><td>消融实验训练</td><td>270k iter</td><td>#Hu et al., 2023#</td></tr>
+        <tr><td>数据增强</td><td>LSJ（large-scale jitter）</td><td>COCO 主实验用 #Hu et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 2：YOSO 超参数（据 Hu et al., 2023 正文 + 消融表 + .tex 源码提取）。</div>
+
+  <h4 class="ch-section">训练配置披露（10 项逐项标注）</h4>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>训练配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>COCO 370k / Cityscapes+Mapillary 180k / ADE20K 30k iter，LSJ 增强 #Hu et al., 2023#</td></tr>
+        <tr><td>训练硬件</td><td><strong>未披露</strong></td><td>原文未给训练 GPU 型号 / 数量（推理用 V100/3090/A100/2080Ti）#Hu et al., 2023#</td></tr>
+        <tr><td>优化器</td><td><strong>未披露</strong></td><td>原文未明确给出（lr=1e-4、batch=16 已给）#Hu et al., 2023#</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>1e-4；schedule / warmup 未明确 #Hu et al., 2023#</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>16 #Hu et al., 2023#</td></tr>
+        <tr><td>训练步数 / 轮数</td><td>已披露</td><td>按 iter 给出（见训练数据行）#Hu et al., 2023#</td></tr>
+        <tr><td>训练时长</td><td><strong>未披露</strong></td><td>原文未给 #Hu et al., 2023#</td></tr>
+        <tr><td>模型参数量</td><td>部分披露</td><td>主表给 FPS / FLOPs，参数量未单列 #Hu et al., 2023#</td></tr>
+        <tr><td>精度格式</td><td><strong>未披露</strong></td><td>FP32/FP16/BF16 未明确 #Hu et al., 2023#</td></tr>
+        <tr><td>Checkpoint 策略</td><td><strong>未披露</strong></td><td>原文未给 #Hu et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>训练配置披露缺口</div>
+    <div class="admonition-content"><p>原文给了 iter 数、lr、batch、backbone、LSJ 增强和全部消融超参，但<strong>优化器类型、学习率 schedule/warmup、训练硬件、训练时长、精度格式、checkpoint 策略、损失函数具体形式与权重</strong>均未明确给出——复现需读开源代码（github.com/hujiecpp/YOSO）确认。#Hu et al., 2023#</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · Inference Pipeline</div>
+  <div class="ch-title">单次前向 + 重参数化提速：一次分割怎么在线跑起来</div>
+
+  <p>YOSO 是单图像、单次前向的实时模型——没有视频流的 chunk / cache / causal mask 那一套，它的"实时"体现在<strong>单张图端到端跑过 45 FPS</strong>。推理链路是训练链路的"提速版" #Hu et al., 2023#：</p>
+
+  <p><strong>① 输入准备</strong>：按数据集分辨率输入单张 RGB 图（COCO/Cityscapes/ADE20K 各自约定分辨率，Mapillary 用更高分辨率，故 FPS 跌到 7.1）。#Hu et al., 2023#</p>
+
+  <p><strong>② 特征提取（CFA 推理版）</strong>：ResNet-50 抽多尺度特征 → Feature Pyramid Aggregator。<em>推理时聚合器直接以 CFA 形态运行</em>——因为 Part 3.2 已证明 CFA 与 IFA 数学等价，训练好的 IFA 权重被重参数化成 CFA，在低分辨率上做卷积再插值上采样。这一步是 2.6× GPU 提速的主要来源，且<strong>无需任何额外训练</strong>。#Hu et al., 2023#</p>
+
+  <p><strong>③ kernel 生成（SDCA）</strong>：Separable Dynamic Decoder 生成 $n=100$ 个 panoptic kernel。pre-attention 用 hard sigmoid 二值门控出 masked feature，SDCA 用 depthwise + pointwise 可分离动态卷积做 kernel-feature 交互，post-attention 聚合。迭代 $T=2$ 个 stage 精修 kernel。#Hu et al., 2023#</p>
+
+  <p><strong>④ 一次动态卷积出掩码</strong>：$n$ 个 kernel 与图像特征图做 2D 动态卷积，<em>一次</em>生成全部 things 实例掩码 + stuff 语义掩码——这是 "you only segment once" 的字面落点，也是它免两套分支、免 NMS 的根源。#Hu et al., 2023#</p>
+
+  <p><strong>⑤ 后处理</strong>：stuff 类别按分类 logits 的 argmax 取并集合并写入全景图、things 保持独立实例 ID、重叠像素按分类置信度 argmax 决定归属——全流程无 NMS，拼成最终全景图。#Hu et al., 2023#</p>
+
+  <p>推理时还有两个旋钮值得拎出来。其一是<strong>迭代 stage 数 $T$</strong>：decoder 在一次前向内对 kernel 做 $T$ 轮 cascade 精修，每轮用上一层输出更新 kernel 再做一次动态卷积，掩码边界逐轮锐化——消融显示 $T$ 从 1 加到 2 PQ 从 45.7 跳到 47.0（+1.3），再加到 3 只多 0.5 但 FPS 掉，故推理取 $T=2$。其二是<strong>分辨率-FPS 权衡</strong>：YOSO 的速度对输入分辨率高度敏感，COCO 512,800 跑 45.6 FPS，Mapillary 2048,2048 直接跌到 7.1 FPS——高分辨率下动态卷积在更大特征图上展开，开销随 $h\times w$ 线性涨。这意味着把"46.4 PQ@45.6 FPS"迁移到高分辨率下游时不能照搬，需在分辨率与 FPS 间显式权衡。#Hu et al., 2023#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>推理硬件</th><th>指标</th><th>FPS</th></tr></thead>
+      <tbody>
+        <tr><td>COCO</td><td>V100</td><td>46.4 PQ</td><td>45.6</td></tr>
+        <tr><td>Cityscapes</td><td>V100</td><td>52.5 PQ</td><td>22.6</td></tr>
+        <tr><td>ADE20K</td><td>V100</td><td>38.0 PQ</td><td>35.4</td></tr>
+        <tr><td>Mapillary Vistas</td><td>A100</td><td>34.1 PQ</td><td>7.1</td></tr>
+        <tr><td>消融实验</td><td>3090</td><td>—</td><td>—</td></tr>
+        <tr><td>实例分割附加</td><td>2080Ti</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 3：推理硬件与速度（据 Hu et al., 2023 主表与消融说明）。注意 Mapillary 用 A100 且分辨率更高，故 7.1 FPS 不与 COCO 的 45.6 直接可比。</div>
+
+  <div class="callout"><strong>反直觉发现：SDCA 实测比 DCA 慢</strong>。FLOPs 分析（式 6）说 SDCA 比 DCA 更省，但 GPU 实测延迟 SDCA 反而更高——因为 depthwise + pointwise 两步串行执行，GPU 并行度吃不满。#Hu et al., 2023# 这意味着 YOSO 的"实时"主要来自 <strong>CFA + 小尺度</strong>（$d=256$、$n=100$、$N=2$、$T=2$），SDCA 的贡献更多在<strong>精度</strong>（+1.0 PQ）而非速度。这是作者自己诚实披露的、与 FLOPs 理论分析矛盾的工程现实——读这篇论文时不要只看 FLOPs。</div>
+
+  <div class="admonition tip">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>部署可操作启发</div>
+    <div class="admonition-content"><p>① 部署时务必开 CFA 重参数化路径，这是免重训的 2.6× 提速开关；② 若场景对延迟极致敏感、可接受略掉精度，可把 SDCA 换回 DCA（实测更快）甚至更轻的 attention；③ 高分辨率场景（如 Mapillary）FPS 会被分辨率拖累，需在分辨率与 FPS 间显式权衡，不要被 COCO 的 45.6 FPS 误导。</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验配置与验证</div>
+  <div class="ch-title">四库全景 + 五项消融：哪个组件最值钱</div>
+
+  <h3 class="section-title">6.1 实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>COCO panoptic（133 类）/ Cityscapes（19 类）/ ADE20K（150 类）/ Mapillary Vistas（65 类）#Hu et al., 2023#</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>PQ↑（全景质量，含 PQ<sup>s</sup> / PQ<sup>t</sup> 分项）/ FPS↑ #Kirillov et al., 2019#</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>PanopticDeepLab / LPSNet / RealTimePan / PanopticFCN / K-Net / MaskFormer / Mask2Former 等 #Hu et al., 2023#</td></tr>
+        <tr><td><strong>推理硬件</strong></td><td><strong>已披露</strong></td><td>主实验 V100、Mapillary 用 A100、消融 3090、实例附加 2080Ti #Hu et al., 2023#</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>按数据集约定（Mapillary 分辨率最高，故 FPS 最低）#Hu et al., 2023#</td></tr>
+        <tr><td>推理环境</td><td><strong>未披露</strong></td><td>PyTorch / CUDA 版本未明确给出 #Hu et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 4：实验配置（6 项必含基础项，逐项标注披露状态）。</div>
+
+  <h3 class="section-title">6.2 主实验：四库全景分割</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>Scale</th><th>PQ</th><th>PQ<sup>t</sup></th><th>PQ<sup>s</sup></th><th>FPS</th></tr></thead>
+      <tbody>
+        <tr><td>PanopticDeepLab</td><td>641,641</td><td>35.1</td><td>—</td><td>—</td><td>20.0</td></tr>
+        <tr><td>RealTimePan</td><td>800,1333</td><td>37.1</td><td>41.0</td><td>30.7</td><td>15.9</td></tr>
+        <tr><td>LPSNet</td><td>800,1333</td><td>39.1</td><td>43.9</td><td>30.1</td><td>9.3</td></tr>
+        <tr><td>PanopticFCN</td><td>800,1333</td><td>44.3</td><td>50.0</td><td>35.6</td><td>9.2</td></tr>
+        <tr><td>MaskFormer</td><td>800,1333</td><td>46.5</td><td>51.0</td><td>39.8</td><td>17.6</td></tr>
+        <tr><td>K-Net</td><td>800,1333</td><td>47.1</td><td>51.7</td><td>40.3</td><td>—</td></tr>
+        <tr><td>Mask2Former</td><td>800,1333</td><td>51.9</td><td>57.7</td><td>43.0</td><td>8.6</td></tr>
+        <tr><td><strong>YOSO</strong></td><td>512,800</td><td><strong>46.4</strong></td><td>50.7</td><td>40.0</td><td><strong>45.6</strong></td></tr>
+        <tr><td><strong>YOSO</strong></td><td>800,1333</td><td><strong>48.4</strong></td><td>53.5</td><td>40.8</td><td><strong>23.6</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 5：COCO panptic validation 主对比（据 Hu et al., 2023, Table 1）。512,800 尺度 YOSO 以 45.6 FPS 最快、46.4 PQ，比 PanopticDeepLab 快 ~2.3× 且 PQ 高 ~11.0；800,1333 尺度 48.4 PQ，超 K-Net 1.3、MaskFormer 1.9，与 Max-DeepLab 持平，比 Mask2Former 低 3.5 但快 2.7×。#Hu et al., 2023#</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>Scale</th><th>PQ</th><th>PQ<sup>t</sup></th><th>PQ<sup>s</sup></th><th>FPS</th><th>定位</th></tr></thead>
+      <tbody>
+        <tr><td>Cityscapes</td><td>512,1024</td><td>52.5</td><td>43.5</td><td>59.1</td><td>22.6</td><td>实时档</td></tr>
+        <tr><td>Cityscapes</td><td>1024,2048</td><td>59.7</td><td>51.0</td><td>66.1</td><td>11.1</td><td>与 PanopticDeepLab 持平且快 1.3×，比 FPSNet 高 4.7 #Hu et al., 2023#</td></tr>
+        <tr><td>ADE20K</td><td>640,2560</td><td>38.0</td><td>37.3</td><td>39.4</td><td>35.4</td><td>速度精度双优 MaskFormer，PQ 仍低于 Mask2Former(39.7) #Hu et al., 2023#</td></tr>
+        <tr><td>Mapillary Vistas</td><td>2048,2048</td><td>34.1</td><td>24.3</td><td>47.2</td><td>7.1</td><td>PQ<sup>s</sup>=47.2 stuff 最强，PQ<sup>t</sup>=24.3 落后（作者承认）#Hu et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 5b：其余三库 YOSO 主结果（据 Hu et al., 2023, Table 2–4）。注：Cityscapes 高尺度 59.7 PQ 与 PanopticDeepLab 持平（非"低 7.2"）——前稿曾误把 COCO 的对比错挂到 Cityscapes，已据原文修正。</div>
+
+  <div class="callout"><strong>关键发现</strong>：YOSO 在 COCO 上以 45.6 FPS 跑到 46.4 PQ（512,800 尺度），是首个在四库上都给出竞争力的实时全景分割框架；但<strong>它并未在绝对精度上超越重模型 Mask2Former</strong>——800,1333 尺度 48.4 PQ 仍差 Mask2Former 3.5 PQ（51.9）。它的卖点是用一小部分算力拿到"够用"的精度，而非刷榜。#Hu et al., 2023#</div>
+
+  <div class="photo">
+    <img src="media/images/yoso-2023/fig4.webp" alt="COCO 与 Cityscapes 上 FPS 对 PQ 的速度-精度权衡曲线" loading="lazy">
+    <div class="cap">图 4：COCO 与 Cityscapes 上 FPS 对 PQ 的速度-精度权衡。YOSO 落在曲线左上角——同精度档下更快、同速度档下更准，明显优于 PanopticDeepLab / LPSNet / RealTimePan 等实时档对手（来源：Hu et al., 2023, Fig.4）。</div>
+  </div>
+
+  <h3 class="section-title">6.3 消融：五个旋钮，看哪个最值钱</h3>
+
+  <div class="photo">
+    <img src="media/images/yoso-2023/fig5.webp" alt="CFA 与 SDCA 的 FLOPs 减少等高线" loading="lazy">
+    <div class="cap">图 5：FLOPs 减少比等高线。左 CFA：输入特征图通道维度是降 FLOPs 的关键；右 SDCA：输入 token 的隐藏维度是关键。两者都印证"通道/隐藏维度越大，等价替换省得越多"（来源：Hu et al., 2023, Fig.5）。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>消融</th><th>配置</th><th>关键数值（PQ@FPS）</th><th>结论</th></tr></thead>
+      <tbody>
+        <tr><td>tab5 聚合器</td><td>IFA vs CFA（d=256, c<sub>2-5</sub>）</td><td>IFA 47.5@23.3 / 16.6G / 4871µs；CFA 47.0@29.2 / 2.1G / 1877µs</td><td>独立训练差 0.5 PQ；但 IFA 权重可重参数化为 CFA 推理、输出完全等价、免重训拿 2.6× 提速 #Hu et al., 2023#</td></tr>
+        <tr><td>tab6 attention</td><td>MHCA/SDCA/DCA/PDCA/DDCA</td><td>MHCA 46.0 / <strong>SDCA 47.0</strong> / DCA 46.9 / PDCA 43.7 / DDCA 46.6</td><td>SDCA 最佳 +1.0 PQ；PDCA 缺 cross-dim 最差；详见下表</td></tr>
+        <tr><td>tab7 block 数 N</td><td>N=1,2,3,4</td><td>46.4@30.1 / <strong>47.0</strong>@29.2 / 47.5@28.9 / 47.2@28.7</td><td>N=3 峰值，选 N=2 折中速度精度 #Hu et al., 2023#</td></tr>
+        <tr><td>tab8 核大小 t</td><td>t=1,3,5,7</td><td>46.8@30.6 / <strong>47.0</strong>@29.2 / 47.3@28.3 / 47.1@27.6</td><td>t=5 饱和；t=1（退化为 pointwise）降到 46.8 证 cross-dim 重要 #Hu et al., 2023#</td></tr>
+        <tr><td>tab9 迭代 T</td><td>T=1,2,3</td><td>45.7@30.1 / <strong>47.0</strong>@29.2 / 47.5@28.9</td><td>T=2 最佳，T=3 仅 +0.5 但掉 FPS #Hu et al., 2023#</td></tr>
+        <tr><td>tab10 proposal n</td><td>n=50,100,150,200</td><td>44.2@33.7 / <strong>47.0</strong>@29.2 / 46.9@26.3 / 46.7@24.3</td><td>50→100 大涨 +2.8，150 饱和，200 反降；选 n=100 速度最优 #Hu et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 6：五项消融汇总（据 Hu et al., 2023, Table 5–10）。</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Attention</th><th>PQ</th><th>FLOPs</th><th>Latency (µs)</th><th>FPS</th><th>交互类型</th></tr></thead>
+      <tbody>
+        <tr><td>MHCA</td><td>46.0</td><td>31.5M</td><td>2608</td><td>27.3</td><td>cross-token + cross-dim</td></tr>
+        <tr><td><strong>SDCA</strong></td><td><strong>47.0</strong></td><td>5.4M</td><td>2183</td><td>29.2</td><td>cross-token + cross-dim（可分离）</td></tr>
+        <tr><td>DCA</td><td>46.9</td><td>15.5M</td><td>1701</td><td>30.0</td><td>cross-token + cross-dim</td></tr>
+        <tr><td>PDCA</td><td>43.7</td><td>5.2M</td><td>1450</td><td>30.2</td><td>仅 cross-token（缺 cross-dim）</td></tr>
+        <tr><td>DDCA</td><td>46.6</td><td>0.3M</td><td>1242</td><td>30.3</td><td>仅 cross-dim（缺 cross-token）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 6b：五种 attention 变体逐项对比（据 Hu et al., 2023, Table 6）。SDCA FLOPs(5.4M) 低于 DCA(15.5M)，但 GPU 延迟(2183µs) 反高于 DCA(1701µs)——depthwise+pointwise 串行执行吃不满并行度。</div>
+
+  <div class="callout"><strong>最重要的消融发现：cross-dimension 交互比 cross-token 交互更值钱</strong>。tab6 里 PDCA（缺跨维度交互）最差（43.7 PQ，掉 3.3），DDCA（只有跨维度、缺跨 token）仍能到 46.6——说明对全景分割而言，让 kernel 的"头"维度之间交互（cross-dimension）比让不同 token 之间交互（cross-token）更重要。原因在于<strong>panoptic kernel 彼此需要独立</strong>（每个 kernel 对应一个实例/stuff），过度 cross-token 反而模糊身份。这也是为何标准 MHCA 反而不如 DCA/SDCA——一个反直觉的结果。#Hu et al., 2023# <em>（记号注：原文 Eq.9 定义 depthwise=cross-dimension、pointwise=cross-token，本表据此口径；但原文 L686 行文将 DDCA 描述为 cross-token，与 Eq.9 相反，系原文内部不一致，本表取 Eq.9 口径。）</em></div>
+
+  <h3 class="section-title">6.4 失败案例与定性结果</h3>
+
+  <div class="photo">
+    <img src="media/images/yoso-2023/sup-fig1.webp" alt="COCO 全景分割定性结果" loading="lazy">
+    <div class="cap">图 6：COCO 验证集全景分割定性结果（来源：Hu et al., 2023, Supplementary Fig.1）。</div>
+  </div>
+
+  <p>作者诚实承认的局限 #Hu et al., 2023#：① <strong>Mapillary Vistas 的 PQ<sup>t</sup> 仅 24.3，落后 SOTA</strong>——things 类别多、proposal kernel $n=100$ 在多类别场景可能不够，这恰是 K-Net/MaskFormer 重 decoder 的合理性所在；② COCO 仍差 Mask2Former #Cheng et al., 2022# 约 3.5 PQ（800,1333 尺度，48.4 vs 51.9）；③ SDCA 实测延迟反比 DCA 慢（见 Part 5）；④ $t=7$、$n=200$、$N=4$ 均已过饱和，继续加大边际收益微小。</p>
+
+  <p>附录的实例分割附加实验（tab11）还揭示一个有趣侧面 #Hu et al., 2023#：YOSO 用 panoptic 训练的模型<strong>直接做实例分割</strong>（不专门训练），550 尺度达 34.7 mAP@38.7 FPS，大物体 AP<sup>l</sup>=58.6 全表最高（SOLOv2 55.4、SparseInst 51.9），608 尺度 AP<sup>l</sup> 进一步到 59.2——说明 panoptic kernel 对大物体分割有天然优势，一个 kernel 对应一个完整实例而非碎片化激活。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">不是新范式，而是一次漂亮的"等价换快"</div>
+
+  <p>把 YOSO 放回地图：它是 (c) 路线（统一 kernel × feature map）的<strong>工程高效化变体，不是新范式</strong>。它继承 K-Net #Zhang et al., 2021# / MaskFormer #Cheng et al., 2021# 的统一 kernel 范式，只批评其"模块太重"而不否定范式本身——pre-attention 明确"Inspired by"K-Net，主表对标 K-Net 47.1 PQ。#Hu et al., 2023# 两个提速点的来源也清晰：CFA 来自结构重参数化 #Ding et al., 2021#（RepVGG 系，但用双线性插值齐性-可加性给出数学等价证明，比 RepVGG 系更硬）；SDCA 来自 MobileNet #Howard et al., 2017# 的 depthwise/pointwise 分解 + linear attention 系列 #Kitaev et al., 2020#。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>范式</th><th>things+stuff 统一?</th><th>实时?</th><th>YOSO 的差异</th></tr></thead>
+      <tbody>
+        <tr><td>PanopticDeepLab</td><td>(b) semantic-first</td><td>否</td><td>较快</td><td>YOSO 快 2.3× 且 PQ 高 11.0 #Hu et al., 2023#</td></tr>
+        <tr><td>K-Net</td><td>(c) 统一 kernel</td><td>是</td><td>否</td><td>YOSO 继承其 pre-attention，提速到实时 #Zhang et al., 2021#</td></tr>
+        <tr><td>MaskFormer / Mask2Former</td><td>(c) mask classification</td><td>是</td><td>否</td><td>YOSO 精度低 ~3.5 PQ 但快数倍 #Cheng et al., 2021#</td></tr>
+        <tr><td>SOLOv2</td><td>instance 侧动态核×feature</td><td>仅 things</td><td>较快</td><td>附录 tab11 对照，YOSO 大物体 AP<sup>l</sup> 领先 #Wang et al., 2020#</td></tr>
+        <tr><td>SparseInst</td><td>实时实例分割 SOTA</td><td>仅 things</td><td>是</td><td>附录对照，YOSO 大物体领先 #Cheng et al., 2022-SparseInst#</td></tr>
+        <tr><td>YOSO</td><td>(c) + 工程提速</td><td>是</td><td>是</td><td>CFA + SDCA 两招把 (c) 推到实时 #Hu et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="cap">表 7：YOSO 与五个前置工作的七维定位（据 citation 调研 + Hu et al., 2023 整理）。</div>
+
+  <div class="admonition warning">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>未被充分讨论的范式短板</div>
+    <div class="admonition-content"><p>YOSO 把"实时"做到了，但代价是 $n=100$ 个 proposal kernel 在 things 类别密集的场景（如 Mapillary 65 类）会不够用——这正是 K-Net/MaskFormer 重 decoder 的合理性所在。YOSO 没有正面回应这个短板，只在 Mapillary PQ<sup>t</sup>=24.3 上诚实暴露了它。读这篇时要把"实时 + 小尺度"和"重 decoder + 高精度"看成同一问题的两端，而非 YOSO 全面胜出。#Hu et al., 2023#</p></div>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>可操作启发</div>
+    <div class="admonition-content"><p>① <strong>"证明等价 → 推理换快版本"是可迁移的方法论</strong>：任何含"两个线性算子串联"的模块，只要能证等价，就能训练保旧、推理换快，免重训提速——CFA 是范本。② SDCA 的"depthwise+pointwise 替多头注意力"思路可迁移到任何 query × feature 交互场景，但<strong>务必实测 GPU 延迟而非只看 FLOPs</strong>，串行分解可能反更慢。③ 全景/实例分割里，若 kernel 需保持身份独立，优先 cross-dimension 交互、弱化 cross-token 交互——这是 tab6 给出的一条可复用设计直觉。④ 与本博客其它文章互参：YOSO 的免 NMS 集合预测来自 <a href="detr.html">DETR</a>；统一 kernel 范式与 <a href="segment-anything-survey.html">SAM 系</a>的并行 query 同源；<a href="paper-sam-2.html">SAM 2</a> 的多 query 迭代精修与 YOSO 的 $T$ stage 可对照；同为"实时 + 端到端 + 无后处理"，<a href="contourformer-2025.html">ContourFormer</a> 走 contour 表示、YOSO 走 mask 表示，是分割表示光谱的两端；SDCA"用卷积替注意力"与 <a href="mamba-vision-ssm-survey.html">Mamba 用 SSM 替注意力</a>同属高效注意力光谱的两端。</p></div>
+  </div>
+
+  <p>一句话收束：YOSO 没有发明新范式，但它把"证明等价再换快实现"这件事做得很漂亮——CFA 靠双线性插值齐性-可加性给出数学等价，SDCA 靠 depthwise/pointwise 分解给出多头注意力的等价实现。读懂这两条等价性，比记住 46.4 PQ 这个数字更值钱。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Hu-et-al.-2023">Hu, J. et al. (2023). <strong>You Only Segment Once: Towards Real-Time Panoptic Segmentation</strong>. <em>arXiv:2303.14651</em>. <a href="https://arxiv.org/abs/2303.14651" target="_blank">arXiv:2303.14651</a> · <a href="https://github.com/hujiecpp/YOSO" target="_blank">github.com/hujiecpp/YOSO</a></li>
+    <li data-cite-key="Kirillov-et-al.-2019">Kirillov, A. et al. (2019). <strong>Panoptic Segmentation</strong>（PQ 指标定义）. <em>CVPR 2019</em>. <a href="https://arxiv.org/abs/1801.00868" target="_blank">arXiv:1801.00868</a></li>
+    <li data-cite-key="Zhang-et-al.-2021">Zhang, R. et al. (2021). <strong>K-Net: Towards Unified Image Segmentation</strong>. <em>NeurIPS 2021</em>. <a href="https://arxiv.org/abs/2104.04926" target="_blank">arXiv:2104.04926</a></li>
+    <li data-cite-key="Cheng-et-al.-2020">Cheng, B. et al. (2020). <strong>Panoptic-DeepLab</strong>. <em>CVPR 2020</em>. <a href="https://arxiv.org/abs/1911.09457" target="_blank">arXiv:1911.09457</a></li>
+    <li data-cite-key="Cheng-et-al.-2021">Cheng, B. et al. (2021). <strong>Per-Pixel Classification is Not All You Need for Semantic Segmentation (MaskFormer)</strong>. <em>NeurIPS 2021</em>. <a href="https://arxiv.org/abs/2107.06278" target="_blank">arXiv:2107.06278</a></li>
+    <li data-cite-key="Cheng-et-al.-2022">Cheng, B. et al. (2022). <strong>Masked-attention Mask Transformer (Mask2Former)</strong>. <em>CVPR 2022</em>.</li>
+    <li data-cite-key="Wang-et-al.-2020">Wang, X. et al. (2020). <strong>SOLOv2: Dynamic, Faster and Stronger</strong>. <em>NeurIPS 2020</em>. <a href="https://arxiv.org/abs/2006.02788" target="_blank">arXiv:2006.02788</a></li>
+    <li data-cite-key="Cheng-et-al.-2022-SparseInst">Cheng, T. et al. (2022). <strong>Sparse Instance Activation for Real-Time Instance Segmentation</strong>. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2203.12827" target="_blank">arXiv:2203.12827</a></li>
+    <li data-cite-key="Carion-et-al.-2020">Carion, N. et al. (2020). <strong>End-to-End Object Detection with Transformers (DETR)</strong>. <em>ECCV 2020</em>. <a href="https://arxiv.org/abs/2005.12872" target="_blank">arXiv:2005.12872</a></li>
+    <li data-cite-key="He-et-al.-2017">He, K. et al. (2017). <strong>Mask R-CNN</strong>. <em>ICCV 2017</em>.</li>
+    <li data-cite-key="Xiong-et-al.-2019">Xiong, Y. et al. (2019). <strong>UPSNet: A Unified Panoptic Segmentation Network</strong>. <em>CVPR 2019</em>.</li>
+    <li data-cite-key="De-et-al.-2020">De, A. et al. (2020). <strong>FPSNet: Fast Panoptic Segmentation</strong>.</li>
+    <li data-cite-key="Hong-et-al.-2021">Hong, R. et al. (2021). <strong>LPSNet: A Lightweight Solution for Panoptic Segmentation</strong>.</li>
+    <li data-cite-key="Hou-et-al.-2020">Hou, J. et al. (2020). <strong>RealTimePan: Real-Time Panoptic Segmentation</strong>.</li>
+    <li data-cite-key="Li-et-al.-2021">Li, Y. et al. (2021). <strong>PanopticFCN: A Unified Fully Convolutional Network for Panoptic Segmentation</strong>.</li>
+    <li data-cite-key="Howard-et-al.-2017">Howard, A. et al. (2017). <strong>MobileNets: Efficient Convolutional Neural Networks</strong>（depthwise/pointwise 分解）.</li>
+    <li data-cite-key="Kitaev-et-al.-2020">Kitaev, N. et al. (2020). <strong>Reformer: The Efficient Transformer</strong>（linear attention 谱系）.</li>
+    <li data-cite-key="Ding-et-al.-2021">Ding, X. et al. (2021). <strong>RepVGG: Making VGG-style ConvNets Great Again</strong>（结构重参数化）.</li>
+  </ul>
+  <p style="font-size:0.85em;color:#888;margin-top:8px"><strong>来源说明</strong>：本文事实性数值与公式均锚定论文正文 + .tex 源码（arXiv source tarball）；引用链五个前置工作的身份经联网核验（arXiv 编号/venue 以 .bbl 为准）。GitHub star/被引次数/CVPR 正式录用等未联网确证的条目从略。</p>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="contourformer-2025.html"><span class="nav-arrow">←</span><span class="nav-label">延伸阅读</span><span class="nav-title">ContourFormer · 实时端到端分割精读</span></a>
+  <div class="nav-card nav-hub current"><span class="nav-label">枢纽页</span><span class="nav-title">视觉模型（暂无）</span></div>
+  <div class="nav-card nav-next current"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">（暂缺）</span></div>
+</div>
