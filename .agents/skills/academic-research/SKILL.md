@@ -32,6 +32,8 @@ metadata:
 > 当领域过大时，交付应升级为**同一 subcategory 下的系列文章**，用 Hub 串联多篇专题文。
 > 系列文章规则见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md`。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ## 共享引用
 
 | 引用文件 | 内容 | 何时读取 |

@@ -27,8 +27,8 @@ description: |
 当用户在仓库内提出任何知识性问题时（如"XX 有什么用""XX 怎么实现""XX 原理是什么""XX 和 YY 的区别"），**必须先用本 skill 检索博客已有内容**，而不是直接上网搜索。
 
 执行顺序：
-1. **先搜库内**：用下述检索方法在 `src/pages/`、`raw/` 或 `public/search-index.json` 中搜索关键词。
-2. **找到相关文章则直接读取并回答**：用 `Read` 工具读取匹配到的文章源文件，基于库内已有内容回答用户问题。
+1. **先搜库内**：用下述检索方法在 `src/pages/`、`drafts/`（草稿）、`raw/` 或 `public/search-index.json` 中搜索关键词。
+2. **找到相关文章则直接读取并回答**：用 `Read` 工具读取匹配到的文章源文件，基于库内已有内容回答用户问题。若命中草稿，也读草稿——用户在草稿里的 brainstorming 笔记可能就是答案雏形。
 3. **库内确实没有相关内容时，才补充上网搜索**：且在搜索前告知用户"库内未找到相关内容，补充搜索网络"。
 
 违反此规则的典型错误：用户问"Ditto 里面输入视频有什么用"，库里已有 `paper-ditto.html` 和 `ditto-talkinghead.html` 两篇详细文章，但 Agent 跳过库内检索直接 WebSearch——这是严格禁止的。
@@ -75,26 +75,32 @@ description: |
 
 **注意**：数据源是构建产物 `public/search-index.json`，刚写完新文章后需先 `node build.js` 才能检索到。若需搜索正文内容或未构建时的实时检索，使用方法 2。
 
+**草稿纳入**：`blog-search.py` **默认同时检索 `drafts/` 草稿**（`.org` 和 `.md` 都扫，按扩展名解析 frontmatter）。草稿在结果里带 `[draft:status]` 前缀（如 `[draft:outlining] 模型训练`），与已发布文章区分。草稿的**正文也参与 keyword 搜索**（如搜"正则化"会命中 model-training 草稿正文里的公式讨论）。加 `--no-drafts` 可只搜已发布文章。草稿的 `target_alias` 映射成 categoryPath 参与分类检索，`tags` 参与 tag 检索。`--list-categories` / `--list-tags` 统计只算已发布，避免草稿的"目标分类"污染。
+
 ### 方法 2：grep 搜索文章源文件（未构建时 / 搜正文内容）
 
-博客所有源文件在 `src/pages/` 目录下，直接用 grep 搜索：
+博客源文件在 `src/pages/`（已发布），草稿在 `drafts/`（`.org` + `.md`，brainstorming 笔记）。直接用 grep 搜索：
 
 ```bash
-# 按关键词搜索文章标题和内容
+# 按关键词搜索文章标题和内容（含草稿）
 cd ~/gongshangzheng.github.io
-grep -rl "关键词" src/pages/ --include="*.html" --include="*.md"
+grep -rl "关键词" src/pages/ drafts/ --include="*.html" --include="*.md" --include="*.org"
+
+# 只搜草稿
+grep -rl "关键词" drafts/ --include="*.org" --include="*.md"
 
 # 搜索标题（frontmatter 中的 title 字段）
-grep -r "title:" src/pages/ | grep "关键词"
+grep -r "title:" src/pages/ drafts/ | grep "关键词"
 
 # 搜索特定标签
-grep -r "tags:.*关键词" src/pages/
+grep -r "tags:.*关键词" src/pages/ drafts/
 
-# 搜索特定分类（通过 aliases 路径）
-grep -r "aliases:.*categories/.*关键词" src/pages/
+# 搜索分类（已发布用 aliases，草稿用 target_alias）
+grep -rE "categories/.*关键词|target_alias:.*关键词" src/pages/ drafts/
 
-# 查看某篇文章的完整 frontmatter（前 15 行）
+# 查看某篇 frontmatter
 head -15 src/pages/<slug>.html
+head -15 drafts/<slug>.org   # 或 .md
 ```
 
 ---
@@ -104,15 +110,18 @@ head -15 src/pages/<slug>.html
 ### 场景 1：写新文章前检查是否已写过
 
 ```bash
-# 检查标题中是否已有相关文章
-grep -ri "主题关键词" src/pages/ --include="*.html" -l
+# 检查标题中是否已有相关文章（同时覆盖已发布 + 草稿）
+grep -ri "主题关键词" src/pages/ drafts/ --include="*.html" --include="*.org" --include="*.md" -l
 
 # 检查标签
-grep -r "tags:.*关键词" src/pages/
+grep -r "tags:.*关键词" src/pages/ drafts/
 
-# 如果找到相关文章，查看其内容范围
+# 如果找到相关文章/草稿，查看其内容范围
 head -50 src/pages/<slug>.html
+head -50 drafts/<slug>.org   # 草稿也看，可能已有 brainstorming 可直接扩充
 ```
+
+> 写新文章前务必同时检查 `drafts/`——可能已有同主题的 brainstorming 草稿，直接扩充比新建省力。
 
 ### 场景 1.1：题目 / 考点补充前判断是“补已有专题”还是“新建专题”
 

@@ -45,7 +45,8 @@ Slug：<slug>
      "<url>" --format markdown --table-mode accurate \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.md
 
-   # JSON（结构化：tables/formulas/layout；可用于 figure 页码/bbox 定位）
+   # JSON（结构化：tables/formulas/layout；pictures[].prov 含 figure 页码+bbox，
+   #   是优先级 D 脚本 scripts/crop-figures-from-docling.py 的输入）
    ~/.venv/bin/python3 ~/.agents/skills/docling/scripts/convert.py \
      "<url>" --format json \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.json
@@ -72,15 +73,29 @@ Slug：<slug>
    - 对 arXiv 论文，必须先尝试 `https://arxiv.org/e-print/<arxiv-id>`。
    - **一键脚本**：`fetch-arxiv-paper.py` 自动完成下载→解压→提取图片→转 WebP→生成 extraction-log.md。
 
+   > 脚本位置：`.agents/skills/read-article/scripts/fetch-arxiv-paper.py`（read-article 私有，已挪入 skill）。
+   > 它从自身路径反推 repo root（无需 `--root`），调用 repo 级共享工具 `scripts/convert-figures.py`。
+   > 专属 venv：`.cache/read-article/.venv`（**不放 `.agents/skills/read-article/.venv`**——sandbox 会还原 `.agents/` 配置目录、清掉被 gitignore 的 `.venv/`；`.cache/` 持久且已忽略）。需装 `pymupdf pillow numpy`（numpy 供 `crop_whitespace`，缺则转换静默全失败）。
+
    ```bash
+   # 首次建专属 venv（持久、gitignored）
+   uv venv .cache/read-article/.venv
+   uv pip install --python .cache/read-article/.venv/Scripts/python.exe pymupdf pillow numpy
+   # Unix 路径下 python 在 .cache/read-article/.venv/bin/python
+
    # 一键完成：目录创建 + tarball 下载 + 解压 + 图片提取 + TeX→Markdown + WebP 转换
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
+   # Windows GBK 控制台需 PYTHONUTF8=1（脚本已内置 stdout 重配，env 仅为兜底）
+   PYTHONUTF8=1 .cache/read-article/.venv/Scripts/python.exe \
+     .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
 
    # 同时下载 HTML 和 PDF（备用）
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug> --html --pdf
+   PYTHONUTF8=1 .cache/read-article/.venv/Scripts/python.exe \
+     .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug> --html --pdf
 
-   # 如果已有 source.tar（手动下载或之前执行过），可只运行图片转换部分：
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/convert-figures.py raw/<slug>/figures/<slug>/ -o media/images/<slug>/
+   # 如果已有 source.tar（手动下载或之前执行过），可只运行图片转换部分
+   # convert-figures.py 是 repo 级共享工具（blog-drafts/crop-figures 也用），留在 scripts/
+   PYTHONUTF8=1 .cache/read-article/.venv/Scripts/python.exe \
+     scripts/convert-figures.py raw/<slug>/figures/<slug>/ -o media/images/<slug>/
    ```
 
    脚本输出目录结构：
@@ -145,20 +160,32 @@ PY
    done
    ```
 
-   **优先级 D：PDF 高 DPI 裁图（兜底）**
+   **优先级 D：PDF 高 DPI bbox 裁图（脚本化兜底）**
    - 只有当 arXiv source tarball、arXiv/官方 HTML、官方仓库/项目页都拿不到可用图片时，才允许 PDF crop。
    - 使用前必须记录 fallback 原因。
+   - bbox 来自 Docling JSON 的 `pictures[].prov[0].bbox`（layout 模型 `docling-layout-heron` 的 `picture` 检测结果），渲染由 PyMuPDF 按 bbox 在源 PDF 上 300-400 DPI clip 完成。
+   - **与 ❌ Docling referenced 图片的区别**：本脚本只借 Docling 的 bbox 坐标，**不使用** Docling 自家 `--image-export-mode referenced` 产出的 144 DPI 整页/区域截图（那玩意遇到矢量 figure 会空白，PerformRecast 踩过坑）。PyMuPDF 在源 PDF 上 clip 渲染矢量内容是正确的。
 
    ```bash
-   PDF="$RAW_DIR/sources/${SLUG}.pdf"
-   curl -L "<pdf-url>" -o "$PDF"
+   # 1. 先跑 Docling 出 JSON（若 Phase 1 步骤 2 已产出 sources/<slug>.json 则跳过）
+   ~/.venv/bin/python3 ~/.hanako/skills/docling/scripts/convert.py \
+     "<pdf-url 或本地 PDF>" -f json \
+     --output ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.json
 
-   # 先 300-400 DPI 渲染目标页；页码从 Docling JSON / caption / 人工检查确定
-   pdftocairo -png -r 300 -f <page> -l <page> "$PDF" "$RAW_DIR/page"
+   # 2. 用脚本按 picture bbox 高清裁图 → PNG 到 figures/，再链式转 WebP 到 media/images/
+   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/crop-figures-from-docling.py \
+     ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.json \
+     --pdf ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.pdf \
+     -o ~/gongshangzheng.github.io/raw/${SLUG}/figures/${SLUG}/ \
+     --media-dir ~/gongshangzheng.github.io/media/images/${SLUG}/ \
+     --dpi 300
 
-   # 再用 magick 裁剪，geometry 由人工检查或 PyMuPDF bbox 转换得到
-   magick "$RAW_DIR/page-<page>.png" -crop <WxH+X+Y> +repage "$FIG_DIR/figN.png"
+   # 可选：只裁指定页（1-based，如 3,5,7-9）
+   #   --pages 3,5,7-9
+   # 可选：只出 PNG 不转 WebP
+   #   --no-convert
    ```
+   脚本同时写 `figures/<slug>/figures-manifest.json`，记录每张图的 page_no / bbox / self_ref / caption / 尺寸 / 空白嫌疑，供后续 HTML 配 `cap` 使用。如某张 `blank_suspect: true`，说明矢量渲染可能失败，需人工复核或回退到更高 DPI。
 
    **优先级 E：blog-images 搜到的可靠公开图片（补充来源）**
    - 当论文原始来源图不足，或需要背景配图/作者照片/机构示意图时，先读取并遵循 `~/.agents/skills/blog-images/SKILL.md`。

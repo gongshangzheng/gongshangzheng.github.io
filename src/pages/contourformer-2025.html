@@ -1,0 +1,367 @@
+---
+title: "视频轮廓提取论文精读（四）：ContourFormer，DETR 范式下的实时 contour-based 实例分割"
+description: "ContourFormer 深度解读：建在 D-FINE 之上把 bbox 回归扩成 contour 回归，用 sub-contour 解耦（加法复合 query + decoupled SA 降 O((Nq+Nc)²) + 子轮廓外接框引导 deformable cross-attention）与 CFDR（概率分布 + 跨层残差 sharpen）两技术，在 SBD/COCO/KINS 上全面 SOTA、A30 512² 达 24.6 FPS。"
+created_at: 2026-07-14T18:00:00
+updated_at: 2026-07-14T18:00:00
+tags: ["ContourFormer", "实例分割", "DETR", "contour", "论文精读"]
+sub_id: 130
+aliases: ["categories/AI/视觉模型/视频轮廓提取/视频轮廓提取论文精读"]
+mathjax: true
+papers: ["https://arxiv.org/abs/2501.17688"]
+repos: ["https://github.com/talebolano/Contourformer"]
+paper_title: "ContourFormer: Real-Time Contour-Based End-to-End Instance Segmentation Transformer"
+paper_authors: ["Weiwei Yao", "Chen Li", "Minjun Xiong", "Wenbo Dong", "Hao Chen", "Xiong Xiao"]
+paper_affiliation: "Zhuzhou CRRC Times Electric Co., Ltd., China（中车时代电气，株洲）"
+paper_venue: "arXiv:2501.17688, 2025"
+paper_url: "https://arxiv.org/abs/2501.17688"
+paper_code: "https://github.com/talebolano/Contourformer"
+hero_title: "ContourFormer"
+hero_sub: "arXiv 2025 · CRRC Times Electric"
+hero_tagline: "首个 DETR 范式的实时 contour-based 实例分割：sub-contour 解耦 + CFDR 概率分布精修"
+---
+
+<div class="callout"><strong>一句话读懂</strong>：ContourFormer 把"用闭合多边形而非像素掩码做实例分割"这条 contour-based 老路线，第一次完整搬进 DETR 范式——它建在实时检测器 <strong>D-FINE</strong> 之上，把 bbox 回归扩成 contour 顶点回归，靠两件事同时拿到精度和速度：<strong>sub-contour 解耦</strong>（把 64 点轮廓切成 8 段、用加法复合 query 把自注意力复杂度从 $O((N_qN_c)^2)$ 压到 $O((N_q+N_c)^2)$，并让每段子轮廓的外接框引导 deformable cross-attention 自适应聚焦边界）和 <strong>CFDR</strong>（把每个轮廓点的位置建模成离散概率分布、跨层残差地逐步 sharpen）。SBD/COCO/KINS 三库全面刷新 contour-based SOTA，A30 上 512×512 达 24.6 FPS。<strong>一个诚实的限定</strong>：它是图像级、逐实例的方法，没有时序机制——本系列前三篇讲的是"视频"轮廓提取，本文是那条问题在图像侧的 contour 表示基础。#Yao et al., 2025#</div>
+
+<div class="photo">
+  <img src="media/images/contourformer-2025/fig1.webp" alt="ContourFormer 整体架构 Overview" loading="lazy">
+  <div class="cap">图 1：ContourFormer 整体架构。Backbone+Encoder 出多尺度特征、初始 bbox 与实例 query；用 bbox 内切椭圆初始化多边形 contour，再切成 8 段 sub-contour 并各取外接框；N 层 Transformer decoder 逐层精修每段 sub-contour，sub-contour 外接框作为 cross-attention 的特征采样范围；FDR head 在迭代中为每个边界点提供细粒度概率分布；denoising module 加速训练（来源：Yao et al., 2025, Fig.1）。</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">从 mask 到 contour：为什么需要一条 DETR 化的轮廓路线</div>
+
+  <p>实例分割按"用什么表示一个实例"分成两大范式。主流的 <strong>mask-based</strong> 用像素级掩码——从 Mask R-CNN 的"先框后 mask"两阶段，到 YOLACT/SOLO/BlendMask 的无框直接预测，再到 MaskFormer/Mask2Former/Mask DINO 把它搬进 DETR 范式——精度高，但每个目标都要逐像素预测，算力与显存开销大、缺显式几何结构建模、实时吃力。#Yao et al., 2025# 另一条相对小众但持续活跃的是 <strong>contour-based</strong>：用稀疏边界点/多边形刻画实例，计算开销更小、自带显式几何结构。它又分极坐标（PolarMask #Xie et al., 2020#）与笛卡尔坐标两支，长期以来在大规模 benchmark 上精度追不上 mask-based。</p>
+
+  <p>contour 这条线的演进，可以看成一次次的"初始化与形变"升级：DeepSnake #Peng et al., 2020# 用 bbox 初始化轮廓再做圆形卷积多步形变（SBD 54.4 AP_vol），DANCE #Liu et al., 2021# 改进匹配并引入 attention 形变，E2EC #Zhang et al., 2022# 提出<strong>可学习轮廓初始化</strong>把精度推到 SBD 59.2，PolySnake #Feng et al., 2024# 给出更轻量的可变形 contour 模块加 shape loss（SBD 60.0、COCO 34.9、KINS 35.2），TSnake 加了时间嵌入的循环。#Yao et al., 2025# 这些方法的共同短板是：要么依赖两阶段（先检测 box 再形变）、要么非端到端、要么依赖 NMS/anchor，速度受限；而且它们都把轮廓点当成<strong>确定性坐标</strong>来回归，在模糊边界处易把微小预测偏差放大成定位误差——这一点 Generalized Focal Loss #Li et al., 2023# 在检测框上、D-FINE #Peng et al., 2024# 在 bbox 回归上都已论证过。</p>
+
+  <p>ContourFormer 想同时解决两件事：一是把 contour-based 完整搬进 DETR 范式，拿到端到端、无 NMS、无 anchor 的好处；二是把"确定坐标回归"换成"概率分布回归"，让模型显式表达位置不确定性。它的自我定位是"完全基于 DETR 范式"（论文原话 <em>fully based on the DETR paradigm</em>）#Yao et al., 2025#；在 contour-based 路线里它也是第一个完整采用 DETR 范式的代表——<strong>此为本文判断</strong>，因 BoundaryFormer/PolyFormer/DeepSnake 等确非纯 DETR 范式（论文未自夸 "first"）。作者并期望它成为该领域的强 baseline 而非颠覆 mask 主流。作者来自中车时代电气（株洲，CRRC 工业界轨交团队），contour 表示的紧凑性、实时性、显式几何对车载/轨旁嵌入式感知有直接工程价值——尤其 KINS 这个自动驾驶车辆 amodal 分割基准与他们的智能交通方向契合。#Yao et al., 2025#</p>
+
+  <div class="callout"><strong>本系列里的位置</strong>：本系列前三篇（<a href="paper-sam-2.html">SAM 2</a>、RVM、<a href="paper-track-anything.html">Track Anything</a>）讲的是<strong>视频</strong>里提取时序一致轮廓。ContourFormer 是<strong>图像级</strong>、逐实例的方法，没有时序机制——它回答的是"单张图里怎么用 contour 又快又准地切出每个实例"。把它收进这个系列，是因为 contour <em>表示</em>（离散多边形顶点）是图像侧与视频侧共享的底座，也是 MPEG-4 形状编码、两链接链形状表示那条 contour 表示谱系在 DETR 时代的延续。</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题定义</div>
+  <div class="ch-title">输出是一条 64 点闭合多边形，不是一张掩码</div>
+
+  <p>给定一张 RGB 图像 $I\in\mathbb{R}^{H\times W\times 3}$，模型要为图中每个感兴趣实例输出两样东西：一个语义类别 $c$，和一条闭合多边形轮廓 $V=\{v_i\}_{i=0}^{N_v-1}$，其中每个边界点 $v_i=(x_i,y_i)$，共 $N_v=64$ 个点。#Yao et al., 2025# 也就是说，模型最终要为每个实例回归 $2N_v=128$ 个标量坐标——这比 mask 的 $H\times W$ 个值紧凑得多，也正是 contour-based 省算力的根源。</p>
+
+  <p>这个问题被严格定义成<strong>端到端集合预测</strong>：输入一张图，输出一个无序实例集合 $\{(c_k, V_k)\}_{k=1}^{K}$，集合大小由查询数 $N_q$ 上界（实现中 $N_q=300$）封顶，遵循 DETR 范式 #Carion et al., 2020#，不依赖 NMS、不依赖 anchor、不依赖 RoI pooling。训练用 Hungarian 一对一匹配；encoder 端只用 cls+bbox cost，decoder 端用类别预测、contour 点集相似度、外加 contour 外接框与 GT 框的相似度共同决定匹配。#Yao et al., 2025#</p>
+
+  <p>三个硬约束同时压在方法上：端到端无后处理、实时（A30 上 512×512 达 24.6 FPS）、在 SBD/COCO/KINS 上显著超越既有 contour-based SOTA（SBD 上比 TSnake 高 8.7 AP_vol）。#Yao et al., 2025# 要在一个 DETR decoder 里同时满足"准"和"快"，就得在 contour 怎么表示、怎么采样特征、怎么回归位置这三件事上动刀——这正是 Part 3 的两个核心创新要解决的。</p>
+
+  <div class="info-box">
+    <h3>三库速览</h3>
+    <p><strong>SBD</strong>：PASCAL VOC2010 图像重标注，5623 训练/5732 测试，20 类，512×512 单尺度。<strong>COCO</strong>：11.5 万自然场景训练图，80 类，512×512 单尺度。<strong>KINS</strong>：KITTI 图像实例级标注的 amodal 分割，7 类（车、货车、行人等），7474 训练/7517 测试，768×2496 单尺度——注意 KINS 是<strong>车辆等前景的 amodal 分割</strong>（含被遮挡部分的完整形状），不是可行驶区域/freespace 分割。#Yao et al., 2025#</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">D-FINE 基座 + sub-contour 解耦 + CFDR 概率精修</div>
+
+  <h3 class="section-title">3.1 整体架构：把 bbox 回归扩成 contour 回归</h3>
+
+  <p>ContourFormer 明确声明"This framework is built upon the D-FINE object detection model and extends the regression of bounding boxes to the regression of contours"——直接基座是 D-FINE #Peng et al., 2024#，一个把 bbox 回归重定义成细粒度分布精修的实时 DETR 检测器。D-FINE 自己又是 DETR #Carion et al., 2020# + Deformable DETR #Zhu et al., 2021# + RT-DETR/HGNetv2 #Zhao et al., 2023# 系的产物。ContourFormer 借了 D-FINE 的 HGNetv2 主干、deformable attention 参数、denoising 训练、fine-grained distribution refinement 思想，再把"4 个 bbox 坐标的分布"扩成"$2N_v=128$ 个 contour 顶点的分布"。#Yao et al., 2025#</p>
+
+  <p>架构分三段（见图 1）：Backbone（HGNetv2-B2 或 B3）抽多尺度特征 → Encoder（D-FINE 风格）出实例级 query $\{q_i^{\mathrm{ins}}\}$ 和初始 bbox，并<strong>用初始 bbox 的内切椭圆采样</strong>得到初始多边形 $V^0=\{v_i\}_{i=0}^{N_v-1}$（采样方法参考 Curve-GCN #Ling et al., 2019#）→ 把 $V^0$ 切成 $N_c=8$ 段 sub-contour，送进 $L$ 层 Transformer decoder（B2 用 $L=4$，B3 用 $L=6$）逐层精修，最后拼接成完整 contour 输出。整条路是单阶段前向，无 NMS、无后处理。#Yao et al., 2025#</p>
+
+  <p>这里有两个设计选择值得记下：第一，选 64 个边界点是离散化精度与回归维度（$2N_v=128$）的折中，沿用 E2EC/PolySnake 惯例；第二，椭圆初始化相比 E2EC 的可学习初始化是"参数免费"的强先验，给后续残差精修一个尺度正确、拓扑闭合的起点。#Yao et al., 2025#</p>
+
+  <h3 class="section-title">3.2 sub-contour 解耦：把 64 维结构化回归降成 8 个 8 维子回归</h3>
+
+  <p><strong>动机</strong>：直接让一个 query 回归一整条 64 点轮廓，是 $2N_v=128$ 维的高度耦合结构化回归——样本效率低、优化难。E2EC #Zhang et al., 2022# 的可学习初始化思路曾在点维度上做解耦（此为 E2EC 自身方法，非本文转述），ContourFormer 则在 <strong>query 维度</strong>上解耦。#Yao et al., 2025#</p>
+
+  <p><strong>直觉</strong>：把一条 64 点轮廓切成 8 段 sub-contour（每段 8 点，$N_c\times N_s=N_v\Rightarrow 8\times 8=64$），每段只需学局部几何（线段曲率、转角），学习样本相对充裕；跨段的拓扑连续性交给 self-attention 在 sub-contour 级 query 之间交换信息来维护。这本质是把一个 128 维回归降成一组 16 维（$2N_s$）子回归。</p>
+
+  <div class="photo">
+    <img src="media/images/contourformer-2025/fig2.webp" alt="sub-contour 解耦机制" loading="lazy">
+    <div class="cap">图 2：sub-contour 解耦机制。每层 decoder 先对 sub-contour 级 query $\{q_j^c\}$ 做一轮 self-attention、再对实例级 query $\{q_i^{ins}\}$ 做一轮；cross-attention 时用上一层预测的 sub-contour $\{v_i\}$ 的外接框 $\{x,y,w,h\}$ 作为特征采样范围（来源：Yao et al., 2025, Fig.2）。</div>
+  </div>
+
+  <p><strong>机制</strong>：第 $i$ 个实例第 $j$ 段子轮廓的复合 query 是<strong>加法</strong>组合</p>
+
+  \[ q_{ij} = q_i^{\mathrm{ins}} + q_j^{\mathrm{c}} \tag{1} \]
+
+  <p>其中 $\{q_i^{\mathrm{ins}}\}_{i=0}^{N_q-1}$ 是实例级 query（$N_q=300$），$\{q_j^{\mathrm{c}}\}_{j=0}^{N_c-1}$ 是子轮廓级 query（$N_c=8$，全实例共享）。加法（不是拼接）意味着 sub-contour 的身份被解耦成"哪个实例"+"哪段子轮廓"两个正交轴，embedding 相加即可索引任一 (实例, 子轮廓) 二元组。这一步是后续 decoupled self-attention 能降复杂度的前提。</p>
+
+  <p>若对全部 $N_q\times N_c=2400$ 个 $q_{ij}$ 做<em>朴素</em>全自注意力，复杂度会是 $O((N_qN_c)^2)$；解耦方案分两轮——先对 $N_c=8$ 个 $\{q_j^c\}$ 做自注意力、再对 $N_q=300$ 个 $\{q_i^{\mathrm{ins}}\}$ 做自注意力——把复杂度降到 $O((N_q+N_c)^2)$，在 query 维度上显著降低。#Yao et al., 2025# 这正是 $N_c=8$ 时仍能保持 38.8 FPS（不开 CFDR）的关键。消融里 $N_c$ 越大精度越高但越慢（$N_c=16$ <strong>仍用解耦 SA</strong>，能到 66.5 AP_vol 但 FPS 跌到 28.3、显存涨到 3734 MB）——速度下降来自 cross-attention 的 query 数随 $N_c$ 线性增长（$N_qN_c$ 从 2400 增到 4800），而非 SA 模式切换；$N_c=8$ 是速度-精度-显存的最优点。</p>
+
+  {{< mermaid >}}
+graph TD
+    EI["实例级 query {q_i^ins} (N_q=300)"]
+    EC["子轮廓级 query {q_j^c} (N_c=8, 全实例共享)"]
+    QIJ["复合 query q_ij = q_i^ins + q_j^c  (N_q·N_c=2400)"]
+    EI --> QIJ
+    EC --> QIJ
+    QIJ --> S1["第1轮 self-attn: over {q_j^c}"]
+    S1 --> S2["第2轮 self-attn: over {q_i^ins}"]
+    S2 --> CA["cross-attn (deformable)<br/>采样范围 = 上层 sub-contour 外接框"]
+    CA --> F["CFDR head: Δlogits → Pr^l → v^l"]
+    F --> OUT["拼接 8 段 sub-contour → 完整 contour"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">3.3 sub-contour deformable cross-attention：让采样跟着轮廓形状走</h3>
+
+  <p>cross-attention 用 deformable attention（参数沿用 D-FINE decoder 设置，D-FINE 又继承自 Deformable DETR #Zhu et al., 2021#），但<strong>采样范围</strong>不是由 query 自身位置决定，而是由<strong>上一层预测的 sub-contour $\{v_i\}_{i=0}^{N_s-1}$ 的外接框</strong> $\{x,y,w,h\}$ 决定。#Yao et al., 2025# 先对该段 8 个预测点求 axis-aligned 外接框，以此框作为 deformable attention 的采样范围。</p>
+
+  <div class="callout"><strong>与 Deformable DETR 的关键差异</strong>：Deformable DETR 的采样偏移依 query <em>自身学到</em>的 reference point（DAB-DETR #Liu et al., 2022# 把它显式化为 anchor box 中心），采样范围本质由"query 学到的位置"决定；ContourFormer 的采样范围由<em>当前预测的 sub-contour 形状</em>决定——是 contour 几何的函数。这意味着采样会随 contour 逐层收敛而自适应收缩：早期 contour 框大、采样粗，后期框紧贴边界、采样聚焦真正的边界带。这是 <strong>geometry-aware adaptive sampling</strong>，不是 query-learned sampling。消融显示这个机制带来 $+1.3\,\mathrm{AP_{vol}}$ 且<strong>不增加 FPS/显存开销</strong>。（与 Deformable DETR 的 reference-point 对比为本文分析，非论文原文转述。）#Yao et al., 2025#</div>
+
+  <h3 class="section-title">3.4 CFDR：把轮廓点位置建模成概率分布</h3>
+
+  <div class="photo">
+    <img src="media/images/contourformer-2025/fig3.webp" alt="CFDR 概率分布精修" loading="lazy">
+    <div class="cap">图 3：Contour Fine-Grained Distribution Refinement (CFDR)。第一层用常规回归头预测初始 contour、用 CFDR head 给出初步概率分布；后续每层用残差调整更新分布，逐步锐化到精确边界（来源：Yao et al., 2025, Fig.3）。</div>
+  </div>
+
+  <p><strong>动机</strong>：确定性回归无法表达位置不确定性，在模糊边界处易放大误差。受 D-FINE #Peng et al., 2024# 把 bbox 回归重定义为 fine-grained 离散分布的启发（再往前是 Generalized Focal Loss #Li et al., 2023# 把连续回归量离散成分布），CFDR 把同样的概率建模扩展到 contour 点。</p>
+
+  <p><strong>机制</strong>：第 1 层输出两部分——常规回归头给主轮廓估计 $v^0$，CFDR head 给每个边界点的初步偏移分布 $\{Pr_x^1(n),Pr_y^1(n)\}$。后续层残差精修：</p>
+
+  \[ v^{l} = v^{0} + \{W_c, H_c\}\cdot \sum_{n=0}^{N} W(n)\, Pr^{l}(n), \quad l\in\{1,2,\dots,L\} \tag{2} \]
+
+  <p>其中 $Pr^l(n)=\{Pr_x^l(n),Pr_y^l(n)\}$ 是 x/y 两个方向上<strong>离散偏移 bin</strong> 的双变量概率分布；$\{W_c,H_c\}$ 是当前实例外接框宽高，作实例特定尺度的偏移幅度缩放（大实例 bin 步长大、小实例步长小）；$W(n)$ 是可微查找表，把 bin 索引 $n$ 映射为实际偏移量（类比 GFL 的离散化——此为本文类比，原文仅称 differentiable look-up table）。残差精修的核心是</p>
+
+  \[ Pr^{l}(n) = \mathrm{Softmax}\bigl(\Delta\mathrm{logits}^{l}(n) + \mathrm{logits}^{l-1}(n)\bigr) \tag{3} \]
+
+  <p>每层不直接预测新分布，而是在上一层分布的 logits 上加一个残差 $\Delta\mathrm{logits}$，经 Softmax 后分布被"逐步锐化"——早期分布平缓（位置不确定，bin 概率分散），后期分布尖锐（位置收敛到某一 bin）。全过程可微，梯度经 Softmax 回流到每层的 $\Delta\mathrm{logits}$。（原文式 (3) 第二项写作 $\mathrm{logits}(\cdot)$，疑为 $\mathrm{Softmax}$ 笔误，本文据上下文修正。）#Yao et al., 2025#</p>
+
+  <div class="callout"><strong>CFDR 的三大优势</strong>（原文列举）：① <em>Uncertainty-aware</em>——显式概率分布捕获多尺度位置模糊性；② <em>Progressive refinement</em>——残差 logits 使分布跨层逐步锐化；③ <em>Geometry-aware adaptation</em>——$\{W_c,H_c\}$ 提供实例特定的偏移幅度缩放。这是 ContourFormer 相对 D-FINE 的核心增量：把分布建模从 4 个 bbox 坐标扩到 $2N_v=128$ 个 contour 坐标，每点独立建模 x/y 双变量分布并做尺度自适应。代价不便宜——消融显示 CFDR 只带来 $+0.5\,\mathrm{AP_{vol}}$，但 FPS 从 38.8 降到 24.6。#Yao et al., 2025#</div>
+
+  <h3 class="section-title">3.5 多阶段渐进：迭代内化为 decoder 堆叠</h3>
+
+  <p>"多阶段"在本文有两层含义：一是 $L$ 层 decoder 的<strong>层间级联</strong>，stage 间信息传三条通道——query 通道（上层 query 状态作下层输入）、几何通道（上层 sub-contour 外接框→下层 cross-attention 采样范围）、分布通道（上层 $\mathrm{logits}^{l-1}$→下层 Softmax 输入）；二是 <strong>sub-contour 级联</strong>——8 段子轮廓在每层并行精修再拼接，相当于把一条 64 点轮廓的精修拆成 8 个并行子任务。#Yao et al., 2025# 关键在于：ContourFormer 把传统 contour 方法（DeepSnake/PolySnake）的"多阶段 snake forward"——每个变形步骤是独立 CNN forward——<strong>内化为 decoder 层堆叠</strong>，一次前向完成。这是它比那些多阶段方法快的根本原因。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · Training Pipeline</div>
+  <div class="ch-title">Hungarian 一对一匹配 + VFL/L1/shape 三项损失</div>
+
+  <p>训练遵循 DETR 的端到端集合预测：一对一 Hungarian 二分匹配，无 NMS/anchor。encoder 只生成初始检测框，匹配只用类别预测+bbox cost，监督用 classification loss + detection box loss；decoder 端的匹配考虑类别预测、contour 点集相似度、contour 外接框与 GT 框相似度。所有 $L$ 层 decoder 都独立计算损失（深监督，沿用 DETR 系惯例）。#Yao et al., 2025#</p>
+
+  <p>每层 decoder 的总损失：</p>
+
+  \[ \mathcal{L}_{\mathrm{decoder}} = \lambda_c\,\mathcal{L}_{\mathrm{cls}} + \lambda_p\,\mathcal{L}_{p} + \lambda_s\,\mathcal{L}_{\mathrm{shape}} \tag{4} \]
+
+  <p>权重 $\lambda_c=1.0,\ \lambda_p=1.0,\ \lambda_s=0.25$。#Yao et al., 2025# 三项分别是：分类损失 $\mathcal{L}_{\mathrm{cls}}$ 用 <strong>Variational Focal Loss (VFL)</strong> #Zhang et al., 2021#，实现 IoU-aware 的分类与定位一致约束；点对点损失 $\mathcal{L}_p$ 用 <strong>L1 loss</strong> 监督每个预测点位置；形状损失 $\mathcal{L}_{\mathrm{shape}}$ 在<strong>边级几何</strong>上监督——先算 contour 相邻点（含末点→首点的闭合边）的偏移向量 $\nabla V=\{\Delta v^{1\to 0},\dots,\Delta v^{N_{v-1}\to 0}\}$，再对预测与 GT 的偏移向量求<strong>余弦相似度</strong>之和：</p>
+
+  \[ \mathcal{L}_{\mathrm{shape}} = \sum_{i=0}^{N_v-1} \mathrm{cos\_sim}\bigl(\Delta v_{\mathrm{pred}}^{i+1\to i},\ \Delta v_{\mathrm{gt}}^{i+1\to i}\bigr) \tag{5} \]
+
+  <p>这个 shape loss 思路沿用 PolySnake #Feng et al., 2024#。需要留意一个原文未明示的细节：cos_sim 是相似度（越大越好），作为 loss 应取 $(1-\cos)$ 或负值——原文未写清方向，按 PolySnake 惯例处理。CFDR 的概率分布本身没有独立显式损失项，而是经式 (2)(3) 产生 $v^l$ 后，由 $\mathcal{L}_p$（L1）与 $\mathcal{L}_{\mathrm{shape}}$ 间接反传训练。#Yao et al., 2025#</p>
+
+  <div class="table-wrap param-table">
+    <table>
+      <thead><tr><th>超参</th><th>值</th><th>出处/说明</th></tr></thead>
+      <tbody>
+        <tr><td>Backbone</td><td>HGNetv2-B2（ContourFormer）/ B3（ContourFormer+）</td><td>来自 RT-DETR #Zhao et al., 2023#，非 ResNet/Swin</td></tr>
+        <tr><td>轮廓点数 $N_v$</td><td>64</td><td>回归 $2N_v=128$ 标量 #Yao et al., 2025#</td></tr>
+        <tr><td>实例 query $N_q$</td><td>300</td><td>集合预测上界 #Yao et al., 2025#</td></tr>
+        <tr><td>sub-contour 数 $N_c$</td><td>8</td><td>$N_c\times N_s=N_v\Rightarrow N_s=8$ #Yao et al., 2025#</td></tr>
+        <tr><td>decoder 层数 $L$</td><td>4（B2）/ 6（B3）</td><td>#Yao et al., 2025#</td></tr>
+        <tr><td>优化器</td><td>Adam</td><td>β/ε/weight decay 原文未给 #Yao et al., 2025#</td></tr>
+        <tr><td>denoising modules</td><td>100</td><td>DN-DETR #Li et al., 2022# 思路加速收敛 #Yao et al., 2025#</td></tr>
+        <tr><td>损失权重</td><td>$\lambda_c{=}1.0,\lambda_p{=}1.0,\lambda_s{=}0.25$</td><td>cls/p/shape #Yao et al., 2025#</td></tr>
+        <tr><td>deformable attn 参数</td><td>沿用 D-FINE decoder</td><td>原文未列采样点数等数值 #Yao et al., 2025#</td></tr>
+        <tr><td>SBD 训练</td><td>200 epochs，512×512 单尺度</td><td>#Hariharan et al., 2011#</td></tr>
+        <tr><td>COCO 训练</td><td>72 epochs，512×512 单尺度</td><td>#Lin et al., 2014#</td></tr>
+        <tr><td>KINS 训练</td><td>100 epochs，768×2496 单尺度</td><td>follow PolySnake #Qi et al., 2019#</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4 class="ch-section">训练配置披露（10 项逐项标注）</h4>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>训练配置项</th><th>披露状态</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露：SBD 200ep / COCO 72ep / KINS 100ep，分辨率与划分明确 #Yao et al., 2025#</td></tr>
+        <tr><td>优化器</td><td>已披露：Adam（β/ε/weight decay 未给）#Yao et al., 2025#</td></tr>
+        <tr><td>训练步数</td><td>部分披露：epoch 给出，step 数未给 #Yao et al., 2025#</td></tr>
+        <tr><td>训练硬件</td><td><strong>未披露</strong>：A30 仅用于推理测速，训练 GPU 型号/数量未给 #Yao et al., 2025#</td></tr>
+        <tr><td>学习率 / schedule / warmup</td><td><strong>未披露</strong> #Yao et al., 2025#</td></tr>
+        <tr><td>Batch size</td><td><strong>未披露</strong> #Yao et al., 2025#</td></tr>
+        <tr><td>训练时长</td><td><strong>未披露</strong> #Yao et al., 2025#</td></tr>
+        <tr><td>模型参数量</td><td><strong>未披露</strong>（仅给 FPS/显存，无 FLOPs/params）#Yao et al., 2025#</td></tr>
+        <tr><td>精度格式（FP16/BF16）</td><td><strong>未披露</strong> #Yao et al., 2025#</td></tr>
+        <tr><td>数据增强 / 正则化 / Checkpoint</td><td><strong>未披露</strong> #Yao et al., 2025#</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition warning">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>训练配置披露缺口</div>
+    <div class="admonition-content"><p>原文只给了优化器类型、epoch、分辨率、损失权重、denoising 数；<strong>学习率 schedule、warmup、batch size、训练硬件（A30 仅用于测速）、训练时长、数据增强、正则化、精度格式</strong>均未明确给出——复现需向上游 D-FINE 反推或读代码确认。#Yao et al., 2025#</p></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · Inference Pipeline</div>
+  <div class="ch-title">单阶段前向、无 NMS，实时来自三件事</div>
+
+  <p>推理与训练结构一致，是<strong>单阶段前向</strong>：图像→Backbone 多尺度特征→Encoder 出实例 query + 初始 bbox + 椭圆初始 contour→切 8 段 sub-contour 构造复合 query→$L$ 层 decoder 逐层精修（decoupled SA→sub-contour 外接框引导的 deformable CA→CFDR 残差精修分布）→拼接 sub-contour 成完整 contour，输出 (cls, V)→<strong>无 NMS、无 anchor、无后处理</strong>。#Yao et al., 2025#</p>
+
+  <p>ContourFormer 不是视频方法，没有 streaming pipeline（chunk/cache/causal mask 那一套与本篇无关）。它的"实时"是图像级单帧延迟意义上的实时，来自三个叠加因素：</p>
+
+  <ol>
+    <li><strong>HGNetv2 实时主干</strong> #Zhao et al., 2023#：RT-DETR 系高效 backbone，是实时基座的第一块。</li>
+    <li><strong>decoupled self-attention</strong>：$O((N_q+N_c)^2)$ 替代朴素 $O((N_qN_c)^2)$，是 $N_c=8$ 时仍保持 38.8 FPS（不开 CFDR）/ 24.6 FPS（开 CFDR）的关键。#Yao et al., 2025#</li>
+    <li><strong>单阶段前向 + 迭代内化</strong>：不像 DeepSnake/DANCE/PolySnake 的多阶段 snake 迭代（每步一次独立 CNN forward），ContourFormer 把"迭代收敛"内化为 decoder 层堆叠，每层是高效 deformable attention（只采 $K$ 个点，远小于 full attention 的 $HW$），一次前向即出结果。#Yao et al., 2025#</li>
+  </ol>
+
+  <p>速度数据（NVIDIA A30 GPU）#Yao et al., 2025#：</p>
+  <ul>
+    <li>SBD/COCO 512×512：ContourFormer（B2）24.6 FPS，ContourFormer+（B3）18.2 FPS</li>
+    <li>KINS 768×2496：B2 14.4 FPS，B3 11.5 FPS（推测同 A30 硬件）</li>
+  </ul>
+
+  <p>把 FPS 换算成单帧延迟能更直观地理解"实时"的边界：24.6 FPS 约等于 <strong>40.7 ms/帧</strong>，处于"接近实时"的区间（通用实时阈值常取 30 FPS / 33 ms）；ContourFormer+ 的 18.2 FPS（~55 ms）和 KINS 配置的 14.4 FPS（~69 ms）则已不算严格实时。#Yao et al., 2025# 论文没有公布逐段延迟拆解（backbone/encoder/decoder 各占多少），但从机制可推断速度的来源与瓶颈：decoder 层是 deformable attention——只在多尺度特征图上采少量点（沿用 D-FINE/Deformable DETR 的 $K$ 点设置 #Zhu et al., 2021#），复杂度与空间分辨率线性而非平方，远低于 full attention 的 $O(HW)$；backbone 只跑一次。</p>
+
+  <p>和 DeepSnake/PolySnake 这类多阶段 snake 方法比，延迟量级差异的根源就在这里：那些方法的每个形变步骤是一次独立的 CNN forward（过 backbone+head），$N$ 步 snake 约等于 $N$ 次单遍前向；ContourFormer 把"迭代"内化成 decoder 层堆叠，4–6 层 decoder 共享同一份已抽好的多尺度特征、每层只做轻量 deformable attention + 解耦 SA，不再重跑 backbone。这正是"单阶段前向"能在 A30 上压到 24.6 FPS 的结构性原因。KINS 的高分辨率（768×2496）把速度从 24.6 压到 14.4，主要因为更大的特征图让 deformable 采样覆盖更多空间位置、且要在更大画面上精修 64 个边界点——高分辨率对 contour-based 的代价在 KINS 上显形。</p>
+
+  <div class="callout"><strong>实时性的代价要分开看</strong>：CFDR 是主要推理负担——开 CFDR 让 FPS 从 38.8 掉到 24.6（$-14.2$ FPS）；换大 backbone B2→B3 再掉一截到 18.2。KINS 的高分辨率（768×2496）进一步把 B2 压到 14.4 FPS。所以"实时"在 512×512 上成立，在大图/密集小目标场景会被削弱——这是 contour-based 通病与 CFDR 开销叠加的结果。#Yao et al., 2025#</div>
+
+  <p>显存方面（SBD 消融）：$N_c=0$ 时 1632 MB，$N_c=8$ 时 2640 MB，$N_c=16$ 时 3734 MB；完整配置（$N_c=8$+bbox 采样+CFDR）2716 MB。#Yao et al., 2025# 原文未给 FLOPs/参数量，只有 FPS 与显存。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验配置与验证</div>
+  <div class="ch-title">三库全面 SOTA，消融把每个组件的贡献和代价都量清楚了</div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>实验配置项</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露：SBD val、COCO val+test-dev、KINS test #Yao et al., 2025#</td></tr>
+        <tr><td>评测指标</td><td>已披露：AP_vol/AP50/AP70（SBD）、AP_val/AP_test-dev（COCO）、AP（KINS）#Yao et al., 2025#</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露：DeepSnake/DANCE/E2EC/PolySnake/TSnake（仅 contour-based，未含 mask-based SOTA）#Yao et al., 2025#</td></tr>
+        <tr><td>推理硬件</td><td>已披露：NVIDIA A30 #Yao et al., 2025#</td></tr>
+        <tr><td>推理分辨率</td><td>已披露：512×512（SBD/COCO）、768×2496（KINS）#Yao et al., 2025#</td></tr>
+        <tr><td>推理环境（框架/精度）</td><td><strong>未披露</strong>：框架（D-FINE 有 PyTorch/PaddlePaddle 两版）、精度格式均未明示 #Yao et al., 2025#</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">主实验：三库对比</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>SBD AP_vol</th><th>COCO test-dev AP</th><th>KINS AP</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSnake #Peng et al., 2020#</td><td>54.4</td><td>30.3</td><td>31.3</td></tr>
+        <tr><td>DANCE #Liu et al., 2021#</td><td>56.2</td><td>—</td><td>—</td></tr>
+        <tr><td>E2EC #Zhang et al., 2022#</td><td>59.2</td><td>33.8</td><td>34.0</td></tr>
+        <tr><td>PolySnake #Feng et al., 2024#</td><td>60.0</td><td>34.9</td><td>35.2</td></tr>
+        <tr><td>TSnake #Hsu et al., 2024#</td><td>60.5</td><td>—</td><td>—</td></tr>
+        <tr><td>ContourFormer（B2）</td><td>67.6</td><td>36.5</td><td>35.3</td></tr>
+        <tr><td><strong>ContourFormer+（B3）</strong></td><td><strong>69.2</strong></td><td><strong>37.6</strong></td><td><strong>36.2</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><small>原文 SBD 表另含 EigenContours（AP50=56.5）、COCO 表另含 PolarMask++（test-dev=33.8），因指标列不全未列入本主表，详见原文 SBD/COCO 表。#Yao et al., 2025#</small></p>
+
+  <div class="callout"><strong>关键发现</strong>：ContourFormer+ 在三库全面刷新 contour-based SOTA。SBD 上 69.2 AP_vol，比 SBD 最强 contour 基线 TSnake 高 <strong>+8.7</strong>（比 PolySnake 高 +9.2）；COCO test-dev 37.6，比 PolySnake 高 <strong>+2.7</strong>；KINS 36.2，比 PolySnake 高 <strong>+1.0</strong>。注意 KINS 提升最小——论文也坦承在 KINS 上相对 PolySnake 优势不大。#Yao et al., 2025# 另外要分清：headline 数字 69.2/37.6/36.2 是 <strong>ContourFormer+（B3 backbone）</strong>；B2 版是 67.6/36.5/35.3。</div>
+
+  <p>也要把精度放进大盘看：COCO test-dev 37.6 AP 距 Mask2Former/Mask DINO 一系 mask-based SOTA 的 50+ AP 仍有 12+ 个点的鸿沟——这是 contour-based 整条路线的未竟之志，论文也只在 contour 派内对比。KINS 上仅 +1.0 AP 的最小提升，大概率与 amodal 任务对 contour 初始化的挑战有关：被遮挡部分的完整形状对椭圆初始化 + 残差精修要求更高，contour 表示在重度遮挡下的恢复能力受限。</p>
+
+  <h3 class="section-title">消融一：sub-contour 数 $N_c$</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>$N_c$</th><th>AP_vol</th><th>FPS</th><th>显存 (MB)</th></tr></thead>
+      <tbody>
+        <tr><td>0</td><td>64.0</td><td>49.6</td><td>1632</td></tr>
+        <tr><td>4</td><td>65.1</td><td>39.8</td><td>2072</td></tr>
+        <tr><td>8</td><td>65.8</td><td>38.8</td><td>2640</td></tr>
+        <tr><td>16</td><td>66.5</td><td>28.3</td><td>3734</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>$N_c$ 从 0→16 精度单调升（64.0→66.5），但 $N_c=16$ 时 FPS 从 49.6 跌到 28.3、显存翻倍到 3734 MB。$N_c=8$ 是折中选定点——相对 $N_c=4$ 只 $-1.0$ FPS 换 $+0.7$ AP_vol，而 $N_c=16$ 要再付 $-10.5$ FPS、$+1094$ MB 才换 $+0.7$ AP_vol，性价比陡降。#Yao et al., 2025#</p>
+
+  <h3 class="section-title">消融二：sub-contour bbox 采样 + CFDR</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>sub-contour bbox 采样</th><th>CFDR</th><th>AP_vol</th><th>FPS</th><th>显存 (MB)</th></tr></thead>
+      <tbody>
+        <tr><td>—</td><td>—</td><td>65.8</td><td>38.8</td><td>2640</td></tr>
+        <tr><td>✓</td><td>—</td><td>67.1</td><td>38.8</td><td>2640</td></tr>
+        <tr><td>✓</td><td>✓</td><td>67.6</td><td>24.6</td><td>2716</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>最有意思的消融发现</strong>：sub-contour bbox 作采样范围带来 <strong>+1.3 AP_vol 且零速度/显存代价</strong>——这是"白吃"的精度；CFDR 再 <strong>+0.5 AP_vol 但代价是 $-14.2$ FPS</strong>（24.6）+76 MB。也就是说，ContourFormer 那条"geometry-aware 自适应采样"的几何创新几乎免费，而那个概率分布精修（CFDR）才是真正的推理负担。#Yao et al., 2025#</div>
+
+  <p>把各组件贡献量累起来（SBD，AP_vol）：$N_c=0$ 基线 64.0 → +sub-contour 解耦（$N_c$ 0→8）+1.8 → +bbox 采样 +1.3 → +CFDR +0.5 = 67.6（ContourFormer B2）→ 换 B3 backbone +1.6 = 69.2（ContourFormer+）。#Yao et al., 2025# 可以看到 sub-contour 解耦是最大单项贡献，CFDR 精度收益小但速度代价大。</p>
+
+  <h3 class="section-title">定性结果</h3>
+
+  <div class="photo">
+    <img src="media/images/contourformer-2025/sbd1.webp" alt="SBD val 定性结果示例" loading="lazy">
+    <div class="cap">图 4：ContourFormer 在 SBD val 上的定性结果示例（预测的 64 点闭合多边形贴合目标边界）。完整 8 图网格见原文 Fig（来源：Yao et al., 2025, SBD 定性图）。</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">强 baseline 而非颠覆：contour 派仍没追平 mask 派</div>
+
+  <p>读完这篇，几个值得拎出来的判断：</p>
+
+  <p><strong>第一，定位很克制。</strong>作者明确把 ContourFormer 定位为 contour 派的"强 baseline"而非颠覆 mask 主流的新范式——Conclusion 自述"we anticipate that Contourformer will serve as a pivotal baseline in this field"。#Yao et al., 2025# 它只在 contour-based 方法间对比（DeepSnake/DANCE/E2EC/PolySnake/TSnake），刻意回避与 Mask2Former/Mask DINO 等 mask-based SOTA 正面比数值。这不是回避批评，而是诚实承认：COCO 37.6 AP 距 mask-based 的 50+ AP 仍有鸿沟，contour-based 与 mask-based 的精度 gap 未真正弥合。</p>
+
+  <p><strong>第二，CFDR 是个"贵但必要"的精修。</strong>它只带来 +0.5 AP_vol 却吃掉 14.2 FPS——精度收益小、速度代价大。这意味着在严格实时的边缘部署场景，关掉 CFDR、只保留 sub-contour 解耦 + geometry-aware 采样（38.8 FPS、67.1 AP_vol）可能才是工程上更划算的配置。这种"精度小赚但速度大亏"的组件，在落地时往往是被砍掉的第一选择。</p>
+
+  <p><strong>第三，几个未解的短板。</strong>原文没有独立 Limitations 章节，以下从消融与全文推断：椭圆初始化沿用 Curve-GCN #Ling et al., 2019# 的 bbox 内切椭圆采样，对极端非凸/细长形状初始化可能偏差大，依赖后续迭代纠正——但论文未分析失败模式；64 个边界点固定，对多凸起、孔洞等复杂拓扑表达力有限（contour-based 通病）；KINS 高分辨率下速度掉到 14.4 FPS，实时性优势在大图/密集小目标场景被削弱。#Yao et al., 2025#</p>
+
+  <p><strong>第四，可复现性有真实缺口。</strong>CFDR 的 bin 数 $N$、$W(n)$ 查找表的具体形式、分布监督损失（是否用 DFL #Li et al., 2023#）、shape loss 的方向、sub-contour 切分方式（按顶点顺序 8 等分还是按弧长）、复合 query 加法的维度对齐——这些关键点原文都没写清。复现者需主要靠论文 + D-FINE 上游代码反推，建议优先核实 GitHub 仓库实际内容（论文脚注给的是 <code>github.com/talebolano/Contourformer</code>，仓库名拼作 Contourformer 而非 ContourFormer，疑似占位/别名账号，权重与活跃度未联网核实）。#Yao et al., 2025#</p>
+
+  <div class="admonition tip">
+    <div class="admonition-title"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>可操作启发</div>
+    <div class="admonition-content"><p>① 需要紧凑、可矢量化边界几何的车载/轨旁/工业测量下游，ContourFormer 的 contour 输出天然适配 CAD/矢量管线，比 dense mask 省后处理；② 严格实时场景考虑砍 CFDR 换回 14 FPS；③ 把 D-FINE 的"bbox 分布精修"思想迁移到别的结构化回归任务（关键点、曲线）是可直接借鉴的模式——CFDR 本质就是一次成功的"把 1D bbox 分布扩到 2D 曲线点分布"的迁移示范。#Peng et al., 2024#</p></div>
+  </div>
+
+  <p>回到本系列的脉络：ContourFormer 回答的是"单张图里怎么用 contour 又快又准地切实例"，没有时序机制。它和本系列前三篇（SAM 2 / RVM / Track Anything 的<strong>视频</strong>轮廓提取）共享的是 contour <em>表示</em>这一底座，也是 MPEG-4 形状编码、两链接链形状表示那条 contour 表示谱系在 DETR 时代的延续。把它放进"视频轮廓提取"系列，是为了让 contour 表示的图像侧基础与视频侧方法在同一坐标里对望——前者给"轮廓怎么表示与回归"，后者给"轮廓怎么在帧间保持一致"。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Yao-et-al.-2025">Yao, W. et al. (2025). <strong>ContourFormer: Real-Time Contour-Based End-to-End Instance Segmentation Transformer</strong>. <em>arXiv:2501.17688</em>. <a href="https://arxiv.org/abs/2501.17688" target="_blank">arXiv:2501.17688</a> · <a href="https://github.com/talebolano/Contourformer" target="_blank">github.com/talebolano/Contourformer</a></li>
+    <li data-cite-key="Peng-et-al.-2024">Peng, Y. et al. (2024). <strong>D-FINE: Redefine Regression Task in DETRs as Fine-grained Distribution Refinement</strong>. <em>arXiv:2410.13842</em>. <a href="https://arxiv.org/abs/2410.13842" target="_blank">arXiv:2410.13842</a></li>
+    <li data-cite-key="Zhu-et-al.-2021">Zhu, X. et al. (2021). <strong>Deformable DETR: Deformable Transformers for End-to-End Object Detection</strong>. <em>ICLR 2021</em>. <a href="https://arxiv.org/abs/2010.04159" target="_blank">arXiv:2010.04159</a></li>
+    <li data-cite-key="Carion-et-al.-2020">Carion, N. et al. (2020). <strong>End-to-End Object Detection with Transformers (DETR)</strong>. <em>ECCV 2020</em>. <a href="https://arxiv.org/abs/2005.12872" target="_blank">arXiv:2005.12872</a></li>
+    <li data-cite-key="Peng-et-al.-2020">Peng, S. et al. (2020). <strong>Deep Snake for Real-Time Instance Segmentation</strong>. <em>CVPR 2020</em>. <a href="https://arxiv.org/abs/2007.04338" target="_blank">arXiv:2007.04338</a></li>
+    <li data-cite-key="Zhang-et-al.-2022">Zhang, T. et al. (2022). <strong>E2EC: An End-to-End Contour-Based Method for High-Quality High-Speed Instance Segmentation</strong>. <em>CVPR 2022</em>.</li>
+    <li data-cite-key="Feng-et-al.-2024">Feng, H. et al. (2024). <strong>PolySnake: Recurrent Generic Contour-Based Instance Segmentation with Progressive Learning</strong>. <em>TCSVT 2024</em>.</li>
+    <li data-cite-key="Liu-et-al.-2021">Liu, J. et al. (2021). <strong>DANCE: Deep Attentive Normalized Correlation Estimator</strong>. <em>WACV 2021</em>.</li>
+    <li data-cite-key="Hsu-et-al.-2024">Hsu, K. et al. (2024). <strong>TSnake: Time-Embedded Snake for Instance Segmentation</strong>. <em>APSIPA 2024</em>.</li>
+    <li data-cite-key="Xie-et-al.-2020">Xie, Y. et al. (2020). <strong>PolarMask: Single Shot Instance Segmentation</strong>. <em>CVPR 2020</em>.</li>
+    <li data-cite-key="Li-et-al.-2023">Li, X. et al. (2023). <strong>Generalized Focal Loss</strong>. <em>IEEE TPAMI 45(3)</em>.</li>
+    <li data-cite-key="Li-et-al.-2022">Li, F. et al. (2022). <strong>DN-DETR: Accelerate DETR Training by Denoising</strong>. <em>CVPR 2022</em>.</li>
+    <li data-cite-key="Liu-et-al.-2022">Liu, S. et al. (2022). <strong>DAB-DETR: Anchor Box DETR</strong>. <em>ICLR 2022</em>.</li>
+    <li data-cite-key="Zhang-et-al.-2021">Zhang, H. et al. (2021). <strong>VarifocalNet: An IoU-aware Dense Object Detector</strong> (VFL). <em>CVPR 2021</em>. · <a href="flow-guided-talking-2021.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Ling-et-al.-2019">Ling, H. et al. (2019). <strong>Fast Object Segmentation in Unconstrained 3D Vision Data (Curve-GCN)</strong>. <em>ICCV 2019</em>.</li>
+    <li data-cite-key="Zhao-et-al.-2023">Zhao, Y. et al. (2023). <strong>RT-DETR: DETRs Beat YOLOs on Real-time Object Detection</strong> (HGNetv2). <em>CVPR 2024</em>.</li>
+    <li data-cite-key="Hariharan-et-al.-2011">Hariharan, B. et al. (2011). <strong>SBD: Semantic Boundaries Dataset</strong>. <em>ICCV 2011</em>.</li>
+    <li data-cite-key="Lin-et-al.-2014">Lin, T. et al. (2014). <strong>Microsoft COCO: Common Objects in Context</strong>. <em>ECCV 2014</em>.</li>
+    <li data-cite-key="Qi-et-al.-2019">Qi, L. et al. (2019). <strong>Amodal Instance Segmentation (KINS)</strong>. <em>ICCV 2019</em>.</li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="paper-track-anything.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">论文精读（三）：Track Anything</span></a>
+  <a class="nav-card nav-hub" href="video-contour-extraction-survey.html"><span class="nav-label">枢纽页</span><span class="nav-title">视频轮廓提取模型全景</span></a>
+  <a class="nav-card nav-next" href="paper-oasis.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">论文精读（五）：OASIS</span></a>
+</div>

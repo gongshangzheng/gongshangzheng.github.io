@@ -1,0 +1,596 @@
+---
+title: "动作识别论文精读（七）：SuperAnimal，跨 45+ 物种零样本姿态估计基础模型"
+description: "深度解读 SuperAnimal：如何通过广义数据转换、关键点梯度掩码和记忆回放微调，构建覆盖 45+ 物种的零样本动物姿态估计基础模型。"
+created_at: 2026-07-09T10:35:46
+updated_at: 2026-07-09T10:45:00
+tags: ["SuperAnimal", "姿态估计", "基础模型", "DeepLabCut", "零样本"]
+aliases: ["categories/AI/动作识别/动作识别论文精读"]
+sub_id: 70
+papers: ["https://arxiv.org/abs/2203.07436", "https://doi.org/10.1038/s41467-024-48792-2"]
+repos: ["https://github.com/DeepLabCut/DeepLabCut"]
+mathjax: true
+hero_title: "SuperAnimal"
+hero_sub: "Nature Communications 2024 · EPFL Mathis Lab"
+hero_tagline: "跨 45+ 物种零样本姿态估计基础模型"
+paper_title: "SuperAnimal Pretrained Pose Estimation Models for Behavioral Analysis"
+paper_authors: ["Shaokai Ye", "Anastasiia Filippova", "Jessy Lauer", "Steffen Schneider", "Maxime Vidal", "Tian Qiu", "Alexander Mathis", "Mackenzie Weygandt Mathis"]
+paper_affiliation: "EPFL, Brain Mind Institute & Neuro-X Institute"
+paper_venue: "Nature Communications, 2024"
+paper_doi: "10.1038/s41467-024-48792-2"
+paper_code: "https://github.com/DeepLabCut/DeepLabCut"
+---
+
+<!-- ============================================================
+  Part 1 · 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">为什么需要跨物种的姿态估计基础模型？</div>
+
+  <p>在神经科学、兽医学和动物保护等领域，量化动物行为是一项基础而关键的任务。神经科学家需要精确测量小鼠的运动模式来关联大脑神经活动；兽医通过步态变化检测马匹的疼痛；生态学家在野外监测野生动物的行为模式。而在所有这些应用中，第一步都是同一个问题：<strong>动物姿态估计</strong>（Animal Pose Estimation）——从图像或视频中定位动物身体的关键解剖点，如鼻尖、耳根、四肢关节、尾巴等 #Ye-et-al-2024#。</p>
+
+  <p>2018 年，Mathis Lab 发布的 DeepLabCut 开创了基于迁移学习的无标记动物姿态估计范式 #Mathis-et-al-2018#。核心发现令人振奋：仅需 50-200 帧人工标注数据，就能训练出达到人类级别标注精度的姿态估计模型。2022 年，Multi-Animal DeepLabCut 进一步扩展到多动物场景，引入了 DLCRNet 架构 #Lauer-et-al-2022#。这一工具迅速成为神经科学领域最广泛使用的开源姿态估计软件，Google Scholar 引用超过 16,000 次。</p>
+
+  <p>但 DeepLabCut 的标准流程有一个根本性的瓶颈：<strong>每个实验室、每个新场景都需要重新标注数据并训练模型</strong>。更糟糕的是，不同实验室对同一解剖关键点的命名各不相同——同样是"鼻尖"，有的标注为 "nose"，有的标注为 "snout"，还有的标注为 "mouse1_nose" #Ye-et-al-2024#。这种标注碎片化导致了两个严重后果：</p>
+
+  <ol>
+    <li><strong>重复劳动</strong>：各实验室独立标注和训练，同样的工作被反复执行。</li>
+    <li><strong>数据孤岛</strong>：不同命名体系使得数据无法合并，无法训练覆盖多物种的大规模预训练模型。</li>
+  </ol>
+
+  <div class="callout"><strong>核心矛盾：</strong>DeepLabCut 解决了"少标注"的问题，但还没有解决"零标注"的问题。能否像 NLP 中的 BERT 或视觉中的 CLIP 一样，构建一个预训练基础模型，让用户无需标注即可直接使用？</div>
+
+  <p>这正是 Ye et al. (2024) 在 Nature Communications 上发表的 SuperAnimal 论文要回答的问题 #Ye-et-al-2024#。来自 EPFL Mathis Lab 的这篇论文提出了一套完整的"全景姿态估计"（Panoptic Pose Estimation）范式，通过六项技术创新实现了跨 45+ 物种的零样本姿态估计：</p>
+
+  <ul>
+    <li><strong>广义数据转换器</strong>：统一 20+ 数据集的关键点命名</li>
+    <li><strong>关键点梯度掩码</strong>：解决稀疏标注空间的训练稳定性</li>
+    <li><strong>记忆回放微调</strong>：避免灾难性遗忘</li>
+    <li><strong>自动关键点匹配</strong>：零样本推理时的语义对齐</li>
+    <li><strong>空间金字塔搜索</strong>：处理不同动物尺寸</li>
+    <li><strong>视频自适应</strong>：无监督伪标签提升视频推理质量</li>
+  </ul>
+
+  <p>结果令人印象深刻：零样本推理即可在六个基准上超越 ImageNet 预训练的迁移学习方法；若进行微调，数据效率比已有方法高 10-100 倍 #Ye-et-al-2024#。更重要的是，SuperAnimal 已经在下游行为分析任务中得到验证——小鼠行为分类的 F1 分数与完全监督的方法相当，马匹步态分析的蹄-地接触相关性达到 r=0.919 #Ye-et-al-2024#。</p>
+
+  <p>本文将从问题定义、方法架构、训练与推理 Pipeline、实验验证四个维度深度解读 SuperAnimal，帮助读者理解这套"动物姿态估计基础模型"的完整设计逻辑。</p>
+</div>
+
+<!-- ============================================================
+  Part 2 · 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">标注碎片化：一个阻碍基础模型的根本问题</div>
+
+  <p>要理解 SuperAnimal 的创新，首先需要看清问题的本质。动物姿态估计与人类姿态估计有一个关键区别：<strong>人类姿态估计有 COCO、MPII 等统一基准，所有数据集使用相同的 17 个关键点定义</strong>。但动物世界有数千个物种，每个物种的解剖结构不同，每个实验室的研究需求也不同，根本不存在统一的关键点标准。</p>
+
+  <p>SuperAnimal 论文在 Introduction 中清晰地描述了这一困境 #Ye-et-al-2024#：</p>
+
+  <blockquote>
+    "The current pipeline allows users to tailor deep learning models, but this then relies on human effort to identify keypoints on each animal to create a training set. This leads to duplicated labeling efforts across researchers and can lead to different semantic labels for the same keypoints, making merging data to train large foundation models very challenging."
+    <em>— Mackenzie Mathis, EPFL 新闻稿</em>
+  </blockquote>
+
+  <p>这个问题可以拆解为三个层次：</p>
+
+  <h3 class="section-title">层次一：命名不统一</h3>
+  <p>同一解剖点在不同数据集中有不同名称。这是最表层的语义对齐问题，理论上可以通过手工映射表解决。但实际操作中，映射表的质量直接影响模型学习——面部关键点的标注偏差较小（各标注者对"鼻尖"的位置判断较一致），但身体关键点的标注偏差较大（如"背部中心"的精确定位因人而异）#Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">层次二：标注稀疏性</h3>
+  <p>即使统一了命名，合并后的数据集也会面临一个更棘手的问题：<strong>没有单一数据集包含所有关键点</strong>。假设超集空间有 39 个关键点（SuperAnimal-Quadruped 的实际值），而数据集 A 只标注了 17 个，数据集 B 只标注了 20 个。将 A 和 B 投影到 39 维超集空间后，每个样本的标注向量都是稀疏的——大部分关键点的标签为 0 #Ye-et-al-2024#。</p>
+
+  <div class="callout"><strong>关键陷阱：</strong>如果直接训练，损失函数会将"未定义"（数据集中根本没有这个关键点）和"未标注"（关键点存在但被遮挡/不可见）混为一谈，对未定义的关键点施加虚假惩罚，导致训练严重不稳定。</div>
+
+  <h3 class="section-title">层次三：尺度多样性</h3>
+  <p>野外动物的相对和绝对尺寸呈长尾分布。COCO 人体姿态估计中，人体在图像中的占比相对集中；但四足动物数据集中，从近景的狗到远景的鹿，动物尺寸差异可达数十倍。CNN 不具备尺度不变性，这使得底部向上模型在不同尺寸动物上性能差异巨大 #Ye-et-al-2024#。</p>
+
+  <p>这三个层次的问题叠加在一起，使得"简单合并数据集然后训练"的朴素方案完全不可行。SuperAnimal 的核心贡献，正是针对这三个层次逐一给出了系统性的解决方案。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>问题层次</th><th>已有方法</th><th>SuperAnimal</th></tr></thead>
+      <tbody>
+        <tr><td>命名不统一</td><td>各数据集独立定义</td><td>广义数据转换器 + 手工映射表</td></tr>
+        <tr><td>标注稀疏性</td><td>朴素训练 → 虚假惩罚</td><td>关键点梯度掩码</td></tr>
+        <tr><td>微调遗忘</td><td>ImageNet 迁移学习</td><td>记忆回放微调</td></tr>
+        <tr><td>语义对齐</td><td>手工匹配</td><td>自动关键点匹配（匈牙利算法）</td></tr>
+        <tr><td>尺度多样性</td><td>固定分辨率推理</td><td>空间金字塔搜索</td></tr>
+        <tr><td>视频抖动</td><td>卡尔曼滤波</td><td>无监督视频自适应</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 3 · 模型结构与创新
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">SuperAnimal 方法全景</div>
+
+  <p>SuperAnimal 不是一种单一的模型架构，而是一套完整的方法论体系。它包含数据层面的统一、训练层面的稳定、推理层面的自适应，以及微调层面的防遗忘机制。我们可以将其拆解为六大核心组件，每个组件解决一个特定问题。</p>
+
+  {{< mermaid >}}
+flowchart TD
+  A["20+ 公开数据集"] --> B["广义数据转换器"]
+  B --> B1["手工映射表"]
+  B --> B2["词汇投影"]
+  B --> B3["数据集合并"]
+  B3 --> C["超集关键点空间"]
+  C --> D["训练阶段"]
+  D --> D1["关键点梯度掩码"]
+  D --> D2["HRNet/DLCRNet/AnimalTokenPose"]
+  D1 --> E["预训练模型"]
+  D2 --> E
+  E --> F1["零样本推理"]
+  E --> F2["微调"]
+  E --> F3["视频自适应"]
+  F1 --> G1["自动关键点匹配"]
+  F1 --> G2["空间金字塔搜索"]
+  F2 --> G3["记忆回放"]
+  F3 --> G4["伪标签"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">3.1 广义数据转换器：统一碎片化标注</h3>
+
+  <p>SuperAnimal 的第一步是将 20+ 个来源不同、格式各异的数据集统一为一个可训练的超集空间。这个过程称为"广义数据转换"（Generalized Data Converter），包含三个子步骤 #Ye-et-al-2024#：</p>
+
+  <p><strong>第一步：手工转换映射。</strong>作者人工检查每个数据集中关键点的视觉外观，判断不同数据集中的两个关键点是否应视为同一解剖位置。例如，将 "nose"、"snout"、"mouse1_nose" 统一映射为 "nose"。这一步看似简单，但实际上需要领域知识——面部关键点的映射相对容易（各标注者对鼻尖位置判断较一致），但身体关键点的映射更复杂（如"背部中心"的精确定位因人而异）#Ye-et-al-2024#。</p>
+
+  <p><strong>第二步：词汇投影。</strong>将各数据集的关键点投影到超集关键点空间。每个关键点变为超集空间中的 one-hot 向量。对于 SuperAnimal-TopViewMouse（SA-TVM），超集空间包含 27 个关键点；对于 SuperAnimal-Quadruped（SA-Q），超集空间包含 39 个关键点 #Ye-et-al-2024#。</p>
+
+  <p><strong>第三步：数据集合并。</strong>将统一后的标注向量拼接。如果图像只显示单一物种，本质上构建了该物种在不同笼子和相机设置下的专用数据集；如果包含多个物种，则以物种不变的方式分组，鼓励模型学习物种无关的关键点表示 #Ye-et-al-2024#。</p>
+
+  <div class="photo">
+    <img src="media/images/superanimal-2024/Extended_Data_01.webp" alt="构建 SuperAnimal 模型和关键点梯度掩码" loading="lazy">
+    <div class="cap">Extended Data Fig. 1：(a) 多个数据集的关键点命名映射表；(b) SA-Q 和 SA-TVM 数据集组成；(c) 梯度掩码算法示意；(d) 有/无掩码的对比。（来源：Ye et al., 2024, Extended Data Fig. 1）</div>
+  </div>
+
+  <h3 class="section-title">3.2 关键点梯度掩码：解决稀疏标注的训练稳定性</h3>
+
+  <p>这是 SuperAnimal 最核心的技术创新之一。投影到超集空间后，每个数据集只定义了部分关键点。如果直接训练，损失函数会对未定义的关键点进行惩罚（仿佛它们被遮挡了），这会严重损害训练稳定性 #Ye-et-al-2024#。</p>
+
+  <p>作者的解决方案是在损失函数中引入二值掩码 \(n_k\)。对于图像标注中存在的关键点设为 1，不存在的关键点设为 0。掩码 L_k 损失函数为：</p>
+
+  \[
+  \mathcal{L}_{\mathrm{L}_k} = \sum_{k=1}^m \sum_{i,j} n_k \cdot \| p_k(i,j) - t_k(i,j) \|^k
+  \]
+
+  <p>其中 \(p_k(i,j)\) 是关键点 \(k\) 在像素 \((i,j)\) 的预测概率，\(t_k(i,j)\) 是对应的标签，\(k=2\) 表示均方误差，\(k=1\) 表示 L1 损失。掩码交叉熵损失函数为：</p>
+
+  \[
+  \mathcal{L}_{\mathrm{CE}} = \sum_{k=1}^m \sum_{i,j} n_k t_k(i,j) \log p_k(i,j)
+  \]
+
+  <div class="callout"><strong>关键设计区分：</strong>作者明确区分了"未标注"（not annotated，可能是遮挡/不可见）和"未定义"（not defined，原始数据集中根本没有这个关键点）。梯度掩码<strong>只</strong>作用于"未定义"的关键点。如果将掩码应用于"未标注"关键点，模型会被鼓励对遮挡关键点赋予高似然 #Ye-et-al-2024#。</div>
+
+  <p>另一个精妙的设计在于 softmax 的计算方式。网络预测 \(p_k(i,j)\) 通过对所有 \(M\) 个关键点的 logits 计算 softmax 得到，<strong>包括被掩码的关键点</strong>：</p>
+
+  \[
+  p_k(i,j) = \frac{\exp l_k(i,j)}{\sum_{j=1}^{M} \exp l_j(i,j)}
+  \]
+
+  <p>如果 softmax 只在未掩码的关键点上计算，不同数据集的概率空间会不同，导致模型无法学习一致的关键点表示。通过在所有关键点上计算 softmax，概率空间保持一致，而掩码只影响损失计算——分配给未定义关键点的概率既不被惩罚也不被鼓励 #Ye-et-al-2024#。</p>
+
+  <p>消融实验验证了这一设计的重要性：没有梯度掩码的 SA-TVM 模型零样本性能严重退化（Extended Data Fig. 4a）#Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">3.3 记忆回放微调：避免灾难性遗忘</h3>
+
+  <p>当用户在下游数据集上微调 SuperAnimal 模型时，如果只使用下游数据训练，模型会遗忘预训练中学到的关键点表示——这就是经典的"灾难性遗忘"问题。SuperAnimal 的解决方案是<strong>记忆回放</strong>（Memory Replay）#Ye-et-al-2024#：</p>
+
+  <p>微调时，将预训练数据的伪标签与下游数据的真实标签混合训练。伪标签来自 SuperAnimal 模型自身的零样本推理，因此不需要访问原始训练数据。编码器和解码器都更新（与 ImageNet 迁移学习只训练随机初始化解码器不同）#Ye-et-al-2024#。</p>
+
+  <div class="photo">
+    <img src="media/images/superanimal-2024/Figure1.webp" alt="SuperAnimal 方法总览" loading="lazy">
+    <div class="cap">Fig. 1：(a) DeepLabCut Model Zoo 平台；(b) 全景姿态估计范式；(c) 任务感知微调 vs 标准迁移学习；(d) 记忆回放示意；(e-h) SA-TVM 在各基准上的性能。（来源：Ye et al., 2024, Fig. 1）</div>
+  </div>
+
+  <h3 class="section-title">3.4 自动关键点匹配：零样本推理的语义对齐</h3>
+
+  <p>即使用户已有标注数据集，关键点命名也可能与 SuperAnimal 模型不同。手工编写映射表费时且容易出错。SuperAnimal 提供了一个自动匹配算法 #Ye-et-al-2024#：</p>
+
+  <ol>
+    <li>对数据集进行零样本推理，获得预测-真实标注对</li>
+    <li>将匹配建模为二分图匹配，代价为欧氏距离</li>
+    <li>使用匈牙利算法求解每帧的匹配矩阵</li>
+    <li>对所有图像的匹配矩阵取平均（消除帧间噪声）</li>
+    <li>进行第二次二分图匹配，输出最终转换表</li>
+  </ol>
+
+  <p>作者警告：匹配质量直接影响零样本性能。如果 "nose" 被错误转换为 "tail"，模型需要"反学习"对应通道 #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">3.5 空间金字塔搜索：处理尺度多样性</h3>
+
+  <p>CNN 不具备尺度不变性，而野外动物的尺寸呈长尾分布。SuperAnimal 的解决方案是在推理时以多种分辨率对图像进行推理，然后聚合预测结果。示例参数：<code>scale_list = range(200, 600, 50)</code>（图像高度像素尺寸从 200 到 600，步长 50）#Ye-et-al-2024#。</p>
+
+  <p>值得注意的是，SA-Q 模型不需要空间金字塔搜索，因为它使用 top-down 检测器（Faster R-CNN），检测器会将动物裁剪并标准化为固定尺寸。作者选择 top-down 架构正是因为早期实验表明 bottom-up 模型在四足动物数据上性能较差 #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">3.6 视频自适应：无监督伪标签减少抖动</h3>
+
+  <p>视频中的帧间抖动（jitter）和域偏移影响姿态估计质量。SuperAnimal 提供了一种无监督视频自适应方法 #Ye-et-al-2024#：</p>
+
+  <ol>
+    <li>使用模型对视频进行推理</li>
+    <li>高置信度预测（阈值 0.5）作为伪标签</li>
+    <li>用伪标签微调模型（4 epochs）</li>
+    <li>使用适应后的模型重新推理</li>
+  </ol>
+
+  <p>性能影响：如果视频以 40 FPS 运行，视频自适应会降低到约 12 FPS；而对比方法 self-pacing（PPLO）会降低到约 4 FPS #Ye-et-al-2024#。视频自适应在 Horse-30 数据集上显著改善了 mAP（自适应增益 p&lt;0.003, Cohen's d&gt;0.785；鲁棒性增益 p=0.0001, Cohen's d=3.124）#Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">3.7 模型架构选择</h3>
+
+  <p>SuperAnimal 支持多种 backbone 架构：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>架构</th><th>类型</th><th>适用模型</th><th>特点</th></tr></thead>
+      <tbody>
+        <tr><td>HRNet-w32</td><td>CNN</td><td>SA-TVM + SA-Q</td><td>高分辨率表示，最佳精度</td></tr>
+        <tr><td>DLCRNet</td><td>CNN</td><td>SA-TVM</td><td>多动物姿态估计专用</td></tr>
+        <tr><td>AnimalTokenPose</td><td>Transformer</td><td>SA-TVM + SA-Q</td><td>ViT 编码器 + MLP 热图头</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>AnimalTokenPose 受 ViTPose #Xu-et-al-2022# 启发，将 Vision Transformer 引入动物姿态估计。ViT 编码器后接 MLP 热图估计头，在零样本设置下取得与 CNN 模型可比的性能 #Ye-et-al-2024#。HRNet-w32 #Wang-et-al-2020# 则是 CNN backbone 中精度最高的选择，在整个网络中维持高分辨率表示以实现精确的空间定位。</p>
+</div>
+
+<!-- ============================================================
+  Part 4 · Training Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · Training Pipeline</div>
+  <div class="ch-title">如何训练 SuperAnimal 模型</div>
+
+  <p>SuperAnimal 的训练分为两个阶段：预训练（构建基础模型）和微调（适配下游任务）。两个阶段的数据规模和策略各不相同。</p>
+
+  <h3 class="section-title">4.1 预训练数据集</h3>
+
+  <p>SuperAnimal 构建了两个预训练数据集，分别对应两个模型：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>规模</th><th>关键点数</th><th>组成</th></tr></thead>
+      <tbody>
+        <tr><td>TopViewMouse-5K</td><td>~5,000 帧</td><td>27</td><td>3CSI, BM, EPM, LDB, OFT, BlackMice, WhiteMice, TriMouse, DLC-Openfield, Kiehn-Lab, MausHaus</td></tr>
+        <tr><td>Quadruped-80K</td><td>~85,000 帧</td><td>39</td><td>AwA-Pose, AnimalPose, AcinoSet, Horse-30, StanfordDogs, AP-10K, APT-36K, iRodent</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>TopViewMouse-5K 专注于俯视角小鼠姿态，数据来自 9 个公开数据集和 1 个新贡献的 MausHaus 数据集（322 帧，26 关键点，C57BL/6J 小鼠）#Ye-et-al-2024#。Quadruped-80K 专注于侧视四足动物姿态，数据来自 8 个数据集，覆盖超过 45 个物种 #Ye-et-al-2024#。其中包含 AP-10K（10,015 张图像、54 物种 #Yu-et-al-2021#）、APT-36K #Yang-et-al-2022# 等重要基准。iRodent 是本文新贡献的数据集，通过 iNaturalist API 收集了 443 张啮齿类动物图像，使用 Mask R-CNN 生成分割掩码后人工标注关键点 #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">4.2 训练策略</h3>
+
+  <p>预训练使用关键点梯度掩码损失函数，在超集关键点空间上训练。SA-TVM 可以使用 bottom-up 架构（DLCRNet、HRNet-w32）或 top-down 架构（HRNet-w32 + 检测器）；SA-Q 使用 top-down 架构（HRNet-w32 + Faster R-CNN 检测器）#Ye-et-al-2024#。</p>
+
+  <p>微调时，记忆回放策略将预训练数据的伪标签与下游数据的真实标签混合训练。伪标签来自 SuperAnimal 模型的零样本推理，不需要访问原始训练数据 #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">4.3 训练配置披露表</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>项目</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>TopViewMouse-5K (~5,000 帧) / Quadruped-80K (~85,000 帧)</td></tr>
+        <tr><td>训练硬件</td><td>未披露</td><td>原文未给出 GPU 型号和数量</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>原文未给出优化器类型及参数</td></tr>
+        <tr><td>学习率</td><td>未披露</td><td>原文未给出初始学习率和 schedule</td></tr>
+        <tr><td>Batch size</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>训练步数</td><td>未披露</td><td>原文未给出预训练总 epochs（视频自适应为 4 epochs/video）</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>模型参数量</td><td>未披露</td><td>原文未给出总参数量（HRNet-w32 标准宽度 32）</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>推测为 FP32，原文未明确</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>梯度掩码</td><td>已披露</td><td>只掩码"未定义"关键点，不掩码"未标注"关键点</td></tr>
+        <tr><td>视频自适应阈值</td><td>已披露</td><td>置信度阈值 0.5，4 epochs per video</td></tr>
+        <tr><td>空间金字塔参数</td><td>已披露</td><td>scale_list = range(200, 600, 50)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>注意：</strong>论文在训练超参数方面披露不够完整。核心的梯度掩码损失函数和视频自适应参数已给出，但预训练的学习率、batch size、优化器等基础配置均未明确给出。复现训练过程需要参考 DeepLabCut 框架的默认配置。</div>
+</div>
+
+<!-- ============================================================
+  Part 5 · Inference Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · Inference Pipeline</div>
+  <div class="ch-title">如何使用 SuperAnimal 进行推理</div>
+
+  <p>SuperAnimal 提供了三种推理模式，用户可以根据精度需求和标注资源灵活选择。</p>
+
+  <h3 class="section-title">5.1 零样本推理（Zero-shot Inference）</h3>
+
+  <p>最简单的使用方式：直接下载预训练模型，对新的图像或视频进行推理，无需任何标注数据。推理流程为 #Ye-et-al-2024#：</p>
+
+  <ol>
+    <li><strong>输入准备</strong>：加载图像或视频帧</li>
+    <li><strong>（可选）空间金字塔搜索</strong>：以多种分辨率推理并聚合结果（bottom-up 模型需要，top-down 模型不需要）</li>
+    <li><strong>模型推理</strong>：HRNet / DLCRNet / AnimalTokenPose 输出关键点热图</li>
+    <li><strong>后处理</strong>：从热图中提取关键点坐标和置信度</li>
+    <li><strong>（可选）自动关键点匹配</strong>：如果用户已有标注数据集，使用匈牙利算法自动对齐关键点命名</li>
+  </ol>
+
+  <p>DeepLabCut 提供了简洁的高层 API：</p>
+
+  <pre><code class="language-python">
+import deeplabcut
+
+video_path = 'demo-video.mp4'
+superanimal_name = 'superanimal_topviewmouse'
+scale_list = range(200, 600, 50)
+
+deeplabcut.video_inference_superanimal(
+    [video_path],
+    superanimal_name,
+    scale_list=scale_list,
+    video_adapt=True,  # 慢但可能最准确
+)
+  </code></pre>
+
+  <h3 class="section-title">5.2 微调推理（Fine-tuning）</h3>
+
+  <p>如果零样本精度不够，用户可以用少量标注数据进行微调。关键优势：<strong>数据效率比 ImageNet 预训练高 10-100 倍</strong> #Ye-et-al-2024#。</p>
+
+  <p>微调流程：</p>
+
+  <ol>
+    <li>使用 SuperAnimal 模型对下游数据进行零样本推理</li>
+    <li>（可选）使用自动关键点匹配对齐命名</li>
+    <li>使用记忆回放策略微调：混合预训练数据的伪标签和下游数据的真实标签</li>
+    <li>使用微调后的模型推理</li>
+  </ol>
+
+  <h3 class="section-title">5.3 视频自适应推理（Video Adaptation）</h3>
+
+  <p>对于视频数据，可以在推理过程中进行无监督自适应，减少帧间抖动并提升精度 #Ye-et-al-2024#：</p>
+
+  <ol>
+    <li>对视频进行初始推理（零样本）</li>
+    <li>选取高置信度预测（阈值 0.5）作为伪标签</li>
+    <li>用伪标签微调模型（4 epochs）</li>
+    <li>使用适应后的模型重新推理</li>
+  </ol>
+
+  <p>低层 API 允许更精细的控制：</p>
+
+  <pre><code class="language-python">
+from deeplabcut.modelzoo.api import SpatiotemporalAdaptation
+
+adapter = SpatiotemporalAdaptation(
+    video_path,
+    superanimal_name,
+    modelfolder="weight_directory",
+    scale_list=scale_list,
+)
+adapter.before_adapt_inference()
+adapter.adaptation_training()
+adapter.after_adapt_inference()
+  </code></pre>
+
+  <h3 class="section-title">5.4 推理性能</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模式</th><th>处理速度</th><th>精度</th><th>标注需求</th></tr></thead>
+      <tbody>
+        <tr><td>零样本</td><td>40 FPS</td><td>良好</td><td>无</td></tr>
+        <tr><td>视频自适应</td><td>~12 FPS</td><td>更好</td><td>无</td></tr>
+        <tr><td>Self-pacing (PPLO)</td><td>~4 FPS</td><td>较好</td><td>无</td></tr>
+        <tr><td>微调（1% 数据）</td><td>40 FPS</td><td>优秀</td><td>极少</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>视频自适应在精度和速度之间取得了合理的权衡：速度约为零样本推理的 1/3，但精度显著提升。相比之下，self-pacing 方法（PPLO）速度更慢（约为零样本的 1/10）且精度不如视频自适应 #Ye-et-al-2024#。</p>
+</div>
+
+<!-- ============================================================
+  Part 6 · 实验验证
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验验证</div>
+  <div class="ch-title">六个基准上的系统性验证</div>
+
+  <p>SuperAnimal 在六个姿态估计基准上进行了系统性评估，涵盖小鼠和四足动物两大类。实验设计采用"留一法"（leave-one-out）：对于每个 OOD 测试数据集，创建一个不包含该数据集的预训练模型进行零样本评估 #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">6.1 小鼠基准结果</h3>
+
+  <p>在 DLC-Openfield 和 TriMouse 两个小鼠基准上，SuperAnimal-TopViewMouse 展现了出色的零样本性能和数据效率：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>预训练</th><th>数据比例</th><th>mAP</th><th>RMSE</th><th>数据集</th><th>架构</th></tr></thead>
+      <tbody>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>50.4</td><td>14.32</td><td>DLC_Openfield</td><td>DLCRNet</td></tr>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>95.2</td><td>4.88</td><td>DLC_Openfield</td><td>HRNet-w32</td></tr>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>96.3</td><td>4.57</td><td>DLC_Openfield</td><td>AnimalTokenPose</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>1%</td><td>62.2</td><td>18.14</td><td>DLC_Openfield</td><td>DLCRNet</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>1%</td><td>91.5</td><td>7.00</td><td>DLC_Openfield</td><td>HRNet-w32</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>1%</td><td>74.2</td><td>7.69</td><td>DLC_Openfield</td><td>DLCRNet</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>1%</td><td>99.6</td><td>2.38</td><td>DLC_Openfield</td><td>HRNet-w32</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>100%</td><td>99.2</td><td>2.34</td><td>DLC_Openfield</td><td>DLCRNet</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>100%</td><td>97.9</td><td>3.07</td><td>DLC_Openfield</td><td>DLCRNet</td></tr>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>76.1</td><td>9.01</td><td>TriMouse</td><td>HRNet-w32</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>1%</td><td>26.1</td><td>31.56</td><td>TriMouse</td><td>HRNet-w32</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>1%</td><td>90.3</td><td>5.85</td><td>TriMouse</td><td>HRNet-w32</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>100%</td><td>98.5</td><td>2.10</td><td>TriMouse</td><td>HRNet-w32</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现 1：</strong>SA-TVM (HRNet-w32) 的零样本 mAP 达到 95.2（DLC-Openfield），已经接近 ImageNet 预训练使用 100% 数据微调后的 99.2。这意味着对于许多应用场景，零样本推理已经足够。</div>
+
+  <div class="callout"><strong>关键发现 2：</strong>在 1% 训练数据下，SuperAnimal 记忆回放微调的 mAP 为 99.6（HRNet-w32, DLC-Openfield），而 ImageNet 迁移学习仅为 91.5。在 TriMouse 上差距更大：90.3 vs 26.1。这体现了 10-100× 的数据效率提升 #Ye-et-al-2024#。</div>
+
+  <h3 class="section-title">6.2 四足动物基准结果</h3>
+
+  <p>在 AP-10K、AnimalPose、Horse-10、iRodent 四个四足动物基准上，SuperAnimal-Quadruped 同样展现了优越的零样本和微调性能：</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>预训练</th><th>数据比例</th><th>mAP</th><th>RMSE</th><th>数据集</th></tr></thead>
+      <tbody>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>68.0</td><td>12.97</td><td>AP-10K</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>100%</td><td>70.5</td><td>11.23</td><td>AP-10K</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>100%</td><td>80.1</td><td>11.30</td><td>AP-10K</td></tr>
+        <tr><td>zero-shot</td><td>AP-10K</td><td>-</td><td>79.4</td><td>5.77</td><td>AnimalPose</td></tr>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>84.6</td><td>4.88</td><td>AnimalPose</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>100%</td><td>87.0</td><td>4.64</td><td>AnimalPose</td></tr>
+        <tr><td>zero-shot</td><td>AP-10K</td><td>-</td><td>65.7</td><td>4.93</td><td>Horse-10</td></tr>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>71.2</td><td>3.96</td><td>Horse-10</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>1%</td><td>0.9</td><td>46.26</td><td>Horse-10</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>1%</td><td>73.4</td><td>3.72</td><td>Horse-10</td></tr>
+        <tr><td>fine-tuning</td><td>AP-10K</td><td>1%</td><td>66.3</td><td>5.03</td><td>Horse-10</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>100%</td><td>95.2</td><td>1.15</td><td>Horse-10</td></tr>
+        <tr><td>zero-shot</td><td>AP-10K</td><td>-</td><td>40.4</td><td>37.42</td><td>iRodent</td></tr>
+        <tr><td>zero-shot</td><td>SuperAnimal</td><td>-</td><td>58.6</td><td>33.50</td><td>iRodent</td></tr>
+        <tr><td>transfer learning</td><td>ImageNet</td><td>1%</td><td>0.8</td><td>152.23</td><td>iRodent</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>1%</td><td>60.9</td><td>31.80</td><td>iRodent</td></tr>
+        <tr><td>memory replay</td><td>SuperAnimal</td><td>100%</td><td>73.0</td><td>24.88</td><td>iRodent</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现 3：</strong>在 Horse-10 上，1% 数据下 SuperAnimal 记忆回放达到 73.4 mAP，而 ImageNet 迁移学习仅为 0.9 mAP——差距超过 80 个点。这是 10-100× 数据效率提升最极端的体现 #Ye-et-al-2024#。</div>
+
+  <div class="callout"><strong>关键发现 4：</strong>SuperAnimal 零样本在 AnimalPose 上达到 84.6 mAP，超越了仅用 AP-10K 预训练的模型（79.4 mAP）。这说明多数据集联合预训练比单一数据集预训练有更好的跨物种泛化能力 #Ye-et-al-2024#。</div>
+
+  <h3 class="section-title">6.3 消融实验</h3>
+
+  <p>论文通过系统消融验证了每个组件的必要性：</p>
+
+  <ul>
+    <li><strong>梯度掩码</strong>：无梯度掩码的 SA-TVM 零样本性能严重退化（Extended Data Fig. 4a）#Ye-et-al-2024#。</li>
+    <li><strong>记忆回放 vs 朴素微调</strong>：在 1% 数据下，记忆回放比朴素微调显著减少关键点丢失（t=7.443, p&lt;0.0001, Cohen's d=0.827）；在 100% 数据下差距更大（t=68.459, p&lt;0.0001, Cohen's d=7.607）#Ye-et-al-2024#。</li>
+    <li><strong>SuperAnimal vs ImageNet</strong>：在 1% 数据下，SuperAnimal 记忆回放比 ImageNet 迁移学习高 10.45 mAP（DLC-Openfield, DLCRNet, t=5.975, p&lt;0.0001, Cohen's d=4.88）#Ye-et-al-2024#。</li>
+  </ul>
+
+  <h3 class="section-title">6.4 下游行为分析验证</h3>
+
+  <p>SuperAnimal 的价值不仅在于姿态估计本身，更在于下游行为分析任务中的表现：</p>
+
+  <div class="photo">
+    <img src="media/images/superanimal-2024/Figure4.webp" alt="零样本行为量化" loading="lazy">
+    <div class="cap">Fig. 4：(a) 行为分析工作流；(b) Sturman 数据集上的零样本结果；(c) Ethogram 对比；(d) F1 分数；(e) CEBRA 嵌入；(f) 相关性矩阵；(g-i) 马匹步态分析。（来源：Ye et al., 2024, Fig. 4）</div>
+  </div>
+
+  <p><strong>小鼠行为分类（OFT）：</strong>使用 Sturman et al. 的开放场测试数据集，SuperAnimal 零样本姿态估计 + CEBRA 的行为分类 F1 分数与完全监督的 DeepLabCut 模型相当（线性混合效应模型，F=0.999, p=0.393）#Ye-et-al-2024#。这意味着无需任何标注，零样本姿态估计即可支持高质量的行为分类。</p>
+
+  <p><strong>MABe 基准：</strong>使用 SA-TVM top-down 模型对 1,830 个视频（300 万帧）进行零样本推理，PointNet 分类性能与完全监督的姿态数据几乎相同 #Ye-et-al-2024#。</p>
+
+  <p><strong>马匹步态分析：</strong>30 个视频中 24 个与真实标注一致，仅差 1 步检测。蹄-地接触相关性 r=0.919。1-5 帧内的接触比例 69.9%-81.7% #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">6.5 失败案例</h3>
+
+  <p>论文坦诚展示了 OOD 失败案例（Extended Data Fig. 5b）：极端姿态下的关键点错位、遮挡场景下的关键点丢失、非典型体型或毛色的动物识别错误 #Ye-et-al-2024#。Model Card 中还指出：白色小鼠泛化不佳（训练数据中只有一组白色小鼠）、多动物紧密接触时 top-down 检测器可能只检测到一只动物、非 C56Blk6/J 品系小鼠性能下降 #Ye-et-al-2024#。</p>
+</div>
+
+<!-- ============================================================
+  Part 7 · 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">SuperAnimal 在技术地图上的位置</div>
+
+  <p>SuperAnimal 代表了动物姿态估计领域的一个重要范式转变：从"每个场景训练一个模型"到"一个模型覆盖所有场景"。这一转变的核心驱动力是将基础模型（Foundation Model）的思想引入动物行为分析领域。</p>
+
+  <h3 class="section-title">7.1 技术定位</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>DeepLabCut 标准</th><th>AP-10K 预训练</th><th>无监督方法</th><th>SuperAnimal</th></tr></thead>
+      <tbody>
+        <tr><td>标注需求</td><td>50-200 帧</td><td>大量标注</td><td>无需标注</td><td>零样本无需标注</td></tr>
+        <tr><td>关键点语义</td><td>用户自定义</td><td>固定 17 点</td><td>不可解释</td><td>统一 27/39 点</td></tr>
+        <tr><td>物种覆盖</td><td>单物种</td><td>54 物种</td><td>单物种</td><td>45+ 物种</td></tr>
+        <tr><td>OOD 泛化</td><td>依赖标注质量</td><td>中等</td><td>未知</td><td>优秀</td></tr>
+        <tr><td>微调数据效率</td><td>基准</td><td>较好</td><td>N/A</td><td>10-100× 提升</td></tr>
+        <tr><td>视频自适应</td><td>不支持</td><td>不支持</td><td>部分支持</td><td>支持</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>SuperAnimal 的独特价值在于它同时满足了三个需求：<strong>零样本可用</strong>（无需标注）、<strong>语义可解释</strong>（统一关键点定义）、<strong>微调高效</strong>（10-100× 数据效率）。无监督方法虽然也不需要标注，但学习到的关键点缺乏可解释性，且 OOD 零样本推理能力未知 #Ye-et-al-2024#。</p>
+
+  <h3 class="section-title">7.2 社区生态与后续影响</h3>
+
+  <p>SuperAnimal 不仅仅是一篇论文，更是 DeepLabCut 生态系统的重要组成部分。Mathis Lab 构建了一个完整的正反馈循环 #Ye-et-al-2024#：</p>
+
+  <ul>
+    <li><strong>DeepLabCut Model Zoo</strong>：托管预训练模型，提供在线推理</li>
+    <li><strong>WebApp</strong>（contrib.deeplabcut.org）：用户上传数据、标注图像、在线推理、共享模型</li>
+    <li><strong>HuggingFace</strong>：模型权重托管，方便程序化下载和使用</li>
+    <li><strong>后续扩展</strong>：SuperAnimal-Bird（2024 年 DLC AI Residency 项目）已扩展到鸟类 #DLC-Residency-2024#</li>
+  </ul>
+
+  <p>SuperAnimal 已被多个下游工作使用：Keypoint-MoSeq（2024）使用 SA-TVM 零样本关键点进行行为音节发现；AmadeusGPT（2023）使用 SuperAnimal 模型作为底层姿态估计引擎；MABe 2022 benchmark 使用 SA-TVM 进行零样本推理 #Ye-et-al-2024#。在行为分析中，CEBRA #Schneider-et-al-2023# 被用于联合行为与神经表征学习，进一步提升了行为分类性能。Mackenzie Mathis 也因此获得 2024 年瑞士科学奖 Latsis Prize #Latsis-Prize-2024#。</p>
+
+  <h3 class="section-title">7.3 局限性与开放问题</h3>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      局限性
+    </div>
+    <div class="admonition-content">
+      <p><strong>物种覆盖有限：</strong>目前仅覆盖啮齿类（SA-TVM）和四足动物（SA-Q），不支持鸟类、鱼类、昆虫（SuperAnimal-Bird 是后续独立扩展）。</p>
+      <p><strong>视角限制：</strong>SA-TVM 仅适用于俯视；SA-Q 主要适用于侧视。</p>
+      <p><strong>2D 限制：</strong>仅提供 2D 关键点，不支持 3D 姿态估计。</p>
+      <p><strong>标注偏差：</strong>训练数据来自不同实验室的不同标注者，存在系统性 annotator bias，影响零样本评估精度。</p>
+      <p><strong>超参数披露不足：</strong>预训练的学习率、batch size、优化器、训练硬件等关键配置未给出，增加了复现难度。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">7.4 可操作的启发</h3>
+
+  <p>从 SuperAnimal 的设计中，我们可以提取几条对其他领域有借鉴意义的启发：</p>
+
+  <ol>
+    <li><strong>梯度掩码的通用性</strong>：在任何需要合并多个异构数据集的场景中，如果标注空间不一致，梯度掩码是一种简单但有效的稳定训练策略。这一思想可以迁移到多任务学习、多模态学习等领域。</li>
+    <li><strong>记忆回放的简洁性</strong>：用模型自身的零样本推理生成伪标签来防止灾难性遗忘，不需要访问原始训练数据。这为"隐私保护微调"提供了一种思路。</li>
+    <li><strong>社区驱动的数据收集</strong>：通过 WebApp 和 Model Zoo 构建正反馈循环，让社区贡献数据来持续改进模型。这种模式适合任何数据稀缺且分散的领域。</li>
+    <li><strong>零样本 + 下游验证</strong>：SuperAnimal 不仅在姿态估计指标上验证，还在行为分类和步态分析等下游任务中验证。这提醒我们：基础模型的价值最终要看下游任务表现，而非仅看预训练指标。</li>
+  </ol>
+
+  <div class="photo">
+    <img src="media/images/superanimal-2024/Figure2.webp" alt="SuperAnimal-Quadruped 结果" loading="lazy">
+    <div class="cap">Fig. 2：SuperAnimal-Quadruped 在四个四足动物基准上的零样本和微调性能。可以看到 SuperAnimal 预训练在零样本和少样本设置下均显著优于 ImageNet 和 AP-10K 预训练。（来源：Ye et al., 2024, Fig. 2）</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Ye-et-al-2024">Ye, S. et al. (2024). <strong>SuperAnimal pretrained pose estimation models for behavioral analysis</strong>. Nature Communications. <a href="https://doi.org/10.1038/s41467-024-48792-2" target="_blank">DOI: 10.1038/s41467-024-48792-2</a> · <a href="https://arxiv.org/abs/2203.07436" target="_blank">arXiv:2203.07436</a></li>
+      <li data-cite-key="Mathis-et-al-2018">Mathis, A. et al. (2018). <strong>DeepLabCut: markerless pose estimation of user-defined body parts with deep learning</strong>. Nature Neuroscience. <a href="https://www.nature.com/articles/s41593-018-0209-y" target="_blank">DOI</a></li>
+      <li data-cite-key="Lauer-et-al-2022">Lauer, J. et al. (2022). <strong>Multi-animal pose estimation, identification and tracking with DeepLabCut</strong>. Nature Methods. <a href="https://www.nature.com/articles/s41592-022-01443-0" target="_blank">DOI</a></li>
+      <li data-cite-key="Yu-et-al-2021">Yu, H. et al. (2021). <strong>AP-10K: A Benchmark for Animal Pose Estimation in the Wild</strong>. NeurIPS Datasets &amp; Benchmarks. <a href="https://arxiv.org/abs/2108.12617" target="_blank">arXiv:2108.12617</a></li>
+      <li data-cite-key="Schneider-et-al-2023">Schneider, S. et al. (2023). <strong>Learnable latent embeddings for joint behavioural and neural analysis</strong>. Nature. <a href="https://www.nature.com/articles/s41586-023-06031-6" target="_blank">DOI</a></li>
+      <li data-cite-key="Sturman-et-al-2020">Sturman, O. et al. (2020). <strong>Deep learning-based behavioral analysis</strong>. Nature Communications. <a href="https://www.nature.com/articles/s41467-020-15708-9" target="_blank">DOI</a></li>
+      <li data-cite-key="Wang-et-al-2020">Wang, J. et al. (2020). <strong>Deep High-Resolution Representation Learning for Visual Recognition</strong>. CVPR. <a href="https://arxiv.org/abs/1908.07919" target="_blank">arXiv:1908.07919</a></li>
+      <li data-cite-key="Xu-et-al-2022">Xu, Y. et al. (2022). <strong>ViTPose: Simple Vision Transformer Baselines for Human Pose Estimation</strong>. NeurIPS. <a href="https://arxiv.org/abs/2204.12484" target="_blank">arXiv:2204.12484</a></li>
+      <li data-cite-key="Bommasani-et-al-2021">Bommasani, R. et al. (2021). <strong>On the Opportunities and Risks of Foundation Models</strong>. <a href="https://arxiv.org/abs/2108.07258" target="_blank">arXiv:2108.07258</a></li>
+      <li data-cite-key="Pereira-et-al-2022">Pereira, T. et al. (2022). <strong>SLEAP: A multi-animal pose tracker</strong>. Nature Methods. <a href="https://www.nature.com/articles/s41592-022-01443-0" target="_blank">DOI</a></li>
+      <li data-cite-key="Cao-et-al-2019">Cao, J. et al. (2019). <strong>Cross-domain Animal Pose Estimation</strong>. CVPR. <a href="https://arxiv.org/abs/1904.06332" target="_blank">arXiv:1904.06332</a></li>
+      <li data-cite-key="Yang-et-al-2022">Yang, J. et al. (2022). <strong>APT-36K: A Large-scale Benchmark for Animal Pose Estimation and Tracking</strong>. NeurIPS. <a href="https://arxiv.org/abs/2206.11124" target="_blank">arXiv</a></li>
+      <li data-cite-key="Latsis-Prize-2024">Swiss National Science Foundation (2024). <strong>Latsis Prize 2024: Mackenzie W. Mathis</strong>. <a href="https://www.snf.ch/en/ALDm23FH0wElaepe/news/latsis-prize-2024-mackenzie-w-mathis-tracks-behaviour-to-understand-the-brain" target="_blank">SNF</a></li>
+      <li data-cite-key="DLC-Residency-2024">DeepLabCut Blog (2024). <strong>DeepLabCut AI Residency 2024 Recap: SuperAnimal-Bird and DLC 3.0 Live</strong>. <a href="https://deeplabcut.medium.com/deeplabcut-ai-residency-2024-recap-working-with-the-superanimal-bird-model-and-dlc-3-0-live-e55807ca2c7c" target="_blank">Medium</a></li>
+      <li data-cite-key="ModelZoo-docs">DeepLabCut Documentation. <strong>The DeepLabCut Model Zoo</strong>. <a href="https://deeplabcut.github.io/DeepLabCut/docs/ModelZoo.html" target="_blank">Docs</a></li>
+      <li data-cite-key="Mathis-et-al-2020">Mathis, M.W. &amp; Mathis, A. (2020). <strong>Deep learning tools for the measurement of animal behavior in neuroscience</strong>. Current Opinion in Neurobiology.</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-mammalnet-2023.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">动作识别论文精读（六）：MammalNet</span></a>
+    <a class="nav-card nav-hub" href="categories/ai/action-recognition/action-recognition-paper-reading/index.html"><span class="nav-label">枢纽页</span><span class="nav-title">动作识别论文精读</span></a>
+  </div>
+</div>

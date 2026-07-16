@@ -1,0 +1,989 @@
+---
+title: "图像压缩基础系列（九）：H.265/HEVC 技术深度解析"
+description: "按 12 个专题系统拆解 H.265/HEVC 的完整编码原理：从标准背景、编码树单元 CTU 的四叉树划分、35 种帧内预测、Merge/AMVP 帧间预测、多尺寸 DCT 与 DST-VII 变换、CABAC 熵编码演进、SAO 环路滤波、WPP/Tiles 并行处理，到 Profile/Level/Tier 体系与 HDR 扩展，对照 H.264 系统讲解 HEVC 的全部技术演进。"
+created_at: 2026-07-12T01:45:14
+updated_at: 2026-07-12T01:45:14
+tags: [H.265, HEVC, 视频编码, CTU, SAO]
+aliases: ["categories/AI/图像压缩/图像压缩基础系列"]
+sub_id: 90
+mathjax: true
+hero_title: "H.265/HEVC 技术深度解析"
+hero_sub: "图像压缩基础系列 · 第九篇"
+hero_tagline: "12 个专题，从编码树到 SAO 滤波，对照 H.264 系统拆解 HEVC 的全部技术演进"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">9</span><span class="label">基础系列</span></div>
+  <div class="stat"><span class="num b">12</span><span class="label g">专题</span></div>
+  <div class="stat"><span class="num">2013</span><span class="label">标准发布</span></div>
+</div>
+
+<!-- ============================================================
+  引言
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">引言</div>
+<div class="ch-title">为什么需要 HEVC？</div>
+
+H.265/HEVC（High Efficiency Video Coding）是 H.264/AVC 的正统继承者。2013 年由 JCT-VC（Joint Collaborative Team on Video Coding）发布，设计目标只有一个：**在相同视觉质量下，相比 H.264 节省 50% 的比特**。
+
+这个目标的驱动力来自应用场景的跃迁。H.264 在 2003 年发布时，主流分辨率是 480p/720p；而到 2010 年代初，4K/8K 超高清、HDR 高动态范围、高帧率（60fps 以上）视频全面兴起。如果继续用 H.264 编码 4K 视频，码率会飙升到 20 Mbps 以上，无论是流媒体带宽还是存储成本都难以承受。HEVC 正是为这个"分辨率和画质再上一个台阶"的时代而生。
+
+HEVC 的 50% 压缩效率提升不是来自单一突破，而是**对 H.264 几乎每一个编码模块的全面升级**：固定的 16×16 宏块变成了灵活的编码树单元；9 种帧内预测模式扩展到 35 种；帧间预测引入了 Merge/AMVP 等高级运动矢量预测；环路滤波在去块滤波之上增加了 SAO；熵编码虽然仍用 CABAC，但上下文模型重新设计得更精简。每个模块的增益看似不大（3%–10%），但它们叠加起来，才凑出了那 50%。
+
+本篇按 12 个专题系统拆解 HEVC 的编码原理，并与 H.264（见系列第八篇）对照讲解。理解 HEVC 的技术演进，不仅能看清这一代视频编码的设计哲学，也能理解它为什么在专利上翻车，以及 AV1 为什么会诞生。
+
+<div class="callout">
+<strong>前置阅读</strong>：本篇是系列第八篇 [[@H.264 视频编码原理详解 | H.264/AVC 原理详解]] 的姊妹篇。HEVC 的许多模块（帧内/帧间预测、DCT 变换、CABAC 熵编码、去块滤波）在 H.264 中已有原型，本篇重点讲 HEVC 的<strong>增量改进</strong>。宏块、GOP、NAL 层结构等共享概念请先参阅第八篇。
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 1：概述
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题一</div>
+<div class="ch-title">HEVC 标准背景与发展历程</div>
+
+<div class="section fade-in">
+<div class="section-title">谁制定了 HEVC？</div>
+
+HEVC 由和 H.264 同样的两个组织联合制定：
+
+- **ITU-T VCEG**（Video Coding Experts Group）：国际电信联盟的视频编码专家组
+- **ISO/IEC MPEG**（Moving Picture Experts Group）：国际标准化组织的运动图像专家组
+
+两个组织于 2010 年成立 **JCT-VC**（Joint Collaborative Team on Video Coding），这是继 JVT（制定 H.264）之后两组织的第三次深度合作。2013 年 1 月，HEVC 第一版正式发布。在 ITU-T 体系中称为 **H.265**，在 ISO/IEC 体系中称为 **MPEG-H Part 2 / HEVC**。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">HEVC 的发展历程</div>
+
+| 时间 | 事件 |
+|------|------|
+| 2004 | VCEG 启动 "H.265 项目"（最初叫 H.NGVC，Next-Generation Video Coding） |
+| 2007 | MPEG 启动 "HVC"（High-performance Video Coding）项目 |
+| 2010 | JCT-VC 成立，合并 VCEG 和 MPEG 的研究路线，发布第一版测试模型（HM） |
+| 2013.01 | HEVC 第一版正式发布（Main Profile） |
+| 2013.07 | Range Extensions（RExt）扩展，支持 4:2:2/4:4:4、12–16 bit |
+| 2014.02 | Multiview Extensions（MV-HEVC），支持 3D/多视角 |
+| 2014.07 | SCC 扩展（Screen Content Coding），针对屏幕内容 |
+| 2016 | 完整版 HEVC 标准定型（含所有扩展） |
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">HEVC 的设计目标</div>
+
+JCT-VC 在立项之初就明确了 HEVC 相对 H.264 的几个核心目标：
+
+| 目标 | 具体指标 |
+|------|---------|
+| 压缩效率 | 相同主观质量下码率减半（~50%） |
+| 分辨率支持 | 一直支持到 8K（H.264 理论上也能到但效率低） |
+| 并行能力 | 原生支持 WPP/Tiles，适配多核处理器 |
+| 位深支持 | 原生 8/10/12 bit（H.264 主流 8-bit） |
+| 色度格式 | 原生支持 4:2:0/4:2:2/4:4:4 |
+| 计算复杂度 | 允许编码复杂度提升，但解码复杂度只允许 2–3 倍于 H.264 |
+
+最后一条尤为关键：**HEVC 故意把复杂度压力放在编码端，而解码端保持相对轻量**。这是因为视频是"一次编码、多次解码"的场景——一部电影编码一次，但被亿万观众解码播放。编码器可以慢，解码器必须快。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">HEVC 的应用领域</div>
+
+尽管 HEVC 因专利问题在浏览器端受阻（详见专题十二），它在以下场景仍然广泛使用：
+
+- **超高清流媒体**：4K/8K Netflix、Disney+、Apple TV+ 的高码率档位
+- **蓝光光盘**：UHD Blu-ray 的强制编码格式之一
+- **移动设备**：iPhone 从 iOS 11 起原生支持 HEVC 拍摄
+- **广播电视**：DVB、ATSC 3.0 等新一代数字电视标准
+- **视频会议**：H.265 协议的硬件编解码芯片普及
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 2：编码树单元
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题二</div>
+<div class="ch-title">编码树单元（CTU）与四叉树划分</div>
+
+<div class="section fade-in">
+<div class="section-title">从宏块到编码树：HEVC 最根本的变革</div>
+
+H.264 以 **16×16 宏块**（Macroblock）为基本编码单元，所有预测、变换、量化都围绕这个固定尺寸展开。这个设计在 720p 时代工作良好，但在 4K 时代暴露了问题：一片大面积的天空或墙面，本可以用一个大块、一组编码参数表示，却被迫切成成百上千个 16×16 宏块，每个都携带独立的头信息和运动矢量，造成大量"管理开销"。
+
+HEVC 的根本性变革是用**编码树**（Coding Tree）替代固定宏块。最大编码单元可达 **64×64**，是 H.264 宏块的 16 倍面积。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">CTU/CU/PU/TU 四级结构</div>
+
+HEVC 把"编码单元"拆成四个层次，各司其职：
+
+| 单元 | 全称 | 作用 | 尺寸 |
+|------|------|------|------|
+| **CTU** | Coding Tree Unit | 编码树的根，一帧划分出的最大块 | 最大 64×64 |
+| **CU** | Coding Unit | 编码单元，决定帧内/帧间模式切换 | 8×8 ~ 64×64 |
+| **PU** | Prediction Unit | 预测单元，决定运动矢量/预测模式 | 最小 4×4 |
+| **TU** | Transform Unit | 变换单元，决定 DCT/量化块大小 | 4×4 ~ 32×32 |
+
+理解这四层的关键是：**它们可以独立划分**。H.264 里"宏块=预测块=变换块"三者绑定，HEVC 把它们解耦——同一个 CU 内，PU 和 TU 可以按不同的形状和大小划分，让预测和变换各自找到最优粒度。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">四叉树递归划分</div>
+
+CTU 通过**四叉树**（Quad-Tree）递归划分为 CU。从 64×64 开始，每个块可以选择"继续四等分"或"停止"作为叶节点（CU），划分决策由率失真优化（RDO）自动完成：
+
+```
+64×64 CTU
+  ├── 32×32 CU（叶，停止划分）
+  ├── 32×32 CU
+  │     ├── 16×16 CU（叶）
+  │     └── 16×16 CU
+  │           ├── 8×8 CU（叶）
+  │           ├── 8×8 CU
+  │           ├── 8×8 CU
+  │           └── 8×8 CU
+  └── 32×32 CU（叶）
+```
+
+四叉树的优势在于**自适应粒度**：
+
+- **平坦区域**（天空、白墙）：一个 64×64 CU 用一组参数即可，省去大量头信息
+- **细节区域**（文字、毛发）：递归划分到 8×8 甚至更小，保证预测精度
+
+H.264 的固定宏块在这两端都吃亏：64×64 平坦区要 16 个宏块、16 倍头开销；细节区又因为 16×16 太粗而预测不准。HEVC 的四叉树用同一套机制同时照顾了两个极端。
+
+<div class="callout">
+<strong>直观对比</strong>：一片 64×64 的纯天空，H.264 需要切 16 个 16×16 宏块，每个携带 mb_type、QP delta、运动矢量等头信息；HEVC 只需 1 个 64×64 CU，头信息压缩到几乎为零。这就是 HEVC 在大面积平坦画面上压缩效率显著优于 H.264 的核心原因。
+</div>
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">CU、PU、TU 的解耦划分</div>
+
+在确定 CU 之后，HEVC 进一步对 PU 和 TU 独立划分：
+
+<strong>PU（预测单元）</strong>
+
+- **帧内 CU**：PU 划分较简单，2N×2N（不划分）或 N×N（四等分）
+- **帧间 CU**：支持 8 种划分模式——2N×2N、2N×N、N×2N、N×N、2N×nU、2N×nD、nL×2N、nR×2N（后四种是非对称的，适合物体边界）
+
+非对称划分是 HEVC 相对 H.264 的一个细节增益：当运动物体的形状恰好是"L 形"或"长条形"时，非对称 PU 可以用一个运动矢量描述整块，而 H.264 只能用多个对称块拼接。
+
+<strong>TU（变换单元）</strong>
+
+TU 可以与 CU/PU 不同步：一个 64×64 的 CU 内，TU 可以按独立的四叉树划分到 4×4。这让 HEVC 能在大块预测的同时，对残差做精细的变换——例如大块物体上有局部高频纹理，TU 可以只在纹理区域划小，其余保持大块。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">CTU 大小的码率影响</div>
+
+| CTU 最大尺寸 | 典型码率节省（vs H.264 宏块） | 适用场景 |
+|-------------|------------------------------|---------|
+| 16×16（H.264 兼容） | 基准 | — |
+| 32×32 | ~15% | 移动设备、低复杂度编码 |
+| 64×64 | ~25% | 4K/8K 流媒体、存档 |
+
+CTU 越大，平坦区的头开销越小，但需要编码器做更精细的 RDO 决策（"这块到底要不要继续分"）。所以 64×64 主要用在高分辨率场景——低分辨率下 64×64 CTU 几乎永远会被划小，收益有限。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 3：帧内预测
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题三</div>
+<div class="ch-title">帧内预测：35 种模式</div>
+
+<div class="section fade-in">
+<div class="section-title">为什么需要更多预测方向？</div>
+
+帧内预测利用**同一帧内相邻像素的空间相关性**预测当前块。H.264 的 4×4 帧内预测有 9 种模式（8 个方向 + 1 个 DC），在低分辨率下够用。但 4K 图像中包含大量斜线、曲线、文字边缘——9 个方向不足以精确拟合这些纹理走向，预测残差偏大，压缩效率受限。
+
+HEVC 把帧内预测模式扩展到 **35 种**，这是 HEVC 相对 H.264 单独贡献约 4%–6% 增益的模块之一。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">35 种模式的构成</div>
+
+| 模式 | 数量 | 说明 |
+|------|------|------|
+| Planar | 1 | 平面预测，用二维平面拟合平滑渐变区 |
+| DC | 1 | 取上方和左侧参考像素的平均值 |
+| 角度预测 | 33 | 覆盖从 -135° 到 +135° 的方向范围 |
+
+33 种角度模式以约 **4.5°** 的间隔均匀分布在半圆上。对比 H.264 的 8 个方向（45° 间隔），HEVC 的方向密度提升了约 10 倍，能精确匹配墙砖斜纹、文字笔画、织物纹理等几乎任意走向的边缘。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">参考像素与预测方向</div>
+
+HEVC 帧内预测的参考像素来自当前块上方和左侧的已编码像素（"L 形"参考边）：
+
+```
+参考像素布局（当前块 N×N）：
+
+  a0 a1 a2 ... a(2N-1)    ← 上方参考像素
+L . . . . . .              ← 当前块
+L . . . . . .
+L . . . . . .
+L . . . . . .
+  ↑左侧参考像素 (2N 个)
+```
+
+每种角度模式定义了一条从某个参考像素位置出发、穿过当前块的"投影方向"。例如：
+
+- **模式 0（垂直）**：每列用上方的 `a_i` 填充
+- **模式 1（水平）**：每行用左侧的 `L_j` 填充
+- **模式 26（对角线）**：沿 45° 方向把参考像素投到块内
+- **模式 10–18（左半圆角度）**：斜向左下方投影
+- **模式 19–25（右半圆角度）**：斜向右下方投影
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">参考像素替换（Reference Sample Substitution）</div>
+
+当参考像素位于块外（如当前块在图像左边界）、或尚未编码时，HEVC 用**最接近的可用参考像素**填充缺失位置。这比 H.264 的简单处理更鲁棒，避免了边界处预测失败导致的残差激增。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">最可能模式（MPM）与模式编码</div>
+
+35 种模式如果直接编码索引，需要 5–6 bit。HEVC 借鉴 H.264 的经验，使用 **MPM（Most Probable Modes）** 列表：
+
+- 编码器根据左侧和上方块的帧内模式，预测当前块最可能的 3 个模式
+- 如果当前模式在 MPM 列表中，只需 1–2 bit 标记位置
+- 否则才编码剩余 32 个模式的索引
+
+这个机制让高频出现的模式（通常是与邻居相同的方向）几乎不花比特，把比特留给真正需要的角度切换。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Planar 模式：渐变区的利器</div>
+
+Planar 模式是 HEVC 相对 H.264 新增的概念（H.264 的 16×16 有 Plane 模式但 4×4 没有）。它假设像素在水平和垂直方向都线性变化，用四个角的参考像素做**双线性插值**预测：
+
+$$P(x, y) = \text{clip}\left(\frac{(N-1-x) \cdot L_y + x \cdot a_N + (N-1-y) \cdot a_x + y \cdot L_N + N}{2N}\right)$$
+
+其中 $a$ 是上方参考、$L$ 是左侧参考、$N$ 是块尺寸。Planar 对天空、皮肤、光影渐变等平滑过渡区域的预测远优于 DC，是 HEVC 帧内增益的重要来源。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 4：帧间预测
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题四</div>
+<div class="ch-title">帧间预测：Merge/AMVP 与高级运动矢量预测</div>
+
+<div class="section fade-in">
+<div class="section-title">帧间预测在 HEVC 中的地位</div>
+
+帧间预测是视频压缩中**贡献最大的模块**（约占总压缩效率的 50%）。HEVC 在帧间预测上的改进不在于"更准的运动估计"，而在于**更高效的运动矢量编码**——在 4K 时代，运动矢量数量暴涨，如何用更少的比特编码这些矢量成为新的瓶颈。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Merge 模式：运动矢量的"复制粘贴"</div>
+
+HEVC 引入的 **Merge 模式**是其帧间预测最具代表性的创新。其核心思想极其简单：**直接复用空间/时间邻居的运动矢量，不传任何 MVD（运动矢量差）**。
+
+<strong>Merge 的工作流程</strong>：
+
+1. 编码器从当前块的邻居（左侧、上方、左上、右上、左下等空间邻居，以及时域对应块）构造一个**候选运动矢量列表**（最多 5 个候选）
+2. 编码器用 RDO 选出最佳候选
+3. 码流中只传候选索引（merge_idx，通常 1–3 bit），不传 MV 本身
+
+如果某个块的运动会和邻居完全一致（这在自然视频中极常见——背景平移、整体旋转），Merge 模式可以用 1 bit 左右的代价描述整个运动，而 H.264 必须传完整 MVD。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">AMVP：高级运动矢量预测</div>
+
+当块的运动与邻居**不完全一致**时，需要传 MVD。HEVC 用 **AMVP**（Advanced Motion Vector Prediction）机制：
+
+- 同样构造候选 MV 列表（比 Merge 少，通常 2 个候选）
+- 传一个候选索引 + 一个 MVD
+- MVD = 实际 MV − 候选 MV
+
+由于候选 MV 已经很接近真实 MV（邻居的运动通常相关），MVD 的统计分布比 H.264 的原始 MV 更集中、更接近零，可以用更短的码字编码。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Merge vs AMVP 的选择</div>
+
+| 模式 | 何时使用 | 传输内容 | 典型比特开销 |
+|------|---------|---------|-------------|
+| Merge | 块运动与邻居一致 | 仅候选索引 | ~1–3 bit |
+| AMVP | 块运动与邻居接近但不一致 | 候选索引 + MVD + 参考帧索引 | ~10–30 bit |
+| 帧内 | 无合适参考 | 35 种模式索引 | 视纹理而定 |
+
+编码器对每个块都计算这三种方案的率失真代价，选最小者。Merge 在静态背景和缓慢运动场景占比极高（常达 60%+），是 HEVC 帧间增益的主要来源。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">运动矢量精度</div>
+
+HEVC 沿用 H.264 的 **1/4 像素精度**（Quarter-pel）亮度运动估计，但插值滤波器重新设计：
+
+- **亮度**：8-tap 插值滤波器（H.264 是 6-tap），高频响应更平直，减少振铃伪影
+- **色度**：4-tap 双线性插值
+
+8-tap 滤波器比 H.264 的 6-tap 多两个系数，计算量略增，但亚像素预测精度更高，残差能量更低。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">多参考帧与 B 帧双向预测</div>
+
+HEVC 支持**最多 16 个参考帧**（与 H.264 上限相同，但实际配置更常用 4–8 帧），并改进了 B 帧的预测：
+
+- **双向预测**：B 帧可同时参考前向和后向两个参考帧列表（List 0、List 1）
+- **加权预测**：预测值可以是两个参考的加权组合 $\hat{P} = w_0 \cdot \text{Ref}_0 + w_1 \cdot \text{Ref}_1 + w_o$，对淡入淡出、闪光场景特别有效
+- **Merge 的双向扩展**：Merge 候选可以直接是双向 MV 对，进一步降低 B 帧的 MVD 开销
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 5：变换与量化
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题五</div>
+<div class="ch-title">变换与量化：多尺寸 DCT 与 DST-VII</div>
+
+<div class="section fade-in">
+<div class="section-title">从固定 4×4 到自适应多尺寸</div>
+
+H.264 的整数 DCT 变换固定在 4×4（High Profile 扩展到 8×8）。HEVC 把变换块大小与 TU 解耦，支持 **4×4、8×8、16×16、32×32** 四种变换尺寸，由 RDO 自动选择。
+
+变换尺寸越大，对平坦区域的能量集中越好（DC 系数承载更多能量，高频系数更易量化为零）；变换尺寸越小，对细节区域的局部高频保留越好。HEVC 让编码器根据残差的统计特性自适应选择。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">整数 DCT 矩阵</div>
+
+HEVC 的整数 DCT 沿用 H.264 的"整数近似"思路，但扩展到多种尺寸。以 4×4 为例，其核心变换矩阵（行向量）为：
+
+$$H_4 = \begin{bmatrix} 64 & 64 & 64 & 64 \\ 83 & 64 & -36 & -64 \\ 64 & -64 & -64 & 64 \\ 36 & -83 & 64 & -64 \end{bmatrix}$$
+
+所有系数都是整数，反变换可精确还原（编解码器之间无浮点精度漂移）。8×8、16×16、32×32 的矩阵由标准预先定义，硬件实现时可共用蝶形结构。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">DST-VII：帧内残差的专用变换</div>
+
+HEVC 引入了一个 H.264 没有的变换：**DST-VII**（离散正弦变换第七型），专门用于 **4×4 亮度帧内预测残差块**。
+
+<strong>为什么帧内残差要用 DST 而不是 DCT？</strong>
+
+帧内预测的参考像素只来自块的一侧（上方和左侧），残差在靠近参考边的位置小、远离参考边的位置大——这种"单边渐增"的统计特性，恰好与正弦基函数的形状匹配，而与 DCT 的余弦基（假设对称分布）不匹配。研究表明，对 4×4 帧内残差使用 DST-VII 比 DCT 可获得 **1%–3% 的压缩增益**。
+
+注意 DST 只用于 4×4 帧内亮度残差，其他场景（帧间、大块帧内）仍用 DCT——这是因为 DST 的增益只在"单边参考"的小块残差上才显著，大块和帧间残差的统计特性更适合 DCT。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">变换尺寸的 RDO 选择</div>
+
+| 残差类型 | 推荐变换 | 理由 |
+|---------|---------|------|
+| 平坦区（天空） | 32×32 DCT | 能量集中度最高，高频全量化为零 |
+| 中频纹理 | 8×8 / 16×16 DCT | 平衡能量集中与局部细节 |
+| 高频细节（毛发、文字） | 4×4 DCT | 保留局部高频 |
+| 帧内 4×4 亮度残差 | 4×4 DST-VII | 匹配单边参考的残差统计 |
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">量化</div>
+
+HEVC 的量化机制与 H.264 基本一致——标量量化，QP 范围 0–51，QP 每增 6 量化步长翻倍：
+
+$$Z_{ij} = \text{round}\left(\frac{Y_{ij}}{Q_{\text{step}}}\right)$$
+
+主要差异是 HEVC 引入了**量化矩阵**（Quantization Matrix，Scaling List），允许对不同频率位置的系数使用不同的量化步长。这让编码器可以精细控制"哪些频率该保留、哪些该丢弃"——例如对人眼敏感的低频用小步长、对不敏感的高频用大步长。H.264 High Profile 也有量化矩阵，但 HEVC 把它作为主流配置。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 6：熵编码
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题六</div>
+<div class="ch-title">熵编码：CABAC 在 HEVC 中的演进</div>
+
+<div class="section fade-in">
+<div class="section-title">仍然只用 CABAC</div>
+
+H.264 提供了 CAVLC（Baseline）和 CABAC（Main/High）两种熵编码模式。HEVC **只保留 CABAC**，放弃了 CAVLC。原因是：
+
+- CABAC 比 CAVLC 节省 10%–15% 比特，在 HEVC 追求极致压缩的目标下不可放弃
+- HEVC 面向 4K/高码率场景，CABAC 的复杂度优势在高分辨率下更明显
+- 统一一种熵编码简化了硬件实现（解码器不需要支持两套）
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">CABAC 的核心流程（回顾）</div>
+
+CABAC 的完整流程仍然是：**二值化 → 上下文建模 → 二进制算术编码 → 概率更新**。这些步骤的原理与 H.264 相同（详见系列第八篇专题十一），HEVC 的改进集中在**上下文模型的设计**上。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">上下文模型的精简</div>
+
+这是 HEVC 熵编码最重要的工程改进。H.264 的 CABAC 定义了约 **460 个上下文模型**，而 HEVC 只用了约 **150 个**——少了三分之二。
+
+<strong>为什么要精简？</strong>
+
+H.264 的 460 个上下文模型针对各种语法元素做了非常细粒度的概率区分，但在实际视频中，很多上下文模型的统计特性几乎相同，细分带来的增益微乎其微，却让上下文初始化和概率维护的开销变大。HEVC 通过统计分析合并了大量冗余上下文。
+
+<strong>精简的好处</strong>：
+
+| 维度 | H.264 | HEVC | 收益 |
+|------|-------|------|------|
+| 上下文模型数 | ~460 | ~150 | 初始化表更小，码率几乎无损 |
+| 上下文初始化 | 逐帧 | 支持 slice 级 / 帧级 | 并行解码更友好 |
+| 并行解码 | 困难（上下文串行依赖） | WPP 下行间可并行 | 配合 WPP 实现多核解码 |
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">并行解码友好的上下文设计</div>
+
+H.264 的 CABAC 解码是严格串行的——每个 bin 的解码依赖前一个 bin 更新后的概率状态，无法多核并行。HEVC 在上下文设计上做了两件事来缓解这个瓶颈：
+
+1. **上下文初始化波前化**：配合 WPP（见专题八），每行 CTU 的初始上下文从前一行的对应位置推导，让多行可以并行解码
+2. **减少上下文间的长程依赖**：合并冗余上下文后，单条码流内的依赖链变短
+
+虽然 CABAC 本质仍是串行算法，但 HEVC 的设计让"按行并行"成为可能，这是 4K 实时解码的关键。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">熵编码的增益分布</div>
+
+HEVC 的 CABAC 改进相对 H.264 CABAC 单独贡献约 **3%–5%** 的码率节省。看似不大，但考虑到这只是"重新组织概率表"的纯软件级改进、几乎没有增加编码复杂度，性价比极高。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 7：环路滤波
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题七</div>
+<div class="ch-title">环路滤波：去块滤波与 SAO</div>
+
+<div class="section fade-in">
+<div class="section-title">块效应的来源</div>
+
+基于块的变换和预测会在块边界产生不连续——相邻块独立量化导致边界两侧像素值跳变，这就是**块效应**（Blocking Artifact）。块效应在低码率下尤其刺眼，呈现为画面上的"网格"。
+
+H.264 引入了**环路内去块滤波**（In-loop Deblocking Filter）来缓解这个问题。HEVC 沿用并改进了去块滤波，同时在它之上新增了 **SAO**（Sample Adaptive Offset）这一层。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">HEVC 的去块滤波改进</div>
+
+HEVC 的去块滤波原理与 H.264 类似（根据边界强度 Bs 决定滤波强度），但有两点改进：
+
+- **只在 TU/PU 边界滤波，不在 CU 边界**：因为 CU 边界未必是变换块边界，盲目滤波会模糊真实边缘
+- **8×8 网格起步**：HEVC 的去块滤波最小作用于 8×8 边界（H.264 是 4×4），减少了滤波调用次数，并行性更好
+
+滤波强度仍分 0–4 五档，Bs=4（帧内块边界）最强，Bs=0 不滤波。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">SAO：HEVC 独有的第二级滤波</div>
+
+**SAO（Sample Adaptive Offset）** 是 HEVC 相对 H.264 在环路滤波上最重要的新增。它作用于**去块滤波之后**，对每个像素施加一个分类后的偏移量。
+
+<strong>为什么需要 SAO？</strong>
+
+量化过程会引入两类典型失真：
+
+1. **带状伪影**（Banding Artifacts）：平滑渐变区域出现可见的色带阶梯，因为量化把连续渐变压成了离散台阶
+2. **振铃伪影**（Ringing Artifacts）：高频纹理边缘出现波纹，因为变换的高频系数被量化丢失
+
+去块滤波只处理块边界，对带状和振铃伪影无能为力。SAO 通过对像素值做精细补偿，恢复 1–2 dB PSNR 的质量。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">SAO 的两种模式</div>
+
+SAO 把每个 CTU 的像素分类，对每类施加偏移。分类有两种方式：
+
+<strong>Edge Offset（EO，边缘偏移）</strong>
+
+根据像素与邻居的大小关系分 4 类边缘模式（水平、垂直、135°、45° 方向各一种）。EO 专门处理边缘处的振铃伪影——对边缘像素施加小的偏移，减弱过冲/下冲。
+
+<strong>Band Offset（BO，带偏移）</strong>
+
+把像素值范围分成 32 个带（每带覆盖 32 个亮度级），对当前 CTU 中像素值落在某个带的像素施加偏移。BO 专门处理平滑渐变的带状伪影——把量化"压扁"的带子拉回平滑。
+
+| 模式 | 处理对象 | 分类依据 | 典型增益 |
+|------|---------|---------|---------|
+| EO | 边缘振铃 | 像素与邻居大小关系 | ~0.5–1 dB |
+| BO | 平滑带状 | 像素值所属区间 | ~0.5–1 dB |
+| Off | 不启用 | — | — |
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">SAO 的码率开销</div>
+
+SAO 的偏移参数通过 CTU 级别的 side information 传输，开销很小（每个 CTU 几个比特）。它带来的质量提升主要在主观感知上——尤其在天空、皮肤渐变这种 H.264 容易出现可见色带的区域，SAO 能让画面"干净"一个档次。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 8：并行处理
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题八</div>
+<div class="ch-title">并行处理：WPP、Tiles、Slice</div>
+
+<div class="section fade-in">
+<div class="section-title">为什么并行对 HEVC 尤其关键</div>
+
+4K 视频的像素数是 1080p 的 4 倍、720p 的 9 倍。如果编码/解码仍像 H.264 那样强串行，4K 实时处理根本不可能。HEVC 在标准层面就内置了三种并行工具，让多核处理器可以充分并行。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">WPP：波前并行处理</div>
+
+**WPP**（Wavefront Parallel Processing）是 HEVC 最优雅的并行工具。其思想：
+
+- 把每**行** CTU 作为一个独立的处理单元
+- 第 $N$ 行的编码可以在第 $N-1$ 行推进 2 个 CTU 后就启动（因为帧间/帧内预测只需要上方 2 行的邻居）
+- 多行可以同时在不同线程上编码/解码
+
+```
+行 0: CTU → CTU → CTU → CTU → ...
+行 1:        等 2 个 → CTU → CTU → ...   （可与行 0 并行）
+行 2:                  等 2 个 → CTU → ...
+```
+
+WPP 的优势是**不破坏帧的扫描顺序**，码流结构与传统单线程一致，只是解码时多线程。配合专题六提到的 CABAC 上下文波前化，WPP 能实现接近线性的多核加速。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Tiles：矩形分块并行</div>
+
+**Tiles** 把一帧划分为若干个矩形区域，每个 Tile 完全独立编码/解码——独立预测、独立熵编码上下文。
+
+| 特性 | WPP | Tiles |
+|------|-----|-------|
+| 划分方式 | 按行 | 矩形网格 |
+| 独立程度 | 共享上下文（行间有少量依赖） | 完全独立 |
+| 并行度 | ~行数 | ~Tile 数 |
+| 码流顺序 | 保持扫描顺序 | Tile 间可重排 |
+| 适用场景 | 通用流媒体 | 超低延迟、硬件解码 |
+
+Tiles 的完全独立性让硬件解码器可以把每个 Tile 分配给一个独立解码核，实现极致并行。代价是 Tile 边界处的预测会损失（不能跨 Tile 参考），码率会增 1%–3%。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Slice 与 Dependent Slice</div>
+
+HEVC 保留了 H.264 的 **Slice** 概念——一帧可分为多个 Slice，每个 Slice 独立编码，主要用于错误恢复（一个 Slice 损坏不影响其他）。
+
+新增的 **Dependent Slice** 允许一个 Slice 继承前一个 Slice 的 CABAC 上下文，省去上下文重新初始化的开销，适合把大 Slice 切小做 MTU 适配时减少码率损失。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">三种工具的组合使用</div>
+
+实际编码器（如 x265）通常组合使用：
+
+- **WPP**：默认开启，榨干多核 CPU
+- **Tiles**：仅在需要硬件并行或超低延迟时启用
+- **Slice**：仅在需要错误恢复（如无线传输）时启用
+
+这三者让 HEVC 在 4K 实时编码/解码上比 H.264 有数量级的吞吐优势，这是它被超高清流媒体广泛采用的技术基础。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 9：Profile/Level/Tier
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题九</div>
+<div class="ch-title">Profile、Level 与 Tier 体系</div>
+
+<div class="section fade-in">
+<div class="section-title">Profile：编码工具集</div>
+
+HEVC 的 Profile 体系比 H.264 更细粒度，按"通用性"分层：
+
+| Profile | 全称 | 适用场景 |
+|---------|------|---------|
+| Main | 通用 8-bit 4:2:0 | 主流流媒体、广播 |
+| Main 10 | 10-bit 4:2:0 | 4K HDR、高质量流媒体 |
+| Main Still Picture | 单帧静止图像 | 静态图编码 |
+| RExt（Range Extensions） | 4:2:2/4:4:4、12–16 bit | 专业制作、医疗 |
+| SCC（Screen Content Coding） | 屏幕内容专用 | 屏幕共享、远程桌面 |
+| MV-HEVC | 多视角 | 3D/VR |
+
+<strong>Main 10</strong> 是 4K 流媒体的事实标准——10-bit 位深在 HDR 内容上比 8-bit 显著减少带状伪影。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">SCC：屏幕内容的专用工具</div>
+
+屏幕内容（文字、UI、截图）与自然视频的统计特性完全不同：颜色少、边缘锐利、有大量重复块。HEVC 的 SCC 扩展为此加入了专用工具：
+
+- **调色板模式**（Palette Mode）：把块编码为"颜色调色板 + 索引"，适合颜色数少的屏幕画面
+- **自适应运动矢量分辨率**：屏幕内容常有大块平移，用整数 MV 即可
+- **帧内块复制**（Intra Block Copy）：直接复制同帧内其他位置的像素，对滚动屏幕特别有效
+
+SCC 是 HEVC 相对 H.264 在"应用面"上的重要扩展，远程桌面和云游戏场景高度依赖它。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Level：性能约束</div>
+
+Level 定义了分辨率、码率、帧率的上限。HEVC 的 Level 从 1 到 6.1+：
+
+| Level | 最大分辨率 | 最大码率（Main Tier） | 典型应用 |
+|-------|-----------|---------------------|---------|
+| 1.0 | 176×144 | 128 kbps | 移动视频通话 |
+| 3.0 | 720×576 | 850 kbps | 标清流媒体 |
+| 4.0 | 2048×1080 | 2 Mbps | 1080p 网络视频 |
+| 5.0 | 3840×2160 | 10 Mbps | 4K 流媒体 |
+| 5.1 | 3840×2160 | 12 Mbps | 4K 高码率 |
+| 6.0 | 7680×4320 | 25 Mbps | 8K 试验 |
+| 6.1 | 8192×4320 | 35 Mbps | 8K 广播 |
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">Tier：码率档位</div>
+
+HEVC 在 Level 4 以上引入了 **Tier**（档位）概念，同一 Level 分为两档：
+
+- **Main Tier**：消费级，码率上限较低
+- **High Tier**：专业级，码率上限大幅放宽（可达 Main Tier 的 2–3 倍）
+
+Tier 的引入是为了让同一套标准既服务消费级流媒体（控制带宽），又服务专业制作和广播（高码率高质量）。Profile + Level + Tier 的组合（如 "Main 10@L5.1@High"）完整描述了一个 HEVC 码流的工具集和性能要求。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 10：HEVC 扩展
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题十</div>
+<div class="ch-title">HDR、WCG 与位深扩展</div>
+
+<div class="section fade-in">
+<div class="section-title">HDR 与 WCG 的兴起</div>
+
+超高清视频不仅意味着更高分辨率，还意味着**更宽的亮度范围**（HDR, High Dynamic Range）和**更宽的色域**（WCG, Wide Color Gamut）。传统 SDR 视频的亮度范围约 0.1–100 nits、色域为 BT.709；HDR 视频可达 0–10000 nits、色域扩展到 BT.2020，能呈现远超 SDR 的明暗对比和色彩饱和度。
+
+HEVC 是第一批原生支持 HDR/WCG 的视频编码标准，这是它被 UHD Blu-ray 和 4K 流媒体选中的关键原因。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">10-bit 与 12-bit 位深</div>
+
+HDR 要求更高的位深来避免带状伪影：
+
+| 位深 | 级数 | 应用 |
+|------|------|------|
+| 8-bit | 256 | SDR，传统流媒体 |
+| 10-bit | 1024 | HDR 主流（Main 10 Profile） |
+| 12-bit | 4096 | 专业 HDR 制作（RExt） |
+
+8-bit 在 HDR 的 10000 nits 范围内每级跨度太大，平滑渐变会出现明显色带；10-bit 把级数提高 4 倍，基本消除可见带状。HEVC 的 Main 10 Profile 把 10-bit 作为标准配置，而 H.264 主流仍是 8-bit。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">传输函数：PQ 与 HLG</div>
+
+传统 SDR 使用 BT.709 的伽马曲线作为传输函数（编码端的亮度映射）。HDR 引入了两种新传输函数：
+
+| 传输函数 | 全称 | 特点 | 应用 |
+|---------|------|------|------|
+| PQ | Perceptual Quantizer（SMPTE ST 2084） | 基于人眼感知的峰值亮度映射 | Dolby Vision、UHD Blu-ray |
+| HLG | Hybrid Log-Gamma | 兼容 SDR 的对数伽马 | BBC/NHK 广播 |
+
+HEVC 通过 VUI（Video Usability Information）中的 `transfer_characteristics` 字段标记使用的传输函数，让解码器正确还原亮度。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">色域：BT.2020</div>
+
+HEVC 支持的色域从 BT.709 扩展到 **BT.2020**，覆盖了约 75% 的 CIE 1931 可见色域（BT.709 只覆盖约 36%）。更大的色域意味着更饱和的红、绿、蓝，画面色彩更接近真实。
+
+| 色域 | 覆盖可见色域比例 | 主要原色 | 应用 |
+|------|----------------|---------|------|
+| BT.709 | ~36% | sRGB 原色 | SDR 高清 |
+| DCI-P3 | ~46% | 数字影院原色 | 影院、高端显示器 |
+| BT.2020 | ~75% | 超宽原色 | HDR UHD |
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">静态元数据：HDR 的"使用说明"</div>
+
+HDR 视频码流中除了像素数据，还携带**静态元数据**描述显示参数：
+
+- **Mastering Display**：制作时使用的参考显示器亮度/色域
+- **MaxCLL**（Maximum Content Light Level）：内容中峰值亮度
+- **MaxFALL**（Maximum Frame Average Light Level）：帧平均峰值亮度
+
+解码器根据这些元数据把自己的显示器色调映射到合适范围。这是 HEVC 相对 H.264 在"画质维度"而非"压缩维度"上的根本扩展。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 11：与 H.264 对比
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题十一</div>
+<div class="ch-title">HEVC vs H.264：压缩效率实测对比</div>
+
+<div class="section fade-in">
+<div class="section-title">整体压缩效率</div>
+
+在相同主观质量下，HEVC 相比 H.264 平均节省约 **50%** 的比特。但这个数字因分辨率和内容类型而异：
+
+| 分辨率 | H.264 典型码率 | HEVC 典型码率 | 节省 |
+|--------|--------------|--------------|------|
+| 720p | 3,000 kbps | 1,500 kbps | 50% |
+| 1080p | 5,000 kbps | 2,500 kbps | 50% |
+| 4K | 20,000 kbps | 10,000 kbps | 50% |
+
+分辨率越高，HEVC 的相对优势越大——因为高分辨率下大面积平坦区域占比更高，CTU 大块编码的优势充分发挥。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">各模块的增益拆解</div>
+
+HEVC 相对 H.264 的 50% 增益来自各模块的累加：
+
+| 模块 | HEVC 改进 | 单独增益（粗略） |
+|------|----------|-----------------|
+| 编码树 CTU | 64×64 大块 + 四叉树自适应 | ~10%–15% |
+| 帧内 35 模式 | 33 角度 + Planar | ~4%–6% |
+| Merge/AMVP | 运动矢量高效编码 | ~5%–8% |
+| 多尺寸变换 + DST | 4–32 变换 + 帧内 DST-VII | ~3%–5% |
+| SAO 滤波 | 带状/振铃伪影补偿 | ~2%–4% |
+| CABAC 上下文精简 | 150 个上下文模型 | ~3%–5% |
+| 1/4 像素 8-tap | 更精确亚像素插值 | ~2%–3% |
+
+单独看每个模块增益都不大，但叠加（非简单相加，有交互效应）后达到 50% 量级。这正是 HEVC 设计哲学的体现：**没有银弹，靠系统工程**。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">编码复杂度对比</div>
+
+压缩效率的提升是有代价的——HEVC 编码复杂度约为 H.264 的 **3–10 倍**：
+
+| 编码器 | 1080p 编码速度（参考） | 相对质量 |
+|--------|---------------------|---------|
+| x264（H.264） | 120–180 fps | 基准 |
+| x265（HEVC） | 15–30 fps | +50% 效率 |
+| NVENC HEVC（硬件） | 200+ fps | +40% 效率（略低于软件） |
+
+HEVC 故意把复杂度压在编码端（见专题一），所以解码端复杂度只有 H.264 的 2–3 倍，现代设备都能流畅解码。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">为什么 HEVC 在 4K 上优势特别大</div>
+
+| 维度 | H.264 在 4K 上的劣势 | HEVC 的对应改进 |
+|------|---------------------|----------------|
+| 宏块数量 | 4K 有 33 万个 16×16 宏块，头开销巨大 | CTU 64×64，宏块数减 16 倍 |
+| 帧内方向 | 9 模式难以拟合 4K 高频纹理 | 35 模式精确匹配 |
+| 运动矢量 | 33 万宏块每个都要 MV，开销大 | Merge 模式批量复用 MV |
+| 色彩 | 8-bit 在 HDR 上带状严重 | Main 10 原生 10-bit |
+| 并行 | 串行解码 4K 不可行 | WPP + Tiles 多核并行 |
+
+每一个 4K 的痛点都对应 HEVC 的一个核心改进，这就是为什么 4K 时代 HEVC 几乎是必选。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  专题 12：专利困境
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">专题十二</div>
+<div class="ch-title">HEVC 的专利困境与 AV1 的诞生</div>
+
+<div class="section fade-in">
+<div class="section-title">技术上的成功，商业上的翻车</div>
+
+HEVC 在技术上极其成功——它把视频压缩效率推进到新高度，原生支持 4K/HDR，并行能力优秀。但它**在商业上是一次重大失败**，而这个失败直接催生了 AV1。
+
+问题的根源不在技术，而在**专利许可**。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">H.264 的简单许可 vs HEVC 的碎片化</div>
+
+H.264 的专利许可由 **MPEG LA** 单一专利池管理，政策清晰：每个编码器/解码器 capped 封顶（每年 975 万美元），内容方几乎不收费。这种简单可预测的许可结构是 H.264 普及的关键。
+
+HEVC 本想沿用这套模式，但局面失控了：
+
+| 专利池 | 管理方 | 收费对象 | 政策 |
+|--------|--------|---------|------|
+| MPEG LA | MPEG LA | 编解码器厂商 | capped 封顶 |
+| HEVC Advance | HEVC Advance | 编解码器 + 内容方 | 无封顶，内容方收 0.5%–4% |
+| Velos Media | Velos | 编解码器 + 内容方 | 另一套费率 |
+| 直接许可 | Technicolor、GE 等单个专利持有人 | 各自谈判 | 不透明 |
+
+<strong>三重问题</strong>：
+
+1. **多个专利池并存**：同一份 HEVC 专利被拆到 3 个以上的池子里，使用者要分别签多个许可
+2. **总费用不可预测**：HEVC Advance 对内容方按营收抽成且无封顶，Netflix/YouTube 这种海量视频平台根本无法估算成本
+3. **透明度极差**：还有专利持有人不进任何池子，直接单独追讨，使用者无法穷尽风险
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">浏览器厂商的集体抵制</div>
+
+HEVC 的专利困境直接导致：
+
+- **Chrome 和 Firefox 至今不原生支持 HEVC 播放**——Google 和 Mozilla 不愿为不可预测的许可费买单
+- **开源实现（x265）受限**——开源社区无法自由分发 HEVC 编解码器
+- **Web 视频生态分裂**——Safari 和 Edge 支持 HEVC，Chrome/Firefox 不支持，开发者无法统一用 HEVC
+
+这种"技术好但用不起"的局面让整个行业感到窒息。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">AV1：行业的集体自救</div>
+
+2015 年，Google、Apple、Netflix、Amazon、Microsoft、Meta、Cisco、Intel 等公司联合成立 **AOMedia**（Alliance for Open Media），明确目标：**做一个免版税（royalty-free）的视频编码标准**，打破 HEVC 专利困局。
+
+这就是 **AV1**（2018 年发布）的由来。AV1 在技术上对标 HEVC（甚至略胜），但**完全免版税**——任何公司都可以免费实现、分发、使用。AV1 的诞生本质上是一次"行业自救"：当专利问题阻碍了整个行业的利益，大公司联手投入数亿美元研发一个开放标准。
+
+AV1 的技术细节（超级块、61 种帧内模式、Film Grain 合成等）和它与 HEVC 的对比，详见本系列第六篇 [[@视频编码标准格局，AV1/AV2 的开源未来]]。
+
+</div>
+
+<div class="section fade-in">
+<div class="section-title">HEVC 的遗产</div>
+
+尽管 HEVC 在浏览器端失败，它并非毫无建树：
+
+- **UHD Blu-ray、4K 流媒体、移动拍摄**等封闭生态仍广泛使用 HEVC（这些场景由厂商预先签好许可）
+- **硬件解码普及**：iPhone、安卓旗舰、电视芯片都内置 HEVC 解码，消费端播放无障碍
+- **技术遗产**：HEVC 的 CTU、35 模式、SAO、Merge 等设计被 AV1、VVC 等后续标准不同程度继承
+
+HEVC 的故事是技术标准史上的经典案例：**技术成功不等于商业成功**。一个标准的命运，是技术、经济、政治三方面博弈的产物。理解这一点，才能看清后续 VVC、AV2 的走向——VVC 仍走 MPEG 的专利路线，AV2 仍走 AOM 的免版税路线，两条路线的分野正是 HEVC 翻车埋下的。
+
+</div>
+
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li>Sullivan, G. J., Ohm, J., Han, W.-J., & Wiegand, T. (2012). "Overview of the High Efficiency Video Coding (HEVC) Standard". <em>IEEE Transactions on Circuits and Systems for Video Technology</em>, 22(12), 1649–1668.</li>
+    <li>ITU-T H.265 (2023). "High Efficiency Video Coding".</li>
+    <li>ISO/IEC 23008-2 (2023). "High Efficiency Video Coding".</li>
+    <li>Ohm, J., et al. (2012). "Comparison of the Coding Efficiency of Video Coding Standards—Including HEVC". <em>IEEE TCSVT</em>, 22(12).</li>
+    <li>Sharman, K., & Suehring, K. (2014). "Common Test Conditions for HEVC". JCT-VC document.</li>
+    <li>Bross, B., Han, W.-J., Ohm, J., Sullivan, G. J., & Wiegand, T. (2013). "High Efficiency Video Coding (HEVC) Text Specification Draft 10". JCT-VC.</li>
+    <li>张春田等 (2015). 《视频压缩编码国际标准 HEVC 的技术进展》. <em>电视技术</em>.</li>
+    <li>x265 开源项目文档：HEVC 编码器参数与 RDO 实现。 <a href="https://x265.readthedocs.io/" target="_blank">x265.readthedocs.io</a></li>
+  </ul>
+</div>
+</div>
+
+<!-- ============================================================
+  系列导航
+  ============================================================ -->
+
+<div class="ch fade-in">
+<div class="ch-label">系列导航</div>
+<div class="ch-title">本系列其他文章</div>
+
+- 姊妹篇：[图像压缩基础系列（八）：H.264 视频编码原理详解](/h264-video-coding-principles)（H.264 各模块的对照基础）
+- 上一篇：[图像压缩基础系列（六）：视频编码标准格局，AV1/AV2 的开源未来](/video-codec-landscape)（AV1/AV2 技术细节与 HEVC 专利困境的延续）
+- 系列总览：[图像压缩基础系列总览](/compression-hub)
+
+</div>

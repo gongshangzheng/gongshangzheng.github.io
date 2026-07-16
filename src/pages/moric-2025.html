@@ -1,0 +1,397 @@
+---
+title: "红外轮廓图像压缩论文精读（十二）：MoRIC，区域化隐式神经编解码与自适应链码轮廓压缩"
+description: "深读 NeurIPS 2025 MoRIC：把图像切成任意形状区域，每区域用独立 INR 过拟合压缩，区域轮廓用 C* 自适应链码单独编码。单物体压缩 BD-rate -10.43%/-10.73% 超 MLIC++，全图在 Kodak/CLIC2020 上以 <2000 MACs/px 超 VTM-19.1，并天然支持分层压缩。"
+created_at: 2026-07-11T16:38:29
+updated_at: 2026-07-11T16:38:29
+tags: ["链码", "INR", "过拟合编解码", "轮廓压缩", "图像压缩"]
+aliases: ["categories/AI/图像压缩/红外轮廓图像压缩"]
+sub_id: 190
+papers: ["https://papers.nips.cc/paper_files/paper/2025/file/37f6be32f832caf0f7980469fb06165b-Paper-Conference.pdf"]
+repos: ["https://github.com/eedavidwu/MoRIC"]
+mathjax: true
+hero_title: "MoRIC"
+hero_sub: "NeurIPS 2025 · Imperial College London"
+hero_tagline: "区域化 INR + C* 自适应链码：用任意形状边界把过拟合编解码推向新 SOTA"
+paper_title: "MoRIC: A Modular Region-based Implicit Codec for Image Compression"
+paper_authors: "Gen Li, Haotian Wu, Deniz Gündüz"
+paper_affiliation: "Imperial College London, Department of Electrical and Electronic Engineering"
+paper_venue: "NeurIPS 2025 (39th Conference on Neural Information Processing Systems)"
+paper_url: "https://eedavidwu.github.io/MoRIC/"
+paper_code: "https://github.com/eedavidwu/MoRIC"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">-10.73%</span><span class="label">单物体 BD-rate vs VTM</span></div>
+  <div class="stat"><span class="num b">-2.79%</span><span class="label g">全图 BD-rate vs VTM (Kodak)</span></div>
+  <div class="stat"><span class="num">&lt;800</span><span class="label">单物体解码 MACs/px</span></div>
+  <div class="stat"><span class="num b">&gt;100×</span><span class="label l">解码复杂度低于 MLIC++</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">为什么 overfitted codec 需要一次"分而治之"的重构</div>
+
+  <p>传统图像压缩靠手工设计的变换（JPEG 的 DCT、HEVC/VVC 的块划分）捕捉像素间的统计冗余 #VTM-2021#。近年的学习式编解码器用神经网络替换这些手工变换，率失真（RD）性能突飞猛进，但代价是模型体量和解码算力远超商业编解码器，落地困难 #MLIC-2024#。为了在"低解码复杂度"和"高压缩性能"之间找到平衡点，<strong>过拟合编解码器（overfitted codec）</strong>应运而生：它用轻量 MLP 构成的隐式神经表示（INR）为<strong>每一张图</strong>单独拟合一个连续函数，把量化后的网络权重当作码流 #COIN-2021#。COIN 之后的 COOL-CHIC、C3、LotteryCodec 一路把 RD 性能推到了超越 BPG/HEVC 的地步 #COOL-CHIC-2023# #C3-2024#。</p>
+
+  <p>但这条路撞到了一堵墙：<strong>一张图用一个网络拟合</strong>。图像不同区域的统计特性差异很大——天空平缓、纹理复杂、边缘锐利——用一个固定架构的网络硬塞所有区域，要么网络太大（码率高），要么太小（拟合不了局部细节）。更要命的是，当你想进一步做"只压缩画面里那个行人"这种语义级控制时，矩形像素网格的变换根本不认识"任意形状的物体"。</p>
+
+  <div class="callout"><strong>关键张力</strong>：shape-based coding（按形状编码）在视频编码界研究了几十年却从未真正落地，根因是<strong>变换编码（transform coding）很难为任意形状设计专用变换</strong> #Li-MoRIC-2025#。而 INR 恰恰能在任意形状上训练——这给了 MoRIC 一个绕开历史难题的机会。</div>
+
+  <p>MoRIC（Modular Region-based Implicit Codec）抓住了这个机会，它的核心重构就一句话：<mark>把"一张图一个网络"拆成"多个区域多个网络"，区域边界用链码单独编码，区域内信号用 INR 在任意形状上拟合</mark> #Li-MoRIC-2025#。这条拆分把"形状"和"区域内信号"解耦成两条独立链路，恰好绕开了 transform-based shape coding 几十年没解决的变换设计困难。其中轮廓编码用的是论文新设计的 <strong>C\* 自适应链码</strong>——这正是本系列读者最关心的"链码处理轮廓图像"的现代版答案，也是本文相对库内 <a href="ecc-chain-coding-2026.html">ECC</a> 链码精读 的差异化价值所在。</p>
+
+  <p>结果相当耀眼：单物体压缩上 BD-rate 比 VTM-19.1 低 10.43%（Davis）/10.73%（Kodak），解码只需 &lt;800 MACs/像素；全图压缩在 Kodak（−2.79%）和 CLIC2020（−10.58%）上以 &lt;2000 MACs/像素的复杂度超越 VTM-19.1，号称"首个在 Kodak 上（以 &lt;2000 MACs/像素低复杂度约束）超越 VTM 的神经编解码器" #Li-MoRIC-2025#。本文就带你看透它是怎么做到的——尤其是那个把链码从 1961 年的 Freeman 推到 2025 年的自适应版本的 C\* coding。</p>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/Fig_1_all_illustrate.webp" alt="MoRIC 框架总览" loading="lazy">
+    <div class="cap">图 1：MoRIC 框架总览。三大特征：精确的单物体压缩、区域自适应编码、可扩展的分层压缩。（来源：Li et al., NeurIPS 2025, Fig.1）</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">从"一个网络拟合全图"到"多个网络拟合各区域"的形式化分治</div>
+
+  <p>要看懂 MoRIC 的改法，得先看清它要改的"标准过拟合编解码器"长什么样。论文 §3.1 给了一个非常干净的形式化对照 #Li-MoRIC-2025#。</p>
+
+  <h3 class="section-title">标准过拟合编解码器：一个网络 + 一个 latent</h3>
+
+  <p>标准方案（Fig. 2a）把整个数据点 \(S\) 用一个函数 \(g_W\) 和一个 latent 向量 \(z\) 拟合：编码端做拟合 \(F\)、量化 \(Q\)、熵编码 \(A\)；解码端用量化后的 \(\hat W, \hat z\) 重建 \(\hat S = g_{\hat W}(\hat z)\)。它的率失真分别为：</p>
+
+  \[ D = \mathbb{E}_{S\sim p_s}\bigl[d(S, g_{\hat W}(\hat z))\bigr] \]
+
+  \[ R = \mathbb{E}_{S\sim p_s}\bigl[-\log_2 p_{\hat\psi}(\hat z) - \log_2 p(\hat W) + R_{\hat\psi}\bigr] \]
+
+  <p>这里 \(p_{\hat\psi}(\cdot)\) 是用一个轻量自回归熵模型（ARM）估计的 \(\hat z\) 分布，\(R_{\hat\psi}\) 是传 ARM 参数的额外开销 #COOL-CHIC-2023#。问题很清楚：<strong>一个 \(g_W\) 要同时搞定全图所有区域</strong>，复杂度被强制拉高，码率随之膨胀；而且你想单独压"画面里那个人"根本做不到——网络是按矩形像素网格训练的。</p>
+
+  <h3 class="section-title">模块化分层编解码器：区域 + 轮廓 + 选择函数</h3>
+
+  <p>MoRIC（Fig. 2b）把图像切成 \(N\) 个互斥区域 \(\{S^1,\dots,S^N\}\)，每个区域 \(S^i\) 用<strong>独立的</strong> \(g_{W^i}\) 和 latent \(z^i\) 拟合。关键创新在于：区域位置信息不再靠矩形坐标，而是靠<strong>轮廓 \(\tau^i\)</strong>，用链码方案 \(C(\cdot)\) 单独压缩。解码时 \(\tau^i\) 通过一个选择函数 \(S(\cdot)\) 指导该用哪套 \(\{W^i, z^i\}\)，逐区域重建：</p>
+
+  \[ \hat S = \bigcup_{i=1}^{N} g_{\hat W^i}(\hat z^i, x^i) \]
+
+  <p>新的率变成各区域 latent 之和 + 轮廓 + 共享 ARM：</p>
+
+  \[ R = \mathbb{E}_{S\sim p_s}\Bigl[\sum_{i=0}^{N}\bigl(-\log_2 p_{\hat\psi}(\hat z^i) - \log_2 p(\hat W^i) - \log_2 p(\tau^i)\bigr) + R_{\hat\psi}\Bigr] \]
+
+  <div class="callout"><strong>这条形式化重构的精髓</strong>：每个区域用不同 \(W^i\)，但<strong>共享一个 ARM</strong>。区域化带来局部专业化（每个 LSN 更小更专），共享带来参数复用（ARM 不膨胀）。而 \(\tau^i\) 这一项把"形状"从变换编码的几何难题里彻底剥离出来，交给链码处理——这是 MoRIC 能落到实处的根因。</div>
+
+  <p>一个自然的疑问是：把图切成区域、再为每个区域单独编码轮廓，这些额外的"分区信令"和"轮廓比特"会不会反而吃掉收益？答案是：在低 bpp 区间，轮廓和网络开销确实会主导码率（Fig. 7 显示低 bpp 下轮廓占近 80%）；但在中高 bpp 区间，区域化的拟合增益远超这些开销。这正是后面 C\* coding 要"有损/无损自适应"的动机——低 bpp 时允许轮廓有损以省比特，高 bpp 时切换无损保精度。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构</div>
+  <div class="ch-title">MoRIC 架构详解：LSN + GMN + PCM + C* 链码</div>
+
+  <p>MoRIC 由四个组件构成：<strong>局部合成网络 LSN</strong>（每个区域一个）、<strong>全局调制网络 GMN</strong>（全区域共享）、<strong>latent 调制 \(z^i\)</strong>（每区域可学向量）、<strong>共享 ARM</strong>（熵模型）。再加上把它们串起来的 <strong>PCM 机制</strong> 和负责轮廓的 <strong>C\* 链码</strong>。我们逐个拆开看 #Li-MoRIC-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/Architecture.webp" alt="MoRIC 架构" loading="lazy">
+    <div class="cap">MoRIC 架构：从标准过拟合 codec 到模块化区域 codec 的演进。（来源：Li et al., NeurIPS 2025, Fig.2/3）</div>
+  </div>
+
+  <h3 class="section-title">局部合成网络 LSN 与全局调制 GMN</h3>
+
+  <p>每个区域的 LSN \(g_{W^i}\) 接收轮廓内的坐标 \(x^i\)，重建该区域的像素强度。它由 \(L_s = 4\) 层卷积组成，每层后跟一个<strong>共享调制器 \(M(\cdot)\)</strong>。\(M(\cdot)\) 把上一层输出与 GMN 提供的调制向量拼接，过一个<strong>权重共享的 MLP</strong> 生成下一层输入。</p>
+
+  <p>GMN \(f_\theta\) 全局优化、跨区域共享。它由上采样模块（转置卷积）+ \(L_m = 4\) 层卷积构成，把量化后的 \(\hat z^i\) 上采样成多尺度调制向量喂给 LSN 各层。这里有个精妙的设计：<strong>\(M(\cdot)\) 的参数在区域间共享</strong>。好处有三：(a) 参数共享直接降码率；(b) 跨层 coarse-to-fine 多尺度调制；(c) 局部与全局特征隐式融合。一个区域的小 LSN 借这套共享调制器，就能"借到"全局上下文，不必自己重新学。</p>
+
+  <h3 class="section-title">PCM：把全局上下文"累积拼接"地注入局部</h3>
+
+  <p>光有共享调制器还不够，论文进一步提出 <strong>Progressive Concatenated Modulation（PCM）</strong>，把全局上下文以 coarse-to-fine 的方式持续注入局部合成。latent \(z^i\) 被设计成 \(L\) 个多分辨率向量 \(\{z^i_1,\dots,z^i_L\}\)，每个 \(z^i_j\) 对应 \(2\times2\) 逐级下采样（最粗层缩减 \(4^{L-1}\) 倍）。GMN 把它们上采样成 \(U^i_k\)，PCM 的关键一步是<strong>累积拼接而非单尺度替换</strong>：</p>
+
+  <div class="def-box">
+    <h3>PCM 调制向量</h3>
+    \[ M^i_k = \text{Concatenate}(U^i_1, U^i_2, \dots, U^i_k) \]
+    <p>第 \(k\) 层的调制向量是前 \(k\) 个尺度特征的拼接。每层 \(M(\cdot)\) 把 \(M^i_k\) 与当前层输出拼接后过共享 MLP。直观上，这让每个区域在每一层都能"看到"从粗到细的全部全局上下文，动态精修自己的表示。</p>
+  </div>
+
+  <p>这种设计让 MoRIC 意外获得了一个<strong>跨区域泛化</strong>能力：即使只传背景 LSN，共享的 GMN/PCM 也能让局部 LSN 推断出其他区域的颜色和结构——这正是后面"分层压缩"能成立的基础。论文也指出 MoRIC + PCM 是一个通用框架，可替换为其他调制策略（如 Mehta 的 modulator 或 FiLM）#Li-MoRIC-2025#。</p>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/workflow.webp" alt="MoRIC 工作流" loading="lazy">
+    <div class="cap">图 4：MoRIC 工作流。图像被划分为 N 个区域，每个区域用独立的 LSN \(g_{\hat W^i}\) 配合共享 GMN \(f_{\hat\theta}\) 调制。（来源：Li et al., NeurIPS 2025, Fig.4）</div>
+  </div>
+
+  <h3 class="section-title">C\* 自适应链码：本篇的链码核心</h3>
+
+  <p>前面所有架构都建立在"已知区域轮廓 \(\tau^i\)"之上。那 \(\tau^i\) 怎么压缩？这才是本系列读者最该看懂的部分。MoRIC 没有用现成的链码，而是设计了 <strong>C\* coding</strong>，灵感来自 Chang、Kulkarni、Koplowitz 1992 年的 <em>Adaptive chain coding for arbitrary curves</em> #Chang-1992#。它要同时满足三个目标：(a) 对目标对象的语义覆盖（不漏边界像素）；(b) 对高曲率的鲁棒性（自适应膨胀）；(c) 平衡的 RD 折中。</p>
+
+  <p>C\* coding 由四个模块组成：<strong>角度匹配（angle matching）、全局重置（global resetting）、偏移自适应（offset adaptation）、轮廓膨胀（contour dilation）</strong>。我们从 Freeman 链码的基础讲起，逐步看每个模块为什么必要 #Freeman-1961#。</p>
+
+  <p><strong>起点：带步长的方向量化。</strong>从初始点出发，给定步长 \(T\)（像素）和初始角 \(\varphi_0\)，把方向空间均分为 \(M_0\) 个角度候选。每走一步，计算"下一个 \(T\) 距离处轮廓点"相对最近角度候选的偏移角 \(\theta_t\) 和距离偏移 \(d\)。<strong>每步比特成本</strong>是：</p>
+
+  \[ \text{bit/step} = \lceil \log_2(M_t) \rceil + 1 \]
+
+  <p>第一位用于角度选择，+1 用于重置信令。注意 \(M_t\) 是带下标的——它会自适应变化，这正是 C\* 与固定 8 方向 Freeman 链码的根本区别。</p>
+
+  <p><strong>模块一：角度匹配。</strong>每一步在当前角度划分 \(M_t\) 里选最接近真实轮廓走向的候选。划分越细（\(M_t\) 越大），角度越准，但每步比特成本越高。所以 C\* 不固定 \(M_t\)，而是让它在曲率变化时动态伸缩。</p>
+
+  <p><strong>模块二：全局重置（失步重同步）。</strong>当某步的偏移距离过大，说明当前角度划分已经"跟丢"了轮廓，需要临时切到最细粒度重新对齐。触发条件是：</p>
+
+  <div class="def-box">
+    <h3>全局重置触发条件</h3>
+    \[ d > 2T \sin\Bigl(\frac{\varphi_{t-1}}{4M_{t-1}}\Bigr) \]
+    <p>右边是"四分之一方向格的弧弦长"——当真实点偏离最近候选超过这个阈值，就触发重置：临时令 \(\varphi_t = 2\pi, M_t = 16\)（最细），完成一步精确对齐后恢复初值 \(\varphi_{t+1}=\varphi_0, M_{t+1}=M_0\)。这相当于链码版的"丢同步后重新握手"。</p>
+  </div>
+
+  <p><strong>模块三：偏移自适应（曲率伸缩）。</strong>重置之外，C\* 还根据累积平均偏移 \(\bar\theta_t\) 做更平缓的角度伸缩，三分支决策：</p>
+
+  <div class="info-box">
+    <h3>偏移自适应三分支</h3>
+    <ul>
+      <li><strong>\(\bar\theta_t \lt \frac{2\varphi_t}{M_t-1}\)</strong>：偏移很小，说明当前方向够准，把角度减半 \(\varphi_{t+1} = \frac{1}{2}\varphi_t\)（精益求精，省比特）。</li>
+      <li><strong>\(\bar\theta_t \gt \frac{M_t}{\varphi_t}-1\)</strong>：偏移太大，角度倍增 \(\varphi_{t+1} = 2\varphi_t\)，并清零统计 \(\bar\theta_t = 0\)（重新捕获曲率）。</li>
+      <li>否则保持 \(\varphi_{t+1} = \varphi_t\)。</li>
+    </ul>
+  </div>
+
+  <p>这套"小则减半、大则倍增"的逻辑让链码在平滑段用粗划分省比特、在拐角用细划分保精度——和差分链码"方向连续时熵低"的统计规律一脉相承，但更进一步做到了<strong>曲率自适应</strong>。</p>
+
+  <p><strong>模块四：选择性膨胀（语义覆盖兜底）。</strong>链码只描述一条曲线，但区域编码要保证轮廓"包住"目标。每轮编码后检查误差 \(\epsilon\)，若 \(\epsilon \gt \epsilon_0\)（轮廓没盖住目标），用 \(3\times3\) 核对轮廓做膨胀再重编码，直到覆盖达标或达迭代上限 \(K\)。这步直接防止"漏掉边界像素导致语义损失和 RD 急剧退化"。</p>
+
+  <p>四模块跑完，最后过一遍 <strong>MTF（move-to-front）变换</strong> #Bentley-1986# 去掉方向序列的局部冗余，为后续熵编码铺路。完整伪代码见 Algorithm 1（论文 Appendix D.2）。</p>
+
+  {{< mermaid >}}
+  flowchart TD
+    A["初始点 + 步长 T + 初值 φ0, M0"] --> B["角度匹配: 选最近候选"]
+    B --> C{"偏移 d > 2T sin(φ/4M)?"}
+    C -->|"是"| D["全局重置: φ=2π, M=16"]
+    D --> E["偏移自适应: θ̄ 小→减半 / 大→倍增"]
+    C -->|"否"| E
+    E --> F{"一轮编码完成?"}
+    F -->|"否"| B
+    F -->|"是"| G{"误差 ε > ε0?"}
+    G -->|"是"| H["3×3 膨胀 → 重编码"]
+    H --> F
+    G -->|"否"| I["MTF 变换 → 输出码流"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">有损 vs 无损：两套模式自适应切换</h3>
+
+  <p>C\* coding 提供两种模式。<strong>有损模式</strong>就是上面完整的四模块自适应链码，步长 \(T\) 可调（Table 1 消融里测了 \(T=1/4/6/10\)）。<strong>无损模式</strong>则固定 \(\varphi = 2\pi, M = 8\)，再过 MTF，并额外提供三种可选策略压缩方向序列：(1) VCC 顶点链码共享顶点描述 #Bribiesca-1999#；(2) 3OT 三正交链码按先验方向差分 #3OT-2005#；(3) NAD 归一化角差链码。这三种都是经典链码方案，MoRIC 把它们作为无损模式的可选项内置，承诺开源。</p>
+
+  <div class="callout"><strong>与库内 ECC 的对照</strong>：ECC 用"36 符号扩展 + 共享边界跳过"做<strong>语义地图无损压缩</strong>，目标是多值标签图；而 MoRIC 的 C\* 走的是"<strong>步长 + 角度双自适应</strong>"路线，目标是单物体/全图的<strong>有损-无损可切换</strong>轮廓压缩，且与 RD 优化耦合（比特代价进码流但不进训练 loss）。两者代表了链码现代化的两条不同思路。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 训练</div>
+  <div class="ch-title">RD 分治优化：可微训练 + 不可微编码的分离</div>
+
+  <p>MoRIC 训练时把数据点拟合成参数集 \(\Omega = \{\psi, \theta, \{z^i, \tau^i, W^i\}_{i=1}^N\}\)，最小化：</p>
+
+  \[ \mathcal{L}(\Omega) = \sum_{i=0}^{N}\bigl[d(S^i, \hat S^i) + \lambda R(\hat z^i)\bigr], \quad \hat S^i = g_{W^i}(f_\theta(\hat z^i), x^i) \]
+
+  <p>这里有个非常关键的设计选择：<strong>rate 项只对 latent \(\hat z^i\) 计算，轮廓 \(\tau^i\) 和网络参数 \(\{\theta, W^i, \psi\}\) 被排除在训练 loss 之外</strong> #Li-MoRIC-2025#。原因有二：一是它们的贡献相对小，二是它们不可微（链码是离散过程、参数量化用非学习分布）。于是 MoRIC 走了一条典型的"分治"：训练时只让可微的 latent 进 RD loss，离散的轮廓和网络参数用各自的编码器处理，最后全部计入最终码流。这样既保住了端到端可微训练，又不丢任何码率成分。</p>
+
+  <h3 class="section-title">两阶段量化感知优化</h3>
+
+  <p>latent \(z^i\) 的量化继承自 C3 的两阶段策略 #C3-2024#。训练 Stage I 用带温度的 soft-rounding 加 Kumaraswamy 噪声近似量化（可微），温度和噪声退火让分布从尖峰过渡到均匀；Stage II 与推理用硬量化：</p>
+
+  \[ \hat z^i = \begin{cases} \text{ST}(z^i) + \text{Kumaraswamy noise} & \text{Training Stage I} \\ Q(z^i) & \text{Stage II \& Inference} \end{cases} \]
+
+  <p>网络参数（\(W^i, \theta, \psi\)）走标量量化 + 非学习 Laplace 熵模型，量化步长 \(\Delta\) 用贪心搜索确定。latent 的熵模型则是学习的 Laplace 分布，按空间邻域条件化：</p>
+
+  \[ p_\psi(\hat z^i) = \prod_{k,j} p_\psi(\hat z^i_{k,j} \mid c^i_{k,j}) \]
+
+  <p>最后用 range coder 把 \(\hat z^i\) 压进码流。</p>
+
+  <h3 class="section-title">训练配置披露表</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>DAVIS / Kodak / CLIC2020（逐图过拟合，非大规模训练集）</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>RTX 3090 + i9-10980XE @3.00GHz</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>原文未明确给出优化器类型</td></tr>
+        <tr><td>学习率</td><td>部分披露</td><td>Stage II: 1e-4 → 1e-8，40 步无改善 decay ×0.8</td></tr>
+        <tr><td>Batch size</td><td>未披露</td><td>原文未给出（逐图过拟合场景）</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>Stage I: 1e5 步；Stage II: 1e4 步</td></tr>
+        <tr><td>训练时长</td><td>部分披露</td><td>单区域 17.54 sec/1k steps；三区域 32.06 sec/1k steps</td></tr>
+        <tr><td>模型参数量</td><td>未披露</td><td>原文未给出总参数量</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未明确训练精度</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <!-- 方法特定项 -->
+        <tr><td>RD 权衡 λ（7 档）</td><td>已披露</td><td>{2e-2, 8e-3, 4e-3, 2e-3, 1e-3, 5e-4, 2e-4}</td></tr>
+        <tr><td>架构层数</td><td>已披露</td><td>LSN Ls=4，GMN Lm=4，latent L=7</td></tr>
+        <tr><td>量化退火</td><td>已披露</td><td>温度 T: 0.3→0.1（Stage I）；Kumaraswamy: 2.0→1.0</td></tr>
+        <tr><td>区域 mask 来源</td><td>已披露</td><td>DAVIS 原生 mask；Kodak 用 SAM2 生成 #SAM2-2024#</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 推理</div>
+  <div class="ch-title">解码链路与分层压缩：coarse-to-fine 的可扩展解码</div>
+
+  <p>MoRIC 的推理流程和训练有明确差异：训练时 latent 走 soft-rounding + 噪声，推理时直接硬量化；网络参数也直接量化。解码端拿到码流后，先用链码重建各区域轮廓 \(\tau^i\)，再用选择函数 \(S(\cdot)\) 把每段轮廓映射到对应的 \(\{W^i, z^i\}\)，逐区域用 \(g_{\hat W^i}(f_{\hat\theta}(\hat z^i), x^i)\) 重建，最后区域合并成完整图像。</p>
+
+  <h3 class="section-title">低解码复杂度的来源</h3>
+
+  <p>MoRIC 解码便宜，根因是<strong>区域化让每个 LSN 只需拟合自己那块区域</strong>，网络小、算力低。单物体压缩只需 &lt;800 MACs/像素，全图压缩 &lt;2000 MACs/像素，比 MLIC++ 低 &gt;100× #Li-MoRIC-2025#。更激进的是，由于各区域独立解码，MoRIC 还支持<strong>部分解码</strong>：只重建感兴趣区域。论文报告相对 VTM 省 2× 计算 + 73.56% 码率，相对 MLIC++ 省 1235× 计算 + 37.31% 码率——这对固定摄像头场景（只关心画面里的运动物体）极有价值。</p>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/reconstructed_32_q6.webp" alt="MoRIC 重建示例" loading="lazy">
+    <div class="cap">MoRIC 单物体重建可视化：区域 LSN 精确拟合目标，背景由固定端已知。（来源：Li et al., NeurIPS 2025, 项目页）</div>
+  </div>
+
+  <h3 class="section-title">分层压缩：先粗后细的可扩展码流</h3>
+
+  <p>MoRIC 还揭示了一个 overfitted codec 的新能力：<strong>语义可泛化</strong>。得益于共享的 GMN/PCM，即使解码端<strong>只收到背景 LSN</strong>，也能产生语义可辨的粗重建——对象结构和语义仍清晰可认，只是颜色不准。随后再逐层传区域专属 LSN，颜色和纹理逐步精修（Fig. 11）。这种 coarse-to-fine 的码流对高分辨率多区域图像特别友好，支持渐进式精修和可控的区域级重建。</p>
+
+  <div class="callout"><strong>这个能力的深层意义</strong>：它把 overfitted codec 从"一张图一个死网络"升级成了"可分层的语义码流"。背后是 PCM 把全局上下文注入每个局部 LSN，让局部网络能跨区域推断——这其实是 Gündüz 课题组在语义通信/JSCC 长线研究 #DeepJSCC-2019# 向 INR 压缩的自然迁移。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验验证</div>
+  <div class="ch-title">单物体 SOTA、全图超 VTM 与 C* 消融</div>
+
+  <p>MoRIC 在 DAVIS、Kodak、CLIC2020 上对比 VTM、EVC、MLIC++、C3、COOL-CHIC v4、LotteryCodec，用 PSNR(RGB)、BD-rate、MACs/像素、编码延迟评测 #Li-MoRIC-2025#。</p>
+
+  <h3 class="section-title">实验配置表</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>DAVIS / Kodak / CLIC2020</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>PSNR↑ (RGB) / BD-rate↓ / MACs/px / 编码延迟</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>VTM-19.1, EVC-S/M/L, MLIC++, C3, COOL-CHIC v4, LotteryCodec</td></tr>
+        <tr><td>推理硬件</td><td>已披露</td><td>RTX 3090 + i9-10980XE @3.00GHz</td></tr>
+        <tr><td>推理分辨率</td><td>部分披露</td><td>Kodak 512×512 量级；DAVIS 视频帧分辨率，未逐一标注</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未明确框架/版本（代码仓用 PyTorch + CompressAI）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">单物体压缩：SOTA 且解码极轻</h3>
+
+  <p>单物体任务是 MoRIC 的主战场（只压目标区域，背景假设已知）。在 DAVIS 和 Kodak 上，MoRIC 以 <strong>-10.43% / -10.73% 的 BD-rate（相对 VTM-19.1）</strong>在单物体压缩上超越当前最强神经编解码器 MLIC++，解码只需 &lt;800 MACs/像素——远低于所有 AE-based 编解码器。</p>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/object_exp_results.webp" alt="单物体压缩 RD 曲线" loading="lazy">
+    <div class="cap">图 6：单物体压缩 RD 性能。(a-b) DAVIS/Kodak 的 RD 曲线与 BD-rate；(c) BD-rate vs 解码复杂度，MoRIC 占据左下（低复杂度高性能）。（来源：Li et al., NeurIPS 2025, Fig.6）</div>
+  </div>
+
+  <h3 class="section-title">全图压缩：在 Kodak/CLIC2020 上超越 VTM</h3>
+
+  <p>全图任务下，MoRIC 在 overfitted codec 里 SOTA：比 C3 低 5.0%（Kodak）/5.48%（CLIC2020），比 COOL-CHIC v4 低 5.51%（DAVIS）。更重要的是，它在 Kodak（−2.79%）和 CLIC2020（−10.58%）上超越 VTM-19.1，号称"首个在 Kodak 上超越 VTM 的神经编解码器"。对比同组前作 LotteryCodec（−0.66%/−9.79%），MoRIC 进一步拉大优势。不过它仍落后于 MLIC++，但解码复杂度低 100× 以上。</p>
+
+  <div class="callout"><strong>别漏掉这个限定语</strong>：论文的"超越 VTM"始终带着 <strong>&lt;2000 MACs/像素</strong> 的低复杂度姿态。这不是单纯的 RD 数字胜利，而是"在远低于 VTM 算力的约束下反超"——对固定背景/多用户流媒体场景更有实际意义。</div>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/exp_results.webp" alt="全图压缩 RD 曲线" loading="lazy">
+    <div class="cap">图 8：全图压缩 RD 性能与 BD-rate（Davis/Kodak/CLIC2020）。MoRIC 在 Kodak/CLIC2020 超越 VTM-19.1。（来源：Li et al., NeurIPS 2025, Fig.8）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/moric-2025/complexity_results.webp" alt="RD 与解码复杂度折中" loading="lazy">
+    <div class="cap">图 9：RD 性能与解码复杂度的折中（Davis/Kodak/CLIC2020）。MoRIC 在同等复杂度下 RD 最优。（来源：Li et al., NeurIPS 2025, Fig.9）</div>
+  </div>
+
+  <h3 class="section-title">baseline 对比汇总</h3>
+
+  <p>把散落在各处的 BD-rate 数值汇成一张表，更易看清 MoRIC 相对各 baseline 的改进幅度（负值=MoRIC 更优）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>对比 baseline</th><th>任务</th><th>数据集</th><th>MoRIC BD-rate 改进</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>vs VTM-19.1</td><td>单物体</td><td>DAVIS / Kodak</td><td>-10.43% / -10.73%</td><td>解码 &lt;800 MACs/px，超越 MLIC++</td></tr>
+        <tr><td>vs VTM-19.1</td><td>全图</td><td>Kodak / CLIC2020</td><td>-2.79% / -10.58%</td><td>解码 &lt;2000 MACs/px，号称"首个在 Kodak 超 VTM 的神经 codec"</td></tr>
+        <tr><td>vs C3</td><td>全图</td><td>Kodak / CLIC2020</td><td>-5.0% / -5.48%</td><td>overfitted codec 间对比</td></tr>
+        <tr><td>vs COOL-CHIC v4</td><td>全图</td><td>DAVIS</td><td>-5.51%</td><td>overfitted codec 间对比</td></tr>
+        <tr><td>vs LotteryCodec</td><td>全图</td><td>Kodak / CLIC2020</td><td>更优（LotteryCodec 自身 vs VTM 为 -0.66% / -9.79%）</td><td>同组前作，MoRIC 进一步拉大优势</td></tr>
+        <tr><td>解码复杂度 vs MLIC++</td><td>全图</td><td>—</td><td>&gt;100× 更低</td><td>RD 仍落后 MLIC++，但算力代价极小</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>读表要点</strong>：MoRIC 的卖点不是绝对 RD 最强（全图仍落后 MLIC++），而是<strong>在远低于 VTM/MLIC++ 的算力约束下反超</strong>——这对固定背景、多用户流媒体等"一次编码多次解码"场景极有价值。</div>
+
+  <h3 class="section-title">C\* 步长消融：低 bpp 增大步长略好，高 bpp 急剧退化</h3>
+
+  <p>Table 1 给了 C\* coding 的核心消融——步长 \(T\) 从 1 增到 10，轮廓 IoU 从 100% 降到 87.31%，轮廓 bpp 从 0.0637 降到 0.0140（省了 78%），但高 bpp 下 PSNR 从 32.16 急退到 31.80：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>步长 T</th><th>IoU (%) ↓</th><th>τ 的 bpp ↓</th><th>总 bpp ↓</th><th>PSNR (dB) ↑</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>100%</td><td>0.0637</td><td>0.213</td><td>24.76</td></tr>
+        <tr><td>4</td><td>93.66%</td><td>0.0409</td><td>0.204</td><td>24.56</td></tr>
+        <tr><td>6</td><td>91.07%</td><td>0.0244</td><td>0.192</td><td>24.46</td></tr>
+        <tr><td>10</td><td>87.31%</td><td>0.0140</td><td>0.186</td><td>24.43</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：低 bpp 区间轮廓比特主导码率（Fig. 7 显示低 bpp 下轮廓占近 80%），此时增大 \(T\) 有损压缩轮廓能省可观比特而 RD 影响不大；但高 bpp 下轮廓精度变得关键，有损轮廓会急剧退化。这正是 C\* "有损/无损自适应切换"的设计依据——也是它与库内 ECC（纯无损）的根本场景差异。</div>
+
+  <h3 class="section-title">其他消融与失败案例</h3>
+
+  <p>组件消融显示：去掉 LSN 掉点最大（+5.35%），去掉 GMN 掉 +7.03%（产生 ringing artifact），去掉 PCM-GMN 掉 +3.56%，去掉 C\* 只掉 +0.47%（说明链码本身在整体 RD 里占比小，但提供了任意形状能力），矩形轮廓替代 C\* 掉 +2.53%（stitching artifact）。区域数消融：1→2 区域增益最大，最多用 3 区域（−1.72% vs single），再多收益递减而复杂度上升。</p>
+
+  <p>失败与局限同样清晰：<strong>高编码复杂度</strong>（单区域 17.54 sec/1k steps，三区域 32.06 sec）是最大短板，适合一次编码多次解码的多用户流媒体；<strong>低 bpp 下 contour+network overhead 主导</strong>；<strong>高 bpp 下 lossy contour 退化</strong>；<strong>全图仍落后 MLIC++</strong>；<strong>分割误差敏感</strong>——IoU&lt;20% 时鲁棒，30–40% 起显著退化，严重误差甚至导致编码不稳定。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">在地图上的位置：链码与 INR 的历史性握手</div>
+
+  <p>把 MoRIC 放回它该在的位置，需要看三组对照。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>Transform-based shape coding</th><th>COOL-CHIC/C3 系列</th><th>MoRIC</th></tr></thead>
+      <tbody>
+        <tr><td>编码对象</td><td>矩形块像素 + 专用形状变换</td><td>全图单网络</td><td>任意形状区域 + 独立 LSN</td></tr>
+        <tr><td>形状处理</td><td>设计任意形状专用变换（极难）</td><td>不处理（矩形网格）</td><td>链码 C* 独立编码</td></tr>
+        <tr><td>全局上下文</td><td>块间预测</td><td>单网络全局</td><td>GMN + PCM 共享调制</td></tr>
+        <tr><td>低复杂度解码</td><td>中</td><td>低</td><td>极低（&lt;800–2000 MACs/px）</td></tr>
+        <tr><td>分层/语义控制</td><td>弱</td><td>无</td><td>天然支持</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>第一组对照揭示了 MoRIC 的历史意义：<strong>shape-based coding 研究了几十年没落地，根因是变换编码难为任意形状设计专用变换</strong> #Li-MoRIC-2025#。MoRIC 用"形状用链码 + 区域内信号用 INR"的解耦，第一次让 shape-based coding 在 INR 框架里实际跑通——这是链码与 INR 的一次历史性握手。</p>
+
+  <p>第二组对照定位了它在 overfitted codec 谱系里的位置：COIN 开山 #COIN-2021# → COOL-CHIC 引入 latent/熵模型 #COOL-CHIC-2023# → C3 引入 Wasserstein 失真 #C3-2024# → LotteryCodec 引入彩票掩码 #LotteryCodec-2025# → MoRIC 引入区域化 + 链码 + 全局调制。值得注意的是，通讯作者 Haotian Wu 同时是 LotteryCodec 的共同作者，Gündüz 是同一 PI——MoRIC 是其课题组在 2025 年"区域化+链码+全局调制"的升级路线，与 LotteryCodec 的"二值掩码"路线互补，两条都越过 VTM。</p>
+
+  <p>第三组对照落到本系列：与 ECC 的纯无损语义地图链码、MPEG-4 CAE 形状编码 的块级二值算术编码相比，MoRIC 的 C\* 把链码推进到了"步长 + 角度双自适应 + 有损/无损可切换 + 与 RD 耦合"的现代形态，是目前链码处理轮廓图像最新的代表作之一。</p>
+
+  <div class="callout"><strong>可操作启发</strong>：(1) 任何需要在任意形状区域上做信号拟合的任务，都可借鉴 MoRIC 的"形状链码 + 区域 INR"解耦，绕开专用变换设计；(2) C\* 的"小则减半、大则倍增"自适应角度伸缩思路，可独立用于其他需要曲率自适应的方向量化场景；(3) 共享调制器 + PCM 的"局部小网络借全局上下文"模式，对多目标场景的参数复用极有参考价值。</div>
+
+  <p>局限与未来方向也很明确：高编码复杂度是最大瓶颈，作者建议用 meta-learning 和区域级混合精度训练加速；视频编码扩展可利用相邻帧轮廓相关性 + 跨 GoF 共享调制；目前用 SAM2 离线生成 mask，未来可把分割集成进编码过程探索粒度-性能折中 #Li-MoRIC-2025#。这些方向尚未有公开实现，是后续可跟进的开放问题。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References · 参考来源</div>
+  <div class="ch-title">文献与资源索引</div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="tiv-benchmark-2014.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">TIV 热红外视频基准</span></a>
+    <a class="nav-card nav-hub" href="infrared-compression-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">红外轮廓图像压缩</span></a>
+    <a class="nav-card nav-next" href="two-link-chain-shape-2002.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">运动补偿双链码</span></a>
+  </div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Li-MoRIC-2025">Li, G., Wu, H., &amp; Gündüz, D. (2025). <em>MoRIC: A Modular Region-based Implicit Codec for Image Compression</em>. NeurIPS 2025. <a href="https://papers.nips.cc/paper_files/paper/2025/file/37f6be32f832caf0f7980469fb06165b-Paper-Conference.pdf" target="_blank">NeurIPS PDF</a> · <a href="https://eedavidwu.github.io/MoRIC/" target="_blank">项目页</a> · <a href="https://github.com/eedavidwu/MoRIC" target="_blank">GitHub</a></li>
+      <li data-cite-key="Chang-1992">Chang, N. L., Kulkarni, S. R., &amp; Koplowitz, J. (1992). <em>Adaptive chain coding for arbitrary curves</em>. Curves and Surfaces in Computer Vision and Graphics III, SPIE, vol. 1830, 296–307.</li>
+      <li data-cite-key="Freeman-1961">Freeman, H. (1961). <em>Techniques for the computer description of arbitrary planar curves</em>. AFIPS SJCC.</li>
+      <li data-cite-key="Bribiesca-1999">Bribiesca, E. (1999). <em>A new chain code</em>. Pattern Recognition, 32(2), 235–251.</li>
+      <li data-cite-key="3OT-2005">Sanchez-Cruz, N., &amp; Rodriguez-Dagnino, R. (2005). <em>Three-bit chain code</em>. 相关 3OT 工作。</li>
+      <li data-cite-key="Bentley-1986">Bentley, J. L., Sleator, D. D., Tarjan, R. E., &amp; Wei, V. K. (1986). <em>A locally adaptive data compression scheme</em>. Communications of the ACM, 29(4), 320–330.</li>
+      <li data-cite-key="COIN-2021">Dupont, E., et al. (2021). <em>COIN: Compression with Implicit Neural Representations</em>. ICLR 2021 Workshop.</li>
+      <li data-cite-key="COOL-CHIC-2023">Ladune, T., et al. (2023). <em>COOL-CHIC: Coordinate-based Low-complexity Hierarchical Image Codec</em>. ICCV 2023.</li>
+      <li data-cite-key="C3-2024">Kim, et al. (2024). <em>C3: High-performance and low-complexity neural compression from a single image or video</em>. CVPR 2024.</li>
+      <li data-cite-key="LotteryCodec-2025">Wu, H., et al. (2025). <em>LotteryCodec</em>. ICML 2025 / arXiv:2507.01204.</li>
+      <li data-cite-key="VTM-2021">Bross, B., et al. (2021). <em>Overview of the Versatile Video Coding (VVC) standard and its applications</em>. IEEE TCSVT, 31(10), 3736–3764.</li>
+      <li data-cite-key="MLIC-2024">He, J., et al. <em>MLIC++</em>. 学习式图像压缩，多阶段上下文模型。</li>
+      <li data-cite-key="SAM2-2024">Ravi, S., et al. (2024). <em>SAM 2: Segment Anything in Images and Videos</em>.</li>
+      <li data-cite-key="DeepJSCC-2019">Bourtsoulatze, E., Kurka, D., &amp; Gündüz, D. (2019). <em>Deep Joint Source-Channel Coding for Wireless Image Transmission</em>. IEEE TCSVT.</li>
+    </ul>
+  </div>
+</div>

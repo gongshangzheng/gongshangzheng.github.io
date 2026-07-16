@@ -158,7 +158,7 @@ sub_id: 40
 | 谱段 | alias 路径 | 标题前缀 | sub_id 范围 | 当前最大 | 内容类型 |
 |------|-----------|----------|------------|---------|----------|
 | 主系列 | `categories/AI/数字人` | `数字人系列（N）：` | 10–150 | 150 | Survey/技术路线综述 |
-| 论文精读 | `categories/AI/数字人/数字人论文精读` | `数字人论文精读（N）：` | 10–400 | 400 | 单篇论文深度解读 |
+| 论文精读 | `categories/AI/数字人/数字人论文精读` | `数字人论文精读（N）：` | 10–430 | 430 | 单篇论文深度解读 |
 | 工程解读 | `categories/AI/数字人/数字人工程解读` | `数字人工程解读（N）：` | 10–90 | 90 | 源码解读/工程拆解/Benchmark |
 
 Hub 页（`digital-human-hub.html`）使用 `sub_id: 0`。
@@ -169,7 +169,7 @@ Brainstorm 页使用 `sub_id: 5`。
 1. **先判断内容类型**：论文精读 vs 工程/源码解读 vs 系列综述
 2. **确定谱段**：
    - 系列综述 → `categories/AI/数字人`，sub_id 在 10–999 区间（当前下一个：160）
-   - 论文精读 → `categories/AI/数字人/数字人论文精读`，sub_id 从 410 开始
+   - 论文精读 → `categories/AI/数字人/数字人论文精读`，sub_id 从 440 开始
    - 工程解读 → `categories/AI/数字人/数字人工程解读`，sub_id 从 100 开始
 3. **标题格式**：`系列前缀（编号）：具体标题`
 4. **aliases**：添加对应的 `categories/` 路径
@@ -191,27 +191,27 @@ Brainstorm 页使用 `sub_id: 5`。
 | 谱段 | alias 路径 | 标题前缀 | sub_id 范围 | 当前最大 | 内容类型 |
 |------|-----------|----------|------------|---------|----------|
 | 主系列 Hub | `categories/AI/图像压缩` | `图像压缩系列总览` | 0 | 0 | 总览 |
-| 基础系列 | `categories/AI/图像压缩/图像压缩基础系列` | `图像压缩基础系列（N）：` | 0–70 | 70 | 基础知识教程 |
+| 基础系列 | `categories/AI/图像压缩/图像压缩基础系列` | `图像压缩基础系列（N）：` | 0–80 | 80 | 基础知识教程 |
 | 专题 | `categories/AI/图像压缩/图像压缩专题` | `图像压缩专题（N）：` | 10–70 | 70 | 技术专题综述 |
 | 论文精读 | `categories/AI/图像压缩/图像压缩论文精读` | `图像压缩论文精读（N）：` | 10–180 | 180 | 单篇论文深度解读 |
 | 红外正文 | `categories/AI/图像压缩/红外图像压缩` | `红外图像压缩系列（N）：` | 0–60 | 60 | 红外压缩技术路线 |
-| 红外精读 | `categories/AI/图像压缩/红外图像压缩` | `红外图像压缩论文精读（N）：` | 70–170 | 170 | 红外压缩单篇精读 |
+| 红外精读 | `categories/AI/图像压缩/红外轮廓图像压缩` | `红外轮廓图像压缩论文精读（N）：` | 70–180 | 180 | 红外压缩单篇精读 |
 
 Hub 页（`image-compression-hub.html`）使用 `sub_id: 0`。
 基础系列 Hub（`compression-hub.html`）使用 `sub_id: 0`。
 红外子系列 Hub（`infrared-compression-hub.html`）使用 `sub_id: 0`。
 
-> **红外精读编号说明**：红外正文使用 sub_id 10–60（6 篇），红外精读使用 sub_id 70–170（11 篇），两者在同一 3 级路径下通过 sub_id 段区分。
+> **红外精读编号说明**：红外正文使用 sub_id 10–60（6 篇），红外精读使用 sub_id 70–180（11 篇），两者在同一 3 级路径下通过 sub_id 段区分。
 
 ### 新增文章规则
 
 1. **先判断内容类型**：基础教程 vs 专题综述 vs 论文精读 vs 红外子系列
 2. **确定谱段**：
-   - 基础教程 → `categories/AI/图像压缩/图像压缩基础系列`，sub_id 从 80 开始
+   - 基础教程 → `categories/AI/图像压缩/图像压缩基础系列`，sub_id 从 90 开始
    - 专题综述 → `categories/AI/图像压缩/图像压缩专题`，sub_id 从 80 开始
    - 论文精读 → `categories/AI/图像压缩/图像压缩论文精读`，sub_id 从 190 开始
-   - 红外正文 → `categories/AI/图像压缩/红外图像压缩`，sub_id 从 70 开始
-   - 红外精读 → `categories/AI/图像压缩/红外图像压缩`，sub_id 从 180 开始
+   - 红外正文 → `categories/AI/图像压缩/红外轮廓图像压缩`，sub_id 从 70 开始
+   - 红外精读 → `categories/AI/图像压缩/红外轮廓图像压缩`，sub_id 从 190 开始
 3. **标题格式**：`系列前缀（编号）：具体标题`
 4. **aliases**：添加对应的 `categories/` 路径
 5. 主 Hub 和红外 Hub 需同步更新目录
@@ -225,6 +225,37 @@ Hub 页（`image-compression-hub.html`）使用 `sub_id: 0`。
 **描述**：视觉 Tokenizer、离散分词器、1D Tokenizer、TiTok/DiTok 等。将连续图像编码为离散 token 序列。
 **编号**：27 篇文章，暂无系列前缀和 sub_id 编号体系。文章按发布时间排列。
 **新建规则**：若积累到 5+ 篇同类文章，应考虑建立系列组织并更新本文件。
+
+### categories/读书笔记/美国职业罪犯
+
+**描述**：Thomas Byrnes 1886 年《Professional Criminals of America》全书中文转写系列。每篇 = Part I 一类犯罪手法讲解（转写）+ Part II 该类型罪犯名录（中文转写）。补充篇覆盖著名伪造团伙、悬案谋杀、冒险家、鸦片习性等专题。
+**谱段与系列组织**：
+
+| 谱段 | sub_id 区间 | 标题格式 |
+|------|------------|---------|
+| Hub 总览 | 0 | 《美国职业罪犯》系列总览 |
+| 手法/类型篇 | 10–90（步长 10） | 美国职业罪犯系列（N）：<类型> |
+| 补充篇 | 100–120（步长 10） | 美国职业罪犯系列（N）：<主题> |
+
+**已发布文章清单**：
+
+| sub_id | 文件 | 标题 |
+|--------|------|------|
+| 0 | professional-criminals-of-america-hub.html | 《美国职业罪犯》系列总览 |
+| 10 | pca-bank-burglars.html | 银行窃贼 |
+| 20 | pca-bank-sneaks.html | 银行潜入贼 |
+| 30 | pca-forgers.html | 伪造犯 |
+| 40 | pca-hotel-thieves.html | 旅店与公寓贼 |
+| 50 | pca-sneak-house-thieves.html | 潜入与入户贼 |
+| 60 | pca-store-safe-burglars.html | 商店与保险箱窃贼 |
+| 70 | pca-shoplifters-pickpockets.html | 商店扒手与扒手 |
+| 80 | pca-confidence-banco.html | 诈骗犯与骗局党 |
+| 90 | pca-receivers-sawdust.html | 赃物收买者与锯末骗子 |
+| 100 | pca-notable-forgers-international.html | 著名伪造犯与国际伪造团伙 |
+| 110 | pca-other-criminals-murders.html | 其他著名罪犯与悬案谋杀 |
+| 120 | pca-adventurers-opium.html | 冒险家、鸦片习性与为何给贼拍照 |
+
+**新增文章规则**：本系列已完整覆盖原书，一般不再新增。若后续补写配图注解或某类型深读，沿用同级编号（130, 140...），标题前缀保持"美国职业罪犯系列（N）："。
 
 ---
 

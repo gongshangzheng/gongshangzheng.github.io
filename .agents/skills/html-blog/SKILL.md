@@ -30,6 +30,8 @@ documentation: |
 > **所有生成 HTML 的 skill** 必须通过本 skill 发布文章，不得自行维护模板或组件规范。
 > 写作模板由本 skill 统一维护：`templates/article-template.html`（普通文章）、`templates/hub-template.html`（中枢页）、`templates/course-note-section-template.html`（课程笔记正文片段）。上游的 course-notes 只产出课程内容结构，最终 HTML 页面必须通过本 skill 生成。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ---
 
 ## 0. 写作流程

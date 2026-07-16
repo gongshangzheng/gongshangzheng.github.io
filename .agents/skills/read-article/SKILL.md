@@ -29,6 +29,8 @@ metadata:
 > **最终交付**：HTML 深度解读长文 + 博客发布链接 + 可选邮件通知。
 > **保留的中间产出**：raw 素材 + synthesis 综合分析。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ---
 
 ## 模式
@@ -48,7 +50,7 @@ metadata:
 4. 进入 Phase 5 前，必须完成 Phase 4（文章架构规划）。
 5. 进入 Phase 5 前，必须读取 `~/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
 6. **默认生成博客**：用户若未明确要求"只做分析/只 collect/不生成博客"，默认执行到 HTML 文章生成 + 构建校验 + 发布准备完成。
-7. **配图优先级**：用户截图 > arXiv source tarball 原始图片 > arXiv HTML 原图 > GitHub repo 图 > PDF 提取图 > 代码绘制 > 网络搜图。AI 生图完全禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
+7. **配图优先级**：用户截图 > arXiv source tarball 原始图片 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图（脚本 `scripts/crop-figures-from-docling.py`）> 代码绘制 > 网络搜图。AI 生图完全禁止；Docling 自家 144 DPI referenced 渲染图禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 8. **中间文件保留完整事实**：Phase 2 的四份分析保留所有具体数值、公式、表格、超参数、实验配置。synthesis.md 是导航索引，记录"哪个事实在哪个文件"，用指针连接而非复制。
 9. **重要事实性句子必须显式带引用**：至少覆盖论文贡献表述、实验数值、数据集/基线/指标、作者声明、时间线、引用链前置工作结论。引用必须使用 `#key#` 语法。
 10. Phase 6 fidelity review 回原文核查，以论文全文为准。
@@ -255,7 +257,8 @@ synthesis.md 仅作为导航索引（"去哪里找什么"），不作为内容�
 
 配图来源优先级见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 
-**禁止**：Docling docpage/dcoref 整页抽取、AI 生图、hotlink 远程 URL。
+**禁止**：Docling `--image-export-mode referenced` / `_artifacts/` / `docpage/dcoref` 的 144 DPI 渲染图、AI 生图、hotlink 远程 URL。
+**允许**：`scripts/crop-figures-from-docling.py` 的脚本化高清 bbox 裁图（只借 Docling JSON 坐标，渲染交 PyMuPDF），不在禁止集。
 
 ### 主 agent 合并流程
 

@@ -27,6 +27,8 @@ metadata:
 
 **与 academic-research 的边界**：academic-research 专注学术领域调研（arXiv 检索 + 论文精读 + survey 撰写），deep-research 覆盖非学术深度调研（政策分析、事实查核、行业研究、社会事件追踪等）。当主题同时涉及学术和非学术维度时，由用户自行选择。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ## 共享引用
 
 | 引用文件 | 内容 | 何时读取 |

@@ -1,0 +1,288 @@
+---
+title: "视频轮廓提取论文精读（一）：SAM 2，统一图像与视频的可提示分割基础模型"
+description: "Meta FAIR 2024 论文 SAM 2 深度解读：用 streaming memory 把可提示分割从图像推广到视频，Hiera 编码器 + 记忆库 FIFO + object pointer 实现实时（43.8 FPS）视频对象分割，SA-V 数据集 35.5M 掩码，DAVIS17/YouTube-VOS/MOSE 全面刷新 SOTA。"
+date: 2026-07-14T10:30:00
+created_at: 2026-07-14T10:30:00
+updated_at: 2026-07-14T10:30:00
+tags: ["SAM 2", "视频分割", "VOS", "Streaming Memory", "论文精读"]
+aliases: ["categories/AI/视觉模型/视频轮廓提取/视频轮廓提取论文精读"]
+sub_id: 100
+mathjax: true
+papers: ["https://arxiv.org/abs/2408.00714"]
+repos: ["https://github.com/facebookresearch/sam2"]
+paper_title: "SAM 2: Segment Anything in Images and Videos"
+paper_authors: ["Nikhila Ravi", "Valentin Gabeur", "Yuan-Ting Hu", "Ronghang Hu", "Chaitanya Ryali", "Tengyu Ma", "Roman Rädle", "Chloe Rolland", "Laura Gustafson", "Eric Mintun", "Junting Pan", "Kalyan Vasudev Alwala", "Nicolas Carion", "Chao-Yuan Wu", "Ross Girshick", "Piotr Dollár", "Christoph Feichtenhofer"]
+paper_affiliation: "Meta FAIR"
+paper_venue: "arXiv:2408.00714, 2024 (Meta FAIR)"
+paper_url: "https://arxiv.org/abs/2408.00714"
+paper_code: "https://github.com/facebookresearch/sam2（已开源，含训练代码与权重）"
+hero_title: "SAM 2"
+hero_sub: "Meta FAIR · 2024"
+hero_tagline: "用 streaming memory 把可提示分割推广到视频，统一图像与视频的基础模型"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">35.5M</span><span class="label">SA-V 掩码数</span></div>
+  <div class="stat"><span class="num b">43.8</span><span class="label g">FPS (Hiera-B+)</span></div>
+  <div class="stat"><span class="num">90.7</span><span class="label">DAVIS17 val J&F</span></div>
+  <div class="stat"><span class="num b">8.4×</span><span class="label l">标注加速</span></div>
+</div>
+
+<div class="callout"><strong>一句话读懂</strong>：SAM 2 把 SAM 的"可提示分割"从单图推广到视频——不是把视频当成一堆独立图片来切，而是用一条 <strong>streaming memory</strong> 把每一帧的预测和提示接成一条记忆流，让模型在任意一帧接收点击/框/掩码，就能在整段视频里实时（43.8 FPS）传播出对象掩码。#Ravi et al., 2024#</div>
+
+<div class="photo">
+  <img src="media/images/paper-sam-2/teaser_ai.webp" alt="SAM 2 任务、模型与数据概览" loading="lazy">
+  <div class="cap">图 1：SAM 2 把可提示视觉分割（PVS）任务（a）落地为一个带 streaming memory 的基础模型（b），并配上自建的 SA-V 大规模视频分割数据集（c）。用户在任意帧给点击/框/掩码，模型即可在整个视频里传播掩码（来源：Ravi et al., 2024, Fig.1）。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 引言</div>
+  <div class="ch-title">从「分割一切」到「在视频里分割一切」</div>
+
+  <p>2023 年 Meta FAIR 的 Segment Anything Model（SAM）把图像分割推进到了基础模型阶段：11 亿张掩码、零样本可提示分割、一个 ViT-H 编码器吃下任意点击/框/掩码就能吐出对象掩码。#Kirillov et al., 2023# 但 SAM 本质上是一个<strong>静态图像</strong>模型——给它一段视频，它只能在每一帧独立分割，完全不知道"上一帧那个人"和"这一帧那个人"是同一个对象。视频带来的核心新困难是<strong>时序一致性</strong>：对象会运动、会被遮挡、会消失再出现，掩码必须在帧之间正确传播。</p>
+
+  <p>2024 年 8 月，同一团队交出了 SAM 2。论文标题极克制——"Segment Anything in Images and Videos"——但做的事其实是把 SAM 重新写成了一个<strong>图像与视频统一</strong>的可提示分割基础模型。它不是在 SAM 上贴一个跟踪器，而是从架构内部增加一条记忆通路：每来一帧，先用 Hiera 编码器抽特征，再用一个 memory attention 模块让当前帧"回看"过去若干帧的特征与预测，最后由轻量 mask decoder 输出掩码并把这一帧的结果写回记忆库。当记忆为空时，模型退化成 SAM；当记忆开始累积，模型就变成一个视频对象分割器。#Ravi et al., 2024#</p>
+
+  <p>这条看似简单的"加一条记忆线"的改造，配合一个全新的 SA-V 数据集（50.9K 视频、190.9K 手工 masklet、含自动标注共 35.5M 掩码，比此前最大的 VOS 数据集多一个数量级），把 SAM 2 推上了多个基准的 SOTA：DAVIS17 val J&F 90.7、YouTube-VOS19 val 89.3、MOSE val 77.9、长视频 LVOSv2 val 80.6，同时 Hiera-B+ 在单卡 A100 上跑到 43.8 FPS——比 SAM 快 6 倍还更准。#Ravi et al., 2024#</p>
+
+  <p>对于"视频轮廓提取"这条调研主线，SAM 2 是一个绕不开的 landmark：它第一次让"给个提示、整段视频自动出掩码"变得实时且高质量，而<strong>掩码的边界本质上就是对象的轮廓</strong>。但 SAM 2 也不是终点——它的掩码是二值硬边界，对毛发、半透明、细枝这类软轮廓无能为力，这条局限直接催生了后续的 SAM2Matting 等精修工作。本系列（一）先把 SAM 2 这个"地基"讲透。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 问题剖析</div>
+  <div class="ch-title">PVS 任务：可提示分割的时序化</div>
+
+  <h3 class="section-title">从 SA 到 PVS：多了一个时间维</h3>
+
+  <p>SAM 定义的 Segment Anything（SA）任务是：给定一张图像和一个提示（点击、框、掩码），输出对象在该图的分割掩码。SAM 2 把它推广成 <strong>Promptable Visual Segmentation（PVS）</strong>：给定一段视频和<strong>一帧或多帧上的提示</strong>，输出对象在<strong>所有帧</strong>的掩码（masklet）。#Ravi et al., 2024# 形式化地讲，输入是视频 \(V=\{I_1, I_2, \dots, I_T\}\) 加一组提示 \(\mathcal{P}=\{(t_i, p_i)\}\)（第 \(t_i\) 帧上的提示 \(p_i\)，可以是点击、框或掩码），输出是每帧的掩码 \(\{M_1, \dots, M_T\}\)。</p>
+
+  <p>关键区别在于：SA 任务里提示和预测在同一张图上，空间维度就够；PVS 任务里提示可以在第 1 帧，而预测要延伸到第 100 帧，<strong>必须跨时间传播</strong>。这把问题从纯空间分割变成了时空分割。更难的是，PVS 是开放词表、开放类别的——和传统 VOS 只跟踪预定义对象不同，SAM 2 要"分割任何有合法边界的对象，包括部件和子部件"。#Ravi et al., 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-sam-2/pvs_task_3.webp" alt="PVS 任务示意" loading="lazy">
+    <div class="cap">图 2：PVS 任务示意。用户可以在视频的任意帧上给点击（绿/红点）、框或掩码，SAM 2 负责把对象在整个视频里传播成 masklet（来源：Ravi et al., 2024, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">三个绕不开的难点</h3>
+
+  <p>把"可提示分割"搬到视频，绕不开三个难点。第一是<strong>遮挡与消失再出现</strong>：对象可能被完全挡住甚至离开画面又回来，模型不能因为几帧没看到就把它忘了——这要求记忆能"长期保留"对象的语义。SA-V 数据集的 disappearance rate（掩码在至少一帧消失又重现的比例）高达 42.5%，远高于 DAVIS 的 16.1% 和 YouTube-VOS 的 13.0%，正是为考验这点而设计。#Ravi et al., 2024#</p>
+
+  <p>第二是<strong>任意长视频与实时性</strong>：视频可能几百上千帧，模型不能像许多老 VOS 方法那样一次性把整段视频读进显存做双向匹配，而要按流式（streaming）逐帧处理，且延迟要低到能支撑交互式标注。这等价于要求一个"在线因果"的记忆机制——只能看过去，不能看未来（论文也允许"未来帧"作为提示，但默认流式只看过去）。#Ravi et al., 2024#</p>
+
+  <p>第三是<strong>提示的稀疏与不确定</strong>：用户给的可能是 1 个点击、3 个点击、一个框，甚至一个粗糙掩码；提示帧可能只有第 1 帧（半监督 VOS 设定），也可能散落在中间若干帧（交互式设定）。模型要能从这么稀疏的提示鲁棒地"认出"对象，并在记忆里维护一个足够稳定的对象表征。</p>
+
+  <h3 class="section-title">和传统 VOS 的关系</h3>
+
+  <p>半监督 VOS（Pont-Tuset et al., 2017 的 DAVIS 设定）是 PVS 的一个特例：提示恰好是第 1 帧的 GT 掩码，只此一次。XMem、Cutie 这些 memory-based VOS 方法就是为这个特例设计的。#Cheng et al., 2022# #Cheng et al., 2023# SAM 2 的野心更大：它要在任意帧、任意提示类型下都能工作，于是把 XMem/Cutie 的"记忆库 + 时空注意力"思路吸收进一个可提示的统一框架，并把半监督 VOS 当成评估的一个子设定。论文里直接把 SAM+XMem++、SAM+Cutie 拼成两个强基线来打，SAM 2 在 17 个数据集上 3-click 平均 J&F 75.3，比 SAM+Cutie 的 70.1 高出 5 个点。#Ravi et al., 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型结构与创新</div>
+  <div class="ch-title">streaming memory：一条记忆线串起整段视频</div>
+
+  <p>SAM 2 的架构可以看作 SAM 的"视频化泛化"。它保留 SAM 的三大件——image encoder、prompt encoder、mask decoder——在中间插一条 <strong>memory attention</strong> 通路，再加一个 <strong>memory encoder</strong> 把每帧结果写回记忆库。理解这条记忆通路是理解全文的钥匙。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-sam-2/sam-v-model_20240715.webp" alt="SAM 2 整体架构：streaming 处理与 memory attention" loading="lazy">
+    <div class="cap">图 3：SAM 2 整体架构。视频按流式逐帧进入 Hiera image encoder；memory attention 让当前帧特征 cross-attend 到记忆库里的过去帧特征与 object pointer；mask decoder 输出当前帧掩码；memory encoder 把当前预测写回记忆库供后续帧使用（来源：Ravi et al., 2024, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">Image encoder：Hiera，分层、可提速</h3>
+
+  <p>SAM 用 ViT-H 作图像编码器，又重又慢。SAM 2 换成了 MAE 预训练的 <strong>Hiera</strong> 分层骨干。#Nepal et al., 2024# #El-Nouby et al., 2024# 选分层骨干不是为了时髦，而是为了掩码解码时能用<strong>多尺度特征</strong>——stride 16/32 的特征经 FPN 融合后送入 memory attention 与解码，而 stride 4/8 的高分辨率特征通过<strong>跳连</strong>绕过 memory attention 直接进解码器上采样层，帮助恢复细节边界。这是 SAM 2 在轮廓精度上的一个工程要点。#Ravi et al., 2024#</p>
+
+  <p>更关键的是位置编码的改造。SAM 跟 ViTDet 一样在所有层加相对位置偏置（RPB），AbsWin 论文证明去掉大部分 RPB、改用"absolute-win"能大幅提速。#El-Nouby et al., 2024# SAM 2 更进一步——<strong>直接移除 image encoder 所有 RPB</strong>，只在全局注意力层用 windowed 绝对位置编码，跨窗口靠插值全局位置编码补全。这样做的收益是可以在 1024 分辨率下无障碍启用 FlashAttention-2，速度大幅提升，且在 SA-23 上不掉点。论文提供 T/S/B+/L 四档模型大小，全局注意力层分别是 5-7-9 / 7-10-13 / 12-16-20 / 23-33-43 层。#Ravi et al., 2024#</p>
+
+  <h3 class="section-title">Memory attention：让当前帧回看过去</h3>
+
+  <p>memory attention 是 SAM 2 区别于 SAM 的核心。它堆叠 \(L\) 个 transformer 块（默认 \(L=4\)），第一个块吃当前帧的 image embedding。每个块做三件事：</p>
+
+  <ol>
+    <li><strong>self-attention</strong>：当前帧特征内部做注意力；</li>
+    <li><strong>cross-attention</strong>：对记忆库（过去帧的 spatial 特征 + object pointer）做交叉注意力；</li>
+    <li><strong>MLP</strong>：非线性变换。</li>
+  </ol>
+
+  <p>形式化地，对当前帧特征 \(F_t\) 和记忆库 \(\mathcal{M}\)（含 spatial 特征 \(M^{sp}\) 与 object pointer \(M^{ptr}\)），单层 memory attention 可粗略写成：</p>
+
+  \[ F_t' = \text{MLP}\!\left(\text{CrossAttn}\!\left(\text{SelfAttn}(F_t),\ \mathcal{M}\right)\right) \]
+
+  <p>所有注意力都用<strong>vanilla（标准）注意力</strong>而非线性近似——作者刻意选择如此，以便直接受益于 FlashAttention-2 等高效 kernel。#Dao, 2023# 位置编码上，self/cross-attention 都用 <strong>2d-RoPE</strong>（二维旋转位置编码），但 object pointer 因为没有空间对应关系，被排除在 RoPE 之外。#Ravi et al., 2024#</p>
+
+  <h3 class="section-title">Memory bank：两条 FIFO 队列 + object pointer</h3>
+
+  <p>memory attention 要 cross-attend 的"过去"具体是什么，由 <strong>memory bank</strong> 决定。它维护两条 FIFO 队列：一条存最多 \(N\) 帧近期帧的记忆（spatial feature map），一条存最多 \(M\) 帧提示帧的记忆。比如半监督 VOS 里，第 1 帧 GT 掩码是唯一提示，memory bank 会<strong>始终保留第 1 帧记忆</strong>，再叠加最近 \(N\) 帧未提示帧的记忆。#Ravi et al., 2024# 这种"长期锚 + 近期滑窗"的设计，正是为了兼顾"长期对象身份保持"和"近期表观更新"——和 XMem 的多存储_bank 思路异曲同工，但 SAM 2 用一个统一 FIFO + object pointer 的简化结构实现。#Cheng et al., 2022#</p>
+
+  <p>memory bank 里存的不只是空间特征。除了 spatial memory（卷积下采样后的掩码与帧 embedding 融合而成），还有 <strong>object pointer</strong>——一组轻量向量，来自 mask decoder 的输出 token，承载对象的高层语义身份。memory attention 同时 cross-attend 到 spatial memory 和 object pointer。消融显示，object pointer 在 9 个零样本数据集上收益不明显，但在 SA-V val 和<strong>长视频 LVOSv2</strong> 上显著提升——这很合理，长视频里"记住对象是谁"比"记住长什么样"更关键。#Ravi et al., 2024#</p>
+
+  <h3 class="section-title">Memory encoder + mask decoder + occlusion head</h3>
+
+  <p><strong>memory encoder</strong> 不另起一个编码器，而是<strong>复用 Hiera 的 image embedding</strong>，把预测掩码用卷积模块下采样后与帧 embedding 逐元素相加，再经轻量卷积融合成 memory feature。这样 memory 能直接享受大编码器的强表征——论文特别指出，当 image encoder 放大到 Hiera-L 时，这种复用带来的收益更明显。memory feature 在记忆库里被投影到 64 维，而 256 维的 object pointer 被拆成 4 个 64 维 token 以便和 memory bank 一起做 cross-attention。#Ravi et al., 2024#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-sam-2/model_diagram_zoomin_v3.webp" alt="mask decoder 与 memory 细节" loading="lazy">
+    <div class="cap">图 4：mask decoder 与 memory 细节。解码器沿用 SAM 设计，但加入 stride 4/8 高分辨率跳连用于上采样；mask token 同时作为 object pointer 写回记忆库；额外一个 occlusion head 预测对象是否在当前帧可见，被遮挡帧的记忆会被加上一个 learned occlusion embedding（来源：Ravi et al., 2024, 附录 Fig.）。</div>
+  </div>
+
+  <p><strong>mask decoder</strong> 大体沿用 SAM 的轻量设计，prompt encoder 完全照搬 SAM（点击/框/掩码提示）。但有三个关键新设计。其一，从分层 image encoder 引<strong>跳连</strong>到解码器上采样层，补回高分辨率细节。其二，mask decoder 的 mask token 被复用为 <strong>object pointer</strong> 写回记忆库——一举两得。其三，新增 <strong>occlusion prediction head</strong>：在 mask token、IoU token 之外再加一个 token，用 MLP 预测"对象在当前帧是否可见"。这在 PVS 里不可或缺——对象可能被完全遮挡，模型必须能输出"这里没有对象"而不是硬造一个掩码。对应地，记忆库里被判为遮挡的帧，其 memory feature 会被加上一个 learned occlusion embedding。#Ravi et al., 2024#</p>
+
+  <h3 class="section-title">GRU 不用：简化即效率</h3>
+
+  <p>一个值得注意的工程决策：先前 memory-based VOS 工作（如 XMem 等）常用 GRU 把记忆特征过一遍再写回记忆库，以引入循环状态。#Cheng et al., 2022# SAM 2 做了消融，发现<strong>GRU 并不带来平均收益</strong>（仅 LVOSv2 略有提升），反而徒增复杂度。于是它选择直接把 memory feature 存进记忆库，"既更简单又更高效"。这种"敢做减法"的判断，是 SAM 2 能跑到 43.8 FPS 的重要原因之一。#Ravi et al., 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · Training Pipeline</div>
+  <div class="ch-title">数据引擎与 SA-V：用模型养数据，用数据养模型</div>
+
+  <p>SAM 2 的训练管线最值得讲的不是网络，而是<strong>数据引擎</strong>。和 SAM 的 SA-1B 类似，SAM 2 用"模型在环 + 人工标注"的方式自建数据，但这次目标是视频。引擎分三阶段，逐步提升模型辅助度：#Ravi et al., 2024#</p>
+
+  <ol>
+    <li><strong>Phase 1 · SAM per frame</strong>：用图像版 SAM 逐帧辅助标注，没有时序传播，每帧从零画掩码。慢——平均 37.8 秒/帧，但空间质量高。本阶段收集 1.4K 视频、16K masklet，并用这套方法标注 SA-V val/test 以规避 SAM 2 自身的偏差。</li>
+    <li><strong>Phase 2 · SAM + SAM 2 Mask</strong>：把 SAM 2 的"只接受掩码提示"版本（SAM 2 Mask）放进环。第 1 帧用 SAM 画空间掩码，后续帧让 SAM 2 Mask 做时序传播，人工只在中途修正。本阶段收集 63.5K masklet。</li>
+    <li><strong>Phase 3 · SAM 2</strong>：用完整 SAM 2（接受点击、掩码等多种提示），得益于记忆机制，标注员只需偶尔给几个修正点击，平均标注时间降到 <strong>4.5 秒/帧</strong>，比 Phase 1 快 <strong>8.4×</strong>。本阶段收集 197.0K masklet。</li>
+  </ol>
+
+  <p>这三阶段不是简单的"越来越快"——它是一个<strong>模型-数据共炼</strong>闭环：Phase 1 数据训出 SAM 2 Mask 支撑 Phase 2，Phase 2 数据再训 SAM 2 支撑 Phase 3。消融显示，从"只用 VOS+SA-1B"（SA-V val 50.0、9 数据集 62.5）逐步加入 Phase 1/2/3 数据，精度稳步爬升到 62.5/71.2，再加 Auto 自动标注到 63.2/71.5。#Ravi et al., 2024#</p>
+
+  <table class="data-table">
+    <caption>训练配置披露（SAM 2 全量训练，Hiera-B+ 档）</caption>
+    <thead><tr><th>项</th><th>值</th></tr></thead>
+    <tbody>
+      <tr><td>数据</td><td>SA-1B + Internal + SA-V（含 OSS：DAVIS/MOSE/YouTube-VOS）</td></tr>
+      <tr><td>训练步数</td><td>~150k（预训练 SA-1B ~90k）</td></tr>
+      <tr><td>分辨率</td><td>1024²</td></tr>
+      <tr><td>序列长度</td><td>8 帧（16 帧微调 50k，冻结 image encoder）</td></tr>
+      <tr><td>batch size</td><td>256</td></tr>
+      <tr><td>优化器</td><td>AdamW（β₁=0.9, β₂=0.999），weight decay 0.1，grad clip ℓ₂ 0.1</td></tr>
+      <tr><td>学习率</td><td>image encoder 6e-5，其余 3e-4；cosine 衰减，7.5k 线性 warmup</td></tr>
+      <tr><td>layer-wise decay</td><td>0.8(T/S) / 0.9(B+) / 0.925(L)</td></tr>
+      <tr><td>数据配比（含 OSS）</td><td>49.5% SA-V / 15.5% SA-1B / 15.1% Internal / 9.4% MOSE / 9.2% YouTube-VOS / 1.3% DAVIS</td></tr>
+      <tr><td>损失</td><td>focal(20) + dice(1) + IoU-L1(1) + occlusion-CE(1)</td></tr>
+    </tbody>
+  </table>
+
+  <p>训练采用<strong>图像/视频交替采样</strong>：每个 iteration 整 batch 来自图像或视频，采样概率正比于数据源大小。这样既充分利用两种数据，又能给图像和视频用不同 batch size 最大化算力。视频侧还有几个增强值得提：affine（旋转 25°、剪切 20°）、color jitter、按帧 color jitter，以及<strong>mosaic 2×2</strong>（10% 概率把同一段视频拼成 2×2 网格，从中选一个象限的对象做目标，逼模型靠运动和时序连续性而非表观来区分长得一模一样的对象）。#Ravi et al., 2024#</p>
+
+  <p>损失函数的设计也呼应了 PVS 的新需求：掩码用 focal + dice（比例 20:1，延续 SAM），IoU 用 L1，<strong>遮挡预测用 cross-entropy</strong>——这条是 SAM 2 新增的，对应 occlusion head。多掩码输出时只监督损失最低的那一个掩码；若某帧没有 GT 掩码，不监督掩码输出但<strong>始终监督遮挡预测</strong>。#Ravi et al., 2024# 记总损失为各加权和：</p>
+
+  \[ \mathcal{L} = 20\,\mathcal{L}_{\text{focal}} + 1\,\mathcal{L}_{\text{dice}} + 1\,\mathcal{L}_{\text{IoU}}^{\ell_1} + 1\,\mathcal{L}_{\text{occ}}^{\text{CE}} \]
+
+  <p>其中 focal 与 dice 只作用于被选中的最低损失掩码，\(\mathcal{L}_{\text{occ}}^{\text{CE}}\) 始终作用于 occlusion head 的可见性预测。这种"掩码选择性监督 + 遮挡恒定监督"的不对称设计，正是为了在对象可能消失的 PVS 场景下，让模型同时学会"切得准"和"知道什么时候不该切"。#Ravi et al., 2024#</p>
+
+  <h3 class="section-title">SA-V 数据集：规模与多样性</h3>
+
+  <p>SA-V 是迄今最大的视频分割数据集。核心数字：50.9K 视频、190.9K 手工 masklet、10.0M 手工掩码；加上自动生成的 451.7K masklet，共 642.6K masklet、<strong>35.5M 掩码</strong>——比此前最大的 VOS 数据集多一个数量级。总时长 196 小时、4.2M 帧，消失率 42.5%（加 Auto 后 27.7%）。#Ravi et al., 2024# 对比之下：DAVIS 2017 仅 0.2K 视频/27.1K 掩码，YouTube-VOS 4.5K 视频/197.3K 掩码，MOSE 2.1K 视频/431.7K 掩码。SA-V 的另一大特点是地理与对象多样性：覆盖 47 个国家，分辨率 240p–4K（均值 1401×1037），时长 4s–2.3min，超过 88% 的掩码归一化面积小于 0.1——也就是说 SA-V 充满小对象和部件，这正是"分割任何东西"能力的训练土壤。</p>
+
+  <p>还值得一提的是 Internal 数据集（62.9K 视频、69.6K masklet、5.4M 掩码、281.8 小时），它和 SA-V 一起构成 SAM 2 的视频训练主力。公平性评估显示，SAM 2 在按感知性别和年龄分组上性能差异极小。#Ravi et al., 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · Inference Pipeline</div>
+  <div class="ch-title">streaming 推理：一帧一帧地流过记忆</div>
+
+  <p>SAM 2 的推理是严格的<strong>流式（streaming）</strong>。视频按帧到来，每帧走同一条管线：image encoder 抽特征（整个交互只跑一次）→ memory attention 让当前帧 cross-attend 到记忆库 → mask decoder（可选地接收本帧新提示）输出掩码 → memory encoder 把这一帧结果写回记忆库，供下一帧使用。#Ravi et al., 2024# 这条设计有一个重要含义——<strong>image encoder 的计算可以被多对象共享</strong>：分割同一视频里的多个对象时，Hiera 编码器只跑一次，特征在所有对象间共享；但 memory bank、mask decoder 等组件<strong>按对象各自独立</strong>运行。这是把"per-object 跟踪"塞进"shared encoder"框架的典型工程取舍，也是实时多对象 VOS 的关键。</p>
+
+  <p>提示可以在任意帧加入。若用户在第 \(t\) 帧给了一个修正点击，模型会：在该帧用 prompt encoder 编码点击 → 和当前 memory-attended 特征一起进 mask decoder → 输出修正后的掩码 → 该帧作为 prompted frame 写入 memory bank 的提示帧队列（受 \(M\) 上限约束，FIFO）。这意味着<strong>提示帧也可以"来自未来"</strong>——论文明确允许提示帧相对当前帧是未来的，memory bank 会把它存进去供后续帧回看，这给离线标注场景留下了双向传播的余地。#Ravi et al., 2024#</p>
+
+  <p>实时性来自三处合力：Hiera 分层骨干 + 全去 RPB + FlashAttention-2 带来的编码器提速；memory attention 仅 4 层 vanilla 注意力的轻量设计；GRU 等循环模块的砍除。最终在单卡 A100（batch=1）上，Hiera-B+ 跑到 <strong>43.8 FPS</strong>，Hiera-L 跑到 30.2 FPS——都达到实时阈值，远超此前 VOS 方法动辄几 FPS 的水平。#Ravi et al., 2024#</p>
+
+  <p>对长视频的一个补救措施是<strong>16 帧序列微调</strong>。默认训练只采样 8 帧序列，和推理时几百上千帧的真实长度有差距。为此作者加了额外微调阶段：在"编辑帧数最多的前 50% masklet"上采样 16 帧序列，50k 迭代、学习率减半、<strong>冻结 image encoder</strong>（为了把 16 帧序列塞进 80GB A100 显存）。这一步对长视频分割质量（如 LVOSv2）有直接收益。#Ravi et al., 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验配置与验证</div>
+  <div class="ch-title">DAVIS/MOSE/YouTube-VOS/LVOS 全面刷新</div>
+
+  <p>论文在三大类设定上评估：交互式 PVS（9 个零样本数据集，offline/online 两种）、半监督 VOS（DAVIS17/YouTube-VOS/MOSE/SA-V/LVOSv2，首帧 GT 掩码提示）、图像 SA 任务（23+14 个数据集）。报告的是 SAM 2.1 版本（对初始发布版的改进）的结果。#Ravi et al., 2024#</p>
+
+  <table class="data-table">
+    <caption>VOS 主结果对比（J&amp;F，越高越好；† 表示在线推理设定）</caption>
+    <thead><tr><th>方法</th><th>MOSE val</th><th>DAVIS17 val</th><th>DAVIS17 test</th><th>YTVOS19 val (G)</th><th>SA-V val</th><th>SA-V test</th><th>LVOSv2 val</th></tr></thead>
+    <tbody>
+      <tr><td>STCN #Cheng et al., 2021#</td><td>52.5</td><td>85.4</td><td>76.1</td><td>82.7</td><td>61.0</td><td>62.5</td><td>60.6</td></tr>
+      <tr><td>XMem #Cheng et al., 2022#</td><td>59.6</td><td>86.0</td><td>79.6</td><td>85.6</td><td>60.1</td><td>62.3</td><td>64.5</td></tr>
+      <tr><td>Cutie-base+ #Cheng et al., 2023#</td><td>71.7</td><td>88.1</td><td>88.1</td><td>87.5</td><td>61.3</td><td>62.8</td><td>—</td></tr>
+      <tr><td>JointFormer</td><td>—</td><td>90.1</td><td>88.1</td><td>87.4</td><td>—</td><td>—</td><td>—</td></tr>
+      <tr><td><strong>SAM 2 (Hiera-B+)</strong></td><td>76.6</td><td>90.2</td><td>87.9</td><td>88.6</td><td>76.8</td><td>77.0</td><td>78.7</td></tr>
+      <tr><td><strong>SAM 2 (Hiera-L)</strong></td><td><strong>77.9</strong></td><td><strong>90.7</strong></td><td>87.7</td><td><strong>89.3</strong></td><td>77.9</td><td>78.4</td><td>79.6</td></tr>
+      <tr><td>SAM 2 (Hiera-L)†</td><td>74.6</td><td>90.2</td><td><strong>88.9</strong></td><td>88.8</td><td><strong>78.6</strong></td><td><strong>79.5</strong></td><td><strong>80.6</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p>几个值得圈点的数字。MOSE val（遮挡场景）上 SAM 2 Hiera-L 的 77.9 比此前 SOTA Cutie-base+ 的 71.7 高出 6.2 个点——遮挡正是 SA-V 高消失率训练出来的能力。DAVIS17 val 90.7、test 88.9，都已逼近这个老基准的上限。YouTube-VOS19 val 89.3。但在<strong>SA-V val/test</strong>这个"分割任何东西"的开放基准上，差距最为悬殊：SAM 2 Hiera-L† 78.6/79.5，而 Cutie-base+ 只有 61.3/62.8——高出 17 个点，这正是"专用 VOS 方法在开放世界力不从心"的直接证据。#Ravi et al., 2024# 长视频 LVOSv2 val 上 SAM 2 Hiera-L† 拿到 80.6，对比 XMem 的 64.5——长程记忆的优势同样明显。</p>
+
+  <h3 class="section-title">交互式 PVS：更少交互，更高精度</h3>
+
+  <p>交互式设定下，论文在 17 个数据集上比较 1/3/5-click、bbox、GT-mask 提示（首帧）的平均 J&F。SAM 2 在 3-click 拿到 75.3，GT-mask 拿到 79.3；而 SAM+Cutie 是 70.1 / 74.1，SAM+XMem++ 是 68.4 / 72.7。#Ravi et al., 2024# 在 9 个零样本数据集的 offline/online 曲线上，SAM 2 用<strong>少 3 倍以上的交互</strong>就能达到相同精度——这对交互式标注工具是直接的效率提升。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-sam-2/zero-shot.webp" alt="交互式零样本视频分割结果" loading="lazy">
+    <div class="cap">图 5：9 个零样本视频数据集上的交互式 J&amp;F 曲线（offline/online）。SAM 2 在相同交互帧数下显著高于 SAM+XMem++ 和 SAM+Cutie 基线，达到同等精度所需交互少 3× 以上（来源：Ravi et al., 2024）。</div>
+  </div>
+
+  <h3 class="section-title">图像分割：比 SAM 更准且快 6 倍</h3>
+
+  <p>SAM 2 不是一个"视频专用"模型——在图像 SA-23 基准上，仅用 SA-1B 训练的 SAM 2 (Hiera-B+) 1-click mIoU 58.9，已经超过 SAM (ViT-H) 的 58.1，且<strong>快 6 倍</strong>。加视频数据混合训练后，SA-23 平均 mIoU 进一步到 61.4。#Ravi et al., 2024# 这个结果说明两件事：Hiera 编码器比 ViT-H 更高效；视频数据对图像分割也有正迁移。论文还指出 SAM 2 (Hiera-L) 比 SAM (ViT-H) 快 3.4 倍、比 SAM (ViT-B) 快 1.5 倍——速度优势贯穿各档。</p>
+
+  <table class="data-table">
+    <caption>实验配置概览</caption>
+    <thead><tr><th>项</th><th>配置</th></tr></thead>
+    <tbody>
+      <tr><td>默认模型</td><td>SAM 2 (Hiera-B+)，分辨率 1024，全数据训练</td></tr>
+      <tr><td>评测数据</td><td>MOSE val / DAVIS17 val&amp;test / YTVOS19 val / SA-V val&amp;test / LVOSv2 val / 9 零样本数据集 / SA-23</td></tr>
+      <tr><td>评测指标</td><td>J&amp;F（VOS 标准，VOST 用 J）、mIoU（图像 SA）</td></tr>
+      <tr><td>交互设定</td><td>1/3/5-click、bbox、GT-mask（首帧）；offline/online</td></tr>
+      <tr><td>硬件</td><td>单卡 A100，PyTorch 2.3.1 + CUDA 12.1，bfloat16 AMP，torch.compile</td></tr>
+      <tr><td>速度测量</td><td>视频 batch=1；图像 batch=10</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="section-title">消融：什么真正起作用</h3>
+
+  <p>数据消融最发人深省：只用 DAVIS/MOSE/YouTubeVOS 训练的模型，在 MOSE dev 上还行，但在 9 个零样本数据集上只有 59.7——<strong>专数据养不出通用能力</strong>。加入 SA-V 数据引擎数据后，9 数据集平均 +12.1 个点。#Ravi et al., 2024# 数据量消融显示 SA-V 数量与精度呈幂律关系，说明更多数据仍能换更多精度。架构消融方面：2d-RoPE 比无 RoPE 在 1024 分辨率下只差 4% 速度但带来精度收益；object pointer 在 SA-V val 和 LVOSv2 上显著有效；GRU 无平均收益；更高分辨率（512→1024）和更多帧数（默认 8 帧）都带来明显增益。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论与启发</div>
+  <div class="ch-title">SAM 2 与视频轮廓提取：地基与边界</div>
+
+  <p>把 SAM 2 放回"视频轮廓提取"这条主线，它的定位很清晰：<strong>可提示的视频对象分割基础模型</strong>。从轮廓提取的角度看，SAM 2 输出的 masklet 边界本身就是对象的粗轮廓——给定一段视频，在第 1 帧点一下，整段视频的对象掩码边界就出来了。这把传统视频轮廓提取从"专门设计的边缘检测/水平集/轮廓跟踪"范式，拉到了"基础模型给出对象级掩码，再在边界上做后处理"的新范式。掩码边界即轮廓，这一等价关系是 SAM 2 成为视频轮廓提取 landmark 的根本原因。</p>
+
+  <p>但 SAM 2 不是为"轮廓"专门设计的。它输出的是<strong>二值硬掩码</strong>——边界是一个阶跃，没有 alpha matte 那种软透明度。这对几类目标会出现系统性的边界误差：毛发、半透明物体（玻璃、烟雾）、细枝与毛刺、运动模糊边缘。这类目标的"真实轮廓"本身就是软的或亚像素的，二值掩码无论切多准都会出现锯齿或丢失细节。这条局限直接催生了后续工作 <strong>SAM2Matting</strong>（arXiv 2606.27339）——冻结 SAM 2 等 VOS tracker 的高层鲁棒性，只在丰富的图像抠像数据上训练专用 matting 分支，把硬边界升级成软轮廓，且能 zero-shot 迁移到视频。本系列后续 route-representative 会专门讨论它。#Shen et al., 2026#</p>
+
+  <p>精度与速度的权衡是 SAM 2 留下的另一条开放线。Hiera-B+ 43.8 FPS 已经实时，Hiera-L 30.2 FPS 更准但更慢。对于真正端侧的轮廓提取（手机、AR 眼镜、机器人），这仍太重，于是又催生了 EfficientTAM、EdgeSAM2 等轻量化路线。另一个开放问题是<strong>长视频漂移</strong>：尽管有 16 帧微调和 object pointer，SAM 2 在极长视频（数百帧以上）仍会出现身份漂移，SAM2-Long（arXiv 2410.16288）等后续工作正是为缓解这一点。#Cheng et al., 2024#</p>
+
+  <p>从方法论上，SAM 2 给视频轮廓提取社区带来的最大启发是：<strong>记忆机制比专门的跟踪模块更重要</strong>。传统视频轮廓提取往往依赖光流、卡尔曼滤波、水平集演化等"显式跟踪"工具，而 SAM 2 用一个纯注意力的 memory bank + object pointer 就完成了对象身份的跨帧保持——这种"用基础模型一次吃下分割+跟踪"的范式，把视频轮廓提取的问题从"怎么跟踪边界"重构为"怎么让记忆记住对象"。后者因为可以端到端从大数据学，反而更通用。#Ravi et al., 2024#</p>
+
+  <p>最后，SA-V 数据集本身就是一条独立贡献。它不只是训出 SAM 2 的燃料，也是未来视频轮廓提取方法的事实评测场——35.5M 掩码、47 国、小对象密集、高消失率，足以暴露任何方法在"开放世界任意对象、长时序、遮挡"下的真实短板。任何后续视频轮廓提取工作，都绕不开在 SA-V 上和 SAM 2 比一次。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 8 · 总结</div>
+  <div class="ch-title">一个里程碑，与它打开的后续空间</div>
+
+  <p>回看 SAM 2：它用 streaming memory 把可提示分割从图像推广到视频，用 Hiera 分层编码器 + 全去 RPB + FlashAttention-2 把视频分割拉到实时，用 data engine 三阶段闭环造出迄今最大的 SA-V 数据集，并在 DAVIS/YouTube-VOS/MOSE/SA-V/LVOSv2 上全面刷新 SOTA。对视频轮廓提取这条主线，它是<strong>地基级</strong>工作——后续的精修（SAM2Matting）、长视频（SAM2-Long）、轻量化（EfficientTAM/EdgeSAM2）、跟踪（<a href="paper-track-anything.html">Track Anything</a>）几乎都是在 SAM 2 这个基座上加分支。</p>
+
+  <p>对想入门视频轮廓提取的读者，本篇的建议是：先把 SAM 2 的 streaming memory 机制（image encoder → memory attention → mask decoder → memory encoder → memory bank 的闭环）吃透，再读它的 SA-V 数据引擎三阶段，最后带着"硬掩码边界的局限"这个问题意识进入下一篇 SAM2Matting。地基打牢，后续的精修才看得懂在修什么。</p>
+
+  <p>个人收获有三。其一，<strong>记忆库设计</strong>是视频理解的一个范式级杠杆——FIFO spatial memory + object pointer 这套极简结构比 GRU/复杂记忆塔更管用，"敢做减法"是工程智慧。其二，<strong>模型-数据共炼闭环</strong>（Phase 1→2→3）是造大规模标注数据的有效范式，8.4× 标注加速让"养数据"在经济上可行。其三，<strong>统一任务定义</strong>的价值——把 SA、VOS、交互式分割都收敛进 PVS 一个框架，比单独优化每个任务更省事也更通用，这种"向上抽象一层"的思路对任何领域都有借鉴意义。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Ravi-et-al.-2024">Ravi, N., Gabeur, V., Hu, Y.-T., Hu, R., Ryali, C., Ma, T., et al. (2024). <strong>SAM 2: Segment Anything in Images and Videos</strong>. arXiv:2408.00714. <a href="https://arxiv.org/abs/2408.00714" target="_blank">arXiv:2408.00714</a></li>
+    <li data-cite-key="Kirillov-et-al.-2023">Kirillov, A., Mintun, E., Ravi, N., Mao, H., Rolland, C., Gustafson, L., et al. (2023). <strong>Segment Anything</strong>. ICCV 2023. <a href="https://arxiv.org/abs/2304.02643" target="_blank">arXiv:2304.02643</a></li>
+    <li data-cite-key="Cheng-et-al.-2022">Cheng, H. K., Schwing, A. G. (2022). <strong>XMem: Long-Term Video Object Segmentation with an Atkinson-Shiffrin Memory Model</strong>. ECCV 2022. <a href="https://arxiv.org/abs/2207.06133" target="_blank">arXiv:2207.06133</a></li>
+    <li data-cite-key="Cheng-et-al.-2023">Cheng, H. K., Torr, P., Schwing, A. G. (2023). <strong>Putting the Object Back into Video Object Segmentation</strong> (Cutie). ECCV 2024. <a href="https://arxiv.org/abs/2312.03016" target="_blank">arXiv:2312.03016</a></li>
+    <li data-cite-key="Cheng-et-al.-2021">Cheng, Y., Lai, Z., Liu, X., Hwang, Y., Ding, J., Xia, Y., et al. (2021). <strong>Rethinking Space-Time Networks for Improved Video Object Segmentation</strong> (STCN). ICCV 2021. <a href="https://arxiv.org/abs/2104.05635" target="_blank">arXiv:2104.05635</a></li>
+    <li data-cite-key="Nepal-et-al.-2024">Nepal, K., et al. (2024). <strong>Hiera: A Hierarchical Vision Transformer without Bells-and-Whistles</strong>. <a href="https://arxiv.org/abs/2309.16741" target="_blank">arXiv:2309.16741</a></li>
+    <li data-cite-key="El-Nouby-et-al.-2024">El-Nouby, A., Shukor, S., Neverova, N., Touvron, H., Laptev, I., Jégou, H. (2024). <strong>AbsWin: Rethinking Positional Embedding in Vision Transformer</strong>. <a href="https://arxiv.org/abs/2403.01793" target="_blank">arXiv:2403.01793</a></li>
+    <li data-cite-key="Dao-2023">Dao, T. (2023). <strong>FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning</strong>. <a href="https://arxiv.org/abs/2307.08691" target="_blank">arXiv:2307.08691</a></li>
+    <li data-cite-key="Pont-Tuset-et-al.-2017">Pont-Tuset, J., Perazzi, F., Caelles, S., Russell, R., Torr, P., Van Gool, L. (2017). <strong>The 2017 DAVIS Challenge on Video Object Segmentation</strong>. <a href="https://arxiv.org/abs/1804.00682" target="_blank">arXiv:1804.00682</a></li>
+    <li data-cite-key="Ding-et-al.-2023">Ding, X., Lim, S., Wang, G., Lu, X. (2023). <strong>MOSE: A New Dataset for Video Object Segmentation in Complex Scenes</strong>. <a href="https://arxiv.org/abs/2302.01727" target="_blank">arXiv:2302.01727</a></li>
+    <li data-cite-key="Shen-et-al.-2026">Shen, R. et al. (2026). <strong>SAM2Matting: Generalized Image and Video Matting</strong>. arXiv:2606.27339. <a href="https://arxiv.org/abs/2606.27339" target="_blank">arXiv:2606.27339</a> · <a href="https://henghuiding.com/SAM2Matting" target="_blank">项目页</a></li>
+    <li data-cite-key="Cheng-et-al.-2024">Cheng, Y., et al. (2024). <strong>SAM2-Long: Segment Long Videos with Memory</strong>. arXiv:2410.16288. <a href="https://arxiv.org/abs/2410.16288" target="_blank">arXiv:2410.16288</a></li>
+  </ul>
+</div>

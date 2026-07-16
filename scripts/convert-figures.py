@@ -26,6 +26,13 @@ import os
 import sys
 from pathlib import Path
 
+# Windows 控制台默认 GBK，print 带 emoji(✅→ 等)会 UnicodeEncodeError；统一成 utf-8。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 try:
     import fitz  # PyMuPDF
 except ImportError:

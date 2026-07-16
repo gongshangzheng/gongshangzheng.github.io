@@ -53,8 +53,10 @@ const tests = {
     })(path.join(root, 'public'));
 
     // '课程' translates to 'courses' and '数字信号处理' to 'dsp' via category-names.json
-    const catPath = publicFiles.find(p => p === 'categories/courses/index.html');
-    const subPath = publicFiles.find(p => p === 'categories/courses/dsp/index.html');
+    // path.relative 在 Windows 返回反斜杠，归一化为正斜杠再比较，保证跨平台。
+    const norm = p => p.split(path.sep).join('/');
+    const catPath = publicFiles.find(p => norm(p) === 'categories/courses/index.html');
+    const subPath = publicFiles.find(p => norm(p) === 'categories/courses/dsp/index.html');
 
     assert(catPath, 'category hub page should exist: ' + publicFiles.join(', '));
     assert(subPath, 'subcategory hub page should exist: ' + publicFiles.join(', '));

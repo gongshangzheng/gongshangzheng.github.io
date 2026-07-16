@@ -1,0 +1,430 @@
+---
+title: "视频轮廓提取论文精读（二）：Robust Video Matting，时序引导的实时高分辨率视频抠像"
+description: "深度解读 RVM (arXiv 2108.11515)：用 ConvGRU 单向 recurrent decoder 显式利用时序信息，做 trimap-free、无需预采集背景的实时人像视频抠像。3.7M 参数、HD 104 FPS、4K 76 FPS，alpha 蒙版即发丝级精细轮廓。"
+date: 2026-07-14T10:10:08
+created_at: 2026-07-14T10:10:08
+updated_at: 2026-07-14T10:10:08
+tags: ["视频抠像", "ConvGRU", "时序一致性", "alpha蒙版", "实时推理"]
+aliases: ["categories/AI/视觉模型/视频轮廓提取/视频轮廓提取论文精读"]
+sub_id: 110
+papers: ["https://arxiv.org/abs/2108.11515"]
+repos: ["https://github.com/PeterL1n/RobustVideoMatting"]
+mathjax: true
+hero_title: "Robust Video Matting 论文精读"
+hero_sub: "arXiv 2021 · 视频抠像 / 时序 recurrent 架构"
+hero_tagline: "ConvGRU 单向时序引导 + 联合分割训练：trimap-free 实时高分辨率抠像的 landmark。"
+---
+
+<!-- Stats 数字条：会被自动提取到 hero 和正文之间 -->
+<div class="stats">
+  <div class="stat"><span class="num b">104</span><span class="label g">HD FPS</span></div>
+  <div class="stat"><span class="num">76</span><span class="label">4K FPS</span></div>
+  <div class="stat"><span class="num b">3.7M</span><span class="label">参数</span></div>
+  <div class="stat"><span class="num">58%</span><span class="label">vs MODNet 参数</span></div>
+  <div class="stat"><span class="num b">0.88</span><span class="label g">VM Grad (×1e-3)</span></div>
+</div>
+
+<!-- ============================================================
+  第一章：问题与动机
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 1 章</div>
+  <div class="ch-title">问题定义：trimap-free 实时视频抠像</div>
+
+  <strong>抠像（matting）</strong> 的目标是预测每个像素的 alpha 蒙版 $\alpha$ 和前景色 $F$。形式化地，一帧图像 $I$ 可视为前景 $F$ 与背景 $B$ 通过 $\alpha$ 系数的线性组合 #Lin et al., 2021#：
+
+$$
+I = \alpha F + (1 - \alpha) B
+$$
+
+  提取 $\alpha$ 与 $F$ 后即可把前景合成到新背景，实现背景替换。在视频会议、娱乐视频创作等场景里，用户希望<strong>无需绿幕、无需 trimap、无需预采集背景图</strong>，就能在普通视频流上实时替换人像背景。
+
+  <div class="callout"><strong>核心痛点</strong>：此前的方法（MODNet、BGMv2、BGMv1）虽面向视频应用，却<strong>逐帧独立处理</strong>，把视频当成一组互不相关的图像。这丢弃了视频最普遍也最廉价的信息——==时序信息==。#Lin et al., 2021#</div>
+
+  论文给出的时序信息三重价值，是全文的动机基石 #Lin et al., 2021#：
+
+  <ol>
+    <li><strong>时序一致性</strong>：模型可见多帧及自身历史预测，显著降低闪烁，提升感知质量。</li>
+    <li><strong>鲁棒性</strong>：当单帧歧义（前景色与背景过路物相近）时，可参考前帧更好猜边界。</li>
+    <li><strong>背景学习</strong>：相机/主体运动逐步揭示被遮挡背景，更好理解背景 → 简化抠像任务。</li>
+  </ol>
+
+  由此 RVM 提出<strong>recurrent 架构</strong>显式利用时序信息，并辅以 <strong>matting + segmentation 联合训练策略</strong>对抗合成数据过拟合，做出一个 trimap-free、实时、高分辨率、且鲁棒的人像视频抠像模型。
+
+  <!-- Teaser 图 -->
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/teaser.webp" alt="RVM teaser：鲁棒一致结果" loading="lazy">
+    <div class="cap">图 1：RVM 在各种视频上产出鲁棒、时序一致的 alpha 蒙版，无需 trimap 或预采集背景 #Lin et al., 2021#。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第二章：整体架构
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 2 章</div>
+  <div class="ch-title">整体架构：编码器 + 单向 recurrent 解码器 + DGF</div>
+
+  RVM 由三大组件构成 #Lin et al., 2021#：
+
+  <ul>
+    <li><strong>特征提取编码器</strong>：MobileNetV3-Large 骨干 + LR-ASPP 模块，沿用 MobileNetV3 的语义分割设计（源自 DeepLabV3 / DeepLabV3+）。骨干最后一个 block 用 dilation rate=2、stride=1 的膨胀卷积，停在 1/16 尺度（不再下采样到 1/32）。编码器<strong>逐帧</strong>提取 1/2、1/4、1/8、1/16 四尺度特征。</li>
+    <li><strong>Recurrent 解码器</strong>：ConvGRU 在多尺度聚合时序信息，<strong>单向（uni-directional）</strong>，因此既能直播流式用，也能后处理。</li>
+    <li><strong>Deep Guided Filter (DGF) 模块</strong>：高分辨率上采样。处理 4K/HD 时先对输入做 factor-$s$ 下采样过编码-解码网络，再用 DGF 把低分辨率 $\alpha$/$F$/hidden features + 高分辨率原图上采到全分辨率。DGF <strong>可选</strong>，低分辨率视频可不用。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/model_architecture.webp" alt="RVM 架构图：encoder + recurrent decoder + DGF" loading="lazy">
+    <div class="cap">图 2：RVM 整体架构。编码器逐帧提特征 → recurrent 解码器用 ConvGRU 聚合时序信息 → DGF 做高分辨率上采样 #Lin et al., 2021#。</div>
+  </div>
+
+  <div class="info-box">
+    <h3>survey 对齐：单向 vs 双向时序引导</h3>
+    <p>本系列（视频轮廓提取）模板中"时序引导"常被分为 previous / forward / backward 三类。需要强调：<strong>RVM 的时序引导严格单向（previous → current）</strong>，通过 ConvGRU 隐状态 $h_{t-1} \to h_t$ 因果传播，<strong>没有 forward/backward 双向分支</strong>。这恰是它能用于直播流的前提。与 XMem 的"多级 memory + attention readout"或 BiLSTM 式双向时序模型形成对照——前者轻量因果适合实时，后者长程显存可控或后处理更优。</p>
+  </div>
+</div>
+
+<!-- ============================================================
+  第三章：Recurrent 解码器与 ConvGRU
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 3 章</div>
+  <div class="ch-title">核心机制：ConvGRU 单向时序传播</div>
+
+  <h3 class="section-title">为何选 recurrent 而非 attention / 多帧拼接</h3>
+
+  论文给出了一个干净的设计论证 #Lin et al., 2021#：recurrent 机制可在连续视频流上<strong>自适应学习保留与遗忘什么信息</strong>；而 attention 或多帧 feedforward 必须依赖一条固定规则，在固定间隔把旧信息移出、新信息插入到有限的 memory pool。recurrent 能同时保留长短期时序信息，更适合抠像这种"背景要长期记、运动要短期跟"的任务。
+
+  <h3 class="section-title">ConvGRU 公式</h3>
+
+  选 ConvGRU 而非 ConvLSTM，是因为门更少、参数更省 #Lin et al., 2021#。更新规则为：
+
+$$
+\begin{aligned}
+z_t &= \sigma(w_{zx} * x_t + w_{zh} * h_{t-1} + b_z) \\
+r_t &= \sigma(w_{rx} * x_t + w_{rh} * h_{t-1} + b_r) \\
+o_t &= \tanh\bigl(w_{ox} * x_t + w_{oh} * (r_t \odot h_{t-1}) + b_o\bigr) \\
+h_t &= z_t \odot h_{t-1} + (1 - z_t) \odot o_t
+\end{aligned}
+$$
+
+  其中 $*$ 为卷积、$\odot$ 为逐元素乘；$z_t$ 是更新门，$r_t$ 是重置门，$o_t$ 是候选状态；隐状态 $h_t$ 既是输出也是下一时刻的输入 $h_{t-1}$；初始 $h_0$ 为全零张量。
+
+  <div class="callout"><strong>直觉</strong>：更新门 $z_t$ 逐像素、逐通道决定"保留多少旧记忆 vs 写入多少新证据"。背景区域 $z_t$ 偏大 → 长期保留重建的背景；运动边界 $z_t$ 偏小 → 快速吸收新帧证据。这正是"自适应保留/遗忘"的参数化体现。</div>
+
+  <h3 class="section-title">解码器三类 block</h3>
+
+  <ul>
+    <li><strong>Bottleneck block</strong>（1/16 尺度，LR-ASPP 之后）：ConvGRU 只作用于<strong>一半通道</strong>（split-and-concatenation），大幅省参省算，因为 ConvGRU 计算昂贵。</li>
+    <li><strong>Upsampling block</strong>（1/8、1/4、1/2 重复）：先拼接三路——上一 block 双线性上采输出 + 编码器同尺度特征图 + 原图经 2×2 avg pool 下采样；再 conv+BN+ReLU 做特征融合与通道压缩；最后 ConvGRU 作用于半数通道。</li>
+    <li><strong>Output block</strong>（全分辨率）：不用 ConvGRU（此尺度既贵又无效）。2 层 conv+BN+ReLU 堆叠得 final hidden features，1×1 投影输出 <strong>5 通道</strong>：1-ch $\alpha$ + 3-ch 前景 $F$ + 1-ch 分割预测 $S$。</li>
+  </ul>
+
+  <div class="callout"><strong>关键设计：半通道 split-and-concatenation</strong>。ConvGRU 只在半数通道上跑，recurrent 半支专注聚合时序信息，另一半直连当前帧空间特征。这样既省算力，又让"时序聚合"与"当前帧空间特征"两条信息流并行，互不挤压 #Lin et al., 2021#。</div>
+
+  <h3 class="section-title">T 帧并行化技巧</h3>
+
+  网络被改造为一次接收 $T$ 帧、每层处理完所有 $T$ 帧再传下一层 #Lin et al., 2021#。训练时 BatchNorm 跨 batch+time 统计保证归一化一致；推理时 $T=1$ 处理直播、$T>1$ 当允许 buffering 时利用非 recurrent 层的 GPU 并行（一种 batching）。
+</div>
+
+<!-- ============================================================
+  第四章：隐状态可解释性
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 4 章</div>
+  <div class="ch-title">可解释发现：隐状态自动重建背景</div>
+
+  这是全文最令人印象深刻的发现。论文可视化 recurrent 通道后发现，网络<strong>自动学会</strong>了 #Lin et al., 2021#：
+
+  <ul>
+    <li>随时间<strong>重建被揭示的背景</strong>，并存入 recurrent channels 辅助未来预测；</li>
+    <li>用其他 recurrent channels <strong>跟踪运动历史</strong>；</li>
+    <li>相机运动时仍尝试重建背景；</li>
+    <li><strong>镜头切换时遗忘无用记忆</strong>——这是 recurrent 机制"自适应遗忘"的直接体现。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/ablation_temporal_hidden.webp" alt="recurrent 通道重建背景可视化" loading="lazy">
+    <div class="cap">图 3：recurrent 通道随时间逐步重建被遮挡背景，并跟踪运动历史。网络未被显式监督去做背景建模，却自发学到了 #Lin et al., 2021#。</div>
+  </div>
+
+  <div class="callout"><strong>survey 启示</strong>：这印证了 §1 "时序信息→背景学习" 的动机。对视频轮廓提取而言，隐式背景建模可消减背景干扰、稳定前景轮廓——recurrent state 不只是"记忆"，而是一个轻量、可学习的场景模型。</div>
+</div>
+
+<!-- ============================================================
+  第五章：训练数据与策略
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 5 章</div>
+  <div class="ch-title">训练：四阶段渐进 + 联合分割目标</div>
+
+  <h3 class="section-title">为何联合 matting + segmentation</h3>
+
+  三个理由 #Lin et al., 2021#：(1) 人像抠像与人像分割强相关，trimap-free 网络必须语义理解场景；(2) matting 数据集只提供合成 $\alpha$/$F$ 真值，合成常因前后景光照不同而失真，分割数据集是真实复杂场景 → 联合训练防过拟合；(3) 分割数据量大得多。
+
+  <h3 class="section-title">数据集</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>类别</th><th>数据集</th><th>规模</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>Matting（视频）</td><td>VideoMatte240K (VM)</td><td>484 个 4K/HD 片段</td><td>475/4/5 train/val/test</td></tr>
+        <tr><td>Matting（图像）</td><td>Distinctions-646 (D646)</td><td>人像，420/15 train/val，11 test</td><td>训练 + 评测</td></tr>
+        <tr><td>Matting（图像）</td><td>Adobe Image Matting (AIM)</td><td>10 test</td><td>评测</td></tr>
+        <tr><td>背景视频</td><td>DVM HD backgrounds</td><td>3118 片段 × 100 帧</td><td>合成背景</td></tr>
+        <tr><td>背景图像</td><td>爬取（沿用 BGMv2）</td><td>8000 张室内图</td><td>合成背景</td></tr>
+        <tr><td>分割（视频）</td><td>YouTubeVIS</td><td>2985 含人片段</td><td>联合训练</td></tr>
+        <tr><td>分割（图像）</td><td>COCO</td><td>64,111 含人图</td><td>联合训练</td></tr>
+        <tr><td>分割（图像）</td><td>SPD</td><td>5711 样本</td><td>联合训练</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">四阶段渐进训练</h3>
+
+  设计思路：<strong>让网络逐步见更长序列与更高分辨率以省训练时间</strong>。Adam，batch $B=4$ 跨 4× V100 32G，混合精度训练 #Lin et al., 2021#。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>阶段</th><th>数据</th><th>DGF</th><th>序列 T</th><th>分辨率 h,w</th><th>epochs</th><th>关键 lr</th><th>耗时</th></tr></thead>
+      <tbody>
+        <tr><td>Stage 1</td><td>VM</td><td>否</td><td>15</td><td>Uniform(256,512)</td><td>15</td><td>backbone 1e-4 / 余 2e-4</td><td>~18h</td></tr>
+        <tr><td>Stage 2</td><td>VM</td><td>否</td><td>50</td><td>Uniform(256,512)</td><td>2</td><td>减半</td><td>~2h</td></tr>
+        <tr><td>Stage 3</td><td>VM</td><td>是</td><td>低分 40 / 高分 6</td><td>(256,512) / (1024,2048), s=0.25</td><td>1</td><td>DGF 2e-4 / 余 1e-5</td><td>~8h</td></tr>
+        <tr><td>Stage 4</td><td>D646+AIM</td><td>是</td><td>同 S3</td><td>同上</td><td>5</td><td>decoder 5e-5 / 余 1e-5</td><td>~14h</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      训练复现要点
+    </div>
+    <div class="admonition-content">
+      <p>Stage 1 短 $T=15$ 让网络更新更快；Stage 2 增 $T$ 到 50（显存上限）学长程依赖；Stage 3 同时跑低分长序列 + 高分短序列，避免 recurrent 网络对短序列过拟合——这是 recurrent 训练的常见坑。Stage 3/4 同时启用 DGF 端到端训练。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">分割训练交错策略</h3>
+
+  分割训练<strong>穿插在每次 matting 迭代之间</strong> #Lin et al., 2021#：奇数次迭代后跑图像分割（$T'=1$，$B'=B\times T$），偶数次后跑视频分割。图像被当作"仅第一帧"的序列喂入 → <strong>迫使分割在无 recurrent 信息时也鲁棒</strong>，避免模型对时序状态的过度依赖。
+
+  <h3 class="section-title">损失函数</h3>
+
+  对所有 $t\in[1,T]$ 施损失。$\alpha$ 用 L1 + 拉普拉斯金字塔 + 时序一致性（沿用 FBA / Context-Aware Matting 的最佳实践）#Lin et al., 2021#：
+
+$$
+L^\alpha_{l1} = \|\alpha_t - \alpha^*_t\|_1,\quad L^\alpha_{lap} = \sum_{s=1}^{5}2^{s-1}\|L^s_{pyr}(\alpha_t)-L^s_{pyr}(\alpha^*_t)\|_1,\quad L^\alpha_{tc}=\left\|\frac{d\alpha_t}{dt}-\frac{d\alpha^*_t}{dt}\right\|_2
+$$
+
+  前景 $F$ 仅在 $\alpha^*_t>0$ 像素上算（沿用 BGMv2 做法）。总 matting 损失（时序一致性权重 ×5）：
+
+$$
+L^M = L^\alpha_{l1} + L^\alpha_{lap} + 5\, L^\alpha_{tc} + L^F_{l1} + 5\, L^F_{tc}
+$$
+
+  分割用 BCE（仅人这类）：$L^S = S^*_t\bigl(-\log(S_t)\bigr) + (1-S^*_t)\bigl(-\log(1-S_t)\bigr)$。
+
+  <div class="callout"><strong>时序一致性损失 $L_{tc}$</strong> 直接约束相邻帧 alpha 与前景的导数接近真值导数，从损失侧配合 recurrent 架构，是时序稳定的双重保障。</div>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/data_train_samples.webp" alt="合成训练样本" loading="lazy">
+    <div class="cap">图 4：合成训练样本。末列是每像素沿时间的标准差，可视化运动强度。前景/背景均施 motion + temporal 增强 #Lin et al., 2021#。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第六章：实验结果
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 6 章</div>
+  <div class="ch-title">实验：SOTA 同时更轻更快</div>
+
+  <h3 class="section-title">合成基准：低分辨率 alpha 对比</h3>
+
+  在 VM/D646/AIM 上各取 100 帧 ×（5 视频 + 5 图像）背景合成测试集，对比 DeepLabV3、FBA（用 DeepLabV3 合成 trimap）、BGMv2（只见首帧 GT 背景）、MODNet #Lin et al., 2021#。指标：MAD/MSE（×1e-3）、Grad、Conn、dtSSD（×1e-2，时序一致性）。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>方法</th><th>MAD</th><th>MSE</th><th>Grad</th><th>Conn</th><th>dtSSD</th></tr></thead>
+      <tbody>
+        <tr><td>VM (512×288)</td><td>FBA</td><td>8.36</td><td>3.37</td><td>2.09</td><td>0.75</td><td>2.09</td></tr>
+        <tr><td>VM</td><td>MODNet</td><td>9.41</td><td>4.30</td><td>1.89</td><td>0.81</td><td>2.23</td></tr>
+        <tr><td>VM</td><td><strong>Ours</strong></td><td><strong>6.08</strong></td><td><strong>1.47</strong></td><td><strong>0.88</strong></td><td><strong>0.41</strong></td><td><strong>1.36</strong></td></tr>
+        <tr><td>D646 (512×512)</td><td>MODNet</td><td>10.62</td><td>5.71</td><td>3.35</td><td>2.45</td><td>1.57</td></tr>
+        <tr><td>D646</td><td><strong>Ours</strong></td><td><strong>7.28</strong></td><td><strong>3.01</strong></td><td><strong>2.81</strong></td><td><strong>1.83</strong></td><td><strong>1.01</strong></td></tr>
+        <tr><td>AIM (512×512)</td><td>MODNet</td><td>21.66</td><td>14.27</td><td>5.37</td><td>5.23</td><td>1.76</td></tr>
+        <tr><td>AIM</td><td><strong>Ours</strong></td><td><strong>14.84</strong></td><td><strong>8.93</strong></td><td><strong>4.35</strong></td><td><strong>3.83</strong></td><td><strong>1.01</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>RVM 在 alpha 全指标领先，前景预测落后 BGMv2（其有 GT 背景）但优于 FBA、MODNet #Lin et al., 2021#。注意 dtSSD 全面领先 → 时序一致性优势明确。</p>
+
+  <h3 class="section-title">高分辨率 alpha 对比</h3>
+
+  DGF 端到端可训，故 MODNet 改用非可学 Fast Guided Filter (FGF) 上采样，两者均用 $s=0.25$ 下采样 #Lin et al., 2021#。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>方法</th><th>SAD</th><th>MSE</th><th>Grad</th><th>dtSSD</th></tr></thead>
+      <tbody>
+        <tr><td>VM 1920×1080</td><td>MODNet+FGF</td><td>11.13</td><td>5.54</td><td>15.30</td><td>3.08</td></tr>
+        <tr><td>VM</td><td><strong>Ours</strong></td><td><strong>6.57</strong></td><td><strong>1.93</strong></td><td><strong>10.55</strong></td><td><strong>1.90</strong></td></tr>
+        <tr><td>D646 2048×2048</td><td>MODNet+FGF</td><td>11.27</td><td>6.13</td><td>30.78</td><td>2.19</td></tr>
+        <tr><td>D646</td><td><strong>Ours</strong></td><td><strong>8.67</strong></td><td><strong>4.28</strong></td><td><strong>30.06</strong></td><td><strong>1.64</strong></td></tr>
+        <tr><td>AIM 2048×2048</td><td>MODNet+FGF</td><td>17.29</td><td>10.10</td><td>35.52</td><td>2.60</td></tr>
+        <tr><td>AIM</td><td><strong>Ours</strong></td><td><strong>14.89</strong></td><td><strong>9.01</strong></td><td><strong>34.97</strong></td><td><strong>1.71</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">模型大小与速度</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>参数 (M)</th><th>大小 (MB)</th></tr></thead>
+      <tbody>
+        <tr><td>DeepLabV3</td><td>60.996</td><td>233.3</td></tr>
+        <tr><td>FBA</td><td>34.693</td><td>138.8</td></tr>
+        <tr><td>BGMv2</td><td>5.007</td><td>19.4</td></tr>
+        <tr><td>MODNet</td><td>6.487</td><td>25.0</td></tr>
+        <tr><td><strong>Ours</strong></td><td><strong>3.749</strong></td><td><strong>14.5</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>RVM 仅 MODNet <strong>58%</strong> 参数，最轻量 #Lin et al., 2021#。速度（FP32，Nvidia GTX 1080Ti，TorchScript + BN fusion）：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>分辨率</th><th>s</th><th>方法</th><th>FPS</th><th>GMACs*</th></tr></thead>
+      <tbody>
+        <tr><td>512×288</td><td>1</td><td>BGMv2</td><td><strong>152.5</strong></td><td>8.46</td></tr>
+        <tr><td>512×288</td><td>1</td><td>MODNet</td><td>104.9</td><td>8.80</td></tr>
+        <tr><td>512×288</td><td>1</td><td>Ours</td><td>131.9</td><td><strong>4.57</strong></td></tr>
+        <tr><td>1920×1080</td><td>0.25</td><td>MODNet+FGF</td><td>100.3</td><td>7.78</td></tr>
+        <tr><td>1920×1080</td><td>0.25</td><td><strong>Ours</strong></td><td><strong>104.2</strong></td><td><strong>4.15</strong></td></tr>
+        <tr><td>3840×2160</td><td>0.125</td><td>MODNet+FGF</td><td><strong>88.6</strong></td><td>7.78</td></tr>
+        <tr><td>3840×2160</td><td>0.125</td><td>Ours</td><td>76.5</td><td><strong>4.15</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键数字</strong>：HD 104 FPS、4K 76 FPS，实时 #Lin et al., 2021#。4K 比 MODNet 慢，是因为 RVM 额外预测前景（高分辨率多处理 3 通道）。GMACs 仅含卷积，漏 resize/DGF 等，是粗略估计。</div>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/evaluation_comparison.webp" alt="发丝细节 alpha 对比" loading="lazy">
+    <div class="cap">图 5：发丝细节 alpha 对比（Input / FBA / BGMv2 / MODNet / Ours）。RVM 的 alpha 蒙版即发丝级精细轮廓，明显优于基线 #Lin et al., 2021#。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/results_coherence.webp" alt="时序一致性对比" loading="lazy">
+    <div class="cap">图 6：时序一致性对比。MODNet 在低置信区域闪烁，RVM 结果连贯——recurrent state + $L_{tc}$ 损失的双重保障 #Lin et al., 2021#。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第七章：消融
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 7 章</div>
+  <div class="ch-title">消融实验：每个设计都有效</div>
+
+  <ol>
+    <li><strong>时序信息作用</strong> #Lin et al., 2021#：alpha MAD 在前 15 帧显著下降后稳定；MODNet 即使用邻帧平滑仍大幅波动；关闭 recurrence（传零 recurrent state）质量与一致性均恶化。→ 时序信息确实提升质量与一致性。</li>
+    <li><strong>分割训练目标</strong>：COCO 人像子集 mIOU——DeepLabV3 68.93、MobileNetV3+LR-ASPP 58.58、<strong>Ours（alpha 阈值 0.5）60.88 / Ours（分割输出）61.50</strong>；若仅用预训练权重初始化、去掉分割目标 → 仅 38.24。→ 联合训练目标使模型鲁棒，否则过拟合合成分布。</li>
+    <li><strong>DGF vs FGF</strong>：DGF 仅微小 size/速度开销（3.749M/104.2FPS vs FGF 3.748M/109.4FPS）；DGF 的 Grad 更好（30.06 vs 31.44）且 dtSSD 更好（1.64 vs 1.89），因考虑了 recurrent decoder 的 hidden features。</li>
+    <li><strong>静态 vs 动态背景</strong>：RVM 两者皆可，静态略好（易重建像素对齐背景）；BGMv2 动态背景崩坏（MAD 42.45 vs 静态 4.33），MODNet 无偏好。</li>
+    <li><strong>大模型变体</strong>：ResNet50 骨干 + 更多 decoder 通道 → 26.890M 参数 / 102.9MB / 71.1 FPS (HD) / MAD 5.81 / dtSSD 1.78，适合服务端。</li>
+  </ol>
+
+  <div class="photo">
+    <img src="media/images/paper-robust-video-matting/ablation_limitation.webp" alt="挑战案例" loading="lazy">
+    <div class="cap">图 7：挑战案例。背景有人时主体歧义；复杂场景下抠像更难 #Lin et al., 2021#。</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  第八章：与视频轮廓提取的关系
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 8 章</div>
+  <div class="ch-title">与「视频轮廓提取」的关系</div>
+
+  <ol>
+    <li><strong>alpha 蒙版即发丝级精细轮廓</strong>。抠像输出的 $\alpha$ 是逐像素软前景概率，本质上是<strong>最精细的人体/物体轮廓</strong>（含半透明发丝边缘）。trimap-free 抠像 ≈ 自动提取发丝级轮廓。图 5 的发丝细节对比直观证明 RVM 在发丝边界远胜基线。</li>
+    <li><strong>时序一致性 = 视频轮廓的时间稳定</strong>。视频轮廓提取的核心难点之一是帧间轮廓闪烁。RVM 的 ConvGRU recurrent state + 时序一致性损失 $L_{tc}$ 直接解决该问题，dtSSD 指标全面领先。图 6 直观对比 MODNet 栏杆处闪烁 vs RVM 一致。</li>
+    <li><strong>recurrent 时序引导范式</strong>。RVM 是"recurrent hidden state 作时序载体"这一范式在抠像/轮廓任务的 landmark。与 XMem 的"多级 memory + attention readout"范式互补——前者轻量因果适合直播，后者长程显存可控适合长视频。两者构成视频轮廓提取模型的两大时序机制分支。</li>
+    <li><strong>trimap-free 自动化</strong>。去掉 trimap/背景先验，使轮廓提取从交互式走向全自动，契合"全自动视频轮廓提取"主线。</li>
+    <li><strong>背景建模的可解释通道</strong>。recurrent state 自动重建背景的发现（第 4 章）启示——视频轮廓提取可借助隐式背景建模消减背景干扰、稳定前景轮廓。</li>
+  </ol>
+</div>
+
+<!-- ============================================================
+  第九章：局限与开放问题
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">第 9 章</div>
+  <div class="ch-title">局限与开放问题</div>
+
+  <p>论文自述局限 #Lin et al., 2021#：偏好目标主体清晰的视频；背景有人时主体歧义；偏好简单背景以产出更准确抠像。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      survey 视角的开放问题
+    </div>
+    <div class="admonition-content">
+      <ul>
+        <li><strong>单向 recurrent 无法利用未来帧</strong>：后处理场景下，双向时序（forward+backward）可能更优，RVM 为直播牺牲了这部分上限。</li>
+        <li><strong>recurrent state 容量有限</strong>：长视频是否会出现 representation drift？XMem 用多级 memory 解决，可对比阅读本系列后续。</li>
+        <li><strong>多主体/背景人群歧义未解</strong>：需语义先验或交互引导，纯 trimap-free 在复杂人群场景仍受限。</li>
+        <li><strong>极精细发丝边界受限于 backbone 感受野与 DGF 上采样能力</strong>：trimap-free 的精度上限仍受骨干网络与上采样模块约束。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+  参考
+  ============================================================ -->
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Lin-et-al.-2021">Lin, S., Yang, L., Saleemi, I., Sengupta, S. (2021). Robust High-Resolution Video Matting with Temporal Guidance. <em>arXiv:2108.11515</em>. <a href="https://arxiv.org/abs/2108.11515" target="_blank">arXiv:2108.11515</a> · 代码 <a href="https://github.com/PeterL1n/RobustVideoMatting" target="_blank">PeterL1n/RobustVideoMatting</a></li>
+      <li data-cite-key="Lin-et-al.-2021-BGMv2">Lin, S., Ryabtsev, A., Sengupta, S., Curless, B., Seitz, S., Kemelmacher-Shlizerman, I. (2021). Real-Time High-Resolution Background Matting. <em>CVPR 2021</em>. VideoMatte240K 数据集来源；BGMv2 基线。</li>
+      <li data-cite-key="Sengupta-et-al.-2020">Sengupta, S. et al. (2020). Background Matting: The World is Your Green Screen. <em>CVPR 2020</em>. BGMv1 前作，需预采集背景。</li>
+      <li data-cite-key="MODNet">Chen, H. et al. MODNet: Real-Time Trimap-Free Portrait Matting via Decomposition. 人像抠像基线，邻帧平滑 trick。</li>
+      <li data-cite-key="FBA">Fortes, F. et al. F, B, Alpha Matting (FBA). trimap-based 抠像 SOTA。</li>
+      <li data-cite-key="Xu-et-al.-2017">Xu, N., Price, B., Cohen, S., Huang, T. (2017). Deep Image Matting. <em>CVPR 2017</em>. AIM 数据集来源，首个深度 trimap 抠像。</li>
+      <li data-cite-key="Shi-et-al.-2015">Shi, X. et al. (2015). Convolutional LSTM Network: A Machine Learning Approach to Precipitation Nowcasting. <em>NIPS 2015</em>. ConvLSTM，recurrent 视觉谱系。</li>
+      <li data-cite-key="Ballas-et-al.-2016">Ballas, N., Yao, L., Pal, C., Courville, A. (2016). Delving Deeper into Convolutional Networks for Learning Video Representations. <em>ICLR 2016</em>. ConvGRU 出处。</li>
+      <li data-cite-key="Wu-et-al.-2019">Wu, H., Zheng, S., Zhang, J., Huang, K. (2019). Fast End-to-End Trainable Guided Filter. <em>ICCV 2019</em>. Deep Guided Filter (DGF)。</li>
+      <li data-cite-key="Howard-et-al.-2019">Howard, A. et al. (2019). Searching for MobileNetV3. 编码器骨干。</li>
+      <li data-cite-key="Chen-et-al.-2017">Chen, L.-C. et al. Rethinking Atrous Convolution for Semantic Image Segmentation. DeepLabV3，LR-ASPP 设计来源。</li>
+      <li data-cite-key="Cheng-et-al.-2022">Cheng, H. K., Schwing, A. (2022). XMem: Long-Term Video Object Segmentation with an Atkinson-Shiffrin Memory Model. <em>ECCV 2022</em>. 本系列对照：多级 memory + attention readout 范式。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-xmem.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">XMem：多级 memory 长视频分割</span></a>
+    <a class="nav-card nav-hub" href="contour-video-compression-survey.html"><span class="nav-label">枢纽页</span><span class="nav-title">视频轮廓提取 survey</span></a>
+    <a class="nav-card nav-next" href="paper-edter.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">EDTER：Transformer 边缘检测</span></a>
+  </div>
+</div>

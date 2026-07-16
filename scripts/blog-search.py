@@ -19,6 +19,7 @@
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from collections import Counter
@@ -30,7 +31,88 @@ def load_index(repo_root: Path) -> list[dict]:
         print(f"错误：找不到 {index_path}，请先运行 node build.js 生成索引。", file=sys.stderr)
         sys.exit(1)
     with open(index_path, encoding="utf-8") as f:
-        return json.load(f)
+        posts = json.load(f)
+    for p in posts:
+        p.setdefault("source", "published")
+    return posts
+
+
+# ---------- 草稿加载（drafts/*.org + drafts/*.md）----------
+
+def _parse_frontmatter(text: str, ext: str) -> tuple[dict, str]:
+    """解析 frontmatter + body。.md → YAML ---；.org → #+KEY: 属性行。"""
+    if ext == ".md":
+        m = re.match(r"^---\n(.*?)\n---\n?", text, re.DOTALL)
+        if not m:
+            return {}, text
+        fm = {}
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                v = v.strip()
+                if " #" in v:
+                    v = v.split(" #", 1)[0].rstrip()
+                fm[k.strip()] = v
+        return fm, text[m.end():]
+    else:  # .org
+        fm = {}
+        lines = text.splitlines()
+        i = 0
+        while i < len(lines) and lines[i].strip() == "":
+            i += 1
+        while i < len(lines):
+            m = re.match(r"^#\+(\w+):\s*(.*)$", lines[i])
+            if not m:
+                break
+            fm[m.group(1).lower()] = m.group(2).strip()
+            i += 1
+        return fm, "\n".join(lines[i:])
+
+
+def _parse_list(s: str) -> list[str]:
+    s = (s or "").strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    return [x.strip().strip('"') for x in s.split(",") if x.strip()]
+
+
+def _alias_to_path(alias: str) -> list[str]:
+    """categories/AI/图像压缩/论文精读 → ['AI', '图像压缩', '论文精读']"""
+    a = (alias or "").strip()
+    if a.startswith("categories/"):
+        a = a[len("categories/"):]
+    return [s for s in a.split("/") if s]
+
+
+def load_drafts(repo_root: Path) -> list[dict]:
+    """扫描 drafts/*.org + drafts/*.md，返回与 search-index 同构的条目（带 source='draft' + body）。"""
+    drafts_dir = repo_root / "drafts"
+    if not drafts_dir.exists():
+        return []
+    out = []
+    for ext in (".org", ".md"):
+        for f in sorted(drafts_dir.glob(f"*{ext}")):
+            if f.name in ("README.md", "_template.md"):
+                continue
+            fm, body = _parse_frontmatter(f.read_text(encoding="utf-8"), ext)
+            slug = f.stem
+            out.append({
+                "title": fm.get("title", slug).strip('"').strip("'"),
+                "tags": _parse_list(fm.get("tags", "")),
+                "categoryPath": _alias_to_path(fm.get("target_alias", "")),
+                "description": "",
+                "aliases": [],
+                "created_at": fm.get("created_at", ""),
+                "updated_at": fm.get("updated_at", ""),
+                "status": fm.get("status", ""),
+                "progress": fm.get("progress", ""),
+                "slug": slug,
+                "url": None,
+                "source": "draft",
+                "draft_file": f"drafts/{f.name}",
+                "body": body,
+            })
+    return out
 
 
 def match(post: dict, args) -> bool:
@@ -67,6 +149,7 @@ def match(post: dict, args) -> bool:
             post.get("description", ""),
             " ".join(post.get("tags", [])),
             " ".join(post.get("categoryPath", [])),
+            post.get("body", ""),  # 草稿正文（已发布文章无 body，空串不影响）
         ]).lower()
         if kw not in haystack:
             return False
@@ -100,6 +183,10 @@ def print_table(posts: list[dict], max_rows: int | None = None):
         title = p.get("title", "")
         if len(title) > title_w:
             title = title[:title_w - 1] + "…"
+        # 草稿加 [draft:status] 前缀，与已发布区分
+        if p.get("source") == "draft":
+            mark = f"[draft:{p.get('status') or '?'}] "
+            title = mark + title
         date = (p.get("created_at") or "")[:10]
         sid = p.get("sub_id")
         sid_display = str(sid) if sid is not None else ""
@@ -157,19 +244,25 @@ def main():
     parser.add_argument("--list-tags", action="store_true", help="列出高频标签")
     parser.add_argument("--top", type=int, default=30, help="--list-tags 时显示的标签数量")
     parser.add_argument("--limit", type=int, default=None, help="限制输出行数")
+    parser.add_argument("--include-drafts", dest="drafts", action="store_true", default=True,
+                        help="同时检索 drafts/ 草稿（默认开启）")
+    parser.add_argument("--no-drafts", dest="drafts", action="store_false",
+                        help="只检索已发布文章，不含草稿")
     parser.add_argument("--format", choices=["table", "json"], default="table", help="输出格式")
     parser.add_argument("--repo", default=".", help="仓库根目录（默认当前目录）")
 
     args = parser.parse_args()
     repo_root = Path(args.repo).resolve()
-    posts = load_index(repo_root)
+    published = load_index(repo_root)
+    drafts = load_drafts(repo_root) if args.drafts else []
+    posts = published + drafts
 
-    # 列表模式
+    # 列表模式（统计只算已发布，避免草稿的 target 分类/标签污染）
     if args.list_categories:
-        list_categories(posts)
+        list_categories(published)
         return
     if args.list_tags:
-        list_tags(posts, args.top)
+        list_tags(published, args.top)
         return
 
     # 至少需要一个检索条件

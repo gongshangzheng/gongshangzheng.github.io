@@ -22,6 +22,8 @@ description: |
 
 历史叙事技能。用于把一个历史事件、时期、人物或主题写成有时间线、有场景、有人物、有来源的编年体故事。
 
+> **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
 ## 何时使用
 
 **使用**：
