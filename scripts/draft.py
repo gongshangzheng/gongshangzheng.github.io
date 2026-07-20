@@ -325,7 +325,7 @@ def main():
     n.add_argument('--source', help='source_url')
     n.add_argument('--tags', help='comma-separated')
     n.add_argument('--template', default='brainstorm',
-                   help='template name (brainstorm|plan), default brainstorm')
+                   help='template name (brainstorm|plan|paper-note), default brainstorm')
     n.add_argument('--format', choices=['org', 'md'], default=DEFAULT_FMT,
                    help=f'draft format, default {DEFAULT_FMT}')
     n.set_defaults(func=cmd_new)

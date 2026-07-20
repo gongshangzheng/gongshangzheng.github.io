@@ -56,6 +56,7 @@ drafts/
 |---|---|---|
 | `brainstorm.org` / `brainstorm.md` | **默认**，几乎空白（frontmatter + 标题 + 空白正文） | 自由 brainstorming，不限制思考 |
 | `plan.org` / `plan.md` | 详细分节（核心问题/大纲/关键素材/TODO） | 规划文章结构 |
+| `paper-note.org` / `paper-note.md` | 论文快读结构（问题/贡献/模型/训练/实验/总结） | 快速读完一篇论文，记下核心要点，不写 HTML |
 
 **两种格式**：
 - `.org`（**默认**）：用 `#+TITLE:` / `#+SLUG:` 等 `#+` 属性行做 frontmatter，正文是 org（`*` 标题、`**` 子节）。
@@ -191,11 +192,46 @@ git log -1 --format=%ci src/pages/<slug>.html  # 文章最近改动时间
 - "更新这篇草稿的状态/进度" / "标记为已发布" → `draft.py set`
 - "归档/删除这个草稿" → `draft.py archive` / `delete`
 - "brainstorm" / "draft" / "待写" → 本 skill
+- "快速读这篇论文/记论文笔记" + arXiv URL → **paper-note 流程**（见下文）
+
+## paper-note：论文快读草稿
+
+用 `paper-note` 模板快速记录一篇论文的核心要点，不写 HTML，不做多 subagent 分析。
+
+详细流程见 `subagents/paper-note.md`。一句话总结：
+
+```bash
+# 1. 提取论文（tarball + 图片 + TeX→Markdown）
+cd ~/gongshangzheng.github.io
+PYTHONUTF8=1 .cache/read-article/.venv/bin/python \
+  .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
+
+# 2. 复制图片到草稿 assets
+mkdir -p drafts/assets/<slug>
+cp media/images/<slug>/*.webp drafts/assets/<slug>/
+
+# 3. 新建草稿（paper-note 模板）
+~/.venv/bin/python3 scripts/draft.py new <slug> \
+  --title "<标题>" --type paper-reading --template paper-note --format md \
+  --source "https://arxiv.org/abs/<id>" --tags "<tag1,tag2,tag3>"
+
+# 4. 读 raw/<slug>/sources/<slug>.md，填写草稿各节（Qoder 完成）
+```
+
+与 `read-article` 的区别：
+
+| | paper-note | read-article |
+|---|---|---|
+| 目标 | 快速记笔记 | 发布深度解读 HTML |
+| subagents | 无（单次） | 4 + 写作 + 3 review |
+| 产出 | `drafts/<slug>.md` | `src/pages/<slug>.html` |
+| 图片 | `drafts/assets/<slug>/` | `media/images/<slug>/` |
+| 后续 | 可升级为 read-article | — |
 
 ## 强制要求
 
 - 草稿操作只用 `scripts/draft.py`，不手动编辑 frontmatter（避免时间戳/格式漂移）。
 - brainstorm 模板保持几乎空白——不预设章节限制用户思考。
-- 草稿正文由用户写，skill 不代写。
+- 草稿正文由用户写，skill 不代写。**例外：paper-note 模板**——Qoder 读论文后填写各节，不需要用户手写。
 - `drafts/_template.md` 已废弃（移到 skill 文件夹 templates/），不要再创建。
 - 发布后不删草稿，保留作归档。
