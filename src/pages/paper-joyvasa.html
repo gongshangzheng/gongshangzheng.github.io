@@ -1,0 +1,378 @@
+---
+title: "数字人论文精读（五十）：JoyVASA，解耦表征 + 扩散运动生成的跨物种音频驱动肖像动画"
+description: "京东健康与浙大提出的两阶段音频驱动肖像动画框架：先用 LivePortrait 解耦面部表征，再用轻量扩散 Transformer 生成运动序列，支持人类、动物和卡通角色的统一驱动。"
+date: 2026-07-17T13:30:58
+created_at: 2026-07-17T13:30:58
+updated_at: 2026-07-17T13:45:00
+tags: [数字人, diffusion-transformer, LivePortrait, audio-driven, talking-face]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 490
+papers: ["https://arxiv.org/abs/2411.09209"]
+repos: ["https://github.com/jdh-algo/JoyVASA"]
+mathjax: true
+paper_title: "JoyVASA: Portrait and Animal Image Animation with Diffusion-Based Audio-Driven Facial Dynamics and Head Motion Generation"
+paper_authors: "Xuyang Cao, Guoxin Wang, Sheng Shi, Jun Zhao, Yang Yao, Jintao Fei, Minyu Gao, Pei Xie"
+paper_affiliation: "JD Health International；Zhejiang University"
+paper_venue: "arXiv, 2024"
+paper_doi: "10.48550/arXiv.2411.09209"
+paper_code: "https://github.com/jdh-algo/JoyVASA"
+hero_title: "JoyVASA"
+hero_sub: "arXiv 2024 · 京东健康 & 浙江大学"
+hero_tagline: "解耦表征 + 扩散 Transformer，让任何角色的脸都能跟着音频动起来"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：从唇形同步到跨物种驱动</div>
+
+音频驱动肖像动画（Audio-Driven Portrait Animation）是数字人领域中最具应用价值的方向之一：给定一张静态图片和一段音频，生成嘴型同步、表情自然的动画视频 #Cao-et-al.-2024#。这个方向经历了三代技术演进——从早期 GAN 端到端方法（<a href="paper-wav2lip.html">Wav2Lip</a>、DINet）的"只动嘴"，到 Two-stage 中间表征方法（<a href="paper-sadtalker.html">SadTalker</a>、DreamTalk）的解耦尝试，再到 2024 年扩散模型（EMO、<a href="paper-hallo.html">Hallo</a>、<a href="paper-vasa1.html">VASA-1</a>）带来的质量飞跃 #Tian-et-al.-2024# #Xu-et-al.-2024-VASA#。
+
+然而，扩散模型在提升生成质量的同时，也带来了新的问题。多数端到端扩散方法一次只生成约 10 帧（约 0.4 秒 @ 25fps），导致帧间连续性不足、时序抖动 #Cao-et-al.-2024#。更关键的是，这些方法的运动生成往往与特定身份绑定——换一张脸就需要重新提取参考动作，无法做到"一次训练，万物驱动"。
+
+JoyVASA 的核心思路是：**把身份和运动彻底拆开**。通过复用 [[@数字人论文精读（三）：运动空间路线，从 SadTalker 到 VASA-1 与 <a href="paper-ditto.html">Ditto</a> | <a href="paper-liveportrait.html">LivePortrait</a>]] 的解耦表征框架分离静态外观与动态运动，再用一个轻量的扩散 Transformer 仅从音频生成身份无关的运动序列。这种设计使得同一个运动生成模型可以驱动人类、动物、动漫角色甚至手工艺品——这在端到端方法中几乎不可能实现。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：短帧困境与身份耦合</div>
+
+要理解 JoyVASA 的设计动机，我们需要看清当前扩散驱动方法面临的两个结构性问题。
+
+<h3 class="section-title">问题一：短帧生成的时序断裂</h3>
+
+多数端到端扩散方法（EMO、Hallo、<a href="paper-echomimic-2024.html">EchoMimic</a> 等）在推理时一次预测约 10 帧图像，对应标准 25fps 帧率下的 0.4 秒 #Guan-et-al.-2023# #Chen-et-al.-2024#。这意味着模型在每一段只"看到"极短的上下文，无法有效捕捉前序运动趋势。结果就是帧间拼接处容易出现时序抖动和外观形变——尤其是头部大幅转动时，不同段之间的姿态可能不一致。
+
+部分工作试图通过增加预测帧数和前序帧数来缓解这一问题 #Jiang-et-al.-2024#，但这直接增加了扩散模型的计算负担——对于像素级端到端生成，每多一帧都意味着 UNet 或 DiT 需要处理更多的空间信息。
+
+<h3 class="section-title">问题二：身份与运动的纠缠</h3>
+
+端到端方法的另一个隐性约束是：运动生成过程依赖图像特征。无论是 EMO 的 speed embedding、Hallo 的 facial landmarks 还是 <a href="paper-aniportrait.html">AniPortrait</a> 的 keypoints guidance，这些额外条件都从参考图像或参考视频中提取。这意味着：
+
+<ul>
+  <li><strong>灵活性受限</strong>：每次生成新角色的动画，都需要从该角色的视频中提取参考动作</li>
+  <li><strong>跨域泛化差</strong>：模型训练在人脸数据上，很难直接驱动动物或卡通角色</li>
+  <li><strong>训练成本高</strong>：扩散模型同时学习外观渲染和运动生成，参数量大、训练周期长</li>
+</ul>
+
+<div class="def-box">
+  <h3>JoyVASA 的核心 Insight</h3>
+  如果把面部表示拆成"静态外观"和"动态运动"两个独立分量，那么扩散模型只需要学习 <strong>音频 → 运动</strong> 这个低维映射，完全不需要"看到"图像。运动序列一旦生成，可以配合任意身份的外观特征做渲染。这就是 JoyVASA 两阶段设计的出发点。
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：解耦表征 + 扩散运动生成</div>
+
+JoyVASA 的架构清晰地分为两个阶段。第一阶段利用 LivePortrait 完成面部表示的解耦，第二阶段训练一个轻量扩散 Transformer 从音频生成运动序列。
+
+<h3 class="section-title">Stage 1：面部表示解耦</h3>
+
+第一阶段直接复用 [[@数字人论文精读（三）：运动空间路线，从 SadTalker 到 VASA-1 与 Ditto | LivePortrait]] #Guo-et-al.-2024# 的解耦框架。给定源图像 $s$ 和驱动视频 $d_1, \ldots, d_N$，框架通过两个编码器提取不同性质的特征：
+
+<ul>
+  <li><strong>外观编码器</strong> $E_{app}$：从源图像提取 3D 面部嵌入 $f_{face}$，编码身份、纹理、结构等静态属性</li>
+  <li><strong>运动编码器</strong> $E_{mnt}$：从每帧图像提取运动参数，包括规范空间关键点 $x_c$、位移 $\delta$、旋转矩阵 $R$、平移向量 $t$ 和缩放因子 $s$</li>
+</ul>
+
+核心变换公式定义了从规范空间到实际空间的映射：
+
+$$
+\begin{aligned}
+x_s &= s_s \cdot (x_c \cdot R_s + \delta_s) + t_s \\
+x_d &= s_d \cdot (x_c \cdot R_d + \delta_d) + t_d
+\end{aligned}
+$$
+
+这个公式的物理含义非常直观：$x_c$ 是一张"标准正面脸"的基准关键点；乘以 $R$ 旋转到实际头部朝向；加上 $\delta$ 做局部表情位移（张嘴、皱眉）；乘以 $s$ 缩放到实际距离；最后加上 $t$ 平移到图像中的位置。源图像和驱动帧共享同一套 $x_c$，但运动参数不同——这正是解耦的关键。
+
+<div class="info-box">
+  <h3>为什么选择 LivePortrait 而非 3DMM？</h3>
+  传统 3DMM（如 FLAME）用线性基底表示面部，表达能力有限，难以捕捉复杂微妙表情 #Li-et-al.-2017#。LivePortrait 用深度网络将 3D 面部映射到非线性参数空间，用更少的参数表示更复杂的动态，同时保持显式的物理可解释性（旋转、平移、缩放、位移都有明确含义）。
+</div>
+
+<h3 class="section-title">Stage 2：音频驱动运动序列生成</h3>
+
+第二阶段是 JoyVASA 的核心贡献。目标是训练一个扩散模型，仅从音频线索生成完整的运动序列 $X_i = [R_i, t_i, \delta_i, s_i]$，完全独立于角色身份。
+
+<div class="photo">
+  <img src="media/images/joyvasa-2024/train.webp" alt="JoyVASA 训练流程" loading="lazy">
+  <div class="cap">图 1：JoyVASA 第二阶段训练流程。冻结的 wav2vec2 提取音频特征，冻结的 LivePortrait 运动编码器提取运动序列，扩散 Transformer 学习从噪声中恢复干净运动（来源：Cao et al., 2024, Fig.2）。</div>
+</div>
+
+<strong>音频特征提取</strong>：使用冻结的 wav2vec2 #Baevski-et-al.-2020# 编码器。冻结策略确保音频特征在扩散训练过程中不发生漂移，同时大幅降低训练开销——只有扩散 Transformer 的参数需要更新。
+
+<strong>扩散 Transformer 架构</strong>：6 层 Transformer decoder，8 头注意力，隐藏维度 512。这是一个相当紧凑的模型——相比端到端扩散方法需要处理像素级渲染的大型 UNet，JoyVASA 的第二阶段只生成低维运动参数序列，计算开销显著更低。
+
+<strong>滑动窗口策略</strong>：为了保证时序连续性，模型在训练和推理时都采用双窗口机制。当前窗口 $W_{cur} = 100$ 帧是需要去噪的目标序列；过去窗口 $W_{pre} = 25$ 帧提供运动连续性先验。去噪网络的形式化描述为：
+
+$$
+\hat{X}^0_{-W_{pre}:W_{cur}} = D\!\left(X^t_{0:W_{pre}},\; X^0_{-W_{pre}:0},\; A_{-W_{pre}:W_{cur}},\; t\right)
+$$
+
+其中 $D$ 是 6 层 Transformer decoder，$X^t$ 是加噪运动，$X^0$ 是已知干净运动，$A$ 是音频特征，$t$ 是扩散时间步。初始窗口的前序部分用可学习的起始特征 $A_{start}$ 和 $X_{start}$ 替代。
+
+<div class="info-box">
+  <h3>与 VASA-1 条件设计的对比</h3>
+  JoyVASA 的条件集 $C = [X_{-W_{pre}:0},\; A_{-W_{pre}:W_{cur}}]$ 比 VASA-1 更紧凑。VASA-1 额外编码了凝视方向（gaze direction）和头部到相机距离作为独立条件，而在 JoyVASA 中，这些信息已经隐含在运动参数 $\delta$（关键点位移，包含凝视相关信息）和 $s$（缩放因子，编码距离变化）中 #Xu-et-al.-2024-VASA#。
+</div>
+
+<strong>Classifier-Free Guidance</strong>：训练时以 0.1 的概率将音频条件随机置空（$\varnothing$），推理时使用 CFG 公式增强生成质量：
+
+$$
+\hat{X}^0 = D(\cdot, \varnothing, t) + \gamma_c \cdot \bigl[ D(\cdot, A, t) - D(\cdot, \varnothing, t) \bigr]
+$$
+
+其中 $\gamma_c$ 是 CFG 尺度参数。一个实用的好处是：通过调节 $\gamma_c$，用户可以在推理时控制运动风格的多样性——较高的 $\gamma_c$ 产生更夸张的表情，较低的 $\gamma_c$ 则更保守。
+
+<strong>直接预测干净运动而非噪声</strong>：与标准扩散模型预测噪声 $\epsilon$ 再间接恢复信号不同，JoyVASA 的扩散模型直接采样干净运动序列 $X^0$。这一选择使得四重损失函数可以直接在预测值与真实值之间施加约束，而不需要经过噪声预测的间接传导 #Cao-et-al.-2024#。配合 velocity loss 和 smooth loss 的多层级约束，模型在生成运动序列的时序一致性上获得了显著优势。
+
+<strong>随机截断训练</strong>：训练过程中，音频样本的长度会被随机截断。这一策略看似简单，实际上至关重要——它使模型对不同长度的语音序列具有鲁棒性，为滑窗推理时处理不等长音频打下了基础。如果没有这种训练时的数据增强，模型在推理时遇到短于窗口长度的音频段时可能产生不稳定输出 #Cao-et-al.-2024#。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：数据清洗、多重损失与轻量训练</div>
+
+<h3 class="section-title">训练数据与清洗</h3>
+
+训练数据来自三个来源：公开的 HDTF 数据集 #Zhang-et-al.-2021#、CelebV-HQ 数据集 #Zhu-et-al.-2022# 和团队自建的私有中文高分辨率说话数据集。数据清洗采用三重过滤流水线：
+
+<ol>
+  <li><strong>视频质量过滤</strong>：使用 QAlign #Wu-et-al.-2023# 视频质量评估模型排除低质量样本</li>
+  <li><strong>唇同步过滤</strong>：使用 SyncNet #Chung-et-al.-2016# 排除音频-视觉同步分数低的视频</li>
+  <li><strong>运动幅度过滤</strong>：移除头部运动过大的 clips，避免训练中的形变失真</li>
+</ol>
+
+最终获得 5,578 个视频 clips，单个 clip 时长从 8 秒到数分钟不等。为平衡三个数据集的样本量，训练时采用 oversampling 策略确保每个数据集贡献可比的样本量。
+
+<h3 class="section-title">损失函数设计</h3>
+
+JoyVASA 的扩散模型直接预测干净运动序列 $X^0$（而非噪声 $\epsilon$），配合四重损失施加多层级约束：
+
+$$
+\mathcal{L}_{total} = \mathcal{L}_{sample} + \lambda_{vel} \cdot \mathcal{L}_{vel} + \lambda_{smooth} \cdot \mathcal{L}_{smooth} + \lambda_{exp} \cdot \mathcal{L}_{exp}
+$$
+
+<ul>
+  <li><strong>Sample Loss</strong> $\mathcal{L}_{sample}$（权重 1.0）：预测运动与真实运动的 $L_2$ 距离，位置级精度约束</li>
+  <li><strong>Velocity Loss</strong> $\mathcal{L}_{vel}$（权重 $\lambda_{vel}=5.0$）：相邻帧速度差的 $L_2$ 距离，<strong>最高优先级</strong>，确保帧间运动连续</li>
+  <li><strong>Smooth Loss</strong> $\mathcal{L}_{smooth}$（权重 $\lambda_{smooth}=0.5$）：加速度级约束，惩罚剧烈变化</li>
+  <li><strong>Expression Loss</strong> $\mathcal{L}_{exp}$（权重 $\lambda_{exp}=0.1$）：专门针对关键点位移 $\delta$ 的损失，聚焦唇部运动和面部表情</li>
+</ul>
+
+从权重数值可以推断优先级为：<strong>速度一致性 &gt; 位置精度 &gt; 平滑性 &gt; 表情细节</strong>。velocity loss 的权重高达 5.0，反映了作者对时序连续性的极端重视——这也直接呼应了 Part 2 中分析的"短帧困境"问题。
+
+<h3 class="section-title">训练配置披露</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>训练数据</td><td>已披露</td><td>HDTF + CelebV-HQ + 私有中文数据集，共 5,578 clips（8s~数分钟/clip）</td></tr>
+      <tr><td>训练硬件</td><td>已披露</td><td>NVIDIA A800 GPU × 1（通常 80GB 显存）</td></tr>
+      <tr><td>优化器</td><td>已披露</td><td>Adam（β1, β2, ε, weight decay 未给出）</td></tr>
+      <tr><td>学习率</td><td>已披露</td><td>1×10⁻⁴（schedule / warmup 未给出）</td></tr>
+      <tr><td>Batch size</td><td>已披露</td><td>16</td></tr>
+      <tr><td>训练步数</td><td>已披露</td><td>20,000 iterations</td></tr>
+      <tr><td>训练时长</td><td>未披露</td><td>原文未给出（推断：6 层 Transformer + 20k steps + 单卡 A800，预计数小时量级）</td></tr>
+      <tr><td>模型参数量</td><td>部分披露</td><td>6-layer transformer decoder, 8 heads, dim=512（总参数量未给出）</td></tr>
+      <tr><td>精度格式</td><td>未披露</td><td>原文未给出 FP16/BF16/mixed precision 信息</td></tr>
+      <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出选择标准</td></tr>
+      <tr><td>窗口参数</td><td>已披露</td><td>W_cur=100, W_pre=25</td></tr>
+      <tr><td>CFG drop 概率</td><td>已披露</td><td>0.1（训练时随机 drop audio condition）</td></tr>
+    </tbody>
+  </table>
+</div>
+
+值得注意的是，整个第二阶段只需训练一个轻量的 6 层 Transformer——外观编码器、运动编码器和渲染器全部来自第一阶段的 LivePortrait 且冻结不更新。这使得训练成本远低于端到端扩散方法。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：滑窗生成与 warp 渲染</div>
+
+推理时，JoyVASA 的管线分为四步：
+
+<div class="photo">
+  <img src="media/images/joyvasa-2024/pipeline_inference.webp" alt="JoyVASA 推理流程" loading="lazy">
+  <div class="cap">图 2：JoyVASA 推理管线。从参考图像提取外观特征和源运动参数，从音频通过扩散模型滑窗生成运动序列，计算目标关键点后 warp + render 得到最终视频（来源：Cao et al., 2024, Fig.1）。</div>
+</div>
+
+<strong>Step 1：提取参考特征。</strong>从输入参考图像 $s$ 中，外观编码器提取 $f_{face}$，运动编码器提取源运动参数 $[x_c, R_s, \delta_s, t_s, s_s]$。这一步只需要做一次。
+
+<strong>Step 2：音频驱动运动生成。</strong>wav2vec2 从输入音频提取特征序列，然后扩散模型以滑动窗口方式逐段生成运动序列 $X^0 = \{X^0_1, \ldots, X^0_N\}$。每个窗口生成 $W_{cur}=100$ 帧（4 秒 @ 25fps）的运动参数，前 $W_{pre}=25$ 帧作为下一个窗口的历史先验。这种滑窗策略使得模型可以生成远超训练窗口长度的长视频，突破了端到端方法通常只能生成 0.4 秒的瓶颈。
+
+<strong>Step 3：计算目标关键点。</strong>利用第一阶段训练的变换公式，将规范关键点 $x_c$ 与生成的目标运动参数 $[R_d, \delta_d, t_d, s_d]$ 组合：
+
+$$
+x_d = s_d \cdot (x_c \cdot R_d + \delta_d) + t_d
+$$
+
+<strong>Step 4：Warp + Render。</strong>基于源关键点 $x_s$ 和目标关键点 $x_d$ 的差异，对 3D 面部外观特征 $f_{face}$ 执行 warp 变换，然后由 LivePortrait 的生成器渲染最终输出帧。具体来说，warp 操作计算每对源-目标关键点的位移场，将该位移场应用到外观特征图上，使静态的面部几何"变形"为目标运动状态。生成器随后将 warp 后的特征解码为像素级图像。由于外观特征 $f_{face}$ 在整个过程中保持不变，身份一致性得到了天然保证——无论运动序列如何变化，面部纹理和结构始终来自同一参考图像 #Guo-et-al.-2024#。
+
+<div class="callout"><strong>关键设计优势</strong>：整个推理过程中，扩散模型完全不接触图像像素——它只生成低维运动参数（旋转、平移、位移、缩放），像素级渲染交给预训练好的 LivePortrait 生成器。这使得推理速度主要由扩散模型的采样步数决定，而非图像分辨率。</div>
+
+关于推理速度，论文未给出精确的 latency 或 throughput 数值。但可以推断：6 层 Transformer（dim=512）的去噪网络在单个窗口内（100 帧）的推理开销远低于端到端扩散模型处理同等帧数的 UNet——前者操作在低维运动参数空间，后者操作在高维像素/latent 空间。实际推理瓶颈更可能出现在 LivePortrait 的逐帧渲染环节，而非扩散采样环节。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：FVD 最优与跨物种驱动</div>
+
+<h3 class="section-title">实验配置</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>评测数据集</td><td>已披露</td><td>celebV-HQ test（50 人 × 2 clips）+ Openset（50 张互联网图片 + 50 段音频，含真人/动漫/手工/动物）</td></tr>
+      <tr><td>评测指标</td><td>已披露</td><td>IQA↑ / VQA↑ / Sync-C↑ / Sync-D↓ / FVD-25↓ / Smooth↑</td></tr>
+      <tr><td>Baseline 方法</td><td>已披露</td><td>EchoMimic, AniPortrait, Hallo, JoyHallo</td></tr>
+      <tr><td>推理硬件</td><td>未披露</td><td>原文未给出推理使用的 GPU 型号（训练用 A800）</td></tr>
+      <tr><td>推理分辨率</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>推理环境</td><td>未披露</td><td>原文未给出框架/版本信息</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 class="section-title">主实验结果：celebV-HQ 测试集</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>Method</th><th>IQA(%)↑</th><th>VQA(%)↑</th><th>Sync-C↑</th><th>Sync-D↓</th><th>FVD-25↓</th><th>Smooth(%)↑</th></tr></thead>
+    <tbody>
+      <tr><td>EchoMimic</td><td>64.46</td><td>68.85</td><td>4.60</td><td>13.90</td><td>904.07</td><td>99.44</td></tr>
+      <tr><td>AniPortrait</td><td><strong>74.85</strong></td><td><strong>78.00</strong></td><td>1.98</td><td><strong>13.28</strong></td><td>623.00</td><td><strong>99.66</strong></td></tr>
+      <tr><td>Hallo</td><td>68.83</td><td>72.95</td><td>6.25</td><td>14.05</td><td>558.96</td><td>99.47</td></tr>
+      <tr><td>JoyHallo</td><td>69.15</td><td>74.00</td><td><strong>6.36</strong></td><td>14.23</td><td>755.61</td><td>99.38</td></tr>
+      <tr><td><strong>JoyVASA</strong></td><td>68.97</td><td>72.42</td><td>4.85</td><td>13.53</td><td><strong>459.04</strong></td><td>99.60</td></tr>
+    </tbody>
+  </table>
+</div>
+
+JoyVASA 在有 ground truth 的 celebV-HQ 测试集上取得了<strong>最低的 FVD-25 分数（459.04）</strong>，比第二名 Hallo（558.96）低了约 18% #Cao-et-al.-2024#。FVD 衡量的是生成视频的时序分布与真实视频分布的距离——这个指标最优说明 JoyVASA 生成的视频在整体时序连贯性和自然度上确实领先。Smoothness 达到 99.60%，仅次于 AniPortrait 的 99.66%。
+
+但在 IQA/VQA 图像/视频质量评分上，JoyVASA（68.97/72.42）落后于 AniPortrait（74.85/78.00）。Sync-C 也不如 JoyHallo 的 6.36。这反映了一个 trade-off：解耦设计换来了更好的时序一致性（FVD），但单帧渲染质量受限于 LivePortrait 生成器的上界。
+
+<div class="photo">
+  <img src="media/images/joyvasa-2024/result_different_methods.webp" alt="不同方法可视化对比" loading="lazy">
+  <div class="cap">图 3：celebV-HQ 测试集上不同方法的可视化对比。左例显示 JoyVASA 的嘴型更贴近 ground truth（尽管幅度较保守），右例显示 JoyVASA 生成了更具表现力的头部运动（来源：Cao et al., 2024, Fig.3）。</div>
+</div>
+
+<h3 class="section-title">消融实验</h3>
+
+论文未提供正式的消融实验。从实验结果和方法设计可以推断的关键结论是：velocity loss（$\lambda_{vel}=5.0$）和滑窗策略是 FVD 指标领先的主要贡献因素，但这一推断缺乏逐组件去除的定量验证。论文也未给出不同 CFG 尺度 $\gamma_c$ 的系统对比，仅在定性结果中提到可调节。
+
+<h3 class="section-title">Openset 测试集：跨域泛化</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>Method</th><th>IQA↑</th><th>VQA↑</th><th>Sync-C↑</th><th>Sync-D↓</th><th>Smooth↑</th></tr></thead>
+    <tbody>
+      <tr><td>EchoMimic</td><td>75.66</td><td>82.73</td><td>4.12</td><td>13.79</td><td>99.20</td></tr>
+      <tr><td>AniPortrait</td><td><strong>81.84</strong></td><td><strong>87.62</strong></td><td>2.67</td><td>14.09</td><td><strong>99.55</strong></td></tr>
+      <tr><td>Hallo</td><td>75.37</td><td>83.85</td><td>5.39</td><td>13.91</td><td>99.33</td></tr>
+      <tr><td>JoyHallo</td><td>73.87</td><td>84.09</td><td><strong>5.91</strong></td><td>14.11</td><td>99.32</td></tr>
+      <tr><td><strong>JoyVASA</strong></td><td>71.45</td><td>77.78</td><td>5.72</td><td>14.01</td><td>99.48</td></tr>
+    </tbody>
+  </table>
+</div>
+
+Openset 的结果进一步印证了 JoyVASA 的优劣势分布。IQA/VQA 差距更大（71.45 vs AniPortrait 的 81.84），因为开放域图像包含动漫、动物等非人脸内容，LivePortrait 的泛化能力不如端到端方法的像素级渲染。
+
+<h3 class="section-title">跨物种驱动：JoyVASA 的独特能力</h3>
+
+<div class="photo">
+  <img src="media/images/joyvasa-2024/result_diff_ids.webp" alt="不同角色驱动结果" loading="lazy">
+  <div class="cap">图 4：同一段音频驱动不同角色的结果——人类、动漫、艺术品、动物。JoyVASA 的运动生成完全不依赖图像信息，使得同一模型可统一驱动多种角色类型（来源：Cao et al., 2024, Fig.4）。</div>
+</div>
+
+这是 JoyVASA 最引人注目的特性。由于扩散模型在生成运动时完全不"看到"图像，同一套音频→运动映射可以直接应用于：人类肖像、动漫角色、手绘艺术品、甚至动物面部。这在端到端方法中很难实现——EMO 和 Hallo 的扩散模型深度耦合人脸先验与参考动作条件，在动物图片上的适用性极为有限。
+
+作者也坦诚承认了代价：因为运动与身份解耦，不同角色在同一段音频下可能产生相似的表情模式。但通过调节 CFG 权重 $\gamma_c$，可以获得不同风格的运动结果。
+
+<h3 class="section-title">失败案例与局限</h3>
+
+<ul>
+  <li><strong>大姿态退化</strong>：LivePortrait 在大头部姿态时性能下降，这是生成质量的上界瓶颈，作者明确承认 #Cao-et-al.-2024#</li>
+  <li><strong>表情趋同</strong>：不同角色对同一音频可能产生相似表情，需手动调节 CFG 缓解</li>
+  <li><strong>Retargeting 不适用</strong>：LivePortrait 的跨身份 retargeting 模块在纯音频驱动场景下不可用</li>
+</ul>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：解耦路线的价值与边界</div>
+
+<h3 class="section-title">竞品定位对比</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>维度</th><th>JoyVASA</th><th>VASA-1</th><th>SadTalker</th><th>EMO/Hallo</th></tr></thead>
+    <tbody>
+      <tr><td>核心路线</td><td>解耦 + 扩散运动</td><td>扩散运动 + Megaportrait</td><td>3DMM + GAN</td><td>端到端扩散</td></tr>
+      <tr><td>运动表征</td><td>LivePortrait 参数</td><td>Holistic dynamics</td><td>3DMM 系数</td><td>像素/latent</td></tr>
+      <tr><td>音频条件</td><td>wav2vec2</td><td>wav2vec2</td><td>mel-spectrogram</td><td>whisper/wav2vec2</td></tr>
+      <tr><td>身份独立性</td><td>完全独立</td><td>部分独立</td><td>部分独立</td><td>强耦合</td></tr>
+      <tr><td>跨物种驱动</td><td>支持</td><td>不支持</td><td>不支持</td><td>不支持</td></tr>
+      <tr><td>长视频能力</td><td>滑窗，无上限</td><td>实时流式</td><td>逐帧</td><td>约 0.4s/段</td></tr>
+      <tr><td>FVD-25</td><td><strong>459</strong></td><td>—</td><td>—</td><td>559 (Hallo)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 class="section-title">可操作的启发</h3>
+
+<ol>
+  <li><strong>解耦路线在 FVD 上有结构性优势</strong>：JoyVASA 的 FVD-25 比所有端到端方法都低，说明"先生成运动再渲染"的管线在时序一致性上确实更优。如果你的应用场景更看重"自然流畅"而非"单帧清晰度"，解耦路线是更好的选择。</li>
+  <li><strong>冻结预训练编码器是降本利器</strong>：wav2vec2 和 LivePortrait 编码器全部冻结，只训练 6 层 Transformer 的 20k steps——这是工程上非常务实的设计，训练成本极低。</li>
+  <li><strong>velocity loss 的权重设计值得借鉴</strong>：$\lambda_{vel}=5.0$ 是四个 loss 中最高的，反映了作者对时序连续性的优先级判断。在做任何序列生成任务时，速度一致性约束都是减少抖动的第一道防线。</li>
+  <li><strong>身份解耦的 trade-off 需要正视</strong>：跨物种驱动是亮点，但单帧质量的损失也是真实的。在数字人产品中，如果只需要驱动真人肖像，端到端方法可能仍然是更优选择。</li>
+</ol>
+
+<h3 class="section-title">未来方向</h3>
+
+作者提到的改进路线包括：用 EMOPortrait #Drobyshev-et-al.-2024# 替代 LivePortrait 以增强大姿态鲁棒性、优化实时推理能力、以及引入更精细的表情控制机制。这些方向与数字人领域的整体演进趋势一致——从"能生成"到"生成得好"再到"可控地生成"。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Cao-et-al.-2024">Cao, X. et al. (2024). <strong>JoyVASA: Portrait and Animal Image Animation with Diffusion-Based Audio-Driven Facial Dynamics and Head Motion Generation</strong>. <a href="https://arxiv.org/abs/2411.09209" target="_blank">arXiv:2411.09209</a></li>
+      <li data-cite-key="Guo-et-al.-2024">Guo, Y. et al. (2024). <strong>LivePortrait: Efficient Portrait Animation with Stitching and Retargeting Control</strong>. <a href="https://arxiv.org/abs/2407.03168" target="_blank">arXiv:2407.03168</a> · <a href="paper-liveportrait.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Xu-et-al.-2024-VASA">Xu, S. et al. (2024). <strong>VASA-1: Lifelike Audio-Talking Avatars</strong>. <a href="https://arxiv.org/abs/2404.10667" target="_blank">arXiv:2404.10667</a></li>
+      <li data-cite-key="Tian-et-al.-2024">Tian, Q. et al. (2024). <strong>EMO: Emote Portrait Alive</strong>. ECCV 2024. <a href="https://arxiv.org/abs/2402.17485" target="_blank">arXiv:2402.17485</a></li>
+      <li data-cite-key="Baevski-et-al.-2020">Baevski, A. et al. (2020). <strong>wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations</strong>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11477" target="_blank">arXiv:2006.11477</a></li>
+      <li data-cite-key="Zhang-et-al.-2023-SadTalker">Zhang, W. et al. (2023). <strong>SadTalker: Learning Realistic 3D Motion Coefficients for Stylized Audio-Driven Single Image Talking Face Animation</strong>. CVPR 2023. <a href="https://arxiv.org/abs/2211.12194" target="_blank">arXiv:2211.12194</a></li>
+      <li data-cite-key="Wei-et-al.-2024">Wei, Z. et al. (2024). <strong>AniPortrait: Audio-Driven Synthesis of Photorealistic Portrait Animation</strong>. <a href="https://arxiv.org/abs/2402.17768" target="_blank">arXiv:2402.17768</a> · <a href="paper-aniportrait.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Xu-et-al.-2024-Hallo">Xu, S. et al. (2024). <strong>Hallo: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation</strong>. <a href="https://arxiv.org/abs/2406.08801" target="_blank">arXiv:2406.08801</a> · <a href="paper-hallo.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Chen-et-al.-2024">Chen, J. et al. (2024). <strong>EchoMimic: Lifelike Audio-Driven Portrait Animations</strong>. <a href="https://arxiv.org/abs/2407.08136" target="_blank">arXiv:2407.08136</a> · <a href="dsl-fiqa-2024.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Shi-et-al.-2024">Shi, S. et al. (2024). <strong>JoyHallo: Digital Human Model for Mandarin</strong>. <a href="https://arxiv.org/abs/2409.13268" target="_blank">arXiv:2409.13268</a></li>
+      <li data-cite-key="Zhang-et-al.-2021">Zhang, S. et al. (2021). <strong>FACIAL: Synthesizing Dynamic Talking Face with Implicit Attribute Learning</strong>. ICCV 2021. · <a href="flow-guided-talking-2021.html" class="paper-link">精读 →</a></li>
+      <li data-cite-key="Zhu-et-al.-2022">Zhu, H. et al. (2022). <strong>CelebV-HQ: A Large-Scale Video Facial Attributes Dataset</strong>. ECCV 2022.</li>
+      <li data-cite-key="Wu-et-al.-2023">Wu, H. et al. (2023). <strong>Q-Align: Teaching LMMs for Visual Scoring via Discrete Text-Defined Levels</strong>. <a href="https://arxiv.org/abs/2312.17090" target="_blank">arXiv:2312.17090</a></li>
+      <li data-cite-key="Chung-et-al.-2016">Chung, J.S. & Zisserman, A. (2016). <strong>Out of Time: Automated Lip Sync in the Wild</strong>. ACCV 2016.</li>
+      <li data-cite-key="Li-et-al.-2017">Li, T. et al. (2017). <strong>Learning a Model of Facial Shape and Expression from 4D Scans (FLAME)</strong>. SIGGRAPH Asia 2017.</li>
+      <li data-cite-key="Drobyshev-et-al.-2024">Drobyshev, A. et al. (2024). <strong>EMOPortraits: Emotion-enhanced Multimodal One-shot Head Avatars</strong>. <a href="https://arxiv.org/abs/2404.19110" target="_blank">arXiv:2404.19110</a></li>
+      <li data-cite-key="Guan-et-al.-2023">Guan, Z. et al. (2023). <strong>StyleSync: High-Fidelity Generalized and Customizable Lip Sync Animation</strong>. CVPR 2023.</li>
+      <li data-cite-key="Jiang-et-al.-2024">Jiang, Z. et al. (2024). <strong>Loopy-Audio-Driven Expressive and Vivid Talking Face Generation</strong>.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="emo-avatar-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">EMO-Avatar，LLM Agent 驱动的共情数字人</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+</div>
