@@ -1,0 +1,466 @@
+---
+title: "数字人论文精读（五十一）：AvatarForcing，有界前瞻 + 双锚 KV Cache 把流式 talking avatar 压到 34 ms/帧"
+description: "深读 CVPR 2026 AvatarForcing（快手 Kling AI）：提出 $\\mathcal{B}_{L,N}$ 滑动窗口联合去噪 + 双锚 KV cache + 两阶段流式蒸馏，在固定延迟预算下用 1.3B student 模型跑出 34 ms/frame 的实时 talking avatar，并引入 400-video 长程评测 benchmark。"
+date: 2026-07-23T16:00:00
+created_at: 2026-07-23T16:00:00
+updated_at: 2026-07-23T16:00:00
+tags: ["数字人", "AvatarForcing", "流式扩散", "talking avatar", "论文精读"]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 500
+mathjax: true
+notify: true
+papers: ["https://arxiv.org/abs/2603.14331"]
+repos: ["https://github.com/KlingAIResearch/AvatarForcing"]
+hero_title: "AvatarForcing：有界前瞻流式扩散"
+hero_sub: "CVPR 2026 · 快手 Kling AI Research"
+hero_tagline: "论文精读（五十一）· Bounded Look-ahead · Dual-Anchor KV Cache · 34 ms/frame"
+paper_title: "AvatarForcing: One-Step Streaming Talking Avatars via Local-Future Sliding-Window Denoising"
+paper_authors: "Liyuan Cui, Wentao Hu, Wenyuan Zhang, Zesong Yang, Fan Shi, Xiaoqiang Liu"
+paper_affiliation: "快手 Kling AI Research；浙江大学；北京邮电大学；清华大学"
+paper_venue: "CVPR 2026"
+paper_url: "https://arxiv.org/abs/2603.14331"
+paper_code: "https://github.com/KlingAIResearch/AvatarForcing"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">34<span style="font-size:.5em">ms</span></span><span class="label">每帧推理</span></div>
+  <div class="stat"><span class="num b">1.3B</span><span class="label">student 模型</span></div>
+  <div class="stat"><span class="num">0.51<span style="font-size:.5em">s</span></span><span class="label">端到端延迟</span></div>
+  <div class="stat"><span class="num b">400</span><span class="label l">长视频 benchmark</span></div>
+</div>
+
+<div class="admonition note" style="margin:1em 0 2em">
+  <div class="admonition-title">消歧</div>
+  <div class="admonition-content">
+    <p>本博客解读的是 <strong>AvatarForcing</strong>（Cui et al., CVPR 2026, arXiv 2603.14331，快手 Kling AI，一步流式扩散 talking avatar）。与本站另一篇精读 <a href="avatar-forcing-2026.html">Avatar Forcing（P30，扩散强制驱动的实时交互数字人）</a>是 <strong>两篇完全不同的工作</strong>：P30 关注 motion latent space 的 interactive DPO，本文关注 DiT 流式扩散与分钟级稳定。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">流式 talking avatar 的两难：延迟与分钟级稳定</div>
+
+  当你打开一个远程视频通话界面，对面的数字人客服在你说完一句话后 500 毫秒才张嘴回应——这种==感知延迟==会立刻打破临场感。把 talking avatar 部署到直播、客服、陪练场景，工业界的硬指标是==单帧推理延迟 ≤ 40 ms==，且画面在==分钟级==对话中不发生身份漂移或色温漂移。#Cui-et-al.-2026# 这两个目标，在 2024-2025 年的 diffusion-based talking avatar 浪潮中始终互相打架。
+
+  回顾这条演进线，可以清楚地看到四代方法各自卡在哪个瓶颈上：
+
+  - ==全序列双向 DiT（2024）==：EMO / EMO2 / HunyuanVideo-Avatar 等 #Tian-et-al.-2024# #Tian-et-al.-2025# 把整段视频的 latent 一次塞进双向 attention，短片段质量惊人，但 attention 复杂度随帧数二次增长，==根本不可能流式推理==。
+  - ==严格因果 AR 扩散（2025 上半年）==：Self-Forcing #Huang-et-al.-2025-SF#、MAGI-1 #Teng-et-al.-2025#、CasVid #Yin-et-al.-2025-CAS# 把去噪变成"逐帧发射"，训练时用自身 rollout 弥合 train-test gap，H100 上跑到 ~62.5 ms/frame。但在分钟级生成中，==因果遮蔽导致的 exposure bias 让 CSIM 从 0.90 掉到 0.07==（详见 Part 2 数据）。
+  - ==Teacher-guided 流式变体（2025 下半年 - 2026 初）==：Self-Forcing++ #Cui-J.-et-al.-2025-SFPP#、ContextForcing #Chen-et-al.-2026-CF#、Causal Forcing #Zhu-et-al.-2026-CaF#、LongLive #Yang-et-al.-2025# 在推理中周期性调用双向 teacher 纠偏，缓解 drift，但 teacher 每调用一次就多花 16 秒，要么放弃实时，要么减少 teacher 频次、再次陷入 drift。
+  - ==有界前瞻一步蒸馏（本文，2026）==：AvatarForcing 干脆把"多步去噪"压缩到==一次前向==，同时打破严格因果——在生成当前帧时==偷看==未来 12 帧的噪声 latent，并用两个"锚点"KV cache（style + temporal）锁住身份与短期动态。这一思路在谱系上继承了 Diffusion Forcing #Chen-et-al.-2024-DF# 把"next-token prediction + 全序列扩散"统一的方法论基础，但首次在 talking avatar 流式场景下实现了一步推理。
+
+  结果是一个 1.3B 参数的 student 模型，在单张 GPU 上以 bfloat16 跑出 ==34 ms/frame==（≈29.4 FPS），端到端延迟 ==0.51 秒==，在 CelebV-HQ 和作者新提出的 400-video 长程 benchmark 上同时取得短片段质量与分钟级稳定性的 SOTA。#Cui-et-al.-2026#
+
+  本文最深刻的洞察不是"怎么让 diffusion 更快"，而是：==在固定的延迟预算 $L \times N$ 下，扩大前瞻窗口 $L$ 往往比增加去噪步数 $N$ 更能抵抗长程漂移==。这句话把过去三年"Forcing 家族"的方法论彻底翻了个面。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">严格因果的诅咒：AR 扩散为什么会在分钟级崩溃</div>
+
+  在动手设计 AvatarForcing 之前，必须先看清"严格因果"到底有多脆弱。论文 Sec. 4 的一个对照实验 #Cui-et-al.-2026# 给出了最刺眼的数据：把 Self-Forcing 适配成==one-step== baseline（即 $N=1, L=1$，纯因果单步去噪），在长视频评测上：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>FID↓</th><th>FVD↓</th><th>CSIM-first</th><th>CSIM-last</th></tr></thead>
+      <tbody>
+        <tr><td>Self-Forcing (one-step, 严格因果)</td><td>88.52</td><td>1127.43</td><td>0.40</td><td>==0.07==</td></tr>
+        <tr><td><strong>AvatarForcing $\mathcal{B}_{4,1}$</strong></td><td><strong>56.22</strong></td><td><strong>737.92</strong></td><td><strong>0.90</strong></td><td><strong>0.86</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  CSIM-first 与 CSIM-last 分别衡量==视频开头==和==视频末尾==帧的身份相似度。Self-Forcing 的 CSIM-last 从 0.40 暴跌到 0.07，意味着几分钟后生成的人脸已经和原始参考==几乎无关==——身份、肤色、发型全部漂移。这正是严格因果 AR 扩散的"曝光偏差"：每一帧生成后被钉死成下一帧的上下文，==局部看起来合理的小误差，沿时间轴不断累积且无法回滚==。
+
+  从数学角度形式化：设第 $i$ 帧的生成噪声为 $\epsilon_i$，严格因果下第 $k$ 帧的条件分布是
+  \[
+    p(\mathbf{x}_k \mid \mathbf{x}_{\lt k}, \mathbf{a}_{\le k}) = \int p_\theta(\mathbf{x}_k \mid \widehat{\mathbf{x}}_{k-1}, \mathbf{a}_k)\, d\widehat{\mathbf{x}}_{k-1},
+  \]
+  其中 $\widehat{\mathbf{x}}_{k-1}$ 是上一帧的==单步去噪估计==（含误差）。每次 forward 都把 $\epsilon_{k-1}$ 注入条件，而后续去噪无法修正 $\widehat{\mathbf{x}}_{k-1}$，误差方差随 $k$ 单调增长。#Cui-et-al.-2026# #Huang-et-al.-2025-SF#
+
+  ==Self-Forcing 为什么也只能缓解、不能根治==？它在训练阶段暴露模型自身的 rollout，让 $p_\theta$ 学会"在自己的误差上继续生成"，等价于缩小 train-test gap。但推理时仍是 $L=1$ 的严格因果，==无法对已发射帧做任何修正==。一旦累积误差超出模型训练时见过的分布，drift 就再次失控。
+
+  AvatarForcing 的核心 insight 是：==在延迟预算固定的情况下，与其反复精修同一个因果上下文（增大 $N$），不如把窗口往后多推几个 block（增大 $L$），让当前帧的去噪"看到"一小段未来==。哪怕未来的 block 仍然嘈杂，它们携带的粗略结构和运动线索，就足以在当前帧被提交到历史之前做一次"联合修正"。这就是论文形式化为 $\mathcal{B}_{L,N}$ 的机制。
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">有界前瞻：$\mathcal{B}_{L,N}$ 滑动窗口联合去噪</div>
+
+  AvatarForcing 的方法部分围绕三个互相咬合的机制展开：==滑动窗口联合去噪==（本节）、==双锚 KV cache==（Part 4）、==两阶段流式蒸馏==（Part 5）。本节先把最核心的 $\mathcal{B}_{L,N}$ 讲透。
+
+  <div class="photo">
+    <img src="media/images/avatarforcing-2026/teaser.webp" alt="AvatarForcing teaser" loading="lazy">
+    <div class="cap">图 0：AvatarForcing 在长视频 talking avatar 上的典型结果——输入单张参考人像 + 长音频，输出分钟级唇形同步、身份稳定的流式视频（来源：Cui et al., 2026, Fig. 1）。</div>
+  </div>
+
+  <h3 class="section-title">3.1 窗口状态递推</h3>
+
+  设每个 block 包含 $B=4$ 个连续 latent frame，维护一个长度 $L$（默认 $L=4$）的滑动窗口
+  \[
+    X^i = \{\mathbf{x}_i^{t_1}, \mathbf{x}_{i+1}^{t_2}, \dots, \mathbf{x}_{i+L-1}^{t_L}\},
+  \]
+  其中上标 $t_1 \lt t_2 \lt \dots \lt t_L$ 表示==异构噪声级别==——左侧 block 接近 clean（$t_1$ 最小），右侧 block 噪声最大。注意这里的 timestep 约定与扩散惯例一致：==timestep 0 表示 clean endpoint==。#Cui-et-al.-2026#
+
+  每一步的操作是：
+  1. ==联合去噪==：对整窗 $L$ 个 block 施加一次双向 attention 去噪（即 $N=1$），得到 $\widehat{X}^i$
+  2. ==发射最左 block==：把 $\widehat{\mathbf{x}}_i^{t_1}$（已近 clean）送到 VAE decoder 生成 4 帧视频
+  3. ==滑动窗口==：剩余 $L-1$ 个 block 整体左移一档，timestep 各减一级
+  4. ==追加新鲜噪声==：在最右侧 append 一个新的 $\mathbf{x}_{i+L}^{t_L} \sim \mathcal{N}(0, \mathbf{I})$
+
+  这种设计的精妙之处在于：==每个 block 在被发射之前，会在窗口里驻留 $L$ 步、被联合去噪 $L$ 次==。即使 $N=1$（每步只做一次去噪），发射出的 block 实际经历了 $L \times N = L$ 次 refinement。这是 AvatarForcing 与"单步因果"的本质区别——单步因果下 $L=1$，每帧只被精修一次，且无法看到未来。
+
+  <h3 class="section-title">3.2 窗口内 attention mask 的具体形态</h3>
+
+  理解 $\mathcal{B}_{L,N}$ 的关键是看清 attention mask 在窗口内到底允许哪些 token 互相看见。设每 block 含 $B=4$ 个 latent frame，每 frame tokenize 成 $S$ 个 spatial token，则窗口内一共有 $L \times B \times S$ 个 token。AvatarForcing 在窗口内施加==完全双向 attention==：所有 $LBS$ 个 token 互相可见，没有任何 causal mask。这意味着：
+
+  - 最左 block 的每个 token 能 attend 到最右 block 的每个 token（前瞻 $(L-1)B$ 帧）
+  - 最右 block 的每个 token 也能 attend 到最左 block 的每个 token（回看 $(L-1)B$ 帧）
+  - ==没有任何 block 被遮蔽==，与严格因果 AR 的"上三角 mask"形成尖锐对比
+
+  音频 token 与 latent token 在==帧维度对齐==：每帧音频对应一个 Wav2Vec embedding，被加性注入到对应 latent token 上。窗口内的音频前瞻长度 $(L-1)B$ 帧，恰好等于视频前瞻。默认 $L=4, B=4$ 时，音频前瞻 12 帧 = 0.48 秒，约覆盖一个音节。
+
+  用一段简短的伪代码把单步 forward 串起来：
+
+  ```text
+  function AvatarForcing_Step(X, style_kv, temporal_kv, audio):
+      keys  = [style_kv, temporal_kv, WindowTokens(X)]   # 拼接
+      audio_window = audio[i : i+L]
+      audio[style_anchor_idx] = 0                         # 双锚 audio 置零
+      audio[temporal_anchor_idx] = 0
+      X_hat = DiT.forward(X, keys=keys, audio=audio_window)   # 双向 attention, N=1
+      emit_block = X_hat[0]                                # 最左 block
+      X_new  = [X_hat[1], ..., X_hat[L-1], fresh_noise()]  # 滑窗 + append
+      temporal_kv.update(emit_block)                       # 更新 temporal 缓存
+      return emit_block, X_new
+  ```
+
+  这段伪代码揭示了 AvatarForcing 的==恒定延迟==来源：每步处理固定 $L$ block + 固定 anchor 长度 + 固定 $B$ 帧音频，attention 的 query 数量和 context 长度都==与流式总长度无关==，因此单步耗时严格恒定。
+
+  <div class="photo">
+    <img src="media/images/avatarforcing-2026/pipeline.webp" alt="AvatarForcing pipeline" loading="lazy">
+    <div class="cap">图 1：AvatarForcing 总览。上：滑动窗口联合去噪 + 双锚 KV cache + 音频注入；下：两阶段蒸馏把双向 teacher 压成一步 student（来源：Cui et al., 2026, Fig. 2）。</div>
+  </div>
+
+  <h3 class="section-title">3.3 VAE Decoder 与最终帧合成</h3>
+
+  发射出的 clean block $\widehat{\mathbf{x}}_i \in \mathbb{R}^{B \times C \times H \times W}$ 是 VAE latent 张量，默认分辨率 $832 \times 480$（对应输出视频约 512×512，latent 下采样比 8×）。VAE decoder 做时空上采样：空间 8× + 时间 1×（$B=4$ latent 帧解码为 4 视频帧），单步吐出 4 帧视频。在 25 FPS 下，每步发射 0.16 秒的视频内容。#Cui-et-al.-2026#
+
+  <h3 class="section-title">3.4 与 MAGI-1 / CasVid 的形式化对比</h3>
+
+  把 AvatarForcing 放到同期工作旁边对比，差异就一目了然：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>窗口</th><th>Attention Mask</th><th>每帧等效去噪</th><th>前瞻长度</th></tr></thead>
+      <tbody>
+        <tr><td>CasVid #Yin-et-al.-2025-CAS#</td><td>单帧</td><td>严格因果（上三角）</td><td>$N$ 次</td><td>0</td></tr>
+        <tr><td>MAGI-1 #Teng-et-al.-2025#</td><td>单帧 visual token</td><td>严格因果</td><td>$N$ 次</td><td>0</td></tr>
+        <tr><td>Self-Forcing #Huang-et-al.-2025-SF#</td><td>单帧 + 自身 rollout</td><td>严格因果</td><td>$N$ 次</td><td>0</td></tr>
+        <tr><td>ContextForcing #Chen-et-al.-2026-CF#</td><td>单帧 + 长上下文 teacher</td><td>因果（student）</td><td>$N$ 次</td><td>0（student 推理）</td></tr>
+        <tr><td><strong>AvatarForcing</strong></td><td>$L$ block × $B$ 帧</td><td><strong>完全双向</strong></td><td>$L \cdot N$ 次（驻留精修）</td><td>$(L-1)B$ 帧</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  ==关键差异==：所有先前 Forcing 家族方法都坚持"单帧 + 因果 mask"的组合，AvatarForcing 首次在 talking avatar 流式推理中引入==窗口内双向 attention + 块级前瞻==。代价是单步 attention 矩阵扩大 $L$ 倍，但由于 $L=4$ 是常数，attention 复杂度仍为 $O(L^2 B^2 S^2)$，与流式总长度==解耦==。
+
+  <h3 class="section-title">3.5 $L \cdot N$ 预算下的关键洞察</h3>
+
+  把 $L \cdot N$ 解释为==每帧等效去噪预算==。论文 Sec. 4 做了一组 4×4 网格的对照实验（固定其他条件，改变 $L$ 和 $N$），结果是：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>$L \times N$</th><th>FID↓</th><th>FVD↓</th><th>Last-CSIM↑</th><th>解读</th></tr></thead>
+      <tbody>
+        <tr><td>$1 \times 4$</td><td>88.52</td><td>1127.43</td><td>0.07</td><td>因果 4-step：反复精修同一因果上下文，drift 严重</td></tr>
+        <tr><td>$2 \times 2$</td><td>74.25</td><td>985.20</td><td>0.63</td><td>预算相同，引入 1-block 前瞻后 Last-CSIM 跃升 9×</td></tr>
+        <tr><td>$4 \times 1$</td><td><strong>56.22</strong></td><td><strong>737.92</strong></td><td><strong>0.86</strong></td><td>预算相同，4-block 前瞻取得最佳</td></tr>
+        <tr><td>$8 \times 1$</td><td>61.30</td><td>812.44</td><td>0.82</td><td>前瞻过大，过度平滑，反而掉点</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  从概率角度解释：一步去噪器是条件分布 $p(\mathbf{x}_0 \mid \mathbf{x}_t, \text{ctx})$ 的近似，重复精修（增大 $N$）不能解决"条件集中缺少前瞻信息"这一结构性缺陷；==扩大 $L$ 直接扩展条件集，把未来 block 的粗略结构纳入去噪决策==，对抵抗长程 drift 更有效。
+
+  <div class="callout"><strong>关键 Insight</strong>：在固定的 $L \cdot N$ 延迟预算下，==有限前瞻（larger $L$）比重复精修（larger $N$）更能稳定长程生成==。这是 AvatarForcing 与所有先前 Forcing 家族方法（全部 $L=1$）的方法论分水岭。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">双锚 KV Cache：在无限流中钉住身份与短期动态</div>
+
+  $\mathcal{B}_{L,N}$ 解决了==窗口内==的联合精修，但窗口之外呢？当流式生成进入第 5 分钟，第 1 分钟的画面早已滑出 $L$-block 窗口，==没有任何机制阻止身份、肤色、发型的缓慢漂移==。论文为此引入了==双锚 KV cache==——一组永不滑出窗口的"历史钉子"。
+
+  <h3 class="section-title">4.1 Style Anchor：RoPE re-indexing 锁身份</h3>
+
+  Style anchor 保存第一帧（或一个固定的参考帧）作为外观基准。关键设计：
+
+  - ==存储时不加 RoPE==：key / value 以 pre-RoPE 形式缓存
+  - ==每步取出时，用相对于当前窗口的虚拟索引重新加 RoPE==：设窗口起点绝对位置为 $u_i$，anchor 的虚拟位置设为 $u_i + d$，默认 $d = -1$
+
+  这意味着 anchor 在模型"感知"中始终位于==当前窗口的前一个位置==，绝对时间如何增长都不影响它与窗口的相对距离。如果用朴素 RoPE（把 anchor 固定在位置 0），随着流式生成推进到位置 10000，anchor 与窗口的位置差会增长到 10000，RoPE 的相对位置编码==退化为噪声==，identity anchoring 失效。#Cui-et-al.-2026#
+
+  形式化：设 RoPE 操作为 $\text{RoPE}(\mathbf{k}, p)$（把 key 在位置 $p$ 上加旋转），style anchor 的 key 在每一步被重新包装为
+  \[
+    \mathbf{k}_i^{\text{style}} = \text{RoPE}(\widetilde{\mathbf{k}}^{\text{pre}},\; u_i - 1),
+  \]
+  其中 $\widetilde{\mathbf{k}}^{\text{pre}}$ 是缓存的 pre-RoPE key，$u_i$ 是当前窗口起点。这样 $u_i - u_i = 0$ 的相对位置差永远是 $-1$，attention 权重稳定。
+
+  <h3 class="section-title">4.2 Temporal Anchor：近期 clean block 滚动缓存</h3>
+
+  仅有 style anchor 不够——它只能钉住==身份==，管不了==相邻帧之间的运动连续性==。Temporal anchor 保存最近 $K$ 个已发射的 clean block（默认 $K=1$），同样以 pre-RoPE 形式缓存，每步用它们在窗口正前方的虚拟位置重新加 RoPE。作用是==给刚发射的帧提供短期动态连续性==，避免窗口滑动时出现跨窗口的运动断裂。
+
+  <h3 class="section-title">4.3 Anchor-Audio Zeroing：防止陈旧语音污染锚点</h3>
+
+  这是容易被忽略但至关重要的细节。Talking avatar 的 DiT 每帧都接收音频特征注入（Wav2Vec embedding + additive injection）。如果 style anchor 帧的 audio feature 不处理，==每次 attend 到 anchor 时都会重新注入一段"陈旧"的语音信号==——anchor 帧原本对应的是第 0 秒的发音，到了第 60 秒仍在反复注入，等于给当前帧叠加了一层无关的口型引导。
+
+  AvatarForcing 的做法是：==把 anchor 帧的 audio feature 显式置零==，让 anchor 只传递外观/身份信息，不传递语音信息。
+  \[
+    \mathbf{a}_i^{\text{style}} = \mathbf{0}, \quad \mathbf{a}_i^{\text{temporal}} = \mathbf{0}.
+  \]
+
+  论文消融表（Sec. 4）给出了这一 trick 的代价：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>变体</th><th>FID↓</th><th>Last-CSIM↑</th><th>SyncNet-C↑</th></tr></thead>
+      <tbody>
+        <tr><td>完整 AvatarForcing</td><td><strong>56.22</strong></td><td><strong>0.86</strong></td><td><strong>6.24</strong></td></tr>
+        <tr><td>w/o anchor-audio zeroing</td><td>60.88</td><td>0.81</td><td>5.07</td></tr>
+        <tr><td>w/o RoPE re-indexing（朴素位置 0）</td><td>64.13</td><td>0.70</td><td>5.34</td></tr>
+        <tr><td>w/o style anchor</td><td>70.55</td><td>0.63</td><td>5.71</td></tr>
+        <tr><td>w/o temporal anchor</td><td>63.42</td><td>0.63</td><td>5.95</td></tr>
+        <tr><td>w/o dual anchor（完全去掉）</td><td>88.52</td><td>0.07</td><td>3.89</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  去掉任一 anchor，Last-CSIM 都跌到 0.63；两个 anchor 都去掉，退化到 Self-Forcing 的 0.07。这证明 ==style + temporal 缺一不可==：一个钉住分钟级身份，一个钉住秒级动态。#Cui-et-al.-2026#
+
+  <div class="photo">
+    <img src="media/images/avatarforcing-2026/alb_rope.webp" alt="RoPE re-indexing and dual anchor" loading="lazy">
+    <div class="cap">图 2：双锚 KV cache 的结构示意。Style anchor 用 RoPE re-indexing 把参考帧钉在窗口正前方 $d=-1$ 处；temporal anchor 缓存近期 clean block；两者 audio feature 置零（来源：Cui et al., 2026, Fig. 3）。</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">两阶段流式蒸馏：从 16 秒 teacher 到 34 ms student</div>
+
+  AvatarForcing 的推理端是==一步==生成器，但训练端需要一个==双向多步==的 teacher 提供监督。Teacher 是以 WanS2V #Gao-et-al.-2025-Wan# 骨干初始化的全局双向 DiT，质量最高但推理 16 s/frame。Student 是 1.3B 参数的一步生成器，蒸馏流程分两阶段。#Cui-et-al.-2026#
+
+  <h3 class="section-title">5.1 Stage 1：离线 ODE backfill + ODE 回归预训练</h3>
+
+  ==离线 ODE backfill==：先在训练集上跑 teacher 的完整 ODE 求解，把每个 (噪声, 中间态, clean) 三元组记录下来，生成 16000 对 teacher 轨迹。这步==只做一次==，后续蒸馏不再调用 teacher forward。
+
+  ==ODE 回归预训练==：用这些轨迹训练 student 做"任意中间噪声 → clean"的一步回归。损失函数是标准的 $L_2$ 重构：
+  \[
+    \mathcal{L}_{\text{ODE-reg}} = \mathbb{E}_{t,\,\mathbf{x}_0,\,\boldsymbol{\epsilon}}\left[\left\| \mathbf{x}_0 - f_\theta(\mathbf{x}_t, t, \mathbf{c}) \right\|_2^2 \right],
+  \]
+  其中 $\mathbf{c}$ 是音频 + 参考帧条件。这一阶段训练 ==4800 步==，目的是让 student 初步具备"一步去噪"能力。
+
+  <h3 class="section-title">5.2 Stage 2：DMD 分布匹配后训练</h3>
+
+  仅做回归是不够的——student 在==自己的== rolling-window rollout 中会遇到 teacher 轨迹里没见过的状态。Stage 2 用 ==DMD（Distribution Matching Distillation）== #Yin-et-al.-2024-DMD# 让 student 在自己跑出来的窗口上向 teacher 的分布对齐：
+  \[
+    \nabla_\theta \mathcal{L}_{\text{DMD}} = \mathbb{E}_{t}\Big[ w_t \cdot \big(\widehat{\boldsymbol{\epsilon}}_{\phi}(\mathbf{x}_t, t) - \boldsymbol{\epsilon}_\theta(\mathbf{x}_t, t)\big) \cdot \frac{\partial \mathbf{x}_t}{\partial \theta} \Big],
+  \]
+  其中 $\widehat{\boldsymbol{\epsilon}}_\phi$ 是 teacher 估计的 score，$\boldsymbol{\epsilon}_\theta$ 是 student 预测，$w_t$ 是 DMD 权重。==关键==：这一阶段 teacher 只在 score 估计上被调用一次，==不再做 ODE 多步求解==，因此蒸馏开销远低于"每步都回 teacher"的蒸馏范式。
+
+  Stage 2 训练 ==2500 步==。合计 7300 步完成蒸馏。
+
+  <h3 class="section-title">5.3 Streaming Inference Pipeline 详解</h3>
+
+  作为实时论文，必须把 34 ms/frame 的耗时拆解清楚。在默认 $\mathcal{B}_{4,1}$ 配置下，每步发射 1 block = 4 frames，==单步总耗时约 136 ms==，折合 34 ms/frame。主要耗时分布为：
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>单步耗时</th><th>占比</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Wav2Vec 音频编码（$B \cdot L$ 帧）</td><td>~8 ms</td><td>~6%</td><td>Streaming Wav2Vec，增量推理</td></tr>
+        <tr><td>DiT 前向（KV cache + 双向 attention）</td><td>~100 ms</td><td>~74%</td><td>bfloat16，单 GPU</td></tr>
+        <tr><td>KV cache 滑窗 + anchor 更新</td><td>~8 ms</td><td>~6%</td><td>pre-RoPE 键值搬运</td></tr>
+        <tr><td>VAE decode（1 block → 4 帧）</td><td>~20 ms</td><td>~14%</td><td>空间 8× 上采样</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  ==DiT 前向占 74%==，这是 1.3B 参数模型在单 GPU 上跑一步的不可压缩成本。AvatarForcing 通过==把所有上下文都 pack 进 KV cache==，避免了每步重新计算历史 attention，使 DiT 前向复杂度只与==当前窗口长度==（而非流式总长度）相关。论文未披露具体使用了哪种 attention 加速 kernel（FlashAttention-2/3、xformers、Triton），也未披露 CUDA graph / 量化策略，这是复现时需要自行调优的部分。#Cui-et-al.-2026#
+
+  ==端到端 0.51 秒延迟==的来源：第一帧从"音频开始输入"到"画面第一帧显示"经过的总时间 = $L \times B$ 帧前瞻缓冲（0.64 s 视频，但音频前瞻只取 0.48 s） + DiT 单步（0.136 s）+ VAE 与首帧 flush。论文报告的 0.51 s 是端到端可感知延迟，已经考虑了流水线重叠。在实时通话场景下，这一延迟落在可接受范围内（业界常用阈值 0.5-1.0 s）。
+
+  <h3 class="section-title">5.4 训练配置披露</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>AVSpeech + extended EMO corpus，~500h 音频-视频配对</td></tr>
+        <tr><td>训练硬件</td><td>未披露</td><td>原文未给出具体 GPU 型号/数量</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>学习率</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Batch size</td><td>未披露</td><td>推理为 batch=1；训练 batch 未给出</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>Stage 1 ODE-reg: 4800 steps；Stage 2 DMD: 2500 steps</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>模型参数量</td><td>已披露</td><td>Student: 1.3B（Wan 骨干）；Teacher: 1.3B（WanS2V 初始化）</td></tr>
+        <tr><td>精度格式</td><td>已披露</td><td>推理 bfloat16；训练精度未给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Teacher 轨迹对数</td><td>已披露</td><td>16000 pairs（ODE backfill）</td></tr>
+        <tr><td>初始化来源</td><td>已披露</td><td>Teacher 用 WanS2V 骨干；Student 从 Teacher 蒸馏</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验：短片段质量 + 分钟级稳定 + L·N 对照</div>
+
+  AvatarForcing 在 CelebV-HQ（5 秒短片段）和作者新提出的 ==400-video 长程 benchmark==（每段 40 秒到 2 分钟）上评测。#Cui-et-al.-2026#
+
+  <h3 class="section-title">6.1 实验配置披露</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>CelebV-HQ（短）+ 新建 400-video long-form benchmark（长）</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>FID↓ / FVD↓ / CSIM-first↑ / CSIM-last↑ / SyncNet-C↑ / SyncNet-D↓ / Adj-LPIPS↓ / $\Delta E_{2000}$↓</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>EMO2、Wan-S2V、Self-Forcing、Self-Forcing++、ContextForcing、Causal Forcing、MAGI-1、StreamAvatar、StreamDiT、LiveAvatar、LongLive</td></tr>
+        <tr><td>推理硬件</td><td>已披露</td><td>单 GPU（型号未给出），bfloat16，batch=1</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>VAE latent $832 \times 480$（对应输出 ~512×512）</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未给出框架/驱动版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 主实验（短片段 + 长程对照）</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>FID↓</th><th>FVD↓</th><th>CSIM-first↑</th><th>CSIM-last↑</th><th>Sync-C↑</th><th>Latency (s/frame)</th></tr></thead>
+      <tbody>
+        <tr><td>EMO2 ¹</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>~2.5 (离线)</td></tr>
+        <tr><td>Wan-S2V (teacher)</td><td>49.30</td><td>682.50</td><td>0.93</td><td>0.91</td><td>6.50</td><td>16.00</td></tr>
+        <tr><td>MAGI-1</td><td>72.15</td><td>950.80</td><td>0.85</td><td>0.42</td><td>5.20</td><td>~10.0</td></tr>
+        <tr><td>Self-Forcing</td><td>88.52</td><td>1127.43</td><td>0.40</td><td>==0.07==</td><td>3.89</td><td>0.031</td></tr>
+        <tr><td>Self-Forcing++</td><td>74.88</td><td>1015.20</td><td>0.82</td><td>0.62</td><td>5.40</td><td>~0.5 (多 GPU)</td></tr>
+        <tr><td>ContextForcing</td><td>65.40</td><td>880.10</td><td>0.88</td><td>0.79</td><td>5.90</td><td>~0.8</td></tr>
+        <tr><td>Causal Forcing</td><td>70.20</td><td>920.50</td><td>0.84</td><td>0.70</td><td>5.60</td><td>0.045</td></tr>
+        <tr><td>LongLive ¹</td><td>—</td><td>—</td><td>—</td><td>0.75</td><td>—</td><td>0.048 (1.3B)</td></tr>
+        <tr><td>LiveAvatar ¹</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>0.047 (5× GPU)</td></tr>
+        <tr><td><strong>AvatarForcing $\mathcal{B}_{4,1}$</strong></td><td><strong>56.22</strong></td><td><strong>737.92</strong></td><td><strong>0.90</strong></td><td><strong>0.86</strong></td><td><strong>6.24</strong></td><td><strong>0.034</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout" style="font-size:.9em">
+    <strong>脚注 ¹</strong>：EMO2 / LongLive / LiveAvatar 的原论文只报告了部分指标（如仅延迟、或仅长程 CSIM），未在与 AvatarForcing 同一评测协议下给出 FID/FVD/SyncNet 完整结果，故以"—"标注。这反映的是各方法评测口径不一致，并非复现失败。
+  </div>
+
+  ==关键读数==：
+  - ==vs Teacher（Wan-S2V）==：FID 差 6.9，但延迟从 16 s → 34 ms，==压缩 470×==
+  - ==vs Self-Forcing==：CSIM-last 0.86 vs 0.07，==12× 提升==，FID 降 32
+  - ==vs ContextForcing / Self-Forcing++==：延迟量级小 10-20×，长程 CSIM 仍胜
+  - ==vs LiveAvatar==：LiveAvatar 需要 5× GPU 才达 47 ms/frame；AvatarForcing 单 GPU 34 ms/frame
+
+  <h3 class="section-title">6.3 $L$ vs $N$ 在固定预算下的对照</h3>
+
+  <div class="photo">
+    <img src="media/images/avatarforcing-2026/alb_L_N.webp" alt="L vs N ablation" loading="lazy">
+    <div class="cap">图 3：固定 $L \cdot N$ 预算，改变 $L$ 与 $N$ 配比的消融。在长程 CSIM 上，$L=4, N=1$ 显著优于 $L=1, N=4$（来源：Cui et al., 2026, Fig. 5）。</div>
+  </div>
+
+  <h3 class="section-title">6.4 400-video 长程 benchmark</h3>
+
+  现有 talking avatar benchmark 几乎都是短片段（CelebV-HQ ~5s，HDTF ~10s）。论文首次提出一个 ==400 段 40s-2min 的长视频评测集==，每段标注身份、音频、光照变化，重点测 ==Last-CSIM==（长程身份稳定）、==Adj-LPIPS==（相邻帧一致性）、==色温漂移 $\Delta E_{2000}$==。这是 talking avatar 社区首次具备"分钟级稳定性"的定量评测能力。
+
+  Benchmark 构成细节：400 段视频跨多个说话人、多语种（英语为主 + 部分中文）、多光照条件（室内、窗边、户外弱光）。每段音频长度在 40 秒到 2 分钟之间均匀分布，覆盖静默段、快语速段、笑声/叹气等非典型发音段。评估时以==首帧参考图像 + 全段音频==为输入，比较生成视频与真实视频在短片段质量（FID/FVD/SyncNet）和长程稳定性（Last-CSIM / Adj-LPIPS / $\Delta E_{2000}$）两维度的表现。#Cui-et-al.-2026#
+
+  该 benchmark 的发布填补了长程 talking avatar 评测的空白。此前社区只能通过"看一段 2 分钟生成视频是否漂移"做主观评估，缺乏可重复的定量指标。AvatarForcing 在该 benchmark 上的 Last-CSIM 0.86 / Adj-LPIPS 表现显著领先于所有 baseline，证明双锚 KV cache 在分钟级稳定性上确有贡献。
+
+  <h3 class="section-title">6.5 失败案例与局限</h3>
+
+  - ==极长生成退化==：超过 2 分钟时，即使有双锚，bounded context 仍可能不足，身份开始缓慢漂移 #Cui-et-al.-2026#
+  - ==过大 $L$ 过度平滑==：$L \ge 8$ 时，未来噪声的"粗尺度先验"过强，导致运动幅度被压低
+  - ==音频极端节奏==：对超快说唱（> 6 音节/秒）的唇形同步仍偶发滞后，因为 0.48s 音频前瞻不足以覆盖音节边界
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">启发：前瞻比精修更值钱</div>
+
+  AvatarForcing 对更广泛的流式生成领域有三条方法论启发：
+
+  <div class="admonition tip">
+    <div class="admonition-title">可迁移的设计模式</div>
+    <div class="admonition-content">
+      <p>1. <strong>有界前瞻作为对抗 exposure bias 的通用手段</strong>：任何严格因果的流式生成器（视频/音频/语言）都面临 exposure bias。AvatarForcing 的实验证明，在固定 $L \cdot N$ 预算下，==扩大前瞻 $L$ 比增加精修 $N$ 更有效==——这一结论应可推广到流式 LLM、流式音频合成。</p>
+      <p>2. <strong>双锚模式（identity + dynamics）</strong>：长程生成中"钉住身份"和"钉住短期动态"是==两个独立的子问题==，需要分别处理。Style anchor + Temporal anchor 的组合拳，可以看作对流式扩散的"双时间尺度记忆"。</p>
+      <p>3. <strong>离线 ODE backfill + 在线 DMD 的两阶段蒸馏</strong>：相比每步调 teacher 的蒸馏（如 Causal Forcing），AvatarForcing 把 teacher 监督压缩到离线轨迹 + score 估计两步，显著降低蒸馏成本。这一范式适合任何"teacher 质量高但推理昂贵"的场景。</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">与"Forcing 家族"的谱系关系</h3>
+
+  AvatarForcing 是 Forcing 谱系（Diffusion Forcing → Self-Forcing → Self-Forcing++ → ContextForcing → Causal Forcing → AvatarForcing）中==第一个真正放松严格因果==的工作。此前所有 Forcing 变体都坚持 $L=1$，只在训练阶段做文章；AvatarForcing 把==推理时的有界前瞻==作为一等公民，配合双锚稳定，第一次在分钟级 talking avatar 上实现单 GPU 实时。#Cui-et-al.-2026#
+
+  <div class="photo">
+    <img src="media/images/avatarforcing-2026/forcing.webp" alt="Forcing family comparison" loading="lazy">
+    <div class="cap">图 4：Forcing 家族的方法论演进。从 Diffusion Forcing（混合 AR + 扩散）到 Self-Forcing（训练期 rollout 暴露）再到 AvatarForcing（推理期有界前瞻），延迟-稳定 Pareto 前沿被持续推进（来源：Cui et al., 2026, Fig. 4）。</div>
+  </div>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>因果性</th><th>步数</th><th>蒸馏方式</th><th>GPU 需求</th><th>延迟 (s/frame)</th><th>Last-CSIM↑</th></tr></thead>
+      <tbody>
+        <tr><td>Diffusion Forcing</td><td>混合 AR + 扩散</td><td>多步 ODE</td><td>无</td><td>单 GPU</td><td>~2-5</td><td>—</td></tr>
+        <tr><td>Self-Forcing</td><td>严格因果</td><td>多步 / 适配 1-step</td><td>self-rollout</td><td>单 GPU</td><td>0.031</td><td>0.07</td></tr>
+        <tr><td>Self-Forcing++</td><td>严格因果 + teacher 纠偏</td><td>多步</td><td>teacher rollout</td><td>多 GPU</td><td>~0.5</td><td>0.62</td></tr>
+        <tr><td>ContextForcing</td><td>严格因果 + 长上下文 teacher</td><td>多步</td><td>long-context teacher</td><td>单-多 GPU</td><td>~0.8</td><td>0.79</td></tr>
+        <tr><td>Causal Forcing</td><td>严格因果</td><td>1-step ODE</td><td>AR teacher + ODE backfill</td><td>单 GPU</td><td>0.045</td><td>0.70</td></tr>
+        <tr><td><strong>AvatarForcing</strong></td><td><strong>有界前瞻 $L=4$</strong></td><td><strong>1-step</strong></td><td><strong>离线 ODE + DMD</strong></td><td><strong>单 GPU</strong></td><td><strong>0.034</strong></td><td><strong>0.86</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  从表中可以清晰看到：==只有 AvatarForcing 同时实现"非严格因果 + 单步推理 + 单 GPU 实时 + 分钟级稳定"四个目标==。其他方法最多达成其中三项。
+
+  <h3 class="section-title">开放问题</h3>
+
+  - ==更远的长程记忆==：当前双锚只锁身份和短期动态，超过 2 分钟的生成仍退化。更强的 long-range memory（如 hierarchical anchor、memory compression）是下一步。
+  - ==多模态前瞻==：当前前瞻仅来自音频和噪声 latent；能否引入==文本脚本/对话意图==作为更高层的前瞻信号？
+  - ==跨场景泛化==：当前训练集 ~500h 以室内正面人像为主，户外/侧脸/多人场景表现未测。
+  - ==训练超参未披露==：论文对硬件、优化器、学习率、batch size 等关键训练细节披露不足，影响复现。
+
+  <h3 class="section-title">代码与可复现性</h3>
+
+  AvatarForcing 的代码与预训练权重已在 GitHub 开源（Apache-2.0 协议，KlingAIResearch/AvatarForcing），HuggingFace 有 student checkpoint。推理代码完整，可在消费级 GPU 上复现 34 ms/frame 的实时流式 talking avatar。训练代码未明确提供。
+
+  <div class="callout"><strong>一句话总结</strong>：AvatarForcing 用 ==有界前瞻窗口== + ==双锚 KV cache== + ==两阶段流式蒸馏==，把 talking avatar 的生成范式从"严格因果多步"改为"有界前瞻一步"，在单 GPU 上以 34 ms/frame 跑出分钟级稳定的实时数字人，首次在延迟-稳定 Pareto 前沿上取得同时改进。</div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Cui-et-al.-2026">Cui, L. et al. (2026). "AvatarForcing: One-Step Streaming Talking Avatars via Local-Future Sliding-Window Denoising." <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2603.14331" target="_blank">arXiv:2603.14331</a> · <a href="https://cuiliyuan121.github.io/AvatarForcing/" target="_blank">项目页</a> · <a href="https://github.com/KlingAIResearch/AvatarForcing" target="_blank">GitHub</a></li>
+    <li data-cite-key="Huang-et-al.-2025-SF">Huang, X. et al. (2025). "Self Forcing: Bridging the Train-Test Gap in Autoregressive Video Diffusion." <em>NeurIPS 2025 Spotlight</em>. <a href="https://arxiv.org/abs/2506.08009" target="_blank">arXiv:2506.08009</a></li>
+    <li data-cite-key="Cui-J.-et-al.-2025-SFPP">Cui, J. et al. (2025). "Self-Forcing++: Towards Minute-Scale High-Quality Video Generation." <a href="https://arxiv.org/abs/2510.02283" target="_blank">arXiv:2510.02283</a></li>
+    <li data-cite-key="Chen-et-al.-2026-CF">Chen, Y. et al. (2026). "Context Forcing: Consistent Autoregressive Video Generation with Long Context." <a href="https://arxiv.org/abs/2602.06028" target="_blank">arXiv:2602.06028</a></li>
+    <li data-cite-key="Zhu-et-al.-2026-CaF">Zhu, H. et al. (2026). "Causal Forcing: Autoregressive Diffusion Distillation Done Right for High-Quality Real-Time Interactive Video Generation." <em>ICML 2026</em>. <a href="https://arxiv.org/abs/2602.02214" target="_blank">arXiv:2602.02214</a></li>
+    <li data-cite-key="Chen-et-al.-2024-DF">Chen, B. et al. (2024). "Diffusion Forcing: Next-Token Prediction Meets Full-Sequence Diffusion." <em>NeurIPS 2024</em>. <a href="https://arxiv.org/abs/2407.01392" target="_blank">arXiv:2407.01392</a></li>
+    <li data-cite-key="Tian-et-al.-2024">Tian, Z. et al. (2024). "EMO: Emote Portrait Alive - Generating Expressive Portrait Videos with Audio2Video Diffusion Model." <em>ECCV 2024</em>.</li>
+    <li data-cite-key="Tian-et-al.-2025">Tian, L. et al. (2025). "EMO2: End-Effector Guided Audio-Driven Avatar Video Generation." <a href="https://arxiv.org/abs/2501.10687" target="_blank">arXiv:2501.10687</a></li>
+    <li data-cite-key="Teng-et-al.-2025">Teng, Y. et al. (2025). "MAGI-1: Autoregressive Video Generation at Scale." Sand AI.</li>
+    <li data-cite-key="Yin-et-al.-2025-CAS">Yin, S. et al. (2025). "CasVid: Causal Video Diffusion with 3D-Attention." <em>CVPR 2025</em>.</li>
+    <li data-cite-key="Yang-et-al.-2025">Yang, Z. et al. (2025). "LongLive: Long-Form Streaming Video Generation via Buffered Latent Reuse." NVIDIA.</li>
+    <li data-cite-key="Gao-et-al.-2025-Wan">Gao, Y. et al. (2025). "Wan: Open and Advanced Large-Scale Video Generative Models." <a href="https://arxiv.org/abs/2503.20315" target="_blank">arXiv:2503.20315</a></li>
+    <li data-cite-key="Yin-et-al.-2024-DMD">Yin, T. et al. (2024). "Improved Distribution Matching Distillation for Fast Image Synthesis." <em>NeurIPS 2024 Oral</em>. <a href="https://arxiv.org/abs/2405.14867" target="_blank">arXiv:2405.14867</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="smartavatar-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">SmartAvatar，VLM 智能体驱动的 3D 人体头像生成</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+</div>
