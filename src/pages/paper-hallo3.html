@@ -1,0 +1,448 @@
+---
+title: "数字人论文精读（五十二）：Hallo3，视频扩散 Transformer 驱动的高动态肖像动画"
+description: "精读 Hallo3（CVPR 2025）：首次把预训练 DiT 视频生成模型 CogVideoX-5B 用于肖像动画，用 Identity Reference Network、audio cross-attention 与 motion frame 外插解决非正面视角、动态前后景与长视频身份保持。"
+date: 2026-07-23T15:47:47
+created_at: 2026-07-23T15:47:47
+updated_at: 2026-07-23T15:47:47
+tags: ["数字人", "论文精读", "Diffusion", "Talking Head", "DiT"]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 510
+papers: ["https://arxiv.org/abs/2412.00733"]
+repos: ["https://github.com/fudan-generative-vision/hallo3"]
+paper_title: "Hallo3: Highly Dynamic and Realistic Portrait Image Animation with Video Diffusion Transformer"
+paper_authors: "Jiahao Cui, Hui Li, Yun Zhan, Hanlin Shang, Kaihui Cheng, Yuqi Ma, Shan Mu, Hang Zhou, Jingdong Wang, Siyu Zhu"
+paper_affiliation: "复旦大学 Generative Vision Lab；百度"
+paper_venue: "CVPR 2025"
+paper_url: "https://arxiv.org/abs/2412.00733"
+paper_code: "https://github.com/fudan-generative-vision/hallo3"
+mathjax: true
+notify: true
+hero_title: "Hallo3"
+hero_sub: "CVPR 2025 · Fudan Generative Vision Lab / Baidu"
+hero_tagline: "首次把预训练视频扩散 Transformer 搬进肖像动画，让 talking head 走出正面居中的静态背景"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">134h</span><span class="label">过滤后训练数据</span></div>
+  <div class="stat"><span class="num b">64×H100</span><span class="label g">训练硬件</span></div>
+  <div class="stat"><span class="num">20.359</span><span class="label">HDTF FID</span></div>
+  <div class="stat"><span class="num b">13.286</span><span class="label l">Wild 主体动态度</span></div>
+</div>
+
+<div class="callout"><strong>系列说明</strong>：<a href="paper-hallo.html">Hallo3</a> 是复旦 Generative Vision Lab 的 Hallo 系列第三代，也是本系列里第一篇把 <em>预训练视频扩散 Transformer（DiT）</em> 当 backbone 的肖像动画工作。它与本系列的 Hallo（精读十五） 出自同一实验室，但换掉了 U-Net + ReferenceNet 的整套技术栈；与 <a href="paper-sadtalker.html">SadTalker</a>（精读四）、<a href="paper-aniportrait.html">AniPortrait</a>（精读十四） 这些中间表示路线相比，它直接吃视频生成大模型的先验去做“wild 场景”里的会说话肖像。</div>
+
+<!-- ============================ Part 1 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">为什么肖像动画需要一个“视频大模型”底座</div>
+
+  <p>肖像动画（portrait image animation）要做的事听起来很朴素：给一张肖像照片、一段语音，再加一句文字提示，生成一段与语音同步、表情自然、身份稳定的说话视频。#Cui-et-al.-2025-Hallo3# 它同时坐落在计算机视觉和计算机图形学的交叉口，也直接对接影视制作、游戏、社媒内容、在线教育这些落地场景。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p>过去几年这个领域的技术栈换了好几轮。最早是<em>显式中间表示</em>路线：用面部关键点（landmark）定位嘴、眼、眉、鼻、下巴，或者引入 3DMM（3D Morphable Model）这样的统计形状模型来参数化人脸。#Cui-et-al.-2025-Hallo3# 这类方法可控性好，但表情和头姿的还原精度被中间表示卡死——3DMM 能表达的表情本身就有限。随后 GAN 与扩散模型把画质拉了上来：<a href="paper-liveportrait.html">LivePortrait</a> 用 GAN 做隐式关键点的拼接与重定向，<a href="paper-vasa1.html">VASA-1</a>、EMO、以及本实验室的 Hallo / Hallo2 则用扩散模型做端到端生成。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p>但这些方法有一个共同的“舒适区假设”：参考图是<strong>正面、居中</strong>的一张脸，背景是<strong>静态</strong>的，表情幅度不大。一旦离开这个舒适区——侧脸、仰拍、手里拿着麦克风、身后有奔跑的鸵鸟、面前有跳动的篝火——它们就集体失灵。#Cui-et-al.-2025-Hallo3# Hallo3 的出发点，就是想把 talking head 从“证件照说话”推到“真实世界里说话”。</p>
+
+  <div class="callout"><strong>一句话结论</strong>：Hallo3 的核心贡献不是“又用扩散模型做数字人”，而是<strong>首次把预训练的 DiT 视频生成模型（CogVideoX-5B-I2V）当 backbone</strong>，借它的视频先验和强泛化能力，去处理非正面视角、动态前后景和肖像周围的动态物体。#Cui-et-al.-2025-Hallo3#</div>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/teaser.webp" alt="Hallo3 teaser：不同视角、动态前后景的说话肖像" loading="lazy">
+    <div class="cap">图 1：Hallo3 效果概览。给定一张参考图、一段音频和一句文字提示，方法能生成正面或不同视角的动画肖像，长时间保持身份，并融入动态前景与背景。（来源：Hallo3, teaser）</div>
+  </div>
+
+  <p>为什么“换 backbone”这件事值得单独写一篇 CVPR？因为 backbone 一换，<strong>旧时代的技术手段全部作废</strong>。U-Net 时代靠 ReferenceNet 做身份保持、靠专门的 audio-visual cross-attention 做音频驱动、靠帧间 warp 或时序模块做长视频，这些方法都是围绕 U-Net 的空间特征图设计的。#Cui-et-al.-2025-Hallo3# 到了 DiT 里，视频被 3D VAE 压成一串 token，没有了空间特征图这种载体，身份、音频、外插三件事都得推倒重来——这正是本文三大创新的由来。</p>
+</div>
+
+<!-- ============================ Part 2 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：三道旧墙，与 DiT 带来的新麻烦</div>
+
+  <p>我们先把“旧方法为什么不行”讲清楚，再看 DiT 引入了什么新问题。论文把现有方法的局限归成三条。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p><strong>第一，视角受限。</strong>大量方法强调注视、唇同步、头姿，却默认参考图是正面居中的。一旦是侧脸、俯视或仰视，这些方法要么把脸“扳正”，要么直接崩坏。<strong>第二，忽略肖像周围的物体。</strong>人手里拿着手机、麦克风，或者穿戴贴身饰物时，旧方法只会动嘴，物体要么僵住要么鬼畜。<strong>第三，假设静态背景。</strong>前景的篝火、背景的人群、身后奔跑的动物——这些动态元素在旧框架里根本无从生成。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p>一个自然的想法是：既然 DiT 视频生成模型（CogVideoX、Movie Gen 等）已经在海量视频上学到了“世界怎么动”的先验，能生成真实、动态、主体泛化的视频，#Cui-et-al.-2025-Hallo3# 那为什么不直接把它当 talking head 的底座？这样动态前后景、复杂视角这些能力“免费”就有了。</p>
+
+  <p>但麻烦随之而来。DiT 视频模型有一个硬约束：<strong>单次生成只能覆盖几十帧</strong>（Hallo3 的配置是 49 帧）。#Cui-et-al.-2025-Hallo3# 而且它原生并不知道“要保持某个人的脸”，也不知道“嘴要跟着这段语音动”。于是本文要在不破坏预训练先验的前提下，往里塞三样东西：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>DiT 带来的新问题</th><th>U-Net 时代的旧解法</th><th>Hallo3 的新设计</th></tr></thead>
+      <tbody>
+        <tr><td>视频变长后身份快速退化</td><td>ReferenceNet（空间特征图注入）</td><td>Identity Reference Network（3D VAE + 42 层 transformer，token 级注入）</td></tr>
+        <tr><td>音频如何驱动嘴部</td><td>分层 audio-visual cross-attention</td><td>wav2vec 多层拼接 + audio cross-attention 层</td></tr>
+        <tr><td>单次只能生成 49 帧</td><td>时序模块 / 帧间 warp</td><td>Temporal Motion Frames（末 n 帧作条件外插）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键 Insight</strong>：Hallo3 没有从零训练一个视频模型，而是把“身份、音频、长视频”三件事拆成三个<strong>可插拔的条件注入模块</strong>，各自最小化对 CogVideoX 原始特征的扰动。三个模块的具体形式（reference network vs face attention、cross-attention vs adaLN、n 帧 motion）全部是靠消融实验选出来的，而不是拍脑袋。#Cui-et-al.-2025-Hallo3#</div>
+</div>
+
+<!-- ============================ Part 3 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">Hallo3 架构详解：一个 backbone，三根注入</div>
+
+  <p>我们先看整体 pipeline，再逐个拆三个注入模块。理解这张图是理解全文的关键。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/pipeline.webp" alt="Hallo3 整体架构：Identity Reference Network + denoising network + audio 分支" loading="lazy">
+    <div class="cap">图 2：Hallo3 整体架构。文本经 T5 得 c<sub>text</sub>；参考图经 3D VAE 得 z<sub>ref</sub> 送入 Identity Reference Network（上方 ×N）；音频经 Wav2Vec + MLP 得 c<sub>audio</sub>；噪声与 motion frames 拼成 z<sub>vision</sub> 送入 denoising network（下方 ×N，含 3D Full Attention / Cross-Attention / Audio-Attention），最后 3D VAE Decoder 解码成视频。（来源：Hallo3, Fig. 2）</div>
+  </div>
+
+  <h3 class="section-title">3.1 Backbone：CogVideoX 的 DiT 骨架</h3>
+
+  <p>Hallo3 的底座是 <strong>CogVideoX</strong>：它用一个 3D VAE 把视频压缩成 latent，latent 变量被拼接、reshape 成序列 \(\mathbf{z}_t\)；文本用 T5 编码成 \(\mathbf{c}_{\text{text}}\)。#Cui-et-al.-2025-Hallo3# 视频 latent 与文本 embedding 一起送进 expert transformer，用 <em>expert adaptive layer normalization</em> 对齐文本与视频两个特征空间，再用 3D RoPE（旋转位置编码）建立帧间的长程依赖。#Yang-et-al.-2024-CogVideoX#</p>
+
+  <p>在这个骨架上，Hallo3 除了原有的文本条件 \(\mathbf{c}_{\text{text}}\)，又引入两个新条件：语音条件 \(\mathbf{c}_{\text{audio}}\) 和身份外观条件 \(\mathbf{c}_{\text{id}}\)。#Cui-et-al.-2025-Hallo3# DiT 论文里给了四种条件注入方式：in-context、cross-attention、adaLN、adaLN-zero。#Peebles-Xie-2022-DiT# Hallo3 主要在 <strong>cross-attention</strong> 和 <strong>adaLN</strong> 之间做选择。cross-attention 把条件 embedding 当 key/value、latent 当 query，能让模型“聚焦”到条件信息上；而 adaLN 在简单条件下够用，但面对语音这种富含时序语义的序列条件就力不从心——这个判断后面被消融坐实了。#Cui-et-al.-2025-Hallo3#</p>
+
+  <h3 class="section-title">3.2 音频驱动：为什么 cross-attention 完胜 adaLN</h3>
+
+  <p><strong>Motivation.</strong> 语音信号里同时藏着音素（决定嘴形）和韵律（影响表情节奏）。要把它变成能驱动脸的条件，先得抽出一个层次丰富的表示。<strong>Mechanism.</strong> Hallo3 用 wav2vec 提特征，并且<strong>把最后 12 层的 embedding 全部拼接</strong>起来，让不同层级的语音语义都保留下来。#Schneider-et-al.-2019-wav2vec# 再用三层连续线性变换把它转成逐帧表示：</p>
+
+  <div class="def-box">
+    <h3>音频逐帧表示</h3>
+    \[ \mathbf{c}_{\text{audio}}^{(f)} = \mathcal{L}_3\!\left( \mathcal{L}_2\!\left( \mathcal{L}_1\!\left( \mathbf{c}_{\text{audio}} \right) \right) \right) \]
+    <p>其中 \(\mathbf{c}_{\text{audio}}\) 是 wav2vec 拼接后的音频 embedding，\(\mathcal{L}_1,\mathcal{L}_2,\mathcal{L}_3\) 是三个线性变换层，\(\mathbf{c}_{\text{audio}}^{(f)}\) 是最终逐帧的音频驱动特征。</p>
+  </div>
+
+  <p>拿到逐帧音频特征后，Hallo3 在 denoising network 的<strong>每个 face-attention 层之后</strong>插入一个 audio attention 层，用 cross-attention 让 latent 与音频特征交互。具体地，音频的 motion patch 作 key/value，与隐状态 \(\mathbf{z}_t\) 做 cross-attention：</p>
+
+  <div class="def-box">
+    <h3>音频 Cross-Attention 注入</h3>
+    \[ \mathbf{z}_t = \text{CrossAttention}\!\left( \mathbf{z}_t, \, \mathbf{c}_{\text{audio}}^{(f)} \right) \]
+    <p>\(\mathbf{z}_t\) 作为 query（视觉隐状态），\(\mathbf{c}_{\text{audio}}^{(f)}\) 作为 key/value（音频条件）。这种“局部聚焦”让嘴唇区域能精准跟随音素。</p>
+  </div>
+
+  <div class="callout"><strong>反直觉发现</strong>：把音频改用 adaLN 或 self-attention 注入，Sync-C 只有 1.3~1.4；换成 cross-attention 后 Sync-C 跳到 4.601（详见 Part 6 消融表）。#Cui-et-al.-2025-Hallo3# 差距如此悬殊，说明唇同步本质是一个<em>空间局部对齐</em>问题，adaLN 那种“全局调制”根本抓不住嘴部这个局部。</div>
+
+  <h3 class="section-title">3.3 身份保持：Identity Reference Network</h3>
+
+  <p><strong>Motivation.</strong> DiT 视频模型有个通病：视频越长，脸越“漂”。只靠音频 embedding 能建立音-面对应，却拦不住长时生成中身份特征的快速退化。#Cui-et-al.-2025-Hallo3# <strong>Intuition.</strong> Hallo3 的思路是：与其临时“提醒”模型这个人长什么样，不如造一个和 denoising network <em>结构完全对称</em>的参考网络，让它把参考图的外观特征逐层“喂”给去噪网络。</p>
+
+  <p><strong>Mechanism.</strong> 把参考图 \(\mathbf{I}_{\text{ref}}\) 当成单帧，送进 causal 3D VAE 得到身份 latent：</p>
+
+  <div class="def-box">
+    <h3>身份 latent 提取</h3>
+    \[ \mathbf{z}_{\text{id}} = \mathcal{E}_{3D}\!\left( \mathbf{I}_{\text{ref}} \right) \]
+    <p>\(\mathcal{E}_{3D}\) 是 causal 3D VAE 的编码器，\(\mathbf{z}_{\text{id}}\) 是参考图对应的身份 latent。</p>
+  </div>
+
+  <p>这个 latent 经过一个由 <strong>42 层 transformer</strong> 组成的 reference network。在每一层，Hallo3 从 3D full attention 的输入里抽出 vision token 作为参考特征 \(\mathbf{z}_{\text{id}}\)，注入到 denoising network 对应层，与去噪 latent 一起做 self-attention：</p>
+
+  <div class="def-box">
+    <h3>身份特征注入</h3>
+    \[ \mathbf{z}_{t,\text{enhanced}} = \text{SelfAttention}\!\left( \mathbf{z}_t, \, \mathbf{z}_{\text{id}} \right) \]
+    <p>\(\mathbf{z}_t\) 是时间步 \(t\) 的去噪 latent，\(\mathbf{z}_{\text{id}}\) 是同层参考特征。二者拼在一起做 self-attention，让去噪网络“看着参考图去噪”。</p>
+  </div>
+
+  <p>这里有一个特别关键的设计：reference network 和 denoising network <strong>共享同一个 causal 3D VAE（权重完全相同）、层数也完全一致（都是 42 层）</strong>。#Cui-et-al.-2025-Hallo3# 因为两条网络的特征在语义和尺度上天然对齐，注入时既能带入参考图的外观，又几乎不扰动去噪网络原有的特征表示。这也是为什么后面消融里“identity reference network”路线（FID 28.789）远好于“face attention”路线（FID 57.541，反而引入模糊失真）——后者用一个外部 face encoder 塞特征，特征空间对不齐，破坏了全局视觉上下文。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p>论文最终采用的是<strong>“Face attention + Identity reference network”的组合</strong>：用 face encoder（InsightFace）抽的面部 embedding 走 cross-attention 让面部运动更可控，用 3D VAE reference network 保全局外观，两者互补。#Cui-et-al.-2025-Hallo3#</p>
+
+  <h3 class="section-title">3.4 长视频外插：Temporal Motion Frames</h3>
+
+  <p>DiT 单次只能出 49 帧，要生成长视频就得“接龙”。Hallo3 的做法是把<strong>前一段视频的最后 \(n\) 帧当作 motion frames</strong>，作为下一段生成的条件。#Cui-et-al.-2025-Hallo3# 具体地：设目标视频长 \(L\)、对应 latent 有 \(l\) 帧，motion frames 记为 \(N\)。motion frames 先过 3D VAE 得到 \(n\) 帧 latent，对后续 \((l-n)\) 帧做 zero padding，再与 \(l\) 帧高斯噪声拼接，patchify 成 vision token 输入去噪网络。#Cui-et-al.-2025-Hallo3# 通过反复利用 motion frames 做锚点，长视频就能保持时序一致。</p>
+
+  <p>这套三注入 + 外插的机制，可以用下面这张流程图串起来：</p>
+
+  {{< mermaid >}}
+graph LR
+    A[参考图 I_ref] --> B[Causal 3D VAE]
+    B --> C[Identity Reference Network<br/>42 层 transformer]
+    T[文本 prompt] --> T5[T5] --> D
+    AU[驱动音频] --> W[Wav2Vec 末12层拼接] --> M[3 层 MLP] --> CA[c_audio_f]
+    MF[前段末 n 帧 motion frames] --> B2[3D VAE] --> Z
+    N[高斯噪声 x l 帧] --> Z[z_vision 拼接]
+    Z --> D[Denoising Network<br/>3D Full Attn + Cross Attn + Audio Attn]
+    C -. 逐层 z_id 注入 self-attn .-> D
+    CA -. 逐层 cross-attn .-> D
+    D --> DEC[3D VAE Decoder] --> V[输出视频 x F 帧]
+  {{< /mermaid >}}
+
+  <div class="callout"><strong>小结</strong>：一个 CogVideoX backbone（提供动态与泛化）+ Identity Reference Network（保身份）+ audio cross-attention（驱动嘴）+ motion frames（接长视频）。四块拼起来，就是 Hallo3。</div>
+</div>
+
+<!-- ============================ Part 4 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">如何训练 Hallo3：两阶段冻结策略与百小时数据 curation</div>
+
+  <h3 class="section-title">4.1 两阶段训练</h3>
+
+  <p>Hallo3 的训练分成两个阶段，核心是<strong>冻结大部分参数、只训练当前阶段需要的模块</strong>，以免破坏 CogVideoX 的预训练先验。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p><strong>阶段一 · 身份一致性（Identity Consistency Phase）。</strong>冻结 3D VAE 与 face image encoder；更新 reference network 和 denoising network 里的 3D full attention block，以及 denoising network 的 face attention block。输入是从训练视频随机采样的一张参考图、一句文本提示、一个面部 embedding——文本由 <strong>MiniCPM</strong> 生成（描述人物外观、动作、环境背景），面部 embedding 由 <strong>InsightFace</strong> 提取。输出 49 帧视频。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p><strong>阶段二 · 音频驱动（Audio-Driven Phase）。</strong>在 denoising network 的每个 transformer block 里插入 audio attention module，<strong>冻结其他所有组件，只更新 audio attention</strong>。输入换成参考图 + 音频 embedding + 文本提示，输出 49 帧音频驱动视频。#Cui-et-al.-2025-Hallo3# 这种“先学身份、再学音频”的解耦，让音频模块不至于把已经学好的身份/外观搞乱。</p>
+
+  <p>两个阶段都用 <strong>v-prediction 扩散损失</strong> 优化。#Salimans-Ho-2022# 网络用 <strong>CogVideoX-5B-I2V</strong> 的权重初始化。#Yang-et-al.-2024-CogVideoX#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>约 134h（HDTF 6h + YouTube 72h + movie 56h），源自 8h+1200h+2346h 原始素材</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>64× NVIDIA H100</td></tr>
+        <tr><td>优化器</td><td>未披露</td><td>原文只给学习率，未给优化器类型 / β</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>1×10⁻⁵（未给 schedule / warmup）</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>per-GPU = 1（全局 64）</td></tr>
+        <tr><td>训练步数</td><td>已披露</td><td>每阶段 20,000 steps，共两阶段</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出小时数</td></tr>
+        <tr><td>模型参数量</td><td>部分披露</td><td>基于 CogVideoX-5B（约 5B backbone）+ 42 层 reference network；总参数量未精确给出</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>初始化来源</td><td>已披露</td><td>CogVideoX-5B-I2V 权重</td></tr>
+        <tr><td>Stage 1 优化范围</td><td>已披露</td><td>reference&amp;denoising 的 3D full attention + denoising 的 face attention</td></tr>
+        <tr><td>Stage 2 优化范围</td><td>已披露</td><td>仅 audio attention modules（其余全冻结）</td></tr>
+        <tr><td>条件 drop</td><td>已披露</td><td>参考图 / 音频 / 文本各以概率 0.05 drop（CFG 训练）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">4.2 数据 curation：从 3554 小时噪声里洗出 134 小时</h3>
+
+  <p>训练数据来自三个来源：HDTF（8 小时原始素材）、YouTube（1,200 小时公开视频）、以及一个大规模电影数据集（2,346 小时）。#Cui-et-al.-2025-Hallo3# 但 YouTube 和电影里噪声极多，于是论文设计了一条三阶段 curation 流水线。</p>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/dataset.webp" alt="Hallo3 数据处理流水线与统计分布" loading="lazy">
+    <div class="cap">图 3：数据处理流水线（左）、最终数据的 Sync-C/Sync-D/面部旋转/脸比分布（中），以及推理数据可视化（右）。（来源：Hallo3, Fig. 4）</div>
+  </div>
+
+  <p><strong>第一步 · 单说话人提取：</strong>用 SceneDetect 做镜头切分（时长过滤到 5–20 秒）并以 H.264、25 FPS 重编码，用 UVR（Ultimate Vocal Remover）去掉背景音乐和环境音，再用 pyannote 做说话人分离，保证每段只含一个说话人。#Cui-et-al.-2025-Hallo3# <strong>第二步 · 面部与相机运动过滤：</strong>用 InsightFace 算面部位移（17 帧窗口内位移超过人脸框 50% 就丢）、算面部旋转（平均水平 yaw 超过 40° 就丢）；用 CoTracker 检测并剔除动态相机的片段；用 SyncNet 算音画同步分，低于 5.0 的丢弃。#Cui-et-al.-2025-Hallo3# <strong>第三步 · 后处理：</strong>用 ffmpeg 按面部位置裁到 3:2，用 Wav2Vec2 编码音频、InsightFace 编码随机一帧的人脸得到 embedding。#Cui-et-al.-2025-Hallo3#</p>
+
+  <p>经过这套流水线，3,554 小时原始素材最终只保留约 <strong>134 小时</strong>高质量数据（HDTF 6h + YouTube 72h + movie 56h）。#Cui-et-al.-2025-Hallo3# 值得注意的是，论文特意保留了大幅头动和动态场景的数据——这也解释了后面为什么它在静态 benchmark 上的唇同步反而“吃亏”。</p>
+</div>
+
+<!-- ============================ Part 5 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">推理链路：motion frame 接龙与三路 CFG 调参</div>
+
+  <p>推理时，模型接收四样输入：一张参考图、一段驱动音频、一句文本提示、以及 motion frames。#Cui-et-al.-2025-Hallo3# 它从随机高斯噪声出发，经过 DiT 的迭代去噪，最后由 3D VAE 解码器还原成视频。生成的视频既要与音频唇同步，又要保持身份一致。</p>
+
+  <h3 class="section-title">5.1 长视频“接龙”式外插</h3>
+
+  <p>由于单次只能出 49 帧，长视频靠 motion frames 一段接一段地生成：<strong>推理时用前一段视频的最后 2 帧作为 motion frames</strong>（\(n=2\)），作为下一段的锚点条件。#Cui-et-al.-2025-Hallo3# 这样每一段都“记得”上一段结尾的样子，拼起来时序连贯。为什么是 2 帧而不是 1 帧或 8 帧？这是消融选出来的折中——1 帧唇同步最好，但 2 帧画质（FID/FVD）最好，推理更看重画质稳定，所以取 2（见 Part 6 motion frame 消融）。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      这不是一个“实时”方法
+    </div>
+    <div class="admonition-content"><p>需要提醒的是，Hallo3 是一个 5B 参数的 DiT + 42 层 reference network 的<strong>离线生成</strong>方案，采用完整多步扩散采样、按 49 帧一段接龙。论文正文<strong>没有披露任何推理硬件、推理速度、显存占用或首帧延迟</strong>，因此不能与本系列里 VASA-1、<a href="paper-ditto.html">Ditto</a> 那类实时/流式方案直接比“能不能实时”。它换来的是画质、动态度和场景泛化，代价大概率是推理开销。</p></div>
+  </div>
+
+  <h3 class="section-title">5.2 三路 CFG：一个旋钮控制一种属性</h3>
+
+  <p>推理里最有工程价值的一点，是 Hallo3 把 classifier-free guidance（CFG）拆成音频、文本、参考图三路，各自一个 scale。论文的消融显示这三个旋钮几乎正交：#Cui-et-al.-2025-Hallo3#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>CFG 旋钮</th><th>主要控制</th><th>调大的效果</th></tr></thead>
+      <tbody>
+        <tr><td>\(\lambda_a\)（音频）</td><td>唇同步</td><td>Sync-C 从 6.154 升到 6.469</td></tr>
+        <tr><td>\(\lambda_t\)（文本）</td><td>动态程度</td><td>主体/背景动态度随之增大</td></tr>
+        <tr><td>\(\lambda_i\)（参考图）</td><td>主体外观一致性</td><td>Subject Consistency 从 0.9810 升到 0.9835</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>论文推荐的平衡配置是 <strong>\(\lambda_a=3.5,\ \lambda_t=3.5,\ \lambda_i=1.0\)</strong>。#Cui-et-al.-2025-Hallo3# 想要更活泼的背景就调大 \(\lambda_t\)，想要更严格的对口型就调大 \(\lambda_a\)，想让脸更贴参考图就调大 \(\lambda_i\)——这种可解释的解耦控制，对实际调用非常友好。</p>
+
+  <p>此外，Hallo3 还保留了 CogVideoX 的<strong>文本可控性</strong>：用相同 prompt 与 baseline CogVideoX 对比，它依然能按文字驱动主体交互（如兔子、马、鸟）以及前景/背景动画（海浪、烛光），并且在<em>引入音频条件之后这种可控性仍然维持</em>。#Cui-et-al.-2025-Hallo3# 这说明三路条件之间没有互相“打架”。</p>
+</div>
+
+<!-- ============================ Part 6 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：benchmark 平手、wild 场景碾压</div>
+
+  <h3 class="section-title">6.1 实验配置</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>HDTF、Celeb-V、自建 wild dataset（34 例）</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>FID↓ / FVD↓ / Sync-C↑ / Sync-D↓ / E-FID↓ + V-bench 动态度(RAFT) / 主体一致性(DINO)</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>SadTalker、DreamTalk、AniPortrait、Hallo(/Hallo2)</td></tr>
+        <tr><td>推理硬件</td><td>未披露</td><td>原文未给出推理 GPU / 显存 / RTF / 首帧延迟</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>480×720（同训练）</td></tr>
+        <tr><td>推理环境</td><td>未披露</td><td>原文未给框架 / CUDA 版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="admonition info">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      talking head 不能只看 FID
+    </div>
+    <div class="admonition-content"><p>评价数字人必须多维度看：画质与分布距离（FID/FVD/E-FID）、音画同步（Sync-C/Sync-D）、身份一致性（Subject Consistency，DINO）、动作/动态自然度（V-bench dynamic degree，RAFT）。Hallo3 的贡献恰恰在于额外引入了<strong>主体/背景动态度</strong>这个维度——单看 FID 会完全错过它“能生成动态场景”这个核心卖点。</p></div>
+  </div>
+
+  <h3 class="section-title">6.2 HDTF 与 Celeb-V：画质领先，唇同步略逊</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>HDTF</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>22.340</td><td>203.860</td><td><strong>7.885</strong></td><td><strong>7.545</strong></td></tr>
+        <tr><td>DreamTalk</td><td>78.147</td><td>790.660</td><td>6.376</td><td>8.364</td></tr>
+        <tr><td>AniPortrait</td><td>26.561</td><td>234.666</td><td>4.015</td><td>10.548</td></tr>
+        <tr><td>Hallo</td><td>20.545</td><td>173.497</td><td>7.750</td><td>7.659</td></tr>
+        <tr><td>Hallo3 (Ours)</td><td><strong>20.359</strong></td><td><strong>160.838</strong></td><td>7.252</td><td>8.106</td></tr>
+        <tr><td>Real video</td><td>–</td><td>–</td><td>8.700</td><td>6.597</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Celeb-V</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th><th>E-FID↓</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>50.015</td><td>471.163</td><td>6.922</td><td><strong>7.921</strong></td><td>95.194</td></tr>
+        <tr><td>DreamTalk</td><td>109.011</td><td>988.539</td><td>5.709</td><td>8.743</td><td>153.450</td></tr>
+        <tr><td>AniPortrait</td><td>46.915</td><td>477.179</td><td>2.853</td><td>11.709</td><td>88.986</td></tr>
+        <tr><td>Hallo</td><td>44.578</td><td>377.117</td><td><strong>7.191</strong></td><td>7.984</td><td>78.495</td></tr>
+        <tr><td>Hallo3 (Ours)</td><td><strong>43.271</strong></td><td><strong>355.272</strong></td><td>6.527</td><td>9.113</td><td><strong>71.210</strong></td></tr>
+        <tr><td>Real video</td><td>–</td><td>–</td><td>7.372</td><td>7.518</td><td>–</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>在两个标准 benchmark 上，Hallo3 拿下了 FID、FVD（以及 Celeb-V 的 E-FID）的最优，说明<strong>画质与分布相似度全面领先</strong>。#Cui-et-al.-2025-Hallo3# 但唇同步（Sync-C/Sync-D）略逊于 SadTalker、Hallo。论文给出的解释很诚实：为了能生成不同视角的动态肖像，它的训练数据以大幅头动、身体运动和多样动态场景为主，而非“静态小运动”，这会牺牲一点唇同步，却更贴近真实应用。#Cui-et-al.-2025-Hallo3#</p>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/hdtf_celebv.webp" alt="HDTF 与 CelebV 定性对比" loading="lazy">
+    <div class="cap">图 4：HDTF（左）与 CelebV（右）上的定性对比。（来源：Hallo3, Fig. 3）</div>
+  </div>
+
+  <h3 class="section-title">6.3 Wild 数据集：动态度断层领先</h3>
+
+  <p>真正体现 Hallo3 价值的是自建的 wild dataset——34 个代表性案例，涵盖不同脸比、头姿、静态/动态场景、复杂头饰服装。#Cui-et-al.-2025-Hallo3#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>Wild</th><th>Sync-C↑</th><th>Sync-D↓</th><th>主体动态↑</th><th>背景动态↑</th><th>主体FVD↓</th><th>背景FVD↓</th></tr></thead>
+      <tbody>
+        <tr><td>SadTalker</td><td>3.845</td><td>10.378</td><td>2.953</td><td>0.220</td><td>470.377</td><td>313.758</td></tr>
+        <tr><td>DreamTalk</td><td>4.498</td><td>11.005</td><td>6.958</td><td>1.806</td><td>835.480</td><td>744.177</td></tr>
+        <tr><td>AniPortrait</td><td>1.685</td><td>12.025</td><td>3.351</td><td>1.769</td><td>473.173</td><td>302.716</td></tr>
+        <tr><td>Hallo</td><td>4.654</td><td>10.202</td><td>5.268</td><td>1.272</td><td>394.627</td><td>291.052</td></tr>
+        <tr><td>Hallo3 (Ours)</td><td><strong>6.154</strong></td><td><strong>8.574</strong></td><td><strong>13.286</strong></td><td><strong>4.481</strong></td><td><strong>359.493</strong></td><td><strong>248.283</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>关键发现</strong>：在 wild 场景里 Hallo3 <em>全指标最优</em>。主体动态度 13.286（次好的 DreamTalk 只有 6.958，约 1.9 倍）、背景动态度 4.481（次好 1.806，约 2.5 倍），同时唇同步 Sync-C 6.154 也是最高。#Cui-et-al.-2025-Hallo3# 这说明它不是靠“少动”来换画质，而是真的能在剧烈运动、动态背景下依然保持同步与稳定。</div>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/method_comparison.webp" alt="复杂身份、动态配饰、不同姿态朝向对比" loading="lazy">
+    <div class="cap">图 5：复杂面部身份、动态配饰主体与不同姿态朝向的对比。其他方法难以驱动侧脸肖像，常出现静止或面部失真，也会忽略与前景物体（如老人身旁的狗）、动态背景（如女孩身后的鸵鸟）的交互。（来源：Hallo3, Fig. 5）</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/complex_scenes.webp" alt="动态前后景与多头姿复杂场景" loading="lazy">
+    <div class="cap">图 6：动态前景/背景与多种头姿的复杂场景，Hallo3 能生成多朝向、带复杂前后景的真实肖像。（来源：Hallo3, Fig. 6）</div>
+  </div>
+
+  <h3 class="section-title">6.4 消融实验：三个模块各自的贡献</h3>
+
+  <p><strong>音频注入方式（消融一）。</strong>这是最戏剧性的一组对比：adaLN / adaLN-zero / self-attention 的 Sync-C 都在 1.3~1.4 徘徊，唯独 cross-attention 把 Sync-C 拉到 4.601，FID/FVD 也同时最优。#Cui-et-al.-2025-Hallo3#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>音频注入方式</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th></tr></thead>
+      <tbody>
+        <tr><td>AdaLN</td><td>24.159</td><td>264.331</td><td>1.374</td><td>13.524</td></tr>
+        <tr><td>AdaLN-zero</td><td>24.029</td><td>276.403</td><td>1.398</td><td>13.553</td></tr>
+        <tr><td>Self Attn.</td><td>24.748</td><td>270.101</td><td>1.345</td><td>13.456</td></tr>
+        <tr><td>Cross Attn. (Ours)</td><td><strong>23.458</strong></td><td><strong>242.602</strong></td><td><strong>4.601</strong></td><td><strong>10.416</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>身份注入方式（消融二）。</strong>没有身份条件时模型保不住外观（FID 32.304）；只用 face attention 反而更糟（FID 57.541，引入模糊失真）；face adaptive norm 直接崩溃（FID 150.720、FVD 1587.395）；identity reference network 明显改善（FID 28.789）；而 <strong>face attention + reference network 的组合最优</strong>（FID 23.458、主体一致性 0.988）。#Cui-et-al.-2025-Hallo3#</p>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>身份注入方式</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th><th>主体一致性↑</th></tr></thead>
+      <tbody>
+        <tr><td>(a) 无身份条件</td><td>32.304</td><td>371.820</td><td>3.183</td><td>11.732</td><td>0.977</td></tr>
+        <tr><td>(b) Face attention</td><td>57.541</td><td>740.536</td><td>4.042</td><td>10.682</td><td>0.974</td></tr>
+        <tr><td>(c) Face adaptive norm</td><td>150.720</td><td>1587.395</td><td>3.822</td><td>12.324</td><td>0.904</td></tr>
+        <tr><td>(d) Identity reference net</td><td>28.789</td><td>291.863</td><td>4.553</td><td><strong>10.317</strong></td><td>0.984</td></tr>
+        <tr><td>(e) Face attn + Ref net (Ours)</td><td><strong>23.458</strong></td><td><strong>242.602</strong></td><td><strong>4.601</strong></td><td>10.416</td><td><strong>0.988</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/id_comparison.webp" alt="不同身份注入策略定性对比 a-e" loading="lazy">
+    <div class="cap">图 7：不同身份注入策略的定性对比。(a) 无身份条件；(b) Face attention；(c) Face adaptive norm；(d) Identity reference network；(e) Face attention + Identity reference network。（来源：Hallo3, Fig. 8）</div>
+  </div>
+
+  <p><strong>Motion frame 数量（消融三）。</strong>\(n=1\) 唇同步最好（Sync-C 6.889、Sync-D 8.695），\(n=2\) 画质最好（FID 23.458、FVD 242.602），\(n=8\) 明显退化（FID 27.303）。#Cui-et-al.-2025-Hallo3# 推理最终取 \(n=2\) 平衡画质与稳定。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Motion frame 数</th><th>FID↓</th><th>FVD↓</th><th>Sync-C↑</th><th>Sync-D↓</th></tr></thead>
+      <tbody>
+        <tr><td>n = 1</td><td>24.040</td><td>242.708</td><td><strong>6.889</strong></td><td><strong>8.695</strong></td></tr>
+        <tr><td>n = 2</td><td><strong>23.458</strong></td><td><strong>242.602</strong></td><td>4.601</td><td>10.416</td></tr>
+        <tr><td>n = 4</td><td>24.459</td><td>269.904</td><td>5.109</td><td>10.489</td></tr>
+        <tr><td>n = 8</td><td>27.303</td><td>265.396</td><td>5.114</td><td>10.464</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/paper-hallo3/audio_comparison.webp" alt="不同音频注入策略定性对比" loading="lazy">
+    <div class="cap">图 8：不同音频注入策略的定性对比，cross-attention 在唇同步上明显更优。（来源：Hallo3, Fig. 7）</div>
+  </div>
+</div>
+
+<!-- ============================ Part 7 ============================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：把视频大模型的红利导给数字人</div>
+
+  <p>放到整个 talking head 地图上看，Hallo3 是一次<strong>范式迁移</strong>：从“为 talking head 专门设计的 U-Net + 中间表示”，转向“复用通用视频生成大模型 + 轻量条件注入”。#Cui-et-al.-2025-Hallo3# 它证明了一件事——只要把身份、音频、长视频三件事以<em>最小扰动</em>的方式注入 DiT，就能把视频大模型的动态、泛化红利直接导给数字人，从而解决旧方法多年攻不下的非正面视角与动态场景。</p>
+
+  <p>和本系列其他工作对照：Hallo 用 U-Net 分层音视觉对齐，长于静态正面唇同步；VASA-1、Ditto 主打实时/流式，胜在延迟；而 Hallo3 用画质、动态度、场景泛化去换掉了实时性——它更像是“影视级离线生成”路线的代表。选型时，要实时互动选前者，要高动态、复杂场景的高质量成片选 Hallo3。</p>
+
+  <div class="admonition warning">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      局限与开放问题
+    </div>
+    <div class="admonition-content">
+      <p>论文自己承认：动态环境下复杂表情的真实性仍需打磨，尤其在<strong>光照变化</strong>下。#Cui-et-al.-2025-Hallo3# 未来方向包括更强的多视角鲁棒性、更全面的数据集，以及引入实时反馈机制。从复现角度看还有两个坑：一是<strong>推理成本完全没披露</strong>（5B DiT + 42 层 reference network + 多步采样，实时性存疑）；二是<strong>唇同步在静态 benchmark 上并非最优</strong>，若你的场景就是正面静态播报，Hallo/SadTalker 可能更划算。此外论文也专门讨论了 deepfake 滥用风险，强调需要伦理准则与知情同意。#Cui-et-al.-2025-Hallo3#</p>
+    </div>
+  </div>
+
+  <p><strong>可操作的启发：</strong>（1）当你手上有一个强预训练视频扩散模型时，做下游可控生成的正确姿势是“结构对称的 reference network + token 级注入”，而不是外挂一个 encoder 硬塞特征——特征空间对齐比特征本身更重要；（2）序列型条件（语音）优先用 cross-attention 而非 adaLN，因为它需要的是空间局部对齐；（3）长视频外插用少量 motion frame 做锚点，帧数是画质与同步之间的可调折中；（4）把 CFG 拆成多路，能得到可解释、近乎正交的属性旋钮，非常适合产品化调参。</p>
+
+  <p>总的来说，Hallo3 给数字人领域打了个样：<em>不必事事从头训</em>。视频生成大模型的能力正在快速进化，谁能用最轻的方式把这些能力“接”到自己的任务上，谁就能站在浪潮之巅。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Cui-et-al.-2025-Hallo3">Cui, J., Li, H., Zhan, Y., Shang, H., Cheng, K., Ma, Y., Mu, S., Zhou, H., Wang, J., &amp; Zhu, S. (2025). <strong>Hallo3: Highly Dynamic and Realistic Portrait Image Animation with Video Diffusion Transformer</strong>. <em>CVPR 2025</em>. <a href="https://arxiv.org/abs/2412.00733" target="_blank">arXiv:2412.00733</a> · <a href="https://github.com/fudan-generative-vision/hallo3" target="_blank">GitHub</a></li>
+    <li data-cite-key="Yang-et-al.-2024-CogVideoX">Yang, Z. et al. (2024). <strong>CogVideoX</strong>: Text-to-Video Diffusion Models with An Expert Transformer. <a href="https://arxiv.org/abs/2408.06072" target="_blank">arXiv:2408.06072</a></li>
+    <li data-cite-key="Peebles-Xie-2022-DiT">Peebles, W., &amp; Xie, S. (2022). <strong>Scalable Diffusion Models with Transformers (DiT)</strong>. <em>ICCV 2023</em>. <a href="https://arxiv.org/abs/2212.09748" target="_blank">arXiv:2212.09748</a></li>
+    <li data-cite-key="Salimans-Ho-2022">Salimans, T., &amp; Ho, J. (2022). <strong>Progressive Distillation for Fast Sampling of Diffusion Models</strong>（v-prediction）. <em>ICLR 2022</em>. <a href="https://arxiv.org/abs/2202.00512" target="_blank">arXiv:2202.00512</a></li>
+    <li data-cite-key="Schneider-et-al.-2019-wav2vec">Schneider, S. et al. (2019). <strong>wav2vec</strong>: Unsupervised Pre-training for Speech Recognition. <a href="https://arxiv.org/abs/1904.05862" target="_blank">arXiv:1904.05862</a></li>
+    <li data-cite-key="Xu-et-al.-2024-Hallo">Xu, M. et al. (2024). <strong>Hallo</strong>: Hierarchical Audio-Driven Visual Synthesis for Portrait Image Animation. <a href="https://arxiv.org/abs/2406.08801" target="_blank">arXiv:2406.08801</a> · <a href="paper-hallo.html" class="paper-link">精读 →</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="avatarforcing-2026.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">AvatarForcing，有界前瞻 + 双锚 KV Cache 流式生成</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究中枢</span></a>
+  <a class="nav-card nav-next" href="paper-hunyuan-avatar.html"><span class="nav-label">下一篇</span><span class="nav-title">HunyuanVideo-Avatar，多角色高保真音频驱动人物动画</span><span class="nav-arrow">→</span></a>
+</div>

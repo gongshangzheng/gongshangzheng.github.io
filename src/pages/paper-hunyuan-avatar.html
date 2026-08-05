@@ -1,0 +1,432 @@
+---
+title: "数字人论文精读（五十三）：HunyuanVideo-Avatar，多角色高保真音频驱动人物动画"
+description: "腾讯混元基于 MM-DiT 的音频驱动人物动画模型：用 Character Image Injection 化解动态-一致性两难，用 Audio Emotion Module 对齐情感，用 Face-Aware Audio Adapter 实现多角色独立音频驱动。"
+date: 2026-07-23T16:00:00
+created_at: 2026-07-23T16:00:00
+updated_at: 2026-07-23T16:00:00
+tags: [数字人, MM-DiT, audio-driven, HunyuanVideo, 多角色]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 520
+papers: ["https://arxiv.org/abs/2505.20156"]
+repos: ["https://github.com/Tencent-Hunyuan/HunyuanVideo-Avatar"]
+mathjax: true
+paper_title: "HunyuanVideo-Avatar: High-Fidelity Audio-Driven Human Animation for Multiple Characters"
+paper_authors: "Tencent Hunyuan (Yi Chen, Sen Liang, Zixiang Zhou, Ziyao Huang, Yifeng Ma, Junshu Tang, et al.)"
+paper_affiliation: "腾讯混元 Tencent Hunyuan"
+paper_venue: "arXiv 2505.20156, 2025"
+paper_url: "https://arxiv.org/abs/2505.20156"
+paper_code: "https://github.com/Tencent-Hunyuan/HunyuanVideo-Avatar"
+hero_title: "HunyuanVideo-Avatar"
+hero_sub: "arXiv 2025 · 腾讯混元 Tencent Hunyuan"
+hero_tagline: "一张图 + 一段音频，驱动多角色、高一致、可控情感的人物动画"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：音频驱动人物动画为什么这么难</div>
+
+音频驱动人物动画（Audio-Driven Human Animation）是数字人领域最具落地价值的方向之一：给定一张角色参考图和一段驱动音频，模型要生成一段口型同步、表情自然、身体协调的说话或唱歌视频 #Tencent-Hunyuan-2025#。近年扩散 Transformer（DiT）的爆发让这个方向从"只会动嘴"迅速走向"整帧可生成"，但真正拿去做影视级内容时，问题也随之暴露。
+
+按驱动范围，现有方法可粗分为两条路线 #Tencent-Hunyuan-2025#。第一条是**肖像动画**（portrait animation），以 <a href="paper-sadtalker.html">SadTalker</a>、V-Express、<a href="paper-echomimic-2024.html">EchoMimic</a>、<a href="paper-hallo.html">Hallo</a>、Hallo-3 为代表，只关注面部运动，背景保持静止或极简。这条路线的通病是角色与环境割裂，输出很难满足沉浸式内容的要求。第二条是**全身动画**（full-body animation），以 DiffTED、CyberHost、OmniHuman-1 为代表，把运动扩展到全身；但它们仍普遍存在动作不自然、音频情感与面部表情不对齐、以及**无法用音频驱动多角色场景**这三个顽疾。
+
+论文把这些痛点归纳为三个具体缺口 #Tencent-Hunyuan-2025#：Hallo-3 作为 DiT 肖像方法只生成面部、忽略身体运动；CyberHost 用 region attention + ReferenceNet 控制脸和手，却常在人体和背景上产生失真运动；OmniHuman-1 用多模态运动条件混合训练缓解了数据稀缺，但依然搞不定情感-音频对齐和多角色。
+
+<div class="callout">
+  <strong>本文一句话贡献：</strong>HunyuanVideo-Avatar 是一个基于 MM-DiT 的多模态扩散模型，用三个模块——Character Image Injection、Audio Emotion Module (AEM)、Face-Aware Audio Adapter (FAA)——同时解决<strong>动态-一致性两难、情感对齐、多角色音频驱动</strong>三个问题，在基准集和自建 wild 数据集上超越 SOTA。
+</div>
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/teaser.webp" alt="HunyuanVideo-Avatar teaser" loading="lazy">
+  <div class="cap">图 1：HunyuanVideo-Avatar 能力总览。仅需一张角色图 + 一段音频，即可生成多角色、高一致、动态且情感可控的人物动画（来源：HunyuanVideo-Avatar, Teaser）。</div>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：一致性与动态的两难</div>
+
+要理解这篇论文的三个创新点，得先看清它想解的那个最核心的结构性矛盾——**角色一致性（consistency）与运动动态性（dynamism）之间的权衡**。
+
+<h3 class="section-title">Padding frames 的困境</h3>
+
+主流的图生视频（I2V）音频驱动方法，推理时往往依赖参考图来强制约束"生成视频要和参考图一致"。一种常见做法是使用 **padding frames**：把参考图复制成若干帧塞进视频序列。这样能很好地保住角色、背景、前景的完整性和一致性，但代价是**严重限制了运动动态**——模型倾向于照抄参考图里的表情和姿态，而不是生成随音频起伏的动态动作 #Tencent-Hunyuan-2025#。
+
+更糟的是，padding frames 还带来了**训练与推理的失配**（train/inference mismatch）：训练时是有真值视频的，推理时只有一张静态图去 padding，两者分布不同。如果反过来，推理时去掉 padding frames，运动动态确实变好了，但角色一致性和完整性又会崩坏。
+
+<div class="def-box">
+  <h3>HunyuanVideo-Avatar 的核心 Insight</h3>
+  与其把参考图当作"额外的视频帧"直接塞进 latent 空间（addition-based conditioning，导致训练/推理失配），不如把角色图特征转换成一种更利于模型学习的表示，<strong>沿通道维（channel dimension）注入</strong>。这样既避开了直接使用 latent 空间带来的动态-一致性权衡，又让训练和推理保持一致。这就是 Character Image Injection Module 的出发点。
+</div>
+
+沿着这个 Insight，作者进一步提出：情感对齐用一张 **emotion reference image** 来引导（AEM），多角色驱动用 **latent 级 face mask** 来隔离音频作用区域（FAA）。三个模块共同挂在同一个 MM-DiT backbone 上，构成完整的 HunyuanVideo-Avatar。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">HunyuanVideo-Avatar 架构详解</div>
+
+给定一张参考图、一段驱动音频和角色的面部 mask，模型即可生成单角色或多角色的说话视频。整体框架建立在 **HunyuanVideo** 之上——一个基于 MM-DiT 架构的 13B 视频生成模型，提供 3D VAE、Double Block / Single Block 堆叠、3D-RoPE 位置编码 #Kong-et-al.-2024#。
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/framework.webp" alt="HunyuanVideo-Avatar framework" loading="lazy">
+  <div class="cap">图 2：HunyuanVideo-Avatar 总框架。左侧是 Character Image Injection（Ref Image 经 3D Encoder → Tokenizers → Projection 后与 Video Token 相加）；中间是 HunyuanVideo 的 Double/Single Block 堆叠；下方蓝色区是 Face-Aware Audio Adapter（Whisper 音频经 Spatial CrossAttention × Face Mask）；右侧是 Audio Emotion Module（Emotion Ref Image 经 3D Encoder + Projection 注入 Spatial CrossAttention）。红色火焰=可训练，蓝色雪花=冻结（来源：HunyuanVideo-Avatar, Fig.2）。</div>
+</div>
+
+<h3 class="section-title">3.1 预备：MM-DiT backbone 与输入构造</h3>
+
+先建立符号。参考图 \(R\) 经 3D VAE 映射到 latent 空间，得到参考图 latent \(v_R \in \mathbb{R}^{w \times h \times c}\)（\(w,h\) 为 latent 宽高，\(c\) 为特征维度）；噪声视频经同一 3D VAE 得到视频 latent \(v_{\text{noise}} \in \mathbb{R}^{f \times w \times h \times c}\)（\(f\) 为帧数）#Tencent-Hunyuan-2025#。
+
+接着，\(v_R\) 与 \(v_{\text{noise}}\) 分别过 Tokenizer2 \(K_2\) 得到 \(t_R \in \mathbb{R}^{wh \times c}\) 与 \(t_{\text{noise}} \in \mathbb{R}^{fwh \times c}\)。参考图再复制 \(T\) 次（\(T\) 为原视频长度）得到 \(i_r\)，经 3D VAE + Tokenizer1 \(K_1\)（权重从 Tokenizer2 复制初始化）得到 \(t_r \in \mathbb{R}^{fwh \times c}\)。最终把 \(t_r\) 与 \(t_{\text{noise}}\) 逐元素相加，再与 \(t_R\) 沿 token 维拼接：
+
+$$ p = \text{TokenCat}\left( \left\{ K_1(t_{r}) + K_2(z_{0}) \right\},\ t_R \right) $$
+
+由于 HunyuanVideo 有很强的时序建模先验，身份信息能沿时间轴高效传播。作者给拼接后的 image latent 分配 **3D-RoPE** 位置编码 #Su-et-al.-2024#。原始 HunyuanVideo 中，位于 \((l,i,j)\)（帧索引、宽、高）的像素编码为 \(RoPE(l,i,j)\)。为了让身份信息沿时序有效广播，作者把 image latent 放在第 \(-1\) 帧（即第 0 帧之前）；同时借鉴 OmniControl 的思路，对 image latent 施加**空间平移**，避免模型简单地把目标图"复制粘贴"进生成帧：
+
+$$ RoPE_{z_I}(l,i,j) = RoPE(-1,\ i+w,\ j+h) $$
+
+<h3 class="section-title">3.2 Character Image Injection Module（核心创新一）</h3>
+
+这是解"动态-一致性两难"的关键模块。作者系统对比了三种角色图注入机制（对应图 3）：
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/cim.webp" alt="Three Character Image Injection mechanisms" loading="lazy">
+  <div class="cap">图 3：三种 Character Image Injection 机制。(a) Token：参考图与视频用同一 tokenizer，latent 在 token 维拼接；(b) Token+Channel：角色图复制 T 次后与视频在通道维拼接喂 tokenizer1，参考图喂 tokenizer2，两者 token 维拼接；(c) Token+Add（本文选定）：参考图复制 T 次喂 tokenizer2，经 FC 组成的 projection 模块直接加到 video latent（来源：HunyuanVideo-Avatar, Fig.3）。</div>
+</div>
+
+三种机制的取舍很直观：机制 (a) 纯 token 拼接一致性尚可但动态受限；机制 (b) 通道拼接改善一致性却牺牲动态；**机制 (c) 加法注入**——把参考图特征经一个由全连接层组成的 projection module 直接加到 video latent 上——在提升运动动态的同时，保住了角色、背景、前景的一致性和完整性，显著提升视频质量 #Tencent-Hunyuan-2025#。因为 backbone 的 tokenizer1 是专门为视频训练的，作者额外加了一个 tokenizer2 来适配图像分支，其权重从 backbone 的 tokenizer 复制而来，实测能**加速模型收敛**。
+
+<div class="callout">
+  注意这里的用词转换：论文把"传统的 addition-based 角色条件方案"替换为"channel 维的特征注入"，本质是把参考图从"直接叠加的 latent"变成"经过 FC projection 转换后再加"的可学习表示，从而消除训练/推理条件失配。
+</div>
+
+<h3 class="section-title">3.3 Face-Aware Audio Adapter（核心创新二 · 多角色关键）</h3>
+
+FAA 是实现**多角色音频驱动**的核心。音频侧用 **Whisper** 提取特征 #Radford-et-al.-2023#，面部 mask 侧用 **InsightFace** 检测人脸 bounding box #Ren-et-al.-2023#。
+
+先做时间对齐。给定 \(n'\) 帧的音视频序列，每帧提取音频特征得到形状 \(n' \times 10 \times d\) 的张量（10 是每音频帧的 token 数）。视频 latent 经 3D VAE 时间压缩为 \(n\) 帧，其中 \(n = \lfloor n'/4 \rfloor + 1\)（+1 对应初始未压缩帧，4 是时间压缩比）；再在开头拼接一张 identity image，得到 \(n+1\) 帧的视频 latent。为对齐，先把音频序列在初始帧前 padding，凑成 \((n+1)\times 4\) 帧，然后每 4 个连续音频帧聚合成 1 个：
+
+$$ g_A = \text{Rearrange}(g_{A,0}): [b,(n+1)\times 4,10,d] \rightarrow [b,(n+1),40,d] $$
+
+face mask 同样处理：初始帧 mask 置 1，也含 \((n+1)\times 4\) 帧，得到与视频 latent 时空对齐的 \(g_M\)。
+
+接着通过 **spatial cross-attention** 把音频信息注入视频 latent \(y_t\)。为避免跨时间步互相干扰，作者对每个时间步独立做音频注入：解耦时间维与空间维，仅沿空间轴做注意力：
+
+$$
+\begin{aligned}
+y'_{t,A} &= \text{Rearrange}(y_t): [b,(n+1)wh,d]\rightarrow [b,n+1,wh,d],\\
+y''_{t,A} &= y'_{t,A} + \alpha_A \times \text{CrossAttn}(g_A,y'_t) \times g_M,\\
+y_{t,A} &= \text{Rearrange}(y''_{t,A}): [b,n+1,wh,d]\rightarrow [b,(n+1)wh,d],
+\end{aligned}
+$$
+
+其中 \(\alpha_A\) 是控制音频影响强度的权重。**关键在于那个 \(\times g_M\)**：音频只作用在 face mask 覆盖的区域。于是，只要给不同角色配不同的 face mask，就能用**不同的音频独立驱动不同角色**，从而实现影视级的多角色对话生成 #Tencent-Hunyuan-2025#。
+
+<h3 class="section-title">3.4 Audio Emotion Module（核心创新三 · 情感对齐）</h3>
+
+AEM 负责让角色的面部表情与音频传达的情感对齐。做法是：把一张 **emotion reference image** \(I_{\text{ref}}\) 经 3D VAE 压缩为特征 \(E_{\text{ref}} = \text{Encoder}(I_{\text{ref}})\)，再经一个 FC 层和 spatial cross-attention 注入 HunyuanVideo 的 **Double Block**——参考图特征作 Key/Value，视频 latent 作 Query：
+
+$$
+\begin{aligned}
+y'_{t,A} &= \text{Rearrange}(y_{t,A}): [b,(n+1)wh,d]\rightarrow[b,n+1,wh,d],\\
+y''_{t,A,E} &= y'_{t,A} + \gamma_E \times \text{CrossAttn}(\text{FC}(E_{\text{ref}}),y'_{t,A}),\\
+y_{t,A,E} &= \text{Rearrange}(y''_{t,A,E}): [b,n+1,wh,d]\rightarrow[b,(n+1)wh,d],
+\end{aligned}
+$$
+
+其中 \(\gamma_E\) 是控制情感参考特征影响的**可学习缩放因子**。作者发现一个反直觉的现象：把 AEM 插入 **Single Block 完全学不到情感**，只有插入 **Double Block** 才能有效驱动并表达角色情感——说明 Double Block 架构在复杂的"情感→表情"映射中扮演关键角色 #Tencent-Hunyuan-2025#。
+
+<div class="admonition note">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+    三个模块的分工
+  </div>
+  <div class="admonition-content"><p><strong>CIM</strong> 管"像不像 + 动不动"（通道加法注入化解一致性/动态两难）；<strong>FAA</strong> 管"驱动谁"（face mask 隔离音频作用区，支持多角色）；<strong>AEM</strong> 管"什么情绪"（emotion reference image 注入 Double Block）。三者都是在冻结的 HunyuanVideo backbone 上外挂可训练分支。</p></div>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：两阶段训练与 Flow Matching</div>
+
+HunyuanVideo-Avatar 以 **HunyuanVideo-I2V** 为 base model #Kong-et-al.-2024#，训练分两个阶段 #Tencent-Hunyuan-2025#：
+
+<ul>
+  <li><strong>Stage 1</strong>：仅在 audio-only 数据上训练，建立基础的音视频对齐（audio-visual alignment）。</li>
+  <li><strong>Stage 2</strong>：混合训练，audio 与 image 数据按 <strong>1:1.5</strong> 的比例混合，增强运动稳定性（motion stability）。</li>
+</ul>
+
+<h3 class="section-title">4.1 生成损失：Flow Matching</h3>
+
+训练采用 Flow Matching 框架优化视频生成 #Lipman-et-al.-2023#。先提取视频 latent \(z_1\) 及其参考图 \(R\)；从 logit-normal 分布采样时间步 \(t \in [0,1]\) #Esser-et-al.-2024#，初始化噪声 \(z_0 \sim \mathcal{N}(0,I)\)，通过线性插值构造 \(t\) 时刻的训练样本 \(z_t\)。模型学习预测 velocity \(u_t = \frac{dz_t}{dt}\)，用预测 velocity \(\lambda_t\) 与真值 velocity 的均方误差作损失：
+
+$$ \mathcal{L}_{\text{generation}} = \mathbb{E}_{t, z_{0}, z_{1}} \left\| \lambda_{t} - u_{t} \right\|^{2} $$
+
+<h3 class="section-title">4.2 数据构造</h3>
+
+数据清洗上，用 **LatentSync** 过滤音视频不同步的数据 #Li-et-al.-2024#，用 **Koala-36M** 等工具过滤低亮度/低美学数据 #Wang-et-al.-2024-Koala#。经过标准化筛选，最终得到 **50 万条**带角色音频的训练样本，总时长约 **1,250 小时** #Tencent-Hunyuan-2025#。
+
+<h3 class="section-title">4.3 训练配置披露表</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>训练数据</td><td>已披露</td><td>50 万条带角色音频样本，约 1,250 小时；LatentSync + Koala-36M 清洗</td></tr>
+      <tr><td>训练硬件</td><td>已披露</td><td>160 张 GPU，每张 96GB 显存</td></tr>
+      <tr><td>优化器</td><td>未披露</td><td>原文未给出优化器类型/超参</td></tr>
+      <tr><td>学习率</td><td>已披露</td><td>1e-5（未说明 schedule / warmup）</td></tr>
+      <tr><td>Batch size</td><td>已披露</td><td>global batch size = 40</td></tr>
+      <tr><td>训练步数 / 轮数</td><td>未披露</td><td>原文未给出 iterations / epochs</td></tr>
+      <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>模型参数量</td><td>已披露</td><td>backbone 为 HunyuanVideo-13B（MM-DiT）；外挂分支参数量未单列</td></tr>
+      <tr><td>精度格式</td><td>未披露</td><td>原文未明确训练精度</td></tr>
+      <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>训练分辨率</td><td>已披露</td><td>704×704 到 704×1216</td></tr>
+      <tr><td>冻结模块</td><td>已披露</td><td>LLaVA 与 3D VAE 固定，其余可训练参数全部更新</td></tr>
+      <tr><td>两阶段策略</td><td>已披露</td><td>Stage 1 audio-only；Stage 2 audio:image = 1:1.5 混合</td></tr>
+      <tr><td>tokenizer2 初始化</td><td>已披露</td><td>权重从 backbone tokenizer 复制，加速收敛</td></tr>
+    </tbody>
+  </table>
+</div>
+
+从这张表能一眼看出论文的披露风格：硬件、数据、分辨率、batch/lr 这些"系统规格"给得很足（160×96GB 是相当豪华的算力），但优化器、训练步数、训练时长、精度格式这类"复现关键细节"基本没披露，想完整复现仍需参考开源代码。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：长视频生成与推理成本</div>
+
+<h3 class="section-title">5.1 129 帧的天花板</h3>
+
+推理端最大的工程约束来自 backbone：**HunyuanVideo-13B 单次只能生成 129 帧**，通常短于音频长度 #Kong-et-al.-2024#。要生成与整段音频等长的视频，必须把多段拼起来，而拼接处极易出现抖动（jitter）和突变（abrupt transition）。
+
+<h3 class="section-title">5.2 Time-aware Position Shift Fusion</h3>
+
+作者借用了 Sonic 的 **Time-aware Position Shift Fusion** 长视频方法，并成功把它适配到基于 MM-DiT 的 HunyuanVideo-13B 上 #Ji-et-al.-2024#。这个融合策略简单却有效——**不增加任何额外的推理或训练成本**，就能显著缓解抖动和突变。
+
+其核心是一个"移位去噪"循环（论文 Algorithm 1）：在每个去噪时间步，模型取一段音频作为输入预测对应 latent，用一个起始偏移（starting offset）与上一时间步的段平滑衔接，每次前移 \(\alpha\) 步。作者把偏移 \(\alpha\) 设为 **3–7**，实验证明这是有效选择 #Tencent-Hunyuan-2025#。
+
+{{< mermaid >}}
+flowchart TD
+  A["整段音频 v_a[0,l]<br/>初始噪声 latent z_T"] --> B["去噪循环 t = T,...,1"]
+  B --> C["设起始点 s = 累计偏移 α_β<br/>end e = s + f"]
+  C --> D["序列循环 while n &lt; l"]
+  D --> E["z_{t-1}[s,e] = HVA(z_t[s,e], v_a[s,e], t)<br/>非重叠推进 s,e += f"]
+  E --> F{"s>l 或 e>l ?"}
+  F -->|是| G["循环 padding: s = s%l, e = e%l"]
+  F -->|否| D
+  G --> D
+  D --> H["累计偏移 α_β += α (α=3~7)"]
+  H --> B
+  B --> I["输出去噪 latent z_0[0,l]<br/>3D Decoder → 长视频"]
+{{< /mermaid >}}
+
+<h3 class="section-title">5.3 推理成本（关键披露）</h3>
+
+<div class="admonition warning">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    远达不到实时
+  </div>
+  <div class="admonition-content"><p>论文明确给出：生成一段 <strong>10 秒、720×1216 分辨率、50 步推理</strong>的视频，<strong>约需 60 分钟（≈1 小时）</strong> #Tencent-Hunyuan-2025#。这与直播、实时交互等场景的需求相去甚远。作者也坦承：无论用 HunyuanVideo-13B 还是 FantasyTalking 用的 Wan2.1，这类大模型的推理都非常耗时，提升生成速度以达到实时是他们的关键未来目标。</p></div>
+</div>
+
+换句话说，HunyuanVideo-Avatar 是一个**质量优先、离线渲染**的系统：它把算力堆在保真度和多角色能力上，而不是延迟上。对比本系列里做流式/蒸馏的工作（如 <a href="paper-liveact.html">SoulX-LiveAct</a>、<a href="live-avatar-paper.html">Live Avatar</a>），这是一条完全不同的产品定位。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验配置与验证</div>
+
+<h3 class="section-title">6.1 实验配置表</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>评测数据集</td><td>已披露</td><td>肖像：CelebV-HQ、HDTF（公开）；全身：自建测试集 250 视频 / 200 身份</td></tr>
+      <tr><td>评测指标</td><td>已披露</td><td>IQA↑ / ASE↑（Q-align VLM）、Sync-C↑、FID↓、FVD↓、VBench smoothness、主观 LS/IP/FBN/FCN</td></tr>
+      <tr><td>Baseline 方法</td><td>已披露</td><td>肖像：Sonic、EchoMimic、EchoMimic-V2、Hallo-3；全身：<a href="paper-hallo3.html">Hallo3</a>、FantasyTalking、OmniHuman-1</td></tr>
+      <tr><td>推理硬件</td><td>未披露</td><td>原文未给出评测所用 GPU 型号/数量（仅在局限中给出 10s@720×1216/50 步 ≈ 60min 的耗时）</td></tr>
+      <tr><td>推理分辨率</td><td>已披露</td><td>局限章节给出 720×1216；训练分辨率 704×704~704×1216</td></tr>
+      <tr><td>推理环境</td><td>未披露</td><td>原文未给出框架/CUDA 版本</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 class="section-title">6.2 主实验：与 SOTA 的定量对比</h3>
+
+肖像动画在 CelebV-HQ / HDTF 上的对比（左/右两个数据集）：
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方法</th><th>IQA↑</th><th>ASE↑</th><th>Sync-C↑</th><th>FID↓</th><th>FVD↓</th></tr></thead>
+    <tbody>
+      <tr><td>Sonic</td><td>3.60 / 3.86</td><td>2.43 / 2.41</td><td><strong>5.58 / 5.81</strong></td><td>49.28 / 40.50</td><td><strong>415.04</strong> / 413.94</td></tr>
+      <tr><td>EchoMimic</td><td>3.39 / 3.64</td><td>2.25 / 2.23</td><td>3.41 / 4.07</td><td>46.74 / 45.38</td><td>450.98 / 410.05</td></tr>
+      <tr><td>EchoMimic-V2</td><td>2.75 / 3.36</td><td>1.97 / 2.15</td><td>4.11 / 3.39</td><td>46.37 / 39.73</td><td>862.24 / 487.75</td></tr>
+      <tr><td>Hallo-3</td><td>3.57 / 3.77</td><td>2.38 / 2.35</td><td>4.57 / 4.87</td><td>45.69 / 39.07</td><td>444.92 / 380.31</td></tr>
+      <tr><td><strong>Ours</strong></td><td><strong>3.70 / 3.99</strong></td><td><strong>2.52 / 2.54</strong></td><td>4.92 / 5.30</td><td><strong>43.42 / 38.01</strong></td><td>445.02 / <strong>358.71</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+这张表要读出细节：HunyuanVideo-Avatar 在 **IQA、ASE、FID** 上全面领先，HDTF 的 **FVD（358.71）也最优**；但 **Sync-C 不敌 Sonic**（4.92/5.30 vs 5.58/5.81）。这说明本文的优势主要在画质、美学和分布距离，而在纯口型同步这个单一维度上 Sonic 仍略胜。
+
+全身动画在自建测试集上的对比：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>方法</th><th>IQA↑</th><th>ASE↑</th><th>Sync-C↑</th><th>FID↓</th><th>FVD↓</th></tr></thead>
+    <tbody>
+      <tr><td>Hallo3</td><td>4.34</td><td>2.77</td><td>5.13</td><td>50.12</td><td><strong>629.94</strong></td></tr>
+      <tr><td>FantasyTalking</td><td>4.63</td><td>3.02</td><td>3.68</td><td>58.24</td><td>677.67</td></tr>
+      <tr><td>OmniHuman-1</td><td>4.65</td><td>2.99</td><td>5.34</td><td>49.68</td><td>719.40</td></tr>
+      <tr><td><strong>Ours</strong></td><td><strong>4.66</strong></td><td><strong>3.03</strong></td><td><strong>5.56</strong></td><td><strong>49.38</strong></td><td>650.54</td></tr>
+    </tbody>
+  </table>
+</div>
+
+全身场景下本文更全面：IQA、ASE、Sync-C、FID **四项最优**，只有 FVD 略逊于 Hallo3（650.54 vs 629.94）。注意这里 Sync-C 反超所有 baseline（5.56），与肖像场景形成对比——说明在更复杂的全身/wild 数据上，本文的音频对齐反而更稳。
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/compare_body.webp" alt="Qualitative comparison on wild body dataset" loading="lazy">
+  <div class="cap">图 4：wild 全身数据集上的定性对比。相比 Hallo3 / FantasyTalking / OmniHuman-1，本文在前景、背景、角色运动上有更自然的变化，同时口型更准、角色一致性更好（来源：HunyuanVideo-Avatar, Fig.compare）。</div>
+</div>
+
+<h3 class="section-title">6.3 User Study（30 人主观评测）</h3>
+
+在 wild 全身数据集上，30 名参与者从口型同步（LS）、身份保持（IP）、全身自然度（FBN）、面部自然度（FCN）四个维度按 1–5 分打分：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>方法</th><th>FCN↑</th><th>FBN↑</th><th>IP↑</th><th>LS↑</th></tr></thead>
+    <tbody>
+      <tr><td>Hallo3</td><td>2.91</td><td>2.59</td><td>4.28</td><td>3.61</td></tr>
+      <tr><td>FantasyTalking</td><td>3.43</td><td>3.49</td><td>4.65</td><td>4.21</td></tr>
+      <tr><td>OmniHuman-1</td><td><strong>4.11</strong></td><td><strong>4.18</strong></td><td>4.79</td><td>4.61</td></tr>
+      <tr><td><strong>Ours</strong></td><td>3.91</td><td>3.88</td><td><strong>4.84</strong></td><td><strong>4.65</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+HunyuanVideo-Avatar 在 **IP（身份保持）和 LS（口型同步）拿下第一**——正是 Character Image Injection 和 Face-Aware Audio Adapter 带来的增益。但在 **FCN/FBN 上不敌 OmniHuman-1**。作者给出了诚实解释：OmniHuman-1 未开源，其在线服务包含超分操作，在主观评测中有天然的视觉优势；同时本文也继承了 HunyuanVideo 的一些固有问题 #Tencent-Hunyuan-2025#。
+
+<h3 class="section-title">6.4 消融实验</h3>
+
+<h4 class="ch-section">消融一：Character Image Injection 三机制</h4>
+
+作者对三种 CIM 机制在视频质量（VQ）、运动多样性（MD）、身份保持（IP）、口型同步（LS）四维做主观评测：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>机制</th><th>VQ↑</th><th>MD↑</th><th>IP↑</th><th>LS↑</th></tr></thead>
+    <tbody>
+      <tr><td>Token (a)</td><td>2.86</td><td>3.58</td><td>4.402</td><td>4.239</td></tr>
+      <tr><td>Token + Channel (b)</td><td>4.4</td><td>2.336</td><td>4.576</td><td>4.43</td></tr>
+      <tr><td><strong>Token + Add (c, 本文)</strong></td><td>4.16</td><td><strong>4.127</strong></td><td>4.28</td><td>4.161</td></tr>
+    </tbody>
+  </table>
+</div>
+
+读法：机制 (b) Token+Channel 的 VQ/IP 最高，但 **MD（运动多样性）只有 2.336**，几乎是"动不起来"；本文选定的 (c) Token+Add 在 MD 上遥遥领先（**4.127**），VQ（4.16）也接近 (b)，实现了动态与一致性的平衡——这正是 Part 2 那个两难问题的量化答案。
+
+<h4 class="ch-section">消融二 & 三：AEM 与 FAA</h4>
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/ablation.webp" alt="Ablation on AEM and FAA" loading="lazy">
+  <div class="cap">图 5：(a) Audio Emotion Module 消融；(b) Face-Aware Audio Adapter 消融（来源：HunyuanVideo-Avatar, Fig.ablation）。</div>
+</div>
+
+<ul>
+  <li><strong>AEM 消融</strong>：只用文本引导情感、不用 AEM 时，模型无法有效理解并把情感施加到角色脸上；注入 emotion reference image 后，模型能把参考图的情感成功迁移到角色面部，从而与音频情感对齐 #Tencent-Hunyuan-2025#。</li>
+  <li><strong>FAA 消融</strong>：不用 face mask 限制音频作用区时，参考图中两个角色都会被同一段音频驱动；加上 face mask 后，模型只驱动 mask 指定的那个角色，随着 face mask 移动，音频作用到另一个角色的脸上——这就是多角色独立驱动的直接证据 #Tencent-Hunyuan-2025#。</li>
+</ul>
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/emotion.webp" alt="Emotion control visualization" loading="lazy">
+  <div class="cap">图 6：情感控制可视化。模型对 happiness、sadness、excitement、anger 等情感有良好理解，可生成更贴合音频情感的人物动画（来源：HunyuanVideo-Avatar, 附录 Fig.supp4）。</div>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：它在数字人地图上的位置</div>
+
+<h3 class="section-title">7.1 竞品定位</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方法</th><th>驱动范围</th><th>多角色</th><th>情感控制</th><th>backbone</th><th>特点</th></tr></thead>
+    <tbody>
+      <tr><td>Hallo-3</td><td>肖像</td><td>否</td><td>弱</td><td>DiT</td><td>只生成面部，忽略身体</td></tr>
+      <tr><td>CyberHost</td><td>全身</td><td>否</td><td>弱</td><td>—</td><td>region attention + ReferenceNet，人体/背景易失真</td></tr>
+      <tr><td>OmniHuman-1</td><td>全身</td><td>否</td><td>弱</td><td>—</td><td>多模态混合训练，未开源、含超分</td></tr>
+      <tr><td>FantasyTalking</td><td>全身</td><td>否</td><td>弱</td><td>Wan2.1</td><td>推理耗时</td></tr>
+      <tr><td><strong>HunyuanVideo-Avatar</strong></td><td>肖像+全身</td><td><strong>是（FAA）</strong></td><td><strong>是（AEM）</strong></td><td>HunyuanVideo-13B (MM-DiT)</td><td>CIM 平衡动态/一致性；离线高保真</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="photo">
+  <img src="media/images/paper-hunyuan-avatar/compare_head.webp" alt="Qualitative comparison on HDTF" loading="lazy">
+  <div class="cap">图 7：HDTF 数据集上的肖像动画定性对比。相比 Sonic / EchoMimic / EchoMimic-V2 / Hallo-3，本文在视频质量、面部表情自然度和整体美感上更优（来源：HunyuanVideo-Avatar, Fig.head）。</div>
+</div>
+
+HunyuanVideo-Avatar 最独特的两个能力是 **多角色音频驱动** 和 **参考图情感控制**，这是同代大多数方法不具备的。它的路线是"把音频驱动能力嫁接到一个强视频基模（HunyuanVideo-13B）上"，因此天然继承了基模的高保真视频先验，也继承了基模的推理成本。
+
+<h3 class="section-title">7.2 局限</h3>
+
+<ul>
+  <li><strong>情感依赖参考图</strong>：模型不能直接从音频推断情感，而要靠 emotion reference image 引导。这带来两个问题——增加了用户操作复杂度；且一张参考图只对应一种情感，一段音频里若有多种情感变化就可能出错 #Tencent-Hunyuan-2025#。</li>
+  <li><strong>推理慢</strong>：10s@720×1216/50 步 ≈ 60min，远不能实时；这是大视频基模的通病（无论 HunyuanVideo-13B 还是 Wan2.1）。</li>
+  <li><strong>继承基模缺陷</strong>：FCN/FBN 主观分低于 OmniHuman-1，部分源自 HunyuanVideo 的固有问题。</li>
+</ul>
+
+<h3 class="section-title">7.3 可操作启发</h3>
+
+<div class="callout">
+  <strong>给做数字人的工程师三点带走的东西：</strong><br/>
+  1. <strong>条件注入方式决定动态-一致性权衡</strong>——与其把参考图当 padding frame 直接塞进 latent，不如经 FC projection 做通道加法注入，能同时保住动态和一致性；<br/>
+  2. <strong>latent 级 mask 是多主体控制的通用手法</strong>——用 face mask × cross-attention 把音频作用限制在指定区域，就能低成本扩展到多角色，这个思路可迁移到多物体、多区域的任意条件控制；<br/>
+  3. <strong>注入位置很讲究</strong>——同样的 cross-attention，插 Double Block 有效、插 Single Block 失效，说明在 MM-DiT 里"注入到哪一类 block"是需要消融的关键超参。
+</div>
+
+未来方向上，作者点名了两条：让模型直接从音频推断情感（而非依赖参考图），以及探索能实时反馈的交互式人物动画——后者需要模型兼具强内容生成能力和上下文理解能力。
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Tencent-Hunyuan-2025">Tencent Hunyuan (2025). <strong>HunyuanVideo-Avatar: High-Fidelity Audio-Driven Human Animation for Multiple Characters</strong>. <a href="https://arxiv.org/abs/2505.20156" target="_blank">arXiv:2505.20156</a></li>
+    <li data-cite-key="Kong-et-al.-2024">Kong, W. et al. (2024). <strong>HunyuanVideo: A Systematic Framework For Large Video Generative Models</strong>. <a href="https://arxiv.org/abs/2412.03603" target="_blank">arXiv:2412.03603</a></li>
+    <li data-cite-key="Ji-et-al.-2024">Ji, X. et al. (2024). <strong>Sonic: Shifting Focus to Global Audio Perception in Portrait Animation</strong>. <a href="https://arxiv.org/abs/2411.16331" target="_blank">arXiv:2411.16331</a></li>
+    <li data-cite-key="Radford-et-al.-2023">Radford, A. et al. (2023). <strong>Robust Speech Recognition via Large-Scale Weak Supervision (Whisper)</strong>. ICML 2023. <a href="https://arxiv.org/abs/2212.04356" target="_blank">arXiv:2212.04356</a></li>
+    <li data-cite-key="Ren-et-al.-2023">Ren, J. et al. (2023). <strong>InsightFace: 2D and 3D Face Analysis Project</strong>.</li>
+    <li data-cite-key="Lipman-et-al.-2023">Lipman, Y. et al. (2023). <strong>Flow Matching for Generative Modeling</strong>. ICLR 2023. <a href="https://arxiv.org/abs/2210.02747" target="_blank">arXiv:2210.02747</a></li>
+    <li data-cite-key="Esser-et-al.-2024">Esser, P. et al. (2024). <strong>Scaling Rectified Flow Transformers for High-Resolution Image Synthesis</strong>. ICML 2024. <a href="https://arxiv.org/abs/2403.03206" target="_blank">arXiv:2403.03206</a></li>
+    <li data-cite-key="Su-et-al.-2024">Su, J. et al. (2024). <strong>RoFormer: Enhanced Transformer with Rotary Position Embedding (RoPE)</strong>. Neurocomputing. <a href="https://arxiv.org/abs/2104.09864" target="_blank">arXiv:2104.09864</a></li>
+    <li data-cite-key="Li-et-al.-2024">Li, C. et al. (2024). <strong>LatentSync: Audio Conditioned Latent Diffusion Models for Lip Sync</strong>. <a href="https://arxiv.org/abs/2412.09262" target="_blank">arXiv:2412.09262</a></li>
+    <li data-cite-key="Wang-et-al.-2024-Koala">Wang, Q. et al. (2024). <strong>Koala-36M: A Large-scale Video Dataset Improving Consistency between Fine-grained Conditions and Video Content</strong>. <a href="https://arxiv.org/abs/2410.08260" target="_blank">arXiv:2410.08260</a></li>
+    <li data-cite-key="Lin-et-al.-2025">Lin, G. et al. (2025). <strong>OmniHuman-1: Rethinking the Scaling-Up of One-Stage Conditioned Human Animation Models</strong>. <a href="https://arxiv.org/abs/2502.01061" target="_blank">arXiv:2502.01061</a></li>
+    <li data-cite-key="Cui-et-al.-2024">Cui, J. et al. (2024). <strong>Hallo3: Highly Dynamic and Realistic Portrait Image Animation with Diffusion Transformer Networks</strong>. <a href="https://arxiv.org/abs/2412.00733" target="_blank">arXiv:2412.00733</a></li>
+    <li data-cite-key="Wang-et-al.-2025-Fantasy">Wang, M. et al. (2025). <strong>FantasyTalking: Realistic Talking Portrait Generation via Coherent Motion Synthesis</strong>. <a href="https://arxiv.org/abs/2504.04842" target="_blank">arXiv:2504.04842</a></li>
+    <li data-cite-key="Zhu-et-al.-2022">Zhu, H. et al. (2022). <strong>CelebV-HQ: A Large-Scale Video Facial Attributes Dataset</strong>. ECCV 2022. <a href="https://arxiv.org/abs/2207.12393" target="_blank">arXiv:2207.12393</a></li>
+    <li data-cite-key="Zhang-et-al.-2021">Zhang, Z. et al. (2021). <strong>Flow-Guided One-Shot Talking Face Generation with a High-Resolution Audio-Visual Dataset (HDTF)</strong>. CVPR 2021. · <a href="flow-guided-talking-2021.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Wu-et-al.-2023">Wu, H. et al. (2023). <strong>Q-Align: Teaching LMMs for Visual Scoring via Discrete Text-Defined Levels</strong>. <a href="https://arxiv.org/abs/2312.17090" target="_blank">arXiv:2312.17090</a></li>
+    <li data-cite-key="Huang-et-al.-2024">Huang, Z. et al. (2024). <strong>VBench: Comprehensive Benchmark Suite for Video Generative Models</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2311.17982" target="_blank">arXiv:2311.17982</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="paper-hallo3.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">Hallo3，视频扩散 Transformer 驱动的高动态肖像动画</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+  <a class="nav-card nav-next" href="flexavatar-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">FlexAvatar，无位姿无表情标签的可驱动高斯头部大重建模型</span></a>
+</div>

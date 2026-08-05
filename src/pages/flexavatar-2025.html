@@ -1,0 +1,465 @@
+---
+title: "数字人论文精读（五十四）：FlexAvatar，无位姿无表情标签的可驱动高斯头部大重建模型"
+description: "清华刘烨斌组 + 字节 PICO 的 CVPR 2026 工作：用结构化 Head Query token 聚合任意数量无位姿输入，UNet 在 UV 空间解码表情相关形变，45 FPS 实时驱动高斯头部 Avatar。"
+date: 2026-07-27T15:23:23
+created_at: 2026-07-27T15:23:23
+updated_at: 2026-07-27T17:30:00
+tags: [数字人, 3DGS, 头部Avatar, 大重建模型, CVPR2026]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 530
+papers: ["https://arxiv.org/abs/2512.17717"]
+repos: []
+mathjax: true
+notify: true
+paper_title: "FlexAvatar: Flexible Large Reconstruction Model for Animatable Gaussian Head Avatars with Detailed Deformation"
+paper_authors: "Cheng Peng, Zhuo Su, Liao Wang, Chen Guo, Zhaohu Li, Chengjiang Long, Zheng Lv, Jingxiang Sun, Chenyangguang Zhang, Yebin Liu"
+paper_affiliation: "清华大学（刘烨斌组）；字节跳动 PICO"
+paper_venue: "CVPR 2026（arXiv 2512.17717）"
+paper_url: "https://arxiv.org/abs/2512.17717"
+paper_code: "未开源（截至 2026.07 未找到官方仓库，项目页 pengc02.github.io/flexavatar）"
+hero_title: "FlexAvatar"
+hero_sub: "CVPR 2026 · 清华大学 + 字节 PICO"
+hero_tagline: "1~N 张无位姿照片 → 可实时驱动的高斯头部 Avatar，细节形变 45 FPS"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">1~4</span><span class="label">输入图片（无位姿）</span></div>
+  <div class="stat"><span class="num b">45</span><span class="label g">驱动帧率 FPS</span></div>
+  <div class="stat"><span class="num">2150</span><span class="label">训练身份数</span></div>
+  <div class="stat"><span class="num b">10s</span><span class="label l">可选 Refinement</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：随手拍几张照片，就想要一个能动的 3D 头像</div>
+
+照片级、可驱动的 3D 头部 Avatar 是沉浸式通信、远程会议和数字人应用的长期目标。3D Gaussian Splatting（3DGS）出现后，复杂场景的实时渲染变得实用，带起了一波高斯 Avatar 重建方法 #Kerbl et al., 2023#。但对普通用户来说，现有管线仍然"娇贵"：绝大多数方法要么需要多视角同步采集，要么需要已知相机位姿，要么需要每帧表情标签——这三样东西，随手用手机拍照的用户一样都给不了 #Peng et al., 2025a#。
+
+FlexAvatar 的目标可以用一句话概括：**从 1 到 N 张随手拍的照片（无相机位姿、无表情标签、张数不限），前馈式地重建出一个高保真、可实时驱动、带表情细节形变的高斯头部 Avatar** #Peng et al., 2025a#。这里的每个定语都在砍掉一个使用门槛——"无位姿"意味着不需要标定，"无表情标签"意味着输入照片可以是任意表情，"张数不限"意味着一张自拍也行、四张连拍也行。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/teaser.webp" alt="FlexAvatar teaser：从 1~N 张无位姿图片重建可驱动高斯头部 Avatar" loading="lazy">
+  <div class="cap">图 1：FlexAvatar 从单张或稀疏无位姿照片重建可驱动的 3D 高斯头部，支持皱纹、露齿等表情细节（来源：Peng et al., 2025, Fig.1）。</div>
+</div>
+
+这篇论文来自清华大学刘烨斌组与字节跳动 PICO，一作彭程，发表于 CVPR 2026 #Peng et al., 2025a#。刘烨斌组是国内 4D 人体捕捉与数字人方向的头部实验室，这篇工作延续了该组"大数据 + 前馈重建"的路线——与我们此前精读过的 <a href="lam-2025.html">LAM</a>、<a href="match-2026.html">MATCH</a> 同属"大重建模型（LRM）做 Avatar"这一快速升温的赛道 #Hong et al., 2023#。
+
+<div class="callout">
+  <strong>一句话贡献：</strong>FlexAvatar 用结构化 Head Query token + Transformer 聚合任意数量的无位姿输入构建规范空间高斯头，再用一个轻量 UNet 在 UV 空间解码表情相关的细节形变，实现 45 FPS 实时驱动；配合数据分布调整策略与可选的 10 秒 refinement，在重建质量与驱动细节上全面超过 LAM、GAGAvatar、Portrait4D-v2 等前作。
+</div>
+
+<div class="admonition warning">
+  <div class="admonition-title">注意重名</div>
+  <p>arXiv 上同期还有另一篇同名 "FlexAvatar"（arXiv 2512.15599，Kirschstein 等人），是完全不同的工作。本文精读的是清华 + PICO 的 arXiv 2512.17717，检索时请勿混淆。</p>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：三条技术路线，三种失败方式</div>
+
+要理解 FlexAvatar 的设计，先要看清它想同时打败的三类前作，以及各自的失败方式 #Peng et al., 2025a#。
+
+<h3 class="section-title">2.1 现有方法的三类局限</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>路线</th><th>代表工作</th><th>优势</th><th>失败方式</th></tr></thead>
+<tbody>
+<tr><td>2D 驱动生成器</td><td>GAGAvatar、Portrait4D</td><td>大规模 2D 数据带来高视觉保真度</td><td>3D 几何一致性差，侧脸畸变；细节动态形变复现不忠实</td></tr>
+<tr><td>3D 先验系统</td><td>HeadGAP、One2Avatar</td><td>几何一致性强</td><td>3D 数据身份多样性小；依赖耗时的 inversion 或逐人微调</td></tr>
+<tr><td>大重建 / 基础模型</td><td>LRM、LAM、Avat3r</td><td>数据与模型规模化带来强泛化</td><td>输入张数固定；输出与驱动信号不完全匹配；依赖 cross-attention 注入表情，难以实时</td></tr>
+</tbody>
+</table>
+</div>
+
+论文把这三类问题归纳为三个关键障碍 #Peng et al., 2025a#：**弱灵活性**（要么只吃单图、要么必须多视角 + 已知位姿 + 一致表情）、**弱表情保真度**（眼睑、皱纹、牙齿等表情敏感区域的动态细节丢失）、**伪 3D 伪影**（正脸好看、侧脸拉伸变形）。
+
+<h3 class="section-title">2.2 论文的 Insight：把"聚合"与"驱动"拆成两个专用模块</h3>
+
+一个自然的疑问是：为什么 LAM、Avat3r 这些大重建模型不能既灵活又实时？答案藏在架构里。以 LAM 为例，它用纯 LBS（线性混合蒙皮）驱动规范空间高斯——快是快了，但 LBS 是低频形变，表达不出皱纹和露齿这类高频细节 #He et al., 2025#。Avat3r 反过来，用 cross-attention 把表情注入重建网络——细节有了，但每帧都要过一遍大 Transformer，据其报告只能跑约 8 FPS #Kirschstein et al., 2025#。GAGAvatar 用轻量 MLP 预测形变，介于两者之间，但形变缺乏空间结构，常出伪影 #Chu et al., 2024#。
+
+FlexAvatar 的 Insight 是：**重建慢一点没关系（只做一次），驱动必须快（每帧都做）；所以把"重"的 Transformer 全部放在重建端，驱动端只留一个轻量 UNet**。而要让轻量 UNet 也能产生高质量形变，关键是给它一个空间对齐的工作空间——FLAME 的 UV 空间 #Li et al., 2017#：身份特征和驱动表情都展开成 UV 图，逐像素对齐后，卷积网络就能高效地学"这个像素的皮肤在这个表情下应该怎么动"。
+
+<div class="callout">
+  <strong>类比：</strong>可以把 FlexAvatar 想象成"先做雕塑、再牵皮影"。Transformer 雕出一个精细的规范头（慢工细活，只做一次），UNet 只负责在 UV 展开图上画出每帧的微小位移（每帧 22 毫秒），最后 LBS 负责大幅度的头部转动。三者分工，互不拖累。
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：Head Query 聚合 + UV 空间动态解码</div>
+
+FlexAvatar 是一个两段式前馈架构：上半段是**灵活重建模型**（任意输入 → 规范空间静态高斯），下半段是**动态高斯解码器**（驱动表情 → 细节形变）。整体流程如图 2。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/pipeline.webp" alt="FlexAvatar 整体架构：上半段 Transformer 重建，下半段 UNet 动态解码" loading="lazy">
+  <div class="cap">图 2：FlexAvatar 架构。上：1~N 张图片经 Image Encoder 得到 token，Self-Attention 融合后由 Head Query token 通过 Cross-Attention 聚合，Decoder 输出 ID 特征图与静态高斯图。下：FLAME UV 位置图与 ID 特征图拼接后送入 U-Net，输出动态高斯形变，经 LBS 与 Splatting 渲染（来源：Peng et al., 2025, Fig.2）。</div>
+</div>
+
+<h3 class="section-title">3.1 灵活重建模型：结构化 Head Query token</h3>
+
+**Motivation**：输入可能是 1 张也可能是 4 张，可能是任意角度、任意表情，且没有相机位姿。网络需要一个"锚"，把这些杂乱信息统一到规范空间。
+
+**Mechanism**：每张输入图（512×512）先经过**冻结的 DINOv3** 编码器提取 token #Simeoni et al., 2025#：
+
+$$
+f_i = E(I_i), \quad i = 1, \dots, N
+$$
+
+N 张图的 token 直接拼接后过 6 层 Self-Attention 做跨视角融合——注意这里没有任何位姿编码，网络纯靠内容对应关系对齐视角：
+
+$$
+F_{\text{agg}} = \text{SelfAttn}([f_1; f_2; \dots; f_N]) \in \mathbb{R}^{(N \times L) \times D}
+$$
+
+真正的"锚"是一组**可学习的结构化 Head Query token** \(Q_H \in \mathbb{R}^{2500 \times 512}\)。这 2500 个 token 对应 FLAME UV 空间的 50×50 网格——每个 token 天生"负责"头部的一个固定区域。它们通过 6 层 Cross-Attention 从聚合特征中"认领"属于自己区域的信息：
+
+$$
+F_Q = \text{CrossAttn}(Q_H, F_{\text{agg}})
+$$
+
+由于 query 数量固定为 2500，无论输入 1 张还是 N 张图，输出维度都不变——**输入张数无关性就是这样免费获得的**。\(F_Q\) 重排为 50×50×512 的 UV 特征图后，经卷积 Decoder 上采样 8 倍到 400×400，输出两样东西：
+
+<div class="def-box">
+  <h3>重建模型输出</h3>
+
+$$
+(F_{\text{id}},\ G_{\text{st}}) = \text{Decoder}(F_{\text{UV}}), \qquad G_{\text{st}} = \{P, \alpha, S, C, R\}
+$$
+
+  <p>其中 \(F_{\text{id}} \in \mathbb{R}^{400 \times 400 \times 32}\) 是 <strong>ID 特征图</strong>（身份的 UV 空间编码，供下游动态解码用）；\(G_{\text{st}} \in \mathbb{R}^{400 \times 400 \times 14}\) 是<strong>静态高斯图</strong>，每个 UV 像素对应一个 3D 高斯的位置 \(P\)、不透明度 \(\alpha\)、尺度 \(S\)、颜色 \(C\)、旋转 \(R\)，共 141,445 个有效高斯。</p>
+</div>
+
+值得注意的一个工程细节：论文把 FLAME 模板从 5023 个顶点扩展到 5143 个，**新增的顶点全部用于牙齿区域**——这是为"露齿"这一高难表情预留的几何容量 #Peng et al., 2025a#。
+
+<h3 class="section-title">3.2 动态高斯解码器：UNet 在 UV 空间画形变</h3>
+
+**Motivation**：LBS 只能表达骨骼级的低频运动，皱纹、嘴唇挤压、眼睑闭合这些高频细节需要额外的形变场。前作要么不建模（LAM），要么建得太贵（Avat3r 的 cross-attention）。
+
+**Mechanism**：驱动信号是 FLAME 表情系数对应的 **UV 位置图** \(P_{\text{driving}}\)——把驱动表情下每个顶点的 3D 坐标烘焙到 UV 平面上。它与 ID 特征图逐通道拼接：
+
+$$
+\tilde{F}_{\text{UV}} = F_{\text{id}} \oplus P_{\text{driving}}
+$$
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/uv.webp" alt="UV 位置图驱动信号示意" loading="lazy">
+  <div class="cap">图 3：UV 位置图驱动信号。相比直接用 FLAME 系数向量，UV 位置图与 ID 特征图逐像素空间对齐，让卷积网络能定位"哪里该动"（来源：Peng et al., 2025, Fig.4）。</div>
+</div>
+
+为什么用 UV 位置图而不是直接把 FLAME 系数向量喂进去？因为系数是全局向量，没有空间结构；而 UV 位置图与 \(F_{\text{id}}\) **逐像素对齐**——同一个 UV 坐标上，一边是"这块皮肤是谁的"，另一边是"这块皮肤现在应该在哪"。这正是卷积网络最擅长处理的输入。一个 4 层下采样 + 4 层上采样的轻量 UNet 输出形变量：
+
+<div class="def-box">
+  <h3>动态形变解码</h3>
+
+$$
+\Delta G_{\text{dyn}} = \text{UNet}(\tilde{F}_{\text{UV}}), \qquad G_{\text{dyn}} = G_{\text{st}} + M_{\text{dyn}} \odot \Delta G_{\text{dyn}}
+$$
+
+  <p>\(M_{\text{dyn}}\) 是动态区域掩码，限制形变只作用于面部表情敏感区域，避免头发、肩膀被误动。最终图像由 LBS 变换 + 高斯 Splatting 渲染：\(I = \mathcal{R}(\text{LBS}(G_{\text{dyn}}), \Theta)\)，其中 \(\Theta\) 为相机参数。</p>
+</div>
+
+<h3 class="section-title">3.3 数据分布调整：让模型多看"极端表情"</h3>
+
+**Motivation**：训练视频里绝大多数帧是中性或过渡表情，皱眉、龇牙这类"关键帧"占比极低。均匀采样训练，模型自然学不好稀有表情。
+
+**Mechanism**：论文选定 **20 个锚点表情**（皱纹、露齿等），对每个锚点用 **FLAME 系数的余弦相似度**在全体训练序列中检索相似帧，把它们提升为高频训练样本；同时每个 ID 再补 6 帧随机样本防止过拟合 #Peng et al., 2025a#。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/anchor-face.webp" alt="20 个锚点表情示例" loading="lazy">
+  <div class="cap">图 4：数据分布调整使用的锚点表情。通过 FLAME 系数余弦相似度检索，把稀有但关键的表情（皱纹、龇牙）在训练分布中加权（来源：Peng et al., 2025, Fig.5）。</div>
+</div>
+
+<h3 class="section-title">3.4 可选 Refinement：10 秒补齐长尾身份</h3>
+
+前馈模型再强，也会在长尾外观（头发、衣物等）上失手。FlexAvatar 提供一个轻量测试时微调：**只用输入的那几张图**，微调编码器参数 20 步（约 10 秒），UNet 全程冻结、嘴部区域梯度截断——保证提升身份细节的同时不破坏已学好的动态形变能力 #Peng et al., 2025a#：
+
+$$
+\theta_E^* \leftarrow \arg\min_{\theta_E} \ \mathcal{L}\big(\mathcal{R}(\text{LBS}(G_{\theta_E}), \Theta),\ I_{\text{gt}}\big)
+$$
+
+<div class="admonition tip">
+  <div class="admonition-title">设计取舍解读</div>
+  <p>"冻结 UNet + 截断嘴部梯度"是这个 refinement 最聪明的地方：微调只有几张图，如果放开动态解码器，它会立刻过拟合到输入表情上，驱动泛化能力崩掉。把可动的部分锁死，只让"长相"更新，10 秒微调才敢做。</p>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：2150 个身份的 4D 头部数据</div>
+
+<h3 class="section-title">4.1 训练数据与预处理</h3>
+
+FlexAvatar 的训练数据由两部分组成 #Peng et al., 2025a#：
+
+<ul>
+  <li><strong>NeRSemble</strong>：公开多视角头部视频数据集，取 150 个身份训练、16 个测试，每人 16 个视角 #Kirschstein et al., 2023#；</li>
+  <li><strong>FaceCap</strong>：团队自采的 2000 个身份、30 视角 360° 环拍数据集（未公开），16 个身份留作测试，每人采集 26 种表情。</li>
+</ul>
+
+预处理管线：**VHAP** 估计每帧 FLAME 参数，**MODNet** 抠前景，**ParsingHuman** 做头部解析分割；对野外单图测试数据用 **Pixel3DMM** 估计 FLAME #Peng et al., 2025a#。训练时 FaceCap 每个 ID 采样 30 视角 × 26 时间步（NeRSemble 为 16 视角），输入端随机取 1~4 张图模拟灵活输入，并从同一 ID 的 4 个不同时间步采样监督视角以实现身份 / 表情解耦。
+
+<h3 class="section-title">4.2 损失函数</h3>
+
+训练目标是多视角光度重建损失的加权和 #Peng et al., 2025a#：
+
+$$
+\mathcal{L} = \lambda_{l1}\mathcal{L}_{l1} + \lambda_{\text{ssim}}\mathcal{L}_{\text{ssim}} + \lambda_{\text{lpips}}\mathcal{L}_{\text{lpips}} + \lambda_{\text{mouth}}\mathcal{L}_{\text{mouth}} + \lambda_{\text{xyz}}\mathcal{L}_{\text{xyz}} + \lambda_{\text{scale}}\mathcal{L}_{\text{scale}}
+$$
+
+其中 \(\lambda_{l1}=1\)、\(\lambda_{\text{ssim}}=0.1\)、\(\lambda_{\text{lpips}}=0.2\)、\(\lambda_{\text{mouth}}=10\)、\(\lambda_{\text{xyz}}=0.01\)、\(\lambda_{\text{scale}}=1\)。嘴部损失权重高达 10——嘴是表情驱动最难也最显眼的区域，专门用解析掩码裁出嘴部区域重点监督；\(\mathcal{L}_{\text{xyz}}\) 和 \(\mathcal{L}_{\text{scale}}\) 是对高斯位置偏移和尺度的正则，防止高斯"飞出"头部表面 #Peng et al., 2025a#。
+
+<h3 class="section-title">4.3 训练配置披露表</h3>
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+<tbody>
+<tr><td>训练数据</td><td>已披露</td><td>NeRSemble 150 ID + FaceCap（自采）2000 ID，26 表情，16/30 视角</td></tr>
+<tr><td>训练硬件</td><td>已披露</td><td>16× 80GB GPU（型号未披露）</td></tr>
+<tr><td>优化器</td><td>已披露</td><td>Adam</td></tr>
+<tr><td>学习率</td><td>已披露</td><td>3e-5（schedule / warmup 未披露）</td></tr>
+<tr><td>Batch size</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>训练步数 / 轮数</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>训练时长</td><td>已披露</td><td>约 4 天</td></tr>
+<tr><td>模型参数量</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>精度格式</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+<tr><td>图像编码器</td><td>已披露</td><td>DINOv3，训练中冻结</td></tr>
+<tr><td>损失权重</td><td>已披露</td><td>λ_l1=1, λ_ssim=0.1, λ_lpips=0.2, λ_mouth=10, λ_xyz=0.01, λ_scale=1</td></tr>
+<tr><td>数据分布调整</td><td>已披露</td><td>20 锚点表情 + FLAME 余弦相似度检索 + 每 ID 6 随机帧</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="admonition warning">
+  <div class="admonition-title">复现风险提示</div>
+  <p>Batch size、总步数、参数量、训练精度均未披露，且核心训练数据 FaceCap（2000 ID）为私有数据、代码未开源。第三方完整复现这篇工作的实际门槛非常高——能拿到的只有 NeRSemble 的 150 个身份，而论文自己的 scaling 实验（Part 6）恰恰说明身份数是质量的决定性因素。</p>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：一次重建 0.4 秒，每帧驱动 22 毫秒</div>
+
+FlexAvatar 是实时系统，推理链路值得逐段拆解。整个流程分"一次性"与"每帧"两段，这个划分正是它能实时的根本原因。
+
+{{< mermaid >}}
+graph TD
+    subgraph ONCE["一次性阶段（约 0.4 秒 / 4 张输入图）"]
+        A["1~N 张无位姿照片"] --> B["冻结 DINOv3 编码"]
+        B --> C["Self-Attention 跨视角融合"]
+        C --> D["Head Query 2500 token 聚合"]
+        D --> E["卷积 Decoder"]
+        E --> F["ID 特征图 400×400×32"]
+        E --> G["静态高斯图 400×400×14"]
+        F -.-> H["可选 Refinement：20 步约 10 秒"]
+    end
+    subgraph FRAME["每帧阶段（UNet+LBS+渲染 22 ms，约 45 FPS）"]
+        I["驱动 FLAME 表情系数"] --> J["烘焙 UV 位置图"]
+        F --> K["逐通道拼接"]
+        J --> K
+        K --> L["轻量 UNet（4 下采样 + 4 上采样）"]
+        L --> M["动态形变 ΔG"]
+        G --> N["静态高斯 + 掩码形变"]
+        M --> N
+        N --> O["LBS 姿态变换"]
+        O --> P["3DGS Splatting 渲染"]
+    end
+{{< /mermaid >}}
+
+<h3 class="section-title">5.1 一次性阶段：编码与重建</h3>
+
+用户提供 1~4 张照片（无需位姿、表情不限），网络前向一次得到 ID 特征图与静态高斯图。**4 张输入图的编码耗时约 0.4 秒** #Peng et al., 2025a#。此后这两张图就被缓存，输入图片不再参与任何计算——这意味着重建成本与后续驱动时长完全解耦，驱动一分钟和驱动一小时的单帧成本相同。
+
+若用户身份特殊（头发、衣物等长尾外观），可追加 20 步 refinement（约 10 秒）。注意这仍属"一次性"成本：微调的是编码器，不影响每帧速度。
+
+<h3 class="section-title">5.2 每帧阶段：22 ms 的形变 + 渲染</h3>
+
+驱动信号可以来自任何 FLAME 参数源：另一段视频的表情追踪结果（reenactment）、语音驱动模型的输出、或手工编辑的系数。每帧执行四步：烘焙 UV 位置图 → UNet 解码形变 → LBS 姿态变换 → Splatting 渲染。论文报告的 **22 ms/帧（约 45 FPS）**覆盖 UNet + LBS + Splatting 三步，UV 烘焙不计入该计时 #Peng et al., 2025a#。
+
+值得一问的是：驱动端全程没有表情标签监督，UNet 是怎么学会"表情 → 形变"映射的？答案在训练协议里——每次迭代从**同一 ID 的 4 个不同时间步**采样监督视角，输入图与监督图的表情互不相同，网络被迫把身份（跨时间步不变）与表情（由驱动 UV 位置图给定）解耦开来。这正是"无表情标签输入"能成立的机制基础 #Peng et al., 2025a#。
+
+这里可以清楚看到架构决策如何兑现成速度：每帧路径上只有一个 4 下采样 + 4 上采样的小 UNet 和线性的 LBS——没有 Transformer，没有 cross-attention。作为对照，Avat3r 每帧都要让表情信号过一遍重建网络的 cross-attention，据其报告约 **8 FPS**，不到 FlexAvatar 的五分之一 #Kirschstein et al., 2025#。
+
+<h3 class="section-title">5.3 实时性对比与部署视角</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>方法</th><th>驱动机制</th><th>帧率</th><th>细节形变</th></tr></thead>
+<tbody>
+<tr><td>LAM</td><td>纯 LBS</td><td>实时（快）</td><td>❌ 无高频细节</td></tr>
+<tr><td>GAGAvatar</td><td>轻量 MLP 形变</td><td>实时</td><td>⚠️ 有细节但常出伪影</td></tr>
+<tr><td>Avat3r</td><td>Cross-Attention 注入</td><td>约 8 FPS（据其报告）</td><td>✅ 细节好但不实时</td></tr>
+<tr><td><strong>FlexAvatar</strong></td><td>UV 空间轻量 UNet</td><td><strong>45 FPS</strong></td><td>✅ 细节 + 实时</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout">
+  <strong>关键数字：</strong>0.4 秒重建 + 22 ms/帧驱动 + 可选 10 秒 refinement。对 VR 社交、实时会议这类场景，45 FPS 已越过可用线；且驱动信号是标准 FLAME 系数，可直接对接现有语音转表情管线。
+</div>
+
+需要指出的是，论文未披露达成 45 FPS 的具体 GPU 型号，也未报告端到端延迟的分项拆解（UV 烘焙、UNet、渲染各占多少），部署评估时应以自测为准 #Peng et al., 2025a#。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：全指标超越前作，scaling 曲线仍在上升</div>
+
+<h3 class="section-title">6.1 实验配置表</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+<tbody>
+<tr><td>评测数据集</td><td>已披露</td><td>NeRSemble 16 测试 ID + FaceCap 16 测试 ID + 野外单图</td></tr>
+<tr><td>评测指标</td><td>已披露</td><td>PSNR↑ / SSIM↑ / LPIPS↓ / CSIM↑ / AKD↓ / AED↓</td></tr>
+<tr><td>Baseline 方法</td><td>已披露</td><td>LAM、Portrait4D-v1/v2、GAGAvatar；另与 HeadGAP、Avat3r 单独对比</td></tr>
+<tr><td>推理硬件</td><td>未披露</td><td>45 FPS 对应的 GPU 型号原文未给出</td></tr>
+<tr><td>推理分辨率</td><td>已披露</td><td>输入 512×512</td></tr>
+<tr><td>推理环境</td><td>未披露</td><td>框架 / 版本原文未给出</td></tr>
+</tbody>
+</table>
+</div>
+
+指标覆盖了数字人评测的三个维度：画质（PSNR/SSIM/LPIPS）、身份保持（CSIM）、驱动准确度（AKD 关键点距离 / AED 表情距离）。这套指标没有覆盖音画同步与长时稳定性——FlexAvatar 是表情系数驱动而非音频驱动，属合理范围，但接语音管线时需另行评测同步质量。
+
+<h3 class="section-title">6.2 主实验：NeRSemble 自重演与跨身份重演</h3>
+
+评测协议：主表中所有方法均以**单张图片**为输入（保证与单图基线公平），3D 一致性通过 4 个 held-out 测试视角同时评测；Portrait4D 系列的数值为其公开模型在同一协议下的测试结果 #Deng et al., 2024#。
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>方法</th><th>PSNR↑</th><th>SSIM↑</th><th>LPIPS↓</th><th>CSIM↑</th><th>AKD↓</th><th>AED↓</th><th>跨身份 CSIM↑</th><th>跨 AKD↓</th><th>跨 AED↓</th></tr></thead>
+<tbody>
+<tr><td>LAM</td><td>17.83</td><td>0.8031</td><td>0.2730</td><td>0.8213</td><td>5.76</td><td>2.81</td><td>0.8278</td><td>8.38</td><td>4.88</td></tr>
+<tr><td>Portrait4D-v1</td><td>19.37</td><td>0.8121</td><td>0.2410</td><td>0.8390</td><td>4.67</td><td>2.39</td><td>0.8399</td><td>8.07</td><td>4.20</td></tr>
+<tr><td>Portrait4D-v2</td><td>19.63</td><td>0.8184</td><td>0.2360</td><td>0.8385</td><td>4.69</td><td>2.43</td><td>0.8389</td><td>8.06</td><td>4.24</td></tr>
+<tr><td>GAGAvatar</td><td>19.17</td><td>0.8283</td><td>0.2567</td><td>0.8474</td><td>3.87</td><td>2.12</td><td>0.8479</td><td>8.26</td><td>4.05</td></tr>
+<tr><td><strong>Ours（前馈）</strong></td><td><strong>21.15</strong></td><td><strong>0.8335</strong></td><td><strong>0.2193</strong></td><td><strong>0.8490</strong></td><td><strong>3.65</strong></td><td><strong>2.05</strong></td><td><strong>0.8501</strong></td><td><strong>7.87</strong></td><td><strong>3.64</strong></td></tr>
+<tr><td><strong>Ours（+refinement）</strong></td><td><strong>22.63</strong></td><td><strong>0.8491</strong></td><td><strong>0.1833</strong></td><td><strong>0.8532</strong></td><td><strong>3.44</strong></td><td><strong>1.91</strong></td><td><strong>0.8549</strong></td><td><strong>7.24</strong></td><td><strong>3.59</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout">
+  <strong>怎么读这张表：</strong>纯前馈版本已在全部指标上领先所有基线——PSNR 比最强基线 Portrait4D-v2 高 1.5 dB，比 LAM 高 3.3 dB。10 秒 refinement 再加 1.5 dB PSNR、LPIPS 从 0.2193 降到 0.1833。跨身份重演的 AED（表情距离）3.64 vs GAGAvatar 4.05，说明细节形变确实转移到了新驱动信号上，而不是"记住了"自重演的表情。
+</div>
+
+与 3D 先验路线的 HeadGAP 单独对比在 FaceCap 测试集上进行（HeadGAP 需逐人 inversion）：HeadGAP PSNR 20.77 / LPIPS 0.2210 / AKD 3.67，FlexAvatar 前馈版与之大体相当，refinement 后则明显超越——前馈 + 10 秒微调即可换掉一条逐人优化管线 #Zheng et al., 2024#。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/compare.webp" alt="与 LAM、GAGAvatar、Portrait4D-v2 等方法的定性对比" loading="lazy">
+  <div class="cap">图 5：定性对比。FlexAvatar 在露齿、皱眉等大表情下保持嘴部内侧结构与皱纹细节，基线方法普遍出现嘴部模糊或身份漂移（来源：Peng et al., 2025, Fig.6）。</div>
+</div>
+
+<h3 class="section-title">6.3 消融实验</h3>
+
+在 FaceCap 测试集上的消融结果 #Peng et al., 2025a#：
+
+<div class="table-wrap">
+<table>
+<thead><tr><th>配置</th><th>PSNR↑</th><th>LPIPS↓</th><th>SSIM↑</th></tr></thead>
+<tbody>
+<tr><td>w/o UV 位置图（直接用 FLAME 系数）</td><td>22.51</td><td>0.1845</td><td>0.8772</td></tr>
+<tr><td>w/o 数据分布调整</td><td>22.74</td><td>0.1868</td><td>0.8745</td></tr>
+<tr><td>w/o 嘴部损失</td><td>23.10</td><td>0.1810</td><td>0.8890</td></tr>
+<tr><td><strong>完整模型</strong></td><td><strong>23.32</strong></td><td><strong>0.1797</strong></td><td><strong>0.8895</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+三个组件中 **UV 位置图贡献最大**（去掉后 PSNR 掉 0.81 dB）——验证了 Part 3 的核心论点：驱动信号的空间对齐表示比信号本身的信息量更重要。数据分布调整去掉后 SSIM 从 0.8895 降到 0.8745、LPIPS 为三组消融中最差（0.1868），说明极端表情训练不足时，结构相似度退化、动态纹理在大表情下失真。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/ablation.webp" alt="消融实验定性对比" loading="lazy">
+  <div class="cap">图 6：消融定性对比。去掉 UV 位置图后皱纹与嘴部细节明显退化；去掉分布调整后极端表情失真（来源：Peng et al., 2025, Fig.8）。</div>
+</div>
+
+<h3 class="section-title">6.4 灵活性与 scaling 验证</h3>
+
+**输入张数实验**：从 1 张增加到 4 张输入，重建质量单调提升——验证了 Head Query 聚合机制的输入张数无关性 #Peng et al., 2025a#。输入上限 4 张是 GPU 显存限制，不是架构限制。由于高斯定义在完整的 FLAME UV 空间上，即便单图输入，重建结果也支持 **360° 全头渲染**（含后脑勺等未观测区域）。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/input-num.webp" alt="不同输入张数的重建质量对比" loading="lazy">
+  <div class="cap">图 7：输入张数从 1 增加到 4，重建质量单调提升，未观测区域（侧脸、后脑）细节逐步补全（来源：Peng et al., 2025, Fig.9）。</div>
+</div>
+
+**身份数 scaling**：训练身份从 250 增加到 2000+，测试集 PSNR 持续上升、LPIPS 持续下降，曲线尚未出现明显饱和迹象 #Peng et al., 2025a#。
+
+<div class="photo">
+  <img src="media/images/flexavatar-2025/scaling.webp" alt="不同训练身份数的重建质量定性对比" loading="lazy">
+  <div class="cap">图 8：训练身份数 scaling 的定性对比。训练身份从 250 增至 2000，同一测试者的平均 PSNR 从 17.67 提升到 20.73，长尾外观细节逐步改善（来源：Peng et al., 2025, Fig.10）。</div>
+</div>
+
+<div class="callout">
+  <strong>反直觉发现：</strong>scaling 曲线尚未饱和，意味着 FlexAvatar 的天花板不在架构而在数据——这也解释了团队为什么要自采 2000 人的 FaceCap。对社区的坏消息是：这个决定性资源是私有的。
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：前馈 Avatar 的"专用化"时刻</div>
+
+<h3 class="section-title">7.1 在地图上的位置</h3>
+
+<div class="table-wrap wide">
+<table>
+<thead><tr><th>维度</th><th>LAM</th><th>GAGAvatar</th><th>Avat3r</th><th>HeadGAP</th><th>FlexAvatar</th></tr></thead>
+<tbody>
+<tr><td>输入</td><td>单图</td><td>单图</td><td>4 图（固定）</td><td>少样本 + inversion</td><td><strong>1~N 图，无位姿</strong></td></tr>
+<tr><td>表情标签</td><td>不需要</td><td>不需要</td><td>需要一致表情</td><td>需要</td><td><strong>不需要</strong></td></tr>
+<tr><td>驱动帧率</td><td>快（纯 LBS）</td><td>实时</td><td>8 FPS</td><td>实时</td><td><strong>45 FPS</strong></td></tr>
+<tr><td>细节形变</td><td>❌</td><td>⚠️</td><td>✅</td><td>⚠️</td><td>✅</td></tr>
+<tr><td>逐人优化</td><td>无</td><td>无</td><td>无</td><td>需要</td><td>可选 10 秒</td></tr>
+</tbody>
+</table>
+</div>
+
+FlexAvatar 代表了前馈 Avatar 赛道的一个清晰趋势：**从"套用通用 LRM"走向"为头部任务专用化设计"**。结构化 Head Query 是把 FLAME 拓扑先验编进 query 的专用化；UV 空间 UNet 是把"形变有空间局部性"这一先验编进解码器的专用化。与之呼应，我们精读过的 MATCH（CVPR 2026）在配准任务上做了类似的"前馈专用头部化"——这批工作共同显示出逐人优化时代在头部 Avatar 领域正在落幕。
+
+<h3 class="section-title">7.2 局限性</h3>
+
+论文坦承的局限 #Peng et al., 2025a#：眼镜、帽子等配饰易出伪影（训练数据中罕见）；蓬松长发建模不佳（高斯贴 FLAME UV 的拓扑限制）；只建头部，无身体与衣物；光照泛化一般；输入上限 4 张受显存限制。论文给出的未来方向包括引入生成先验补全长尾外观、扩展到头肩 / 上半身建模。此外从复现角度：代码未开源、FaceCap 私有、推理 GPU 未披露，是工程落地评估时必须自行补测的空白。
+
+<h3 class="section-title">7.3 可操作启发</h3>
+
+<ul>
+  <li><strong>驱动信号表示 &gt; 驱动网络容量</strong>：消融显示把 FLAME 系数烘焙成 UV 位置图（空间对齐）比换更大网络收益直接。任何"全局系数驱动局部形变"的任务（身体、手、衣物）都可以套用这个思路。</li>
+  <li><strong>重建 / 驱动算力分离</strong>：把重计算放进一次性阶段、每帧路径只留卷积，是实时数字人系统的通用架构模式；语音驱动管线同样适用。</li>
+  <li><strong>锚点检索式数据重加权</strong>：用参数空间余弦相似度检索稀有样本做分布调整，成本极低，适用于任何"长尾表情 / 姿态学不好"的生成任务。</li>
+  <li><strong>测试时微调的安全边界</strong>：只调身份分支、冻结动态分支并截断关键区域梯度——few-shot 个性化时防止驱动能力退化的可复用配方。</li>
+</ul>
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Peng-et-al.-2025a">Peng, C., Su, Z., Wang, L., Guo, C., Li, Z., Long, C., Lv, Z., Sun, J., Zhang, C., Liu, Y. (2025). FlexAvatar: Flexible Large Reconstruction Model for Animatable Gaussian Head Avatars with Detailed Deformation. <em>CVPR 2026</em>. <a href="https://arxiv.org/abs/2512.17717" target="_blank">arXiv:2512.17717</a></li>
+    <li data-cite-key="Kerbl-et-al.-2023">Kerbl, B., Kopanas, G., Leimkühler, T., Drettakis, G. (2023). 3D Gaussian Splatting for Real-Time Radiance Field Rendering. <em>SIGGRAPH 2023</em>. <a href="https://arxiv.org/abs/2308.04079" target="_blank">arXiv:2308.04079</a></li>
+    <li data-cite-key="He-et-al.-2025">He, Y. et al. (2025). LAM: Large Avatar Model for One-shot Animatable Gaussian Head. <em>SIGGRAPH Asia 2025</em>. <a href="https://arxiv.org/abs/2502.17796" target="_blank">arXiv:2502.17796</a> · <a href="lam-2025.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Kirschstein-et-al.-2025">Kirschstein, T., Romero, J., Sevastopolsky, A., Nießner, M., Saito, S. (2025). Avat3r: Large Animatable Gaussian Reconstruction Model for High-fidelity 3D Head Avatars. <em>ICCV 2025</em>. <a href="https://arxiv.org/abs/2502.20220" target="_blank">arXiv:2502.20220</a></li>
+    <li data-cite-key="Chu-et-al.-2024">Chu, X., Li, Y., Zeng, A., Yang, T., Lin, L., Liu, Y., Harada, T. (2024). GAGAvatar: Generalizable and Animatable Gaussian Head Avatar. <em>NeurIPS 2024</em>. <a href="https://arxiv.org/abs/2410.07971" target="_blank">arXiv:2410.07971</a></li>
+    <li data-cite-key="Deng-et-al.-2024">Deng, Y., Wang, D., Wang, B. (2024). Portrait4D-v2: Pseudo Multi-View Data Creates Better 4D Head Synthesizer. <em>ECCV 2024</em>. <a href="https://arxiv.org/abs/2403.13570" target="_blank">arXiv:2403.13570</a></li>
+    <li data-cite-key="Zheng-et-al.-2024">Zheng, X. et al. (2024). HeadGAP: Few-shot 3D Head Avatar via Generalizable Gaussian Priors. <em>3DV 2025</em>. <a href="https://arxiv.org/abs/2408.06019" target="_blank">arXiv:2408.06019</a></li>
+    <li data-cite-key="Li-et-al.-2017">Li, T., Bolkart, T., Black, M. J., Li, H., Romero, J. (2017). Learning a Model of Facial Shape and Expression from 4D Scans (FLAME). <em>SIGGRAPH Asia 2017</em>. <a href="https://flame.is.tue.mpg.de/" target="_blank">flame.is.tue.mpg.de</a></li>
+    <li data-cite-key="Kirschstein-et-al.-2023">Kirschstein, T., Qian, S., Giebenhain, S., Walter, T., Nießner, M. (2023). NeRSemble: Multi-view Radiance Field Reconstruction of Human Heads. <em>SIGGRAPH 2023</em>. <a href="https://arxiv.org/abs/2305.03027" target="_blank">arXiv:2305.03027</a></li>
+    <li data-cite-key="Simeoni-et-al.-2025">Siméoni, O. et al. (2025). DINOv3. <em>arXiv preprint</em>. <a href="https://arxiv.org/abs/2508.10104" target="_blank">arXiv:2508.10104</a></li>
+    <li data-cite-key="Hong-et-al.-2023">Hong, Y. et al. (2023). LRM: Large Reconstruction Model for Single Image to 3D. <em>ICLR 2024</em>. <a href="https://arxiv.org/abs/2311.04400" target="_blank">arXiv:2311.04400</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="paper-hunyuan-avatar.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（五十三）：HunyuanVideo-Avatar</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <div class="nav-card current"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">敬请期待</span></div>
+</div>
