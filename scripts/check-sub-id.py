@@ -12,6 +12,9 @@ check-sub-id.py — sub_id 分配检查工具
     # 只看某个分类路径（支持部分匹配）
     python3 scripts/check-sub-id.py --category 数字人
 
+    # 只输出下一个可用 sub_id（agent 友好，排除 Hub 页）
+    python3 scripts/check-sub-id.py --category 数字人 --suggest
+
     # 查看指定文件列表
     python3 scripts/check-sub-id.py --files paper-x-portrait.html lia-x-2025.html
 """
@@ -180,6 +183,9 @@ def main():
   # 只看包含"数字人"的路径
   python3 scripts/check-sub-id.py --category 数字人
 
+  # 只输出下一个可用 sub_id（排除 Hub 页）
+  python3 scripts/check-sub-id.py --category 数字人 --suggest
+
   # 指定步长（默认 10）
   python3 scripts/check-sub-id.py --step 10
         """
@@ -190,15 +196,17 @@ def main():
                         help='sub_id 步长（默认 10）')
     parser.add_argument('--files', '-f', nargs='*', default=None,
                         help='只检查指定文件')
+    parser.add_argument('--suggest', '-s', action='store_true',
+                        help='只输出下一个可用 sub_id（每行：<sub_id>\\t<路径>），排除 Hub 页')
 
     args = parser.parse_args()
-    
+
     all_data = scan_all_pages()
-    
+
     if not all_data:
         print("未找到任何带 categories/ 路径的文章")
         sys.exit(0)
-    
+
     # Filter by category
     if args.category:
         filtered = {k: v for k, v in all_data.items() if args.category in k}
@@ -207,7 +215,7 @@ def main():
             print(f"可用路径: {list(all_data.keys())}")
             sys.exit(1)
         all_data = filtered
-    
+
     # Filter by files
     if args.files:
         file_set = set(args.files)
@@ -215,6 +223,17 @@ def main():
         for cat, entries in all_data.items():
             filtered[cat] = [e for e in entries if e[1] in file_set]
         all_data = {k: v for k, v in filtered.items() if v}
+
+    # Suggest mode: print next available sub_id per non-index path
+    if args.suggest:
+        non_index = {k: v for k, v in all_data.items() if not k.endswith('/index')}
+        if not non_index:
+            print("未找到非 Hub 分类路径（所有匹配均为 index 页）", file=sys.stderr)
+            sys.exit(1)
+        for cat_path in sorted(non_index.keys()):
+            next_id = find_next_sub_id(non_index[cat_path], args.step)
+            print(f"{next_id}\t{cat_path}")
+        sys.exit(0)
     
     # Print report
     print(f"\n{'#' * 70}")
