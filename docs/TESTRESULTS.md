@@ -1,6 +1,6 @@
 # Test Results
 
-**Run:** 2026-07-27T07:45:59.084Z
+**Run:** 2026-08-13T08:24:55.546Z
 
 ## Summary
 
@@ -9,7 +9,7 @@
 | Total | 220 |
 | Passed | 220 |
 | Failed | 0 |
-| Duration | 10.76s |
+| Duration | 28.84s |
 
 ## Per-Module Results
 

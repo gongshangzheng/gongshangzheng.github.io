@@ -312,7 +312,10 @@ paper_code: "未开源（截至 2026.06 未找到官方仓库）"
 
 1. 分配前**必须运行检查命令**：
    ```bash
-   # 一键检查指定分类的 sub_id 分布
+   # 直接获取下一个可用 sub_id（输出格式：<sub_id>\t<路径>，排除 Hub 页）
+   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/check-sub-id.py --category <分类关键词> --suggest
+
+   # 如需查看完整分布 + 冲突检查，去掉 --suggest
    ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/check-sub-id.py --category <分类关键词>
    ```
 2. **同级编号**（步长 10，无例外）：

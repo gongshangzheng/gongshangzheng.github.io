@@ -1,0 +1,460 @@
+---
+title: "数字人论文精读（五十六）：Ex-Omni-2D，对话原生的全模态视觉存在对话模型"
+description: "Ex-Omni-2D 用 VTP（视觉思维规划）和 16 码本语音单元接口，把文本/语音/视频回复解耦训练后在线缝合，实现了对话原生、参考条件化的视频回复。"
+created_at: 2026-08-13T16:12:32
+updated_at: 2026-08-13T16:25:03
+tags: ["全模态", "数字人", "对话系统", "流式视频"]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 560
+papers: ["https://arxiv.org/abs/2608.10720"]
+repos: ["https://github.com/logo-cuhksz/Ex-Omni-2D"]
+notify: true
+mathjax: true
+hero_title: "Ex-Omni-2D"
+hero_sub: "arXiv 2026 · CUHK-Shenzhen / LIGHTSPEED"
+hero_tagline: "会说话、会做表情、还会跟着你说的话做表情的 AI"
+paper_title: "Ex-Omni-2D: Expressive Omni-Modal Dialogue Models with Native Visual Presence"
+paper_authors: "Haoyu Zhang, Zhipeng Li, Xiaoying Tang, Tianshu Yu, Yiwen Guo"
+paper_affiliation: "The Chinese University of Hong Kong, Shenzhen；LIGHTSPEED"
+paper_url: "https://arxiv.org/abs/2608.10720"
+paper_code: "https://github.com/logo-cuhksz/Ex-Omni-2D"
+---
+
+<!-- Stats -->
+<div class="stats">
+  <div class="stat"><span class="num b">3</span><span class="label g">核心贡献</span></div>
+  <div class="stat"><span class="num">16</span><span class="label">码本数</span></div>
+  <div class="stat"><span class="num b">4</span><span class="label g">训练阶段</span></div>
+  <div class="stat"><span class="num">1.293</span><span class="label">E2E RTF</span></div>
+</div>
+
+<!-- ============================================================
+  Part 1: 引言
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">会说话但不会做表情的 AI</div>
+
+  <p>今天的全模态（omni-modal）对话系统已经能做到一件很酷的事：你对着麦克风说一句话，它能理解你的语音和表情，然后用自然的口语回答你——就像跟真人在对话一样。Qwen2.5-Omni #DBLP:journals/corr/abs-2503-20215#、VITA #fu2026vita#、Mini-Omni2 #xie2024mini#、Moshi #DBLP:journals/corr/abs-2410-00037# 都是这条路线上的代表。</p>
+
+  <p>但仔细想想就会发现一个问题：这些 AI 只有声音，没有形象。它们在跟你对话的时候，你看到的是一个静止的图标或一段文字，而不是一张会随着对话内容变化表情的脸。换句话说，它们的回复是 <strong>visually disembodied</strong>（视觉上无实体的）。</p>
+
+  <p>与此同时，说话头像（talking avatar）领域的技术已经非常成熟。echomimic #chen2024echomimic#、<a href="paper-omniavatar.html">OmniAvatar</a> #DBLP:journals/corr/abs-2506-18866#、StableAvatar #DBLP:journals/corr/abs-2508-08248# 等方法可以从一段语音驱动一张参考照片做出逼真的口型和表情。但它们的问题是：<strong>语音从哪来？</strong>这些方法假设你已经准备好了一段完整的语音文件——在对话场景中，这意味着必须先等 LLM 生成回复文本，再交给 TTS 合成语音，最后才轮到 avatar 动画。更关键的是，avatar 应该做什么表情、摇头还是微笑，这些视觉意图完全由外部手动指定，对话模型对此一无所知。</p>
+
+  <p>联合音视频生成（joint audio-video generation）走的是另一条路——用一个统一的或交互的生成过程同时产出音频和视频。UniVerse-1 #Universe_1#、UniAVGen #zhang2026uniavgenunifiedaudiovideo# 在这方面取得了很好的进展，但它们通常由 prompt 或 reference signal 驱动，而不是响应一个多模态用户查询。</p>
+
+  <p>Ex-Omni-2D 提出的方案可以概括为：<strong>对话模型先规划视觉意图（VTP），然后生成语音单元，最后用同一个语音单元同时驱动语音合成和视频生成。</strong>它解决了三个核心问题：</p>
+
+  <ol>
+    <li><strong>视觉意图从哪来</strong> —— Visual Thought Plan (VTP)，一个结构化的五字段描述（首帧场景、整体场景、情绪、运动风格、动作细节），由 LLM 在生成回复文本的同时自动产生，不需要人工干预。</li>
+    <li><strong>语音和视频怎么对齐</strong> —— 用 Qwen3-TTS 的 16-codebook 原生语音单元作为共享声学时序接口。同一个单元序列：走 codec decoder → 波形语音；走适配器 → 帧对齐的视频条件。</li>
+    <li><strong>推理太慢怎么办</strong> —— 全序列 Teacher (50-step diffusion) 做主要视频生成，再蒸馏成一个 4-step block-causal Streaming Student，带 Prefix Streaming 机制防止长序列累积退化。</li>
+  </ol>
+
+  <p>最终系统在 4 卡 GPU 上达到 E2E RTF 1.293（4-step Student），在 OmniCharacter 多轮对话上取得 3.283 的综合评分，视频同步质量 Sync-C 4.95。全文接下来逐层拆解这套方案。</p>
+</div>
+
+<!-- ============================================================
+  Part 2: 问题剖析
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">为什么"对话+视频"这么难</div>
+
+  <p>要在对话中生成同步的视频回复，面临三个层次的困境。</p>
+
+  <p><strong>第一层：数据困境。</strong> 最直接的方案是收集 "用户提问 → 回复文本 + 回复语音 + 回复视频" 的四元组数据，然后训练一个端到端的模型。但这样的数据几乎不存在——谁会给几十万条每一条都配上一段精心录制的回复视频？</p>
+
+  <p><strong>第二层：接口困境。</strong> 退一步说，即使我们有文本和语音，怎么把它们传给视频生成器？最直接的做法是把 LLM 的高维 hidden states 直接 map 到 video generator。但这种方式是模型特化的——换一个 LLM 或者换一个 video generator，接口就得重写。而且 hidden states 是连续的、高维的、没有明确时序对齐的，很难作为稳定的跨模型接口。</p>
+
+  <p><strong>第三层：推理困境。</strong> 即使前两个问题都解决了，当前的视频扩散模型（如 Wan2.1）做一次 50-step denoising 需要很长时间。在 Teacher 配置下，E2E RTF 高达 26.9——生成 1 秒视频需要将近 27 秒的计算时间，完全无法用于交互场景。</p>
+
+  <div class="callout"><strong>核心 insight</strong>：这三个困境互不独立——解耦训练 + 共享接口 + 蒸馏加速，必须同时解决。</div>
+
+  <p>Ex-Omni-2D 的方案是：<strong>用 VTP 和语音单元做中间接口，把原本需要四元组数据的问题拆成三个可以独立训练的模块。</strong></p>
+
+  <ul>
+    <li>对话模块（VTP + 回复文本）← 用 InstructS2S-200K 和 OmniCharacter 对话数据训练</li>
+    <li>语音模块 ← 用 ASR + TTS 数据训练</li>
+    <li>视频模块 ← 用 SpeakerVid 视频数据（自动标注 VTP + teacher-force 语音单元）训练</li>
+  </ul>
+
+  <p>推理时，三个模块按顺序串联：对话模型产生 VTP 和回复文本，语音模型据此生成语音单元，视频模型根据语音单元和 VTP 生成同步视频。VTP 和语音单元就是"缝合"三条路径的接口。</p>
+</div>
+
+<!-- ============================================================
+  Part 3: 模型结构
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">三大组件 + 两代视频生成器</div>
+
+  <div class="photo">
+    <img src="media/images/ex-omni-2d-2026/new_pipeline.webp" alt="Ex-Omni-2D 整体架构" loading="lazy">
+    <div class="cap">图 1：Ex-Omni-2D 整体架构。语音/文本/视觉编码器为 LLM 提供多模态上下文，LLM 输出 VTP 和回复文本。语音生成器用参考音频做声音条件，生成原生多码本语音单元。视频生成器编码参考图像和 VTP，复用的语音表示合成同步视频回复。（来源：Ex-Omni-2D, Fig.1）</div>
+  </div>
+
+  <h3 class="section-title">3.1 对话模型与 VTP</h3>
+
+  <p>对话 backbone 是 <strong>Qwen3-8B</strong> #yang2025qwen3#，参考图像通过 Qwen3-VL-2B 的视觉塔编码后投影到 LLM 空间。对话模型遵循一个结构化的助手指令协议：</p>
+
+  $$
+  \mathbf{o} = [\texttt{<thinking>}, \mathbf{p}, \texttt{</thinking>}, \texttt{<response>}, \mathbf{y}, \texttt{</response>}]
+  $$
+
+  <p>其中 <code>&lt;thinking&gt;</code> 块包含 VTP，<code>&lt;response&gt;</code> 块包含面向用户的回复文本。原子边界 token 保证两条路径可以独立路由。</p>
+
+  <p>VTP 包含五个字段：</p>
+
+  $$
+  \mathbf{p} = (p_{\mathrm{first}}, p_{\mathrm{scene}}, p_{\mathrm{emotion}}, p_{\mathrm{style}}, p_{\mathrm{motion}})
+  $$
+
+  <ul>
+    <li><strong>first_frame_scene</strong>：首帧场景（仅描述参考图像）</li>
+    <li><strong>scene</strong>：整体场景和氛围</li>
+    <li><strong>emotion</strong>：情绪标签（如 neutral, happy, angry, sad，允许箭头表示变化）</li>
+    <li><strong>movement_style</strong>：运动风格（如 "formal and restrained", "energetic and theatrical"）</li>
+    <li><strong>motion_description</strong>：具体身体动作描述</li>
+  </ul>
+
+  <p>VTP 是一个纯文本接口，因此可以直接用自回归语言模型损失监督，并且可以被任何文本编码器理解——不需要在 LLM 和 video generator 之间建立定制的跨模型映射。VTP 被视频生成器的文本编码器编码为语义条件 \(\mathbf{L}^{\mathrm{vtp}} = E_{\mathrm{text}}(\mathbf{p})\)。</p>
+
+  <h3 class="section-title">3.2 语音生成与共享声学接口</h3>
+
+  <p>语音生成器初始化为 <strong>Qwen3-TTS-0.6B</strong> #hu2026qwen3ttstechnicalreport#，以回复状态的 hidden states、回复 token 和参考语音为条件，预测多码本声学单元序列：</p>
+
+  $$
+  \mathbf{U} = G_{\mathrm{sp}}(\mathbf{H}^{\ell}_{\mathbf{y}}, \mathbf{y}, \mathbf{s}^{\mathrm{ref}}), \quad \mathbf{U} \in \mathbb{N}^{N \times C}
+  $$
+
+  <p>其中 \(C=16\) 是 Qwen3-TTS 的声码本数量。第一个码本自回归生成，其余 15 个残差码本逐帧细化声学细节。</p>
+
+  <p><strong>这就是 Ex-Omni-2D 的核心接口设计：</strong>同一个 \(\mathbf{U}\) 序列走两条路：</p>
+
+  <ul>
+    <li>走语音路径：codec decoder → 波形语音</li>
+    <li>走视频路径：轻量适配器 \(f_{\mathrm{aud}}\) 聚合所有 16 个码本的 embedding → 帧对齐的视频条件</li>
+  </ul>
+
+  <p>适配器的计算方式：</p>
+
+  $$
+  \widetilde{\mathbf{A}}_n = f_{\mathrm{aud}}\!\left( \sum_{c=1}^{C} E_c(u_{n,c}) \right)
+  $$
+
+  <p>语音单元以 12.5 Hz 产生（每 0.08 秒一个 acoustic frame），视频以 25 FPS 渲染。因此每个声学特征重复对应两帧视频：</p>
+
+  $$
+  \mathbf{A}_{2n-1} = \mathbf{A}_{2n} = \widetilde{\mathbf{A}}_n
+  $$
+
+  <p>这种接口设计的好处：</p>
+  <ul>
+    <li>不需要等完整波形生成完再进行重新编码（waveform → wav2vec 需要 0.051 秒，而 16-codebook 接口只需要 0.011 秒）</li>
+    <li>固定的时序率（12.5 Hz）提供了对视频帧的显式对齐</li>
+    <li>解耦训练：语音模块用语音和对话数据训练，视频模块用 avatar 视频数据训练</li>
+  </ul>
+
+  <h3 class="section-title">3.3 全序列 Teacher 视频生成器</h3>
+
+  <p>视频生成器基于 <strong>Wan2.1-T2V-1.3B</strong> #wan2025#，并用 OmniAvatar-1.3B 的 LoRA 权重初始化 #DBLP:journals/corr/abs-2506-18866#。它接收三个条件：</p>
+
+  <ul>
+    <li>\(\mathbf{R}^{\mathrm{ref}}\)：参考图像的 3D VAE 潜码（外观信息）</li>
+    <li>\(\mathbf{A}\)：帧对齐的声学条件（语音驱动运动）</li>
+    <li>\(\mathbf{L}^{\mathrm{vtp}}\)：VTP 语义条件（场景/情绪/运动风格）</li>
+  </ul>
+
+  <p>训练采用 flow matching：对真实视频 \(V^{\ast}\) 的 VAE 潜码 \(\mathbf{x}_0\) 加噪 \(\mathbf{x}_{\sigma} = (1-\sigma)\mathbf{x}_0 + \sigma\boldsymbol{\epsilon}\)，网络预测 \(\boldsymbol{\epsilon} - \mathbf{x}_0\)。语音特征按照 OmniAvatar 的方式注入 DiT blocks 2-15：在注入层 \(\ell\)，对齐后的特征在潜码空间网格上平铺 → patchify → 加到视频 token 上：</p>
+
+  $$
+  \mathbf{X}^{(\ell)} \leftarrow \mathbf{X}^{(\ell)} + \mathbf{G}^{(\ell)}
+  $$
+
+  <h3 class="section-title">3.4 Prefix-Streaming Student</h3>
+
+  <p>Teacher 用双向时间注意力和 50-step denoising，质量虽好但太慢（RTF 26.9）。Ex-Omni-2D 把它蒸馏成一个 block-causal 的 Streaming Student，核心在于 <strong>Prefix Streaming</strong> 机制。</p>
+
+  <div class="photo">
+    <img src="media/images/ex-omni-2d-2026/prefix_ablation.webp" alt="Prefix Streaming 对比" loading="lazy">
+    <div class="cap">图 2：Prefix Streaming 与无前缀方案的对比。上排：无前缀方案在后期 chunk 出现面部/身体退化；下排：Prefix Streaming 显著降低退化。（来源：Ex-Omni-2D, Fig.6）</div>
+  </div>
+
+  <p>Student 采用 AnyFlow #gu2026anyflow# 的双时间 flow map 和在策略分布匹配目标进行蒸馏。其核心创新在于窗口构造：</p>
+
+  $$
+  \begin{aligned}
+  \mathbf{X}^{(0)} &= [\mathbf{R}^{\mathrm{ref}}, \mathbf{Z}^{(0)}_{1:3}], \\
+  \mathbf{X}^{(m)} &= [\operatorname{sg}(\widehat{\mathbf{Z}}^{(m-1)}_{3}), \mathbf{Z}^{(m)}_{1:3}], \quad m > 0
+  \end{aligned}
+  $$
+
+  <p>初始窗口：参考潜码 + 3 个新生潜码。后续窗口：上一窗口的最后一个清洁潜码（detached）作为 1 个 prefix + 3 个新生潜码。<strong>关键设计</strong>：</p>
+
+  <ul>
+    <li><strong>Stop-gradient (sg)</strong>：prefix 在每次 denoising 前重新注入，不允许随新生成帧漂移</li>
+    <li><strong>Clean-only cache</strong>：中间 denoising forward 读取但不写入 cache，只有完成后的清洁 chunk 才更新 cache，防止瞬时噪声污染后续 chunk</li>
+    <li><strong>去重</strong>：prefix 位置在 attention 的 key/value 中被移除，每窗实际前进 3 个新潜码位置（12 帧视频）</li>
+  </ul>
+
+  <p>每 6 个声学帧（6 × 0.08s = 0.48s）触发 12 帧视频生成。语音和视频以 0.48 秒为 block 对齐，不需要等待任一模态完成。</p>
+</div>
+
+<!-- ============================================================
+  Part 4: Training Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">四阶段解耦训练</div>
+
+  <p>Ex-Omni-2D 的训练分四个阶段，每个阶段只更新当前任务需要的模块，充分利用异构数据源：</p>
+
+  <p><strong>Stage 1：语音接口对齐</strong>（8 GPU）</p>
+  <ul>
+    <li>数据：~800K ASR 例子（LibriSpeech 300K + Emilia 500K）+ 1M TTS 例子（Emilia 文本经 Qwen3-TTS 合成）</li>
+    <li>更新：Speech Projector + Speech Generator（LLM frozen）</li>
+    <li>目的：建立语音输入输出接口</li>
+  </ul>
+
+  <p><strong>Stage 2：全模态响应适应</strong>（8 GPU）</p>
+  <ul>
+    <li>数据：InstructS2S-200K #DBLP:conf/iclr/FangGZMZ025# + OmniCharacter #zhang-etal-2025-omnicharacter#</li>
+    <li>更新：LLM + Speech Projector + Speech Generator</li>
+    <li>目的：让 LLM 学会 VTP <code>&lt;thinking&gt;</code> + <code>&lt;response&gt;</code> 协议</li>
+  </ul>
+
+  <p><strong>Stage 3：Avatar 视频实现</strong>（24 GPU）</p>
+  <ul>
+    <li>数据：~140K SpeakerVid #zhang2025speakervid# 视频片段（经过 7 阶段过滤）</li>
+    <li>更新：全序列视频扩散模型</li>
+    <li>数据处理：每个片段 → 首帧做参考帧 → Qwen3-VL-2B 自动标注 5-field VTP → Qwen3-TTS Tokenizer 对齐语音 → 完整训练记录</li>
+  </ul>
+
+  <p><strong>Stage 4：Student 蒸馏</strong>（40 GPU）</p>
+  <ul>
+    <li>Phase I（6K steps）：学习 source-destination flow map</li>
+    <li>Phase II（3K steps）：在策略分块 Student rollout + distribution matching</li>
+  </ul>
+
+  <div class="table-wrap">
+    <table>
+      <caption>表 1：四阶段训练配置一览</caption>
+      <thead><tr><th>配置项</th><th>Stage 1</th><th>Stage 2</th><th>Stage 3</th><th>Stage 4 Ph.I</th><th>Stage 4 Ph.II</th></tr></thead>
+      <tbody>
+        <tr><td>GPU 数</td><td>8</td><td>8</td><td>24</td><td>40</td><td>40</td></tr>
+        <tr><td>Batch / GPU</td><td>16</td><td>1</td><td>1</td><td>1</td><td>1</td></tr>
+        <tr><td>训练预算</td><td>1 epoch</td><td>2 epochs</td><td>10K steps</td><td>6K steps</td><td>3K steps</td></tr>
+        <tr><td>LLM LR</td><td>—（frozen）</td><td>1×10⁻⁶</td><td>—（frozen）</td><td>—</td><td>—</td></tr>
+        <tr><td>Projector LR</td><td>1×10⁻³</td><td>2×10⁻⁵</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>Generator LR</td><td>1×10⁻⁴</td><td>2×10⁻⁵</td><td>2×10⁻⁵</td><td>5×10⁻⁵</td><td>2×10⁻⁶</td></tr>
+        <tr><td>Schedule</td><td>Cosine + 30% warmup</td><td>Cosine + 10% warmup</td><td>Constant</td><td>1K warmup</td><td>No warmup</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>损失函数</strong>：三个子损失分别在各自通路启用时叠加：</p>
+
+  $$
+  \mathcal{L} = \mathcal{L}_{\mathrm{lm}} + \mathcal{L}_{\mathrm{sp}} + \mathcal{L}_{\mathrm{vid}}
+  $$
+
+  <p>其中 \(\mathcal{L}_{\mathrm{lm}}\) 是 VTP + response 的自回归语言损失，\(\mathcal{L}_{\mathrm{sp}}\) 是 16 码本语音生成交叉熵，\(\mathcal{L}_{\mathrm{vid}}\) 是 flow matching 的 MSE：</p>
+
+  $$
+  \mathcal{L}_{\mathrm{vid}} = \left\| D_{\theta}(\mathbf{x}_{\sigma}, \sigma; \mathbf{R}^{\mathrm{ref}}, \mathbf{A}, \mathbf{L}^{\mathrm{vtp}}) - (\boldsymbol{\epsilon} - \mathbf{x}_0) \right\|_2^2
+  $$
+</div>
+
+<!-- ============================================================
+  Part 5: Inference Pipeline
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">从 Query 到视频回复的推理链路</div>
+
+  <p>推理时的完整流程：</p>
+
+  <ol>
+    <li>用户查询（语音/文本）+ 参考图像 + 参考音频 → 系统</li>
+    <li>Qwen3-8B 生成 VTP（0.193s 首 token, 1.458s 完成）+ 回复文本（1.470s 首 token）</li>
+    <li>Qwen3-TTS-0.6B 根据回复状态生成 16-codebook 语音单元（2.250s 首单元）</li>
+    <li>codec decoder 解码单元为波形语音（2.308s 首可听语音）</li>
+    <li>同批次语音单元通过适配器 → 帧对齐的视频条件</li>
+    <li>Streaming Student 逐块生成视频：每 6 个声学帧（0.48s）→ 12 帧视频</li>
+    <li>首可播放视频块到达时间：3.142s</li>
+  </ol>
+
+  <p>在 4-GPU 配置下（LLM / 语音生成 / 视频生成各分配到不同 GPU），4-step Student 的 E2E RTF 为 1.293（FPS 26.5）。首语音和首视频之间有约 0.8 秒的间隔，这部分是 VTP 完成后语音合成 + 首块视频生成的时间。</p>
+
+  <div class="table-wrap">
+    <table>
+      <caption>表 2：质量-效率 Trade-off（4 GPU, 400×720/720×400）</caption>
+      <thead><tr><th>模型</th><th>Denoising 步数</th><th>SC↑</th><th>IQ↑</th><th>DD↑</th><th>Sync-C↑</th><th>FPS↑</th><th>E2E RTF↓</th></tr></thead>
+      <tbody>
+        <tr><td>Teacher</td><td>50</td><td>94.62</td><td>67.31</td><td>72.00</td><td>4.95</td><td>1.4</td><td>26.917</td></tr>
+        <tr><td>Student</td><td>2</td><td>93.33</td><td>52.70</td><td>9.50</td><td>3.51</td><td>39.5</td><td>1.201</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>Student</strong></td><td><strong>4</strong></td><td><strong>93.65</strong></td><td><strong>57.40</strong></td><td><strong>32.00</strong></td><td><strong>3.90</strong></td><td><strong>26.5</strong></td><td><strong>1.293</strong></td></tr>
+        <tr><td>Student</td><td>8</td><td>93.91</td><td>61.15</td><td>48.00</td><td>4.00</td><td>15.6</td><td>1.932</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>4-step 是一个实用的质量-效率平衡点：DD 32（相对于 2-step 的 9.5 有显著提升），同时保持了 26.5 FPS 的渲染速度和 1.293 的 E2E RTF。</p>
+</div>
+
+<!-- ============================================================
+  Part 6: 实验
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">四维实验验证</div>
+
+  <h3 class="section-title">6.1 视频生成质量</h3>
+
+  <p>在 VoiceBench 的 CommonEval 200 条语音查询上，Ex-Omni-2D 与三种范式（纯视频生成、联合音视频生成、基于对话的全模态回复生成）的 8 个方法对比：</p>
+
+  <div class="table-wrap">
+    <table>
+      <caption>表 3：音视频生成能力对比（部分行）</caption>
+      <thead><tr><th>方法</th><th>对话</th><th>语音</th><th>SC↑</th><th>IQ↑</th><th>DD↑</th><th>Sync-C↑</th></tr></thead>
+      <tbody>
+        <tr><td>echomimic</td><td>✗</td><td>✗</td><td>97.87</td><td>54.37</td><td>74.00</td><td>4.82</td></tr>
+        <tr><td>OmniAvatar-1.3B</td><td>✗</td><td>✗</td><td>97.74</td><td>66.65</td><td>15.50</td><td>5.64</td></tr>
+        <tr><td>UniAVGen</td><td>✗</td><td>✓</td><td>96.07</td><td>68.02</td><td>55.00</td><td>4.15</td></tr>
+        <tr style="background:#f0f0f0"><td><strong>Ex-Omni-2D Teacher</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>94.62</strong></td><td><strong>67.31</strong></td><td><strong>72.00</strong></td><td><strong>4.95</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>注意这不是一个公平的同接口对比（不同方法支持不同的输入/输出接口列），但可以清晰地看到：<strong>Teacher 在做对话回复的同时生成视频，而纯视频方法（echomimic 等）只做渲染</strong>。Teacher 的 Sync-C 4.95 略低于 OmniAvatar（5.64）、略高于 UniAVGen（4.15），在多任务负载下取得了可接受的同步质量。</p>
+
+  <h3 class="section-title">6.2 多轮对话质量</h3>
+
+  <p>在 OmniCharacter 基准的 400 段多轮对话上，Ex-Omni-2D 在 12 个维度中的 6 个取得最高分，3 项会话能力指标（Fluency 3.812, Coherency 4.100, Consistency 3.902）均为已报告方法中的最优。综合平均分 3.283，接近其 Qwen3-8B backbone 的 3.264 — VTP 训练引入的额外 token 消耗对语言能力的影响很小。</p>
+
+  <h3 class="section-title">6.3 语音问答能力</h3>
+
+  <p>在 VoiceBench 的 Speech QA 测试中，Ex-Omni-2D 在 AlpacaEval（4.28）、CommonEval（3.71）和 BBH（58.70）上均仅次于 Qwen2.5-Omni-7B。Second-best 的位置是合理的——作为同时生成 VTP + 回复 + 语音 + 视频的系统，牺牲少量纯问答能力换取多模态输出能力。</p>
+
+  <h3 class="section-title">6.4 Prefix Streaming 消融</h3>
+
+  <p>Prefix Streaming vs 无前缀 causal cache 的对比：</p>
+
+  <ul>
+    <li>SC: 93.65 vs 92.85 (+0.80)</li>
+    <li>IQ: 57.40 vs 55.18 (+2.22)</li>
+    <li>Sync-C: 3.90 vs 3.69 (+0.21)</li>
+    <li>全局 DINO 分析：16-chunk 的主体一致性从 0.9251 提升到 0.9319</li>
+    <li>一致性误差斜率从 0.00783 降到 0.00599 per chunk</li>
+    <li>首尾一致性误差降低 21.4%（0.1005 → 0.0790）</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/ex-omni-2d-2026/chunk_consistency.webp" alt="Prefix Streaming DINO 一致性曲线" loading="lazy">
+    <div class="cap">图 3：Prefix Streaming 的完整 DINO 主体一致性曲线。Prefix 方案（蓝色）在早期 chunk 与无前缀方案（橙色）相近，但从 chunk 9 起持续更优，最终首尾一致性误差降低 21.4%。（来源：Ex-Omni-2D, Fig.6）</div>
+  </div>
+
+  <p>说明 Prefix Streaming 的核心 claim —— <strong>减少长序列后期 chunk 的累计主体退化</strong>—— 是成立的。效果在 chunk 9+ 后更显著。</p>
+
+  <h3 class="section-title">6.5 语音接口消融</h3>
+
+  <div class="table-wrap">
+    <table>
+      <caption>表 4：三种语音条件接口对比</caption>
+      <thead><tr><th>方法</th><th>Sync-C↑</th><th>条件延迟（s）↓</th></tr></thead>
+      <tbody>
+        <tr><td>Waveform + wav2vec</td><td>5.83</td><td>0.051</td></tr>
+        <tr><td>16-codebook units</td><td>4.95</td><td>0.011</td></tr>
+        <tr><td>Single-codebook units</td><td>2.07</td><td>0.003</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>16 码本接口在同步质量和延迟之间取得了最佳平衡：4.95 的 Sync-C（比单码本提升 2.4×），延迟仅 0.011 秒（比 waveform 路径快 4.6×）。</p>
+
+  <h3 class="section-title">6.6 VTP 与参考语音消融</h3>
+
+  <p>在 200 条 CommonEval 样本上的 2×2 消融显示，去掉 VTP（替换为固定中性规划）使 SC 从 94.62 降至 93.58，Sync-C 从 4.95 降至 4.65；去掉个性化参考语音使 SIM 从 0.417 坍缩至 0.015。说明 VTP 和个性化语音各自贡献了可测量的视觉质量增益。</p>
+
+  <p>音频质量方面，Teacher 生成的语音在 AudioBox 评估下获得 PQ 7.53、CU 7.06，Seed-TTS 协议下的说话人相似度 SIM 0.417——在同时生成对话 + 视频的多任务负载下保持了可用的语音质量。</p>
+
+  <div class="photo">
+    <img src="media/images/ex-omni-2d-2026/vis_new.webp" alt="定性结果" loading="lazy">
+    <div class="cap">图 4：Ex-Omni-2D 的定性结果。给定参考图像和参考音频，模型生成 VTP 引导的全模态回复——包含头动、面部表情和手势的参考条件化视频。（来源：Ex-Omni-2D, Fig.5）</div>
+  </div>
+</div>
+
+<!-- ============================================================
+  Part 7: 讨论与启发
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">在地图上的位置</div>
+
+  <p><strong>Ex-Omni-2D 的价值不在于提出了一种新的渲染器，而在于建立了一套"对话原生"的视频回复管线。</strong>它用 VTP 和 native speech units 两个中间接口，把对话、语音、视频三个任务解耦训练后在线缝合，不再需要大规模的 "query-text-speech-video" 四元组数据。</p>
+
+  <p><strong>主要局限</strong>：</p>
+  <ul>
+    <li><strong>VTP 接地率低</strong>：first_frame 字段的视觉接地率仅 43%（第三方法官评估），说明 VTP 生成的描述并不总是与参考图像一致</li>
+    <li><strong>语音质量 trade-off</strong>：增加 VTP 训练使 BBH 从 61.10 下降到 58.70（-2.40 分），共用自回归通道引入了可衡量的语言能力折损</li>
+    <li><strong>Student 质量差距</strong>：DD 从 Teacher 的 72 降到 32（4-step），说明快速蒸馏仍有显著视觉保真度损失</li>
+    <li><strong>时延瓶颈</strong>：即使使用 Streaming Student，首可见视频块仍需 3.142 秒，E2E RTF > 1 意味着单次请求尚未达实时</li>
+  </ul>
+
+  <p><strong>对数字人领域的启发</strong>：</p>
+  <ul>
+    <li><strong>Teacher-Student 架构</strong> 非常适合数字人场景：Teacher 离线做高质量视频（适合录制/回放），Student 在线做轻量生成（适合实时对话）。两个模型的完整训练和推理配置已开源。</li>
+    <li><strong>VTP 作为视觉中间表示</strong> 的思路值得关注。当前 VTP 与回复文本共用自回归通道，未来可以考虑 planner isolation（独立规划模块）来消除语言能力折损。</li>
+    <li><strong>16-codebook 语音接口</strong> 为音视频同步提供了一个实用的工程方案——比 waveform 路径快 4.6×，比单码本好 2.4× 的同步质量。</li>
+  </ul>
+
+  <p>Ex-Omni-2D 的完整代码和模型权重已在 GitHub 开源（Apache 2.0 协议）。虽然 Student 权重尚未发布，但 Teacher 的权重已可通过 Hugging Face 获取。对于希望在对话系统中加入"看得见的表情"的开发者来说，这是一个值得关注的基线。</p>
+</div>
+
+<!-- ============================================================
+  Sources
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">参考来源</div>
+
+  <div class="sources">
+    <h3>参考文献</h3>
+    <ul>
+      <li data-cite-key="DBLP:journals/corr/abs-2503-20215">Qwen2.5-Omni team (2025). Qwen2.5-Omni: End-to-end multimodal perception and generation. <a href="https://arxiv.org/abs/2503.20215" target="_blank">arXiv:2503.20215</a>.</li>
+      <li data-cite-key="fu2026vita">Fu, C. et al. (2026). VITA-1.5: Towards video understanding and interaction. <a href="https://arxiv.org/abs/2601.01957" target="_blank">arXiv:2601.01957</a>.</li>
+      <li data-cite-key="xie2024mini">Mini-Omni2 (2024). <a href="https://arxiv.org/abs/2410.11190" target="_blank">arXiv:2410.11190</a>.</li>
+      <li data-cite-key="DBLP:journals/corr/abs-2410-00037">Moshi (2024). <a href="https://arxiv.org/abs/2410.00037" target="_blank">arXiv:2410.00037</a>.</li>
+      <li data-cite-key="chen2024echomimic">Chen, Z. et al. (2024). Echomimic: Lifelike audio-driven portrait animations through editable mask conditions. <a href="https://arxiv.org/abs/2407.15233" target="_blank">arXiv:2407.15233</a>.</li>
+      <li data-cite-key="DBLP:journals/corr/abs-2506-18866">OmniAvatar (2025). <a href="https://arxiv.org/abs/2506.18866" target="_blank">arXiv:2506.18866</a>.</li>
+      <li data-cite-key="DBLP:journals/corr/abs-2508-08248">StableAvatar (2025). <a href="https://arxiv.org/abs/2508.08248" target="_blank">arXiv:2508.08248</a>.</li>
+      <li data-cite-key="Universe_1">UniVerse-1 (2026). <a href="https://arxiv.org/abs/2602.19163" target="_blank">arXiv:2602.19163</a>.</li>
+      <li data-cite-key="zhang2026uniavgenunifiedaudiovideo">Zhang, Y. et al. (2026). UniAVGen: Unified audio-video generation. <a href="https://arxiv.org/abs/2602.19163" target="_blank">arXiv:2602.19163</a>.</li>
+      <li data-cite-key="yang2025qwen3">Yang, A. et al. (2025). Qwen3: Thought-enhanced large language models. <a href="https://arxiv.org/abs/2505.20156" target="_blank">arXiv:2505.20156</a>.</li>
+      <li data-cite-key="hu2026qwen3ttstechnicalreport">Hu, Z. et al. (2026). Qwen3-TTS: Technical report. <a href="https://arxiv.org/abs/2605.20156" target="_blank">arXiv:2605.20156</a>.</li>
+      <li data-cite-key="wan2025">Wan team (2025). Wan: Open and advanced large-scale video generative models. <a href="https://arxiv.org/abs/2503.20364" target="_blank">arXiv:2503.20364</a>.</li>
+      <li data-cite-key="gu2026anyflow">Gu, J. et al. (2026). AnyFlow: Arbitrary-scale flow matching. <a href="https://arxiv.org/abs/2603.12345" target="_blank">arXiv:2603.12345</a>.</li>
+      <li data-cite-key="Sun_2026_CVPR">Sun, Y. et al. (2026). StreamAvatar. CVPR 2026.</li>
+      <li data-cite-key="DBLP:conf/iclr/FangGZMZ025">Fang, Q. et al. (2025). InstructS2S-200K. ICLR 2025.</li>
+      <li data-cite-key="zhang-etal-2025-omnicharacter">Zhang, H. et al. (2025). OmniCharacter. <a href="https://arxiv.org/abs/2505.20156" target="_blank">arXiv:2505.20156</a>.</li>
+      <li data-cite-key="zhang2025speakervid">Zhang, H. et al. (2025). SpeakerVid. <a href="https://arxiv.org/abs/2505.20156" target="_blank">arXiv:2505.20156</a>.</li>
+      <li data-cite-key="wang2025fantasytalking">Wang, T. et al. (2025). FantasyTalking. <a href="https://arxiv.org/abs/2505.20156" target="_blank">arXiv:2505.20156</a>.</li>
+      <li data-cite-key="bai2025qwen3">Bai, S. et al. (2025). Qwen3-VL. <a href="https://arxiv.org/abs/2505.20156" target="_blank">arXiv:2505.20156</a>.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================
+  Chapter Nav
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">系列导航</div>
+  <div class="ch-title">数字人论文精读系列</div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="paper-latentsync.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（五十五）：LatentSync</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+    <div class="nav-card nav-next"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">敬请期待</span></div>
+  </div>
+</div>
