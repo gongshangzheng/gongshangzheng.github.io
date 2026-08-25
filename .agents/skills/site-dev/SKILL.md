@@ -313,7 +313,8 @@ date = 2025-01-01
 **本地验证**（push 前建议执行）：
 ```bash
 node build.js       # 编译 + 测试
-npx serve public    # 本地预览
+npm run serve       # 本地预览（preview.js --watch，端口 4000，LiveReload 热重载）
+npx serve public    # 纯静态预览（无热重载，备选）
 ```
 
 **注意**：`public/` 由 CI 自动生成，不要手动修改后提交到 main。改源码 → push → 等 Actions 绿勾 → 线上自动更新。

@@ -1,12 +1,13 @@
 ---
 name: blog-drafts
 description: |
-  管理待完成博客的 brainstorming 草稿。草稿存放在 `~/gongshangzheng.github.io/drafts/*.md`
-  （YAML frontmatter + markdown），记录目标位置、进度、状态。通过 git 跟踪草稿版本，
-  对照已发布文章判断需要回补哪些信息。提供 scripts/draft.py 脚本做 new/list/show/set/
-  set-all/archive/delete。不直接写 HTML——写正文交给 read-article / html-blog /
-  academic-research 等上游 skill。草稿目录不进 build.js，不部署到 gh-pages。
-version: 1.1.0
+  管理待完成博客的 brainstorming 草稿。草稿存放在 `~/gongshangzheng.github.io/drafts/`（.org 为默认格式，
+  .md 可选），frontmatter + 正文，记录目标位置、进度、状态。通过 git 跟踪草稿版本，
+  对照已发布文章判断需要回补哪些信息。脚本在 `.agents/skills/blog-drafts/scripts/`（draft.py 做
+  new/list/show/set/set-all/archive/delete/factcheck，draft-convert.py 做 md↔org 互转）。
+  不直接写 HTML——写正文交给 read-article / html-blog / academic-research 等上游 skill。
+  草稿目录不进 build.js，不部署到 gh-pages。
+version: 1.2.0
 category: blog-workflow
 tags: [blog, drafts, brainstorming, planning]
 ---
@@ -18,6 +19,19 @@ tags: [blog, drafts, brainstorming, planning]
 
 不要使用裸 `python`、`python3`、`pip` 或 `pip3`。
 
+## 脚本位置
+
+本 skill 的脚本在 `.agents/skills/blog-drafts/scripts/`（仓库根相对路径），**不在仓库根 `scripts/` 下**。
+下文所有命令都假设从仓库根目录（`~/gongshangzheng.github.io`）执行：
+
+```bash
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py list
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft-convert.py <slug> --to md
+```
+
+> 仓库根 `scripts/` 是站点级脚本（check-sub-id.py、convert-figures.py 等），与草稿管理无关。
+> 旧的 `scripts/draft-convert.py`（pandoc 版）已删除，由 skill 目录的纯 Python 版取代。
+
 ---
 
 # blog-drafts — 博客草稿管理
@@ -26,7 +40,8 @@ tags: [blog, drafts, brainstorming, planning]
 博客需要回补的内容。
 
 ```
-drafts/<slug>.md   (brainstorming，YAML+md，git 跟踪，不部署)
+drafts/<slug>.org  (brainstorming，#+frontmatter+org，git 跟踪，不部署；默认格式)
+                   (或 <slug>.md，YAML+markdown，显式 --format md 时生成)
        │  status: idea → outlining → drafting → review-ready → published
        ▼
 src/pages/<slug>.html  (已发布，build 部署到 gh-pages)
@@ -59,48 +74,75 @@ drafts/
 | `paper-note.org` / `paper-note.md` | 论文快读结构（问题/贡献/模型/训练/实验/总结） | 快速读完一篇论文，记下核心要点，不写 HTML |
 
 **两种格式**：
-- `.org`（**默认**）：用 `#+TITLE:` / `#+SLUG:` 等 `#+` 属性行做 frontmatter，正文是 org（`*` 标题、`**` 子节）。
-- `.md`：用 YAML `---` frontmatter，正文是 markdown（`#` 标题、`##` 子节）。
+- `.org`（**默认，`draft.py new` 不加 `--format` 时生成 org**）：用 `#+TITLE:` / `#+SLUG:` 等 `#+` 属性行做 frontmatter，正文是 org（`*` 标题、`**` 子节）。
+- `.md`：用 YAML `---` frontmatter，正文是 markdown（`#` 标题、`##` 子节），需显式 `--format md`。
 - 脚本自动按扩展名解析对应 frontmatter 格式；`list/show/set/archive` 等都能混合处理 `.org` 和 `.md`。
-- **格式互转**：`scripts/draft-convert.py <slug> --to org|md [--replace]` 用 pandoc 转 body + 保留 frontmatter（YAML↔#+），资产路径不变。详见下文「格式互转」。
+- **格式互转**：`draft-convert.py <slug> --to org|md [--replace] [--dry-run]`，纯 Python 无 pandoc 依赖，详见下文「格式互转」。
 
 > **设计理念**：brainstorm 模板刻意几乎空白——草稿正文由**用户自己写**，模板只提供 frontmatter
 > 骨架，不预设章节结构以免限制思考。需要结构化规划时用 `plan` 模板。
 
-## 管理脚本 `scripts/draft.py`
+## 管理脚本 `draft.py`
 
 所有草稿操作走脚本：
 
 ```bash
 # 新建草稿（默认 org 格式 + brainstorm 模板）
-~/.venv/bin/python3 scripts/draft.py new <slug> [--title T] [--type T] [--alias A] [--pin] [--source URL] [--tags t1,t2] [--template brainstorm|plan] [--format org|md]
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py new <slug> [--title T] [--type T] [--alias A] [--pin] [--source URL] [--tags t1,t2] [--template brainstorm|plan] [--format org|md]
 
 # 列出草稿（默认显示 slug,status,progress,pin,title；可指定字段；可按 status 过滤）
-~/.venv/bin/python3 scripts/draft.py list [fields] [--status S]
-~/.venv/bin/python3 scripts/draft.py list status,pin,tags
-~/.venv/bin/python3 scripts/draft.py list --status idea
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py list [fields] [--status S]
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py list status,pin,tags
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py list --status idea
 
 # 查看单个草稿
-~/.venv/bin/python3 scripts/draft.py show <slug>
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py show <slug>
 
 # 修改单个草稿的 YAML 字段（可一次多个 field=value）
-~/.venv/bin/python3 scripts/draft.py set <slug> status=outlining progress=20
-~/.venv/bin/python3 scripts/draft.py set <slug> tags=学习,费曼,记忆
-~/.venv/bin/python3 scripts/draft.py set <slug> pin=true
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py set <slug> status=outlining progress=20
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py set <slug> tags=学习,费曼,记忆
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py set <slug> pin=true
 
 # 批量修改所有草稿（可按 status 过滤）
-~/.venv/bin/python3 scripts/draft.py set-all status=archived --status review-ready
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py set-all status=archived --status review-ready
 
 # 归档（移到 drafts/archive/，标 status=archived）/ 恢复
-~/.venv/bin/python3 scripts/draft.py archive <slug>
-~/.venv/bin/python3 scripts/draft.py unarchive <slug>
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py archive <slug>
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py unarchive <slug>
 
 # 删除（默认询问确认，-y 跳过）
-~/.venv/bin/python3 scripts/draft.py delete <slug> [-y]
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py delete <slug> [-y]
 
 # 事实性核查（打印草稿 + 启发式提取候选事实陈述，供 agent 核查）
-~/.venv/bin/python3 scripts/draft.py factcheck <slug>
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py factcheck <slug>
 ```
+
+## 格式互转 `draft-convert.py`
+
+md ↔ org 互转，**纯 Python 实现，无 pandoc 依赖**（脚本：`.agents/skills/blog-drafts/scripts/draft-convert.py`）：
+
+```bash
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft-convert.py <slug> --to org      # .md → .org
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft-convert.py <slug> --to md       # .org → .md
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft-convert.py <slug> --to md --dry-run   # 只看结果不写文件
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft-convert.py <slug> --to md --replace    # 转完删源文件
+```
+
+**行为**：
+- frontmatter 在 YAML（`---` 块）↔ `#+KEY:` 属性行之间转换，字段完整保留、顺序规范化，`updated_at` 自动刷新。
+- 资产路径（`assets/<slug>/...`）不变，两边共享。
+- 默认保留源文件（两格式并存时 `find_draft` 按 `.org` → `.md` 顺序查找）；目标文件已存在则拒绝覆盖。
+- 转换是**语句子集**，够用于 brainstorming 草稿，不是完整 markdown/org 解析器：
+
+| 语法 | markdown | org |
+|---|---|---|
+| 标题 | `#` / `##` / `###` | `*` / `**` / `***` |
+| 代码块 | ` ```lang ` | `#+BEGIN_SRC lang` / `#+END_SRC` |
+| 图片 | `![alt](path)` | `[[file:path]]`（org 无 alt 槽位，alt 丢失） |
+| 链接 | `[text](url)` | `[[url][text]]` |
+| 加粗/斜体/行内代码 | `**b**` / `*i*` / `` `c` `` | `*b*` / `/i/` / `~c~` |
+
+- 不转换的语法（列表、引用、表格、数学公式等）原样保留——草稿场景下两边都可作为纯文本读。
 
 ## 事实性核查（factcheck）
 
@@ -109,7 +151,7 @@ drafts/
 
 **流程**：
 
-1. 跑 `~/.venv/bin/python3 scripts/draft.py factcheck <slug>`——打印草稿全文 + 启发式提取的候选事实
+1. 跑 `~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py factcheck <slug>`——打印草稿全文 + 启发式提取的候选事实
    陈述（含数字/URL/定义动词"是/为/叫做"等的行）。
 2. 派 **factcheck subagent**（模板 `subagents/factcheck.md`）：
    - 逐句区分：事实陈述（定义/数值/归属/时间线/引用）需核查；个人笔记/观点/TODO 疑问跳过。
@@ -170,7 +212,7 @@ frontmatter 之后是 markdown brainstorming——**由用户自己写**。参�
 作为 frontmatter 输入。上游 skill 写完 `src/pages/<slug>.html` 后回填草稿：
 
 ```bash
-~/.venv/bin/python3 scripts/draft.py set <slug> status=published progress=100 \
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py set <slug> status=published progress=100 \
   published_at=<时间> published_file=src/pages/<slug>.html
 ```
 
@@ -211,7 +253,7 @@ mkdir -p drafts/assets/<slug>
 cp media/images/<slug>/*.webp drafts/assets/<slug>/
 
 # 3. 新建草稿（paper-note 模板）
-~/.venv/bin/python3 scripts/draft.py new <slug> \
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py new <slug> \
   --title "<标题>" --type paper-reading --template paper-note --format md \
   --source "https://arxiv.org/abs/<id>" --tags "<tag1,tag2,tag3>"
 
@@ -230,7 +272,8 @@ cp media/images/<slug>/*.webp drafts/assets/<slug>/
 
 ## 强制要求
 
-- 草稿操作只用 `scripts/draft.py`，不手动编辑 frontmatter（避免时间戳/格式漂移）。
+- **新建草稿默认生成 org 格式**（`draft.py new` 的 `--format` 默认 `org`）；需要 markdown 时必须显式 `--format md`，不要凭"已有草稿恰好是 md"就跟着建 md。
+- 草稿操作只用 `draft.py` / `draft-convert.py`，不手动编辑 frontmatter（避免时间戳/格式漂移）。
 - brainstorm 模板保持几乎空白——不预设章节限制用户思考。
 - 草稿正文由用户写，skill 不代写。**例外：paper-note 模板**——Qoder 读论文后填写各节，不需要用户手写。
 - `drafts/_template.md` 已废弃（移到 skill 文件夹 templates/），不要再创建。
