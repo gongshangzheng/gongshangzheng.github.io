@@ -1,0 +1,327 @@
+---
+title: "关于数字人：从生成模型到交互系统"
+description: "从数字人生成任务与技术路线出发，经 Ditto 与 Avatar Forcing 两个实操模型，到数字人系统的 pipeline、延迟预算、打断与传输，最后给出我们对 Avatar Forcing 的三点工程改造（视频身份源、Anchor Bank、Cross-Attention LoRA）与实测指标。"
+date: 2026-08-25T15:27:20
+created_at: 2026-08-25T15:27:20
+updated_at: 2026-08-25T15:30:00
+tags: [数字人, TalkingHead, 系统架构, 实时交互]
+aliases: ["categories/杂识"]
+papers: []
+repos: []
+hero_title: "关于数字人"
+hero_sub: "生成模型 · 交互系统 · 工程改造"
+hero_tagline: "从一个视频生成任务，到能听能看的实时对话系统"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">2</span><span class="label">层次：模型与系统</span></div>
+  <div class="stat"><span class="num b">6</span><span class="label g">技术路线</span></div>
+  <div class="stat"><span class="num">3</span><span class="label">交互层级</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label g">工程改造</span></div>
+</div>
+
+<!-- ============================================================
+  第一章：数字人是一个生成任务
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第一章</div>
+  <div class="ch-title">数字人：一个生成任务</div>
+
+  <p>讨论数字人时，需要先区分两个层次：<strong>数字人</strong>（生成模型）和<strong>数字人系统</strong>（产品）。前者是一个算法问题，后者是一整套工程问题。把两者混为一谈，是选型和评测中最常见的错误。</p>
+
+  <p>数字人本质上是一个视频生成任务，由四步构成：</p>
+
+  <ol>
+    <li><strong>输入身份条件</strong>：一张图片、一段视频，或一个固定的数字人资产</li>
+    <li><strong>创建形象</strong>：根据输入条件生成数字人的外观</li>
+    <li><strong>输入驱动信号</strong>：文本或语音</li>
+    <li><strong>输出表演视频</strong>：数字人形象按照驱动信号表演出一段内容匹配的人物视频</li>
+  </ol>
+
+  <h3 class="section-title">输出质量的两个正交维度</h3>
+
+  <p>对输出视频的要求可以从两个正交维度来理解。<strong>生成质量</strong>从无到有、逐步覆盖更多身体部位：</p>
+
+  <ul>
+    <li><strong>唇部同步</strong>（lip sync）：最基本——嘴型和输入的音频/文本匹配</li>
+    <li><strong>面部表情</strong>：不仅是嘴，还有眉毛、眼神等，符合表达的情绪</li>
+    <li><strong>头部姿态</strong>：点头、转头、侧倾等自然头部运动</li>
+    <li><strong>手部动作</strong>：手势跟随语义，如比划、招手</li>
+    <li><strong>全身运动</strong>：身体节奏、重心转移、步态</li>
+  </ul>
+
+  <p><strong>工程性能</strong>从离线到实时：离线生成不要求速度；近实时是秒级延迟、可接受简单缓冲；实时交互要求毫秒级响应，支持双向对话、打断和持续流式输出。这两个维度相互牵制——高生成质量（如视频扩散）往往以牺牲实时性为代价。</p>
+
+  <h3 class="section-title">技术路线：六条主线</h3>
+
+  <p><strong>结构化 Motion Policy</strong>：不直接生成像素，而是生成结构化的运动参数。常用参数化模型：<strong>FLAME</strong>（头部/人脸参数化网格，输出表情与头部姿态系数）、<strong>SMPL-X</strong>（全身统一网格：身体+手+脸）、<strong>MANO</strong>（手部专用表示）。代表工作：EMAGE 把 face/body/hands/global motion 统一到 SMPL-X/FLAME，Audio2Photoreal 把音频生成的 face/body/hand motion 接到个性化 renderer，EMO2 把 MANO 当 End-Effector 生成手势。优点是可解释、可控、动作可单独评估；缺点是输出是 motion，仍需 renderer 才能变成最终画面。</p>
+
+  <p><strong>Latent Inpainting</strong>（早期 2D talking head 路线）：在 latent 空间只重绘嘴部/人脸区域，条件是 landmark、mask 或 latent 特征。代表：Wav2Lip（lip-sync expert 只改嘴）、SadTalker（3DMM 系数 + 3D-aware render）、AniPortrait。</p>
+
+  <p><strong>Motion Diffusion</strong>（潜空间运动扩散）：扩散模型在这里不生成像素，而是生成低维运动表示（motion latent），再交给轻量渲染链路——==扩散从像素空间退到低维运动空间，是实时性的关键交换==。代表：Ditto、VASA-1、Avatar Forcing，以及 JoyVASA（解耦表征 + 扩散运动生成）、DiffSHEG（扩散同时生成表情与手势）、ChatAnyone（motion diffusion + fast renderer）。</p>
+
+  <p><strong>视频扩散基模</strong>：把通用视频生成大模型改造成数字人生成器，演进四阶段：Animate Anyone（ReferenceNet + pose guider 证明扩散可控人物视频）→ EMO（audio-to-video diffusion 直接驱动表情）→ 音频注入视频 DiT（OmniAvatar 基于 Wan2.1、HunyuanVideo-Avatar 用 MM-DiT、Hallo3、InfiniteTalk 长视频）→ 实时化（Live Avatar 14B 扩散做到 45 FPS、StreamAvatar 自回归适配、LLIA 用 consistency model + INT8 量化做到 78 FPS）。</p>
+
+  <p><strong>不用扩散的路线</strong>（对照）：LivePortrait（隐式关键点前馈，12.8ms 推理）、LHM/MATCH（前馈重建）、EGSTalker/GaussianTalker（3DGS 变形）、LiteAvatar（纯 CPU 2D 驱动引擎）。</p>
+
+  <p><strong>LoRA 适配套路</strong>（以 OmniAvatar 为例）：音频经 Audio Pack 对齐视频 latent 后，以像素级多层 latent 注入 Wan2.1 DiT；同时在 attention 和 FFN 层加 LoRA（rank 128 / alpha 64）。用 LoRA 而非全量微调的核心原因不是省显存，而是==避免破坏基础模型的 prompt controllability==——文本提示仍要控制场景、动作、背景、情绪；全量训练会把模型过度拉向音频同步任务。扩散基模路线的通用轻量适配套路：cross-attention / mask adapter / reference injection / 蒸馏 + LoRA。</p>
+
+  <div class="callout"><strong>一句话总结</strong>：技术路线的分野在于「扩散发生在哪个空间」——像素/视频 latent 空间画质上限高但慢，低维运动空间快但需要渲染后端，结构化参数空间最可控但保真依赖 renderer。</div>
+</div>
+
+<!-- ============================================================
+  第二章：Ditto
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第二章</div>
+  <div class="ch-title">Ditto：把扩散搬进运动空间</div>
+
+  <p><a href="paper-ditto.html">Ditto</a>（Ant Group，ACM MM 2025）的核心思路是把扩散模型从图像空间搬到 motion space：Conditional DiT 只生成低维、可控的面部运动序列（音频经 HuBERT 提特征作条件），身份、纹理和像素细节全部交给 one-shot renderer——「谁在说话」和「怎么动」分开处理。</p>
+
+  <div class="photo">
+    <img src="media/images/about-digital-human/ditto-framework.webp" alt="Ditto 框架图" loading="lazy">
+    <div class="cap">图 1：Ditto 总体框架。上半部为 Motion Space（δ/R/t 运动参数），左下为训练管线（视频投到运动空间，扩散只学运动轨迹），右下为推理管线（参考图 + 音频 → 运动 → 渲染）（来源：Ditto, ACM MM 2025）。</div>
+  </div>
+
+  <p>推理分两种形态：离线推理一次性处理整段音频；流式推理按音频 chunk 连续输出（cache + causal mask + 片段融合），online RTF 0.895、首帧延迟 385ms、10 步去噪，也支持 gaze/emotion/pose 显式控制。我们实际跑过它的开源实现（见<a href="ditto-talkinghead.html">源码解读</a>）：TensorRT/ONNX/PyTorch 三种权重形态，online 模式按 chunksize (3,5,2) 切音频逐块喂入。</p>
+</div>
+
+<!-- ============================================================
+  第三章：Avatar Forcing
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第三章</div>
+  <div class="ch-title">Avatar Forcing：扩散强制驱动的实时交互</div>
+
+  <p><a href="avatar-forcing-2026.html">Avatar Forcing</a>（KAIST，CVPR 2026）在 Ditto 的思路上把「单向说话」推进到「交互」：在 motion latent space 中用 Diffusion Forcing（DFoT，per-frame 独立噪声）做因果自回归生成，条件三元组 = 用户音频 + 用户运动（从用户视频提取）+ avatar 自身音频，经 Dual Motion Encoder 融合，推理延迟 ~500ms。额外用免标注 DPO 提升表达性：drop 掉用户条件生成的运动天然低表达性，直接当 losing sample，人类评估偏好率 >80%。</p>
+
+  <div class="photo">
+    <img src="media/images/about-digital-human/avatarforcing-architecture.webp" alt="Avatar Forcing 架构图" loading="lazy">
+    <div class="cap">图 2：Avatar Forcing 架构。左侧用户输入（视频提取运动 m_u + 音频 a_u），经 Dual Motion Encoder 与 avatar 音频融合为统一条件，Causal DFoT Motion Generator 自回归生成 motion block，最终解码为头像视频（来源：Avatar Forcing, CVPR 2026, Fig.1）。</div>
+  </div>
+
+  <p>我们还实测过快手 Kling AI 的工业版 <a href="avatarforcing-2026.html">AvatarForcing</a>：有界前瞻滑窗联合去噪 + 双锚 KV cache + 两阶段流式蒸馏，1.3B student 模型压到 34 ms/帧。</p>
+</div>
+
+<!-- ============================================================
+  第四章：数字人系统
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第四章</div>
+  <div class="ch-title">数字人系统：从模型到产品</div>
+
+  <p>数字人系统更接近一个产品。除了表面的数字人渲染，底层还需要一整套组件来提供驱动输入：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><strong>ASR</strong>（自动语音识别）</td><td>把用户的语音输入转成文字</td></tr>
+        <tr><td><strong>LLM</strong>（大语言模型）</td><td>理解上下文，生成回复文本</td></tr>
+        <tr><td><strong>TTS</strong>（文本转语音）</td><td>把文字变成数字人的声音</td></tr>
+        <tr><td><strong>Avatar 渲染</strong></td><td>生成数字人的视觉形象</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>此外，系统通常还会集成外部工具和 Agent 能力（如 RAG 检索、API 调用），使数字人能像智能体一样完成复杂任务。</p>
+
+  <h3 class="section-title">完整 Pipeline</h3>
+
+  <p>标准级联链路，全链路 stream→stream「边生成边消费」：</p>
+
+  {{< mermaid >}}
+flowchart LR
+  A["用户语音"] --> B["VAD 切分"]
+  B --> C["ASR 流式转写"]
+  C --> D["LLM 流式生成"]
+  D --> E["TTS 分段合成"]
+  E --> F["Avatar 逐帧驱动"]
+  F --> G["视频编码"]
+  G --> H["WebRTC 下行"]
+  H --> I["用户"]
+  I -. "打断：反向清空缓冲" .-> E
+  {{< /mermaid >}}
+
+  <p>用户打断沿反方向传播：清空 TTS 缓冲、Avatar 帧队列、下行 buffer。工程落地为六个 gRPC 流式服务：ASRService.TranscribeStream、LLMService.GenerateStream、TTSService.SynthesizeStream、AvatarService.GenerateStream、VoiceLLMService.Converse/Interrupt、RAGService。</p>
+
+  <h4 class="ch-section">架构三范式</h4>
+
+  <ol>
+    <li><strong>级联管道</strong>（CyberVerse、OpenAvatarChat）：模块可替换，但延迟逐级累加——级联批量 TTFA 13,730ms，流式优化后仍 3,232ms</li>
+    <li><strong>端到端统一</strong>（A2-LLM）：文本+音频+面部运动统一进一个 LLM 的 token 空间（RVQ-VAE 离散化 + Motion Connector），TTFT 51ms、TTFA 536ms、RTF 0.703x，比流式级联快 6 倍</li>
+    <li><strong>混合</strong>（Mio）：Thinker（LLM）+ Talker（Kodama-TTS）+ Face/Body Animator 分离</li>
+  </ol>
+
+  <h3 class="section-title">延迟预算</h3>
+
+  <p>人类停顿容忍约 200-500ms，超过 1s 对话就「不自然」。全链路五段分解：音频采集+编码 10-50ms / 特征窗口 100-2000ms / 模型推理 10-200ms / 视频编码+网络 20-350ms / 播放缓冲+渲染 20-100ms，总计 300ms-3s。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>阶段</th><th>关键指标</th><th>优化方向</th></tr></thead>
+      <tbody>
+        <tr><td>ASR</td><td>partial/final 时延</td><td>流式识别、端点检测、热词</td></tr>
+        <tr><td>LLM</td><td>first token、tokens/s</td><td>小模型路由、缓存、流式输出</td></tr>
+        <tr><td>TTS</td><td>TTFA、chunk 节奏</td><td>流式 TTS、短句切分（现役 TTFA ~100ms）</td></tr>
+        <tr><td>Avatar</td><td>首帧、FPS、音画漂移</td><td>轻量模型、滑窗、GPU 队列隔离</td></tr>
+        <tr><td>RTC</td><td>freeze、渲染延迟</td><td>分层编码、jitter buffer 控制</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>实测教训</strong>：FlashHead Lite 单 chunk 生成仅 0.514s，但端到端 TTFF 3.713s——VP8 编码每段 0.5-0.7s、发布队列积压 4.85s，瓶颈在编码与队列而非模型。延迟优化必须分段测量，不能只看模型推理。</div>
+
+  <h3 class="section-title">打断与双工</h3>
+
+  <p>OpenAvatarChat 双工打断：VAD 持续运行，检测到用户说话即对输出降音量并停止生成。关键坑：只取消 LLM 不够，TTS 缓冲、Avatar 帧队列、SFU 下行 buffer 必须==统一清空==，否则「人已换话题、数字人还在自说自话」。VAD 声学触发误打断由 LTS-VoiceAgent 的语义触发（用户说话中实时判断语义完整性才触发推理）+ 投机执行解决。</p>
+
+  <h3 class="section-title">传输层</h3>
+
+  <p>WebRTC 建连：SDP Offer/Answer → ICE → STUN/TURN → DTLS/SRTP，线上必须自建 TURN（coturn）。媒体链 jitter buffer 消抖，RTCP Sender Report 把 RTP 时间戳映射到 NTP 做音画同步。降级优先级：<strong>先保声音、再保嘴型、最后保画质</strong>。</p>
+
+  <h3 class="section-title">工程化部署</h3>
+
+  <p>插件化架构（PluginRegistry + YAML 配置驱动）；Go 编排 + Python 推理双进程隔离。CPU 实时方案：LiteAvatar 用 Paraformer 特征 → ONNX 32 维面部参数 → TorchScript 编解码器，纯 CPU 30fps（1 秒滑窗 + 重叠帧插值 + 静音回退中性姿态）。加速手段与代价：蒸馏 10-20×、TensorRT 2-3×、量化 1.5-2×。硬件基准差异巨大：LiteAvatar A10 上 25.19 FPS / 7.5GB，FlashHead Pro 同卡仅 4.8 FPS。</p>
+</div>
+
+<!-- ============================================================
+  第五章：交互层级
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第五章</div>
+  <div class="ch-title">交互层级：从半双工到全双工</div>
+
+  <p>数字人按交互能力分三级（Synthesia 三级交互模型）：</p>
+
+  <ol>
+    <li><strong>只能说</strong>（Talk）：给定文本 + 图像生成说话视频。数字人「看起来活着但不响应」，用户说话时它只等自己的回合；长对话中会从「有趣」滑向恐怖谷。所有离线生成系统（SadTalker、Hallo、EMO）都在这一级。</li>
+    <li><strong>既能听又能说</strong>（Listen）：加入用户音频输入，能倾听、能被打断。这是半双工 → 全双工的分界：半双工靠 VAD 检测静默后轮次切换；全双工边说边听，维护持续的双向交互状态。</li>
+    <li><strong>还能看</strong>（See）：再加入用户摄像头/视频输入，能看见用户的表情与动作并做出反应。</li>
+  </ol>
+
+  <p>双工的进化路线：Moshi（160ms）、GPT-4o Realtime API（232-320ms）、ByteDance Seeduplex（端点检测延迟 -250ms）。全双工的三条硬约束（Wan-Streamer 提出）：<strong>因果性</strong>（全链路不能窥探未来）、<strong>流式性</strong>（每 160ms 单元到达即产出）、<strong>全双工性</strong>（输入输出同时间轴共存）。</p>
+
+  <p>Avatar Forcing 是典型的既能听又能看的模型：条件三元组 = 用户音频 + 用户运动（从用户视频提取）+ avatar 自身音频，经 Dual Motion Encoder 融合成统一条件再驱动生成。但测试下来，它的「听」和「看」效果并没有那么好——这一点有数据层面的佐证：ViCo 数据集里 listener 的表情方差远低于 speaker，训练数据本身就缺乏表达性，模型容易学到被动、僵硬的倾听行为（Avatar Forcing 论文自己也承认，需要靠免标注 DPO 来弥补）。</p>
+</div>
+
+<!-- ============================================================
+  第六章：三点改造
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">第六章</div>
+  <div class="ch-title">我们对 Avatar Forcing 的三点改造</div>
+
+  <h3 class="section-title">改造一：视频身份源（参考 Ditto 的人脸定位与拼回）</h3>
+
+  <p>原版 Avatar Forcing 只支持单张图片作身份源，我们让它支持输入视频。做法参考 Ditto：</p>
+
+  <ul>
+    <li><strong>人脸定位</strong>：移植 Ditto Source2Info._crop 的两阶段裁剪——RetinaFace 检测 → lmk106 粗对齐 → 裁剪 → lmk203 精对齐 → 512×512 旋转校正裁剪，ONNX 权重直接复用 Ditto 的（insightface_det / landmark106 / landmark203）。注意只在首帧定位一次，后续帧用固定 bbox（Avatar Forcing 是单参考帧架构，整段生成相对首帧，且裁剪与贴回共享同一 bbox 才能像素级对齐；Ditto 则是逐帧注册仿射矩阵，允许头部运动）。</li>
+    <li><strong>拼回（pasteback）</strong>：整段视频解码缓存为背景帧，生成的人脸块经仿射 warp 贴回原帧对应位置。不是泊松融合，是四边独立线性羽化的 alpha mask 混合（top 0.02 / bottom 0.08 / side 0.03——下巴侧是接缝必须羽化，头顶侧羽化过宽会让原始头发透出）。另加 AlignmentNet 参考 Ditto stitch network 思想（零初始化只学漂移）做贴回位置校正。</li>
+    <li><strong>管线</strong>：gRPC SetAvatar → 抽首帧 + FaceCropper 裁剪 → 视频帧缓存为背景 → 流式生成 → composite 贴回。</li>
+  </ul>
+
+  <h3 class="section-title">改造二：Anchor Bank（流形吸引 + 转角限速）</h3>
+
+  <p>解决长时流式生成中人脸逐渐偏离源视频的问题（代码文档定位为「清晰姿态流形」sharp pose manifold——漂移表现为画面越来越糊）：</p>
+
+  <ul>
+    <li><strong>建库</strong>：身份源视频 25fps 抽帧（上限 2048 帧，超出均匀降采样），每帧 face crop 后过 motion autoencoder 提取运动方向 r_d，归一化为单位方向 + 模长存 npz。实验裁决：源视频帧 bank 清晰度最高（lap_face ~80 vs 生成帧 ~67），用生成帧建库无增益；单图身份一律无 anchor。</li>
+    <li><strong>吸引</strong>：推理时每个 block 的最后 3 个去噪步做软最近邻检索——top-32 softmax(余弦/温度) 加权质心作为目标方向，把当前生成方向 slerp 拉向锚点流形；拉力强度随偏离距离增大（阈值 c_hi 0.99 / c_lo 0.85 / pull_max 0.9，sweep+贝叶斯优化调出）。修正结果还会写回 KV cache，模型在被修正过的历史上继续生成。</li>
+    <li><strong>转角限制</strong>：所有锚点持续吸引可能拉过头，所以对方向转角逐帧限速——相邻帧 r_d 方向夹角超过 12° 就 slerp 限幅，锚点目标链另有 5°/帧的限制防止在 bank 边界震荡。这个限速是因果的，rate=0 也生效。</li>
+    <li><strong>补偿</strong>：锚点拉力会抑制音频驱动的运动，所以音频 CFG 从 2.0 提到 2.25 补偿。</li>
+    <li><strong>伴随问题</strong>：无 anchor 时静音段有 mouth-lock（闭嘴率 46-81%），anchor 后归零；贴回残余 jitter ~15px 地板是 3DOF 校正的极限，LoRA 解决不了。</li>
+  </ul>
+
+  <h4 class="ch-section">实测 A/B（dhid_sync，40 case，c1/c4 两个身份）</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置</th><th>CSIM（身份↑）</th><th>LSE-C（唇同步↑）</th><th>flow（稳定性↓）</th></tr></thead>
+      <tbody>
+        <tr><td>AF + anchor + LoRA（正式配置）</td><td>.8147 / .8399</td><td>5.566 / 6.092</td><td>.1245 / .1007</td></tr>
+        <tr><td>去 anchor 消融</td><td>.729 / .795</td><td>—</td><td>.257 / .278</td></tr>
+        <tr><td>外部基线（guanmu avatar_base）</td><td>.7816</td><td>4.987</td><td>.2286</td></tr>
+        <tr><td>FlashHead lite（对照模型）</td><td>.744</td><td>4.76</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>结论：anchor 对身份保持与运动稳定性的贡献成立（CSIM +0.05~0.09、flow 减半）；mouth-lock 消除。</p>
+
+  <h3 class="section-title">改造三：Cross-Attention LoRA（音频条件对特定人脸的适配）</h3>
+
+  <ul>
+    <li><strong>挂载点</strong>：DiT 8 个 block 的 cross-attention 的 Q 和 K/V 都挂 LoRA（rank 16 / alpha 32，有效缩放 2.0，共 16 个模块）——音频条件经 AudioMotionAttention 编码后走 K/V 进入注意力，LoRA 让音频特征对特定人脸学出专属分布（同一段音频驱动不同角色应有不同习惯性表情/头动）。</li>
+    <li><strong>first-frame 微调</strong>：训练身份条件 r_s 用段首帧静态广播，替代逐帧 GT 编码——逐帧编码时 r_s 与目标 r_d 余弦恒为 1.0，条件里就含答案，模型学会抄捷径（这是早期 t13-5 实验的根因），静态广播也与推理时的单参考帧一致。</li>
+    <li><strong>音画 offset 双重测量</strong>：训练前用两条独立链测源素材的音画偏移——StableSyncNet 滑窗（多窗中位数 + 抛物线亚帧拟合）+ 物理量互相关（嘴部运动能量 × 响度变化），两链分歧 &gt;3 mel 帧即停机人工复核，按源视频聚合中位数回填 offsets.json，训练时校正音频切片。</li>
+    <li><strong>三臂消融</strong>（唯一变量 = sync 项）：ctrl（sync-weight 0，纯重建对照）/ base（wav2lip SyncNet_color）/ stable（SyncNet-v2 + 仿射对齐裁剪）。统一口径 bs=1 / 30 epochs / lr 1e-4。</li>
+    <li><strong>多臂机制</strong>：每个角色一个「臂」（如 q3_stable），训练产物 lora/&lt;arm&gt;_adapter.pt 入资产库；部署时把 LoRA 数学合并进基座权重生成 full-G 完整部署件（W' = W + (B@A)·α/r），切换角色 = config 指向另一 fullg + 重启（明确不做运行时热切换）。</li>
+  </ul>
+
+  <h4 class="ch-section">三臂实测（krJDH 泛化素材，带贴回 LSE-C/D，GT 为真值上限）</h4>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>臂</th><th>LSE-C（↑）</th><th>LSE-D（↓）</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>ctrl（无 sync loss）</td><td>5.29</td><td>9.92</td><td>纯重建</td></tr>
+        <tr><td>base（SyncNet_color）</td><td>6.16</td><td>9.46</td><td></td></tr>
+        <tr><td>stable（SyncNet-v2）</td><td>6.97</td><td>8.70</td><td>双最优，超过 GT</td></tr>
+        <tr><td>GT（真值视频）</td><td>6.28</td><td>8.92</td><td>上限参考</td></tr>
+        <tr><td>基座（未微调）</td><td>3.76</td><td>4.61</td><td>videoc1 对照</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>域内 videoc1 实测：基座 3.76/4.61 → stable 4.11/5.23 双提升。identity loss 的裁决：域内特异数据上加 ArcFace identity 零增益，仅泛化数据有效（CSIM 0.786→0.808 且 LSE-C 4.367→4.739 双升）。</p>
+
+  <div class="callout"><strong>部署工作流</strong>（从素材到上线）：双重 offset 测量 → 自动建锚帧库 + AlignmentNet（单图先 ffmpeg 转 2s 参考视频，零训练零手动）→ 泛化配方训 LoRA → merge 成 full-G 入库 → speed-run 生成 + LSE 评测 + 多指标打分（两重判定：指标 + 人工）→ CyberVerse 侧 config 指向 + 重启验证。</div>
+
+  <p>AlignmentNet 细节：3conv + 8×8 池化 + FC 输出 (tx,ty,log_scale,rot)，末层零初始化，firstframe 双流 6ch（生成脸 + 源帧 warp 同坐标系），oracle 监督，微调 ~5ep/25s 达 1.18px。</p>
+</div>
+
+<!-- ============================================================
+  参考来源
+  ============================================================ -->
+<div class="ch fade-in">
+  <div class="ch-label">References</div>
+  <div class="ch-title">延伸阅读</div>
+
+  <p>本文的模型细节和系统论述大量取材自本站数字人系列文章：</p>
+
+  <ul>
+    <li><a href="paper-ditto.html">Ditto 论文精读</a> · <a href="ditto-talkinghead.html">Ditto 源码解读</a></li>
+    <li><a href="avatar-forcing-2026.html">Avatar Forcing 论文精读（三十）</a> · <a href="avatarforcing-2026.html">AvatarForcing 工业版精读（五十一）</a></li>
+    <li><a href="digital-human-avatar-survey.html">Avatar 类型数字人总报告（系列八）</a> · <a href="digital-hub.html">数字人 Hub</a></li>
+    <li><a href="digital-human-backend-agent-design.html">数字人后端 Agent 设计理念（系列十四）</a></li>
+    <li><a href="wan-streamer-2026.html">Wan-Streamer 论文精读（三十一）</a></li>
+    <li><a href="realtime-communication-digital-human.html">实时通信与数字人</a> · <a href="cyberverse-realtime-digital-human-agent.html">CyberVerse 实时数字人 Agent</a></li>
+  </ul>
+
+  <div class="sources">
+    <h3>参考来源</h3>
+    <ul>
+      <li data-cite-key="Li-et-al.-2025">
+        Li, T. et al. (2025). Ditto: Motion-Space Diffusion for Controllable Realtime Talking Head Synthesis. <em>ACM MM 2025</em>.
+        <a href="https://arxiv.org/abs/2504.10653" target="_blank">arXiv:2504.10653</a>
+      </li>
+      <li data-cite-key="Cui-et-al.-2026">
+        Cui, J. et al. (2026). Avatar Forcing: Interactive Streaming Avatars via Diffusion Forcing. <em>CVPR 2026</em>.
+        <a href="https://arxiv.org/abs/2601.00664" target="_blank">arXiv:2601.00664</a>
+      </li>
+      <li data-cite-key="Wan-Team-2026">
+        Wan Team, Alibaba Group (2026). Wan-Streamer: Native Full-Duplex Audio-Video Interaction in a Single Transformer.
+        <a href="https://arxiv.org/abs/2606.25041" target="_blank">arXiv:2606.25041</a>
+      </li>
+      <li data-cite-key="Hu-et-al.-2026">
+        Hu, Z. et al. (2026). A2-LLM: Unified Text, Audio and Facial Motion Generation. <em>arXiv 2602.04913</em>.
+      </li>
+      <li data-cite-key="Gan-et-al.-2025">
+        Gan, Q. et al. (2025). OmniAvatar: Efficient Audio-Driven Avatar Video Generation with Adaptive Body Animation.
+        <a href="https://arxiv.org/abs/2509.01535" target="_blank">arXiv:2509.01535</a>
+      </li>
+    </ul>
+  </div>
+</div>
