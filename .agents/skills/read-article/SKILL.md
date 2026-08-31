@@ -6,7 +6,8 @@ description: |
   直接通过 html-blog 发表。
   被 academic-research 调用时：core-survey / must-read-paper 用 full 模式，
   route-representative / context-only 用 collect 模式（只产素材）。
-  触发词：读这篇论文、帮我看看这篇、总结这篇、read this paper、深读、解读、精读。
+  为草稿调研时用 draft 模式（核心信息+核心图片落草稿，不产 HTML）。
+  触发词：读这篇论文、帮我看看这篇、总结这篇、read this paper、深读、解读、精读、存到草稿。
 metadata:
   default-enabled: true
   replaces: [capture-and-summarize, article-research]
@@ -39,6 +40,42 @@ metadata:
 |------|------|------|
 | `full`（默认） | 用户直接调用 | raw 素材 + synthesis + HTML + 博客 + 邮件 |
 | `collect` | 被 `academic-research` 调用（route-representative / context-only 论文） | raw 素材 + synthesis（跳过架构规划/HTML/发布） |
+| `draft` | 用户说"存到草稿/为草稿调研这篇/填充草稿的 XX 小节"，或草稿渐进填充流程按模型调用 | 草稿小节填充 + 核心图片（不产 HTML，不发布） |
+
+---
+
+## draft 模式 · 草稿调研路线
+
+为 blog-drafts 草稿读一篇论文，**只提取核心信息与核心图片落进草稿**。与 `collect` 的区别：collect 产 raw 素材层（四份分析文件）供后续写作复用；draft 直接面向草稿小节，轻量、即时。库内查重由调用方负责（草稿流程通常已做）。
+
+**流程**（主 agent 单线执行，不派 4 个分析 subagent）：
+
+```
+论文 URL/标题
+  → Phase 1 提取（arXiv source/HTML，含图片）
+  → 主 agent 直读 摘要 + 方法 + 实验节（必要时读引言/消融/附录）
+  → 填充草稿对应小节（五类信息）
+  → 核心图片 1-3 张拷到 drafts/assets/<草稿slug>/
+  → 汇报，等用户审核（渐进填充流程：一次一篇）
+```
+
+**小节五类信息**：
+1. 问题背景：它解决什么瓶颈（2-4 句，说清"为什么难/为什么现有方案不够"）
+2. 核心方法：怎么做。按机制逐条展开（动机 → 机制 → 直觉解释），每个关键设计点一段；深度对齐 read-article 全管线的分析密度（超参数、tile 尺寸、公式、训练配置这类具体数值都要留），但不需要教学式铺垫和长篇叙事——密度高、篇幅短
+3. 关键指标：核对后的数字 + 测试条件（模型/分辨率/GPU/步数）；与用户提供口径（如报告照片）不一致时以论文为准并标注差异；含消融关键发现（哪个组件贡献最大）
+4. 训练/工程约束：是否需要训练、数据量、硬件门槛、开源状态、复现边界
+5. 论文/代码链接
+
+**内容量参考**：每个小节 30-60 行 org 文本（骨架 5-8 行 → 调研后 30-60 行）。这不是硬上限而是锚点——以信息密度为准，宁可超长不丢关键数值；但不得写成 full 模式的教学式长文（无 Part 结构、无长叙事铺垫、无面向读者的动机重复）。
+
+**核心图片规则**：
+- 每篇 1-3 张，优先框架图 + 主结果图表；沿用全局配图优先级（arXiv source tarball 原图 > arXiv HTML 原图 > PDF bbox 裁图）
+- 存 `drafts/assets/<草稿slug>/`，命名 `<论文简称>-<图名>.png`（如 `fpsattention-framework.png`）
+- 草稿正文（org）引用：`[[file:assets/<草稿slug>/<文件名>]]`
+- webp 转换与移 `media/images/` 推迟到发布交接阶段
+
+**禁止**：不写 HTML、不跑 Phase 4-9、不派 Review、不在草稿里做跨论文对比（小节边界由调用方约束）。
+**保留**：`raw/<slug>/` 提取产物照常保留，后续升级 full 模式写 HTML 时直接复用，无需重新提取。
 
 ---
 
@@ -60,6 +97,7 @@ metadata:
 14. **collect 模式下 survey 深读充分展开**：如果输入是 survey/review，collect 产物至少包括研究范围、taxonomy、任务输入/输出、metrics、datasets、代表方法表、关键结论、局限性、5-10 条可引用 claim。
 15. **扁平数据流**：Phase 2 的四份分析是唯一的事实存储层，Phase 3 synthesis 是导航索引，Phase 5 直接从 Phase 2 产出 + 原文写 HTML。三类产物各司其职。
 16. **Phase 5 写手数据源**：每个写作 subagent 读取 (a) Phase 2 产出文件 `~/gongshangzheng.github.io/raw/<slug>/subagents/`（background / citation / treasure / methodology），(b) 原文 `~/gongshangzheng.github.io/raw/<slug>/sources/`，(c) synthesis.md 作为导航参考。包括 5g（总结+收获）。
+17. **draft 模式轻量路线**：只走 Phase 1 提取 + 主 agent 直读论文，填充草稿小节四类信息 + 1-3 张核心图到 `drafts/assets/<草稿slug>/`；不派分析 subagent、不写 HTML、不 Review，详见「draft 模式 · 草稿调研路线」一节。
 
 ---
 
@@ -70,6 +108,8 @@ metadata:
   │
   ▼
 Phase 1 · 提取 ──────────── raw/<slug>/sources/* + figures/*
+  │
+  ├─ [draft] ── 直读论文 → 草稿小节四类信息 + 核心图 → 到此结束
   │
   ▼ ━━━ 并行 ━━━
   ├── Phase 2a · 背景调研 ── subagents/background.md
