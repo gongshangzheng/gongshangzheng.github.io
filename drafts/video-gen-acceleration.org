@@ -1,23 +1,49 @@
 #+TITLE: 视频生成推理加速
 #+SLUG: video-gen-acceleration
 #+TYPE: survey-chapter
-#+STATUS: outlining
-#+PROGRESS: 90
+#+STATUS: published
+#+PROGRESS: 100
 #+TARGET_ALIAS: categories/AI
 #+TARGET_SUB_ID: auto
 #+PIN: false
 #+SOURCE_URL: 
 #+TAGS: [推理加速, 视频生成, Diffusion, 注意力优化, 系统优化]
 #+CREATED_AT: 2026-08-31T10:34:22
-#+UPDATED_AT: 2026-08-31T17:31:01
+#+UPDATED_AT: 2026-08-31T21:16:54
 #+PUBLISHED_AT: 
-#+PUBLISHED_FILE: 
+#+PUBLISHED_FILE: video-gen-acceleration.html
 
 * 视频生成推理加速
 
-来源：ChinaSI 2026（中国空间智能大会，2026-08-28~30，武汉）报告 *Efficient Long Visual Generation*，11 张幻灯片照片（~/code/digital_human/assets/acceleration/）。
+来源：ChinaSI 2026（中国空间智能大会，2026-08-28~30，武汉）报告 *Efficient Long Visual Generation*，11 张幻灯片照片（~/code/digital_human/assets/acceleration/）。本文以报告的 10 个工作为线索，逐个回溯原始论文与代码库核实数字，按演讲顺序整理成一篇加速技术全景。
 
-下面是 10 个工作的骨架（照片转录，指标待调研核对）。逐个调研填充，按演讲顺序。
+** 为什么视频生成这么慢
+
+视频扩散模型的推理成本来自四个正交维度的叠加：
+
+1. *注意力复杂度*：3D full attention 处理时空 token，复杂度 O(N²)。720P、几秒长的序列 N 巨大，注意力占推理耗时 >70%
+2. *去噪步数*：标准采样 50 步迭代，每步一次完整前向
+3. *模型体积*：主流基座 14B 级，单卡消费级 GPU 放不下，CPU offload 又慢两个数量级
+4. *系统开销*：Python 算子调度、多卡通信、KV cache 随时长线性膨胀
+
+四个维度对应四个加速层：算子/内核层（量化、稀疏注意力）、训练层（蒸馏、范式重构）、管线层（记忆表示、缓存管理）、系统集成层（并行、编译、流式引擎）。报告的 10 个工作恰好覆盖全部四层。
+
+** 十个工作总览
+
+| 工作 | 层级 | 核心技术 | 训练需求 | 代表加速 | 质量口径 |
+|------|------|----------|----------|----------|----------|
+| FPSAttention | 内核 | FP8 量化 × 稀疏注意力协同 | QAT 微调 | E2E 4.96× | VBench 不降 |
+| BLADE | 训练 | 步数蒸馏 × 稀疏注意力协同 | data-free 蒸馏 | E2E 14.10× | VBench 涨 |
+| LSM | 管线 | 3D 记忆存成 diffusion latent | 两阶段训练 | E2E 10.57× + 显存 55×↓ | WorldScore 最高 |
+| WorldAttention | 系统 | HSA 混合稀疏 + 分层 KV | 三阶段训练 | kernel 14.02× / E2E 2.21× | 超 prior SOTA |
+| ZipAR | 推理调度 | 空间局部性行间并行 | 零训练 | 延迟 -82% | CLIP 可无损 |
+| NAR | 训练范式 | 邻域自回归（next-neighbor） | 从头训练 | 吞吐 13.8× | FID 更低 |
+| FlashAR | 后训练 | 对角线并行 + 垂直头 | 25 epochs + 0.05% 数据 | 22.9×（34B） | GenEval -0.19 |
+| DAX | 系统集成 | SP + SageAttn + compile + INT8 + TeaCache | 零训练 | E2E 36.4×（8 卡） | 无量化指标 |
+| TurboDiffusion | 模型×系统 | rCM 蒸馏 + SageSLA + W8A8 | rCM 蒸馏 | 199×（单卡） | 视觉对比 |
+| Inferix | 推理引擎 | block-diffusion + 分层 KV + 流式 | 零训练（需 BD 模型） | 无数字 | 提出 InterVBench |
+
+一条隐藏主线是*团队谱系*：Bohan Zhuang 组（ZIP Lab / 浙大 / DAMO）贡献了 FPSAttention、BLADE、WorldAttention、ZipAR、NAR、FlashAR、Inferix 七个工作，朱军组（清华 / 生数 / Berkeley）贡献 TurboDiffusion，Microsoft 贡献 LSM，RiseAI-Sys 贡献 DAX。两个学术生态分别押注"协同设计"与"模型-系统协同"路线，两个工程项目（DAX、Inferix）负责把学术成果组装成可部署的引擎。
 
 ** FPSAttention — FP8 量化与稀疏注意力协同设计
 - 论文：FPSAttention: Training-Aware FP8 and Sparsity Co-Design for Fast Video Diffusion（NeurIPS 2025 Spotlight，arXiv:2506.04648，ZIP Lab / Bohan Zhuang 组）
@@ -348,6 +374,31 @@
 - *对数字人管线的适用性（最高，与 DAX 互补拼图完成）*：DAX（算子加速）+ TurboDiffusion（rCM 少步蒸馏）+ Inferix（block-diffusion 范式 + 流式引擎）三者正好构成完整技术栈——Inferix 支持的 CausVid/Self Forcing 正是数字人滚动生成的主流路线（参考库里 wan-streamer、数字人系列（七））；16GB 消费级 GPU 跑交互式生成若属实，直接改变数字人直播的部署成本结构
 *** 链接
 - [[https://arxiv.org/abs/2511.20714][arXiv 2511.20714]] · [[https://github.com/alibaba-damo-academy/Inferix][GitHub]]
+
+* 结语：十个工作教会我们的事
+
+** 协同设计是唯一的免费午餐
+
+单点技术简单拼装会互相抵消甚至翻车：FP8 量化与稀疏注意力 naive 组合，VBench 掉 21.1%（FPSAttention 消融）；先蒸馏再插稀疏同样质量崩（BLADE 的出发点）。反过来，把两个手段放进同一个训练循环联合优化，得到的不是 1+1=2，而是 1+1>2：BLADE 消融中蒸馏单独 +0.005、稀疏单独 +0.005、联合 +0.035。*加速手段之间的交互必须显式设计，不能事后拼装*——这是贯穿 FPSAttention、BLADE、TurboDiffusion、WorldAttention 四篇的共同结论。
+
+** 训练费与即插即用的光谱
+
+十个工作按"侵入性"排成一条光谱：ZipAR / DAX（零训练，只改推理代码）→ FlashAR（后训练 25 epochs、0.05% 数据）→ BLADE（data-free 蒸馏 250-500 迭代）→ FPSAttention（QAT，最多 64 节点×7 天）→ NAR（从头训练 300 epochs）。规律清晰：付的训练费越多，加速天花板越高、质量越有保障；零训练路线的天花板由训练目标划定——NAR 论文用"单头并行 FID 66.31"证明了推理侧调度的极限。对工程团队的启示：*先问自己能付多少训练费，再选路线*。
+
+** 照片与论文的口径差异
+
+十个工作中，TurboDiffusion 照片与论文逐字一致；BLADE、LSM、NAR、Inferix 基本一致；FPSAttention、ZipAR、DAX 的照片数字与论文/仓库有出入（均已逐条标注）。演讲幻灯片常换算口径或引用早期版本数字——引用具体数字前务必回原论文核对。两个"README-only"声明也值得警惕：Inferix 的"16GB 消费级 GPU"与 WorldAttention 的部分基线 FPS，论文中均无对应数据。
+
+** 数字人管线的落地排序
+
+对数字人视频生成（本库主线场景），十个工作的实用性排序：
+
+1. *Inferix + TurboDiffusion + DAX*：三者正交可叠加，恰好构成流式技术栈——Inferix 提供 block-diffusion 流式引擎与 KV 管理，TurboDiffusion 的 rCM 提供少步采样，DAX 的算子加速已被 Inferix 系统级吸收。Inferix 支持的 CausVid / Self Forcing 正是数字人滚动生成的主流路线
+2. *LSM*：隐空间记忆思路对跨 chunk 一致性有参考价值，但绑定单图 + 相机轨迹的 scene generation 任务
+3. *FPSAttention / BLADE*：高质量视频生成的通用加速件，但前者吃 Hopper FP8 硬件、未在 14B 之外验证
+4. *ZipAR / NAR / FlashAR*：AR 视觉生成路线，与扩散管线正交，仅在自训 AR 模型时有参考价值
+
+真正改变部署成本结构的悬念只有一个：Inferix 声称的"16GB 消费级 GPU 实时交互生成"若自测属实，数字人直播的门槛从 8×H20 直接掉到一张消费卡。这比任何单篇论文的加速倍数都更值得工程团队亲手验证。
 
 * 填充进度
 
