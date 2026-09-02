@@ -1,0 +1,80 @@
+#+TITLE: Talker-T2AV：自回归扩散联合生成语音与说话头像（motion latent 空间）
+#+SLUG: talker-t2av-2026
+#+TYPE: paper-reading
+#+STATUS: idea
+#+PROGRESS: 0
+#+TARGET_ALIAS: categories/杂识
+#+TARGET_SUB_ID: auto
+#+PIN: false
+#+SOURCE_URL: https://arxiv.org/abs/2604.23586
+#+TAGS: [数字人, 论文精读, motion-latent, 扩散模型]
+#+CREATED_AT: 2026-09-02T17:20:04
+#+UPDATED_AT: 2026-09-02T17:20:04
+#+PUBLISHED_AT: 
+#+PUBLISHED_FILE: 
+
+* Talker-T2AV：自回归扩散联合生成语音与说话头像（motion latent 空间）
+** 基础信息（2026-09-01 调研）
+
+- arXiv 2604.23586，2026-04-26，HKUST / PKU / 浙大 / NUS / CUHK 联合
+- 任务：语音 + 说话头像联合生成（joint talking audio-video generation）
+- 工作空间：motion latent space（明确继承 Ditto 的 identity-agnostic motion space 思路，LIA-X 自编码器每帧压缩成一个 40 维向量），非像素/视频 latent
+
+** 原理
+
+- 层级架构：共享自回归 LM（Qwen3-0.6B 初始化）做高层时序规划，音频 patch 与视觉 patch embedding 元素相加融合
+- 多个 8 层双向 Transformer DiT head 独立解码：从共享 hidden state 解出各模态的连续 latent 帧（语音 token / 运动 latent），再交渲染器
+- LIA-X 自编码器约 1B 参数；ODE sampler 每 patch 10 步
+- 核心卖点：语音和视频 motion 同一个 AR 规划器生成，天然音画对齐；motion latent 空间继承 Ditto 的解耦（身份无关）
+
+** 训练配置
+
+- 200K steps，约 1M talking-head clips + Emilia 数据集
+- GPU：论文 HTML 版未明确标注（待从 PDF 确认）
+
+** 效果对比（vs Ditto，中文/英文）
+
+| 指标 | Talker-T2AV | Ditto | 改进 |
+|------+------+-------|------|
+| FID | 17.32 / 24.46 | 17.98 / 28.73 | 小幅 |
+| FVD | 107.09 / 243.51 | 187.54 / 304.72 | 中文 -43%，英文 -20% |
+| Sync-C | 3.97 / 5.85 | 1.77 / 4.24 | 中文 2.24×，英文 1.38× |
+| Sync-D | 10.09 / 9.03 | 11.81 / 10.04 | 更低更好 |
+
+联合生成（音频+视频一起出）对比：WER 0.055（EN）/ CER 0.148（CN），大幅优于 MoVA 0.317/0.359、Ovi 0.296/0.873、LTX-2 0.257/0.461、UniAVGen 0.302/0.265；UTMOS 3.458（EN）与 UniAVGen 3.459 持平。
+
+** 与 Ditto/AvatarForcing 的关系
+
+- 明确引用并以 Ditto 为基线："Ditto builds an identity-agnostic motion space"
+- 未提 AvatarForcing
+- 定位：Ditto 的"单出视频"扩展为"音画同源联合生成"，仍是 motion-space 路线
+
+** 输入输出接口与音色控制（2026-09-01 补充）
+
+- 输入三元组：文本转录 + 参考语音 + 身份图像
+- 三种模式（同一架构免改造）：
+  1. joint audio-video generation：文本 → 同时生成语音 + 说话头像视频
+  2. audio-driven talking head：给定语音驱动人脸
+  3. video dubbing：给无声视频配同步语音
+- 音色确定：非随机采样。参考语音提取 speaker embedding，作为全局条件向量喂给音频扩散 head（voice cloning 式）。视觉 head 不接收 speaker embedding，只用身份图像的首帧 motion 向量 + backbone 共享 hidden state
+- 联合模式下的唇同步：没有 GT 音频可参照，靠共享 AR planner 的跨模态对齐——音频 patch 与视觉 patch embedding 在 text prefix 之后逐位置元素相加融合，两个模态编码器输出相同帧率的纯时序序列，无需显式同步损失
+- 待确认：speaker encoder 具体是哪个（HTML 版未标注，引用了外部论文）；训练 GPU 型号
+
+** GPU 与推理效率（2026-09-02 从 PDF 核实）
+
+- 推理：单张 NVIDIA H20 实测（Table 2，5s clip，输出 25Hz，FPS>25 即快于实时）
+- 训练：PDF 全文只提端到端 200K steps、global batch 256、AdamW bfloat16；训练 GPU 型号/数量未写（推理表也未含训练硬件）
+- 参数量：联合模式 1B（backbone Qwen3-0.6B + heads）；audio-to-video 模式 0.8B（跳过音频 head）
+- 实测 FPS：联合 24（略低于实时 25），audio-to-video 30（超实时）
+- 对比：FLOAT 0.3B→39 FPS、Ditto 0.2B→47 FPS（Ditto 更快），但 EchoMimic 1.3B→0.98、Sonic 1.5B→0.77，联合生成侧 UniVerse-1 7.1B→0.41、MoVA 32B→0.02——比它大一个量级的模型慢两个量级
+- 快的核心原因：5 秒视频在 AR 序列里只有 31.25 个 patch step（含 text prefix 全序列 <50 token），跨模态交互只发生在短高层 token 序列上；diffusion head 每次只去噪 4 帧的 patch（注意力窗口 <10 位置），而 dual-DiT 要对 T×H×W 的几千到几万 token 视频体量做每步二次方注意力
+- 推理超参：Euler ODE 10 步、温度 0.7、CFG 2.0，stop predictor >0.5 停止
+
+** 任务与场景（2026-09-02 从 PDF intro/abstract 补充）
+
+- 任务定位：talking head 场景下的联合音视频生成（joint audio-video generation for talking heads），对标 Sora 2 / Veo 3 / Kling 3 / Seedance 2.0 的"音画同生"能力，但开源界现状是 dual-DiT（MoVA / Ovi / LTX-2 / UniAVGen）
+- 它要解决的 dual-DiT 三大结构缺陷（论文明说）：
+  1. *全程纠缠*：每个去噪步都做跨模态 attention，高层语义和低层渲染信号全程耦合——但语音与面部运动只在语义/时间层强相关，声学波形与视觉纹理是两套截然不同的渲染过程，连续纠缠无益
+  2. *定长输出*：非自回归，生成前就固定时长（约 5s）——文本超长就要压缩/截断/跳读，语音可懂度崩；也无法适应不同语言/说话人的语速差异
+  3. *推理太贵*：每步对 T×H×W 的几千到几万 token 视频体做二次方 attention，且整条轨迹重复几十次——现有 dual-branch 系统都远低于实时，无法部署到交互式 talking head
+- 场景指向：交互式应用（对话数字人），需要实时、变长、高同步

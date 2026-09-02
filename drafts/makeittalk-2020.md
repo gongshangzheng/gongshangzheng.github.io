@@ -2,18 +2,18 @@
 slug: makeittalk-2020
 title: "MakeItTalk：Speaker-Aware Talking-Head Animation 快读"
 type: paper-reading
-status: outlining
-progress: 20
+status: published
+progress: 100
 target_alias: categories/AI/数字人/数字人论文精读
-target_sub_id: auto
+target_sub_id: 590
 target_hub: digital-human-hub
 pin: false
 source_url: https://arxiv.org/abs/2004.12992
 tags: [数字人, talking-head, 音频驱动, 卡通]
 created_at: 2026-09-01T16:15:22
-updated_at: 2026-09-01T16:15:22
-published_at: 
-published_file: 
+updated_at: 2026-09-02T14:00:21
+published_at: 2026-09-02T13:58:49
+published_file: src/pages/makeittalk-2020.html
 ---
 
 # MakeItTalk：Speaker-Aware Talking-Head Animation 快读

@@ -264,6 +264,11 @@ def add_body_links(files, name_to_paper, cite_to_paper):
                 if last_open_a > last_close_a:
                     continue  # Inside an <a> tag
                 
+                # Check if inside a [[target | label]] wiki-link — already a link
+                if before.rfind('[[') > before.rfind(']]'):
+                    linked_targets.add(target_file)
+                    break
+                
                 # Check if in a table header or short cell
                 line_start = body.rfind('\n', 0, pos) + 1
                 line_end = body.find('\n', pos)
