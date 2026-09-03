@@ -1,0 +1,572 @@
+---
+title: "数字人论文精读（六十三）：ConsisID，频率分解的身份保持文生视频"
+description: "北大 PKU-YuanGroup 的 CVPR 2025 Highlight 工作：把参考人脸按空间频率拆成低频轮廓与高频纹理两路——低频经 GFE 拼进噪声潜变量浅层，高频经 ArcFace+CLIP 双塔以 cross-attention 注入每个注意力块，仅 +0.5B 参数就把 CogVideoX-5B 改造成免微调的身份保持文生视频模型。"
+date: 2026-09-01T10:00:00
+created_at: 2026-09-01T10:00:00
+updated_at: 2026-09-01T10:00:00
+tags: [数字人, 论文精读, 身份一致性, 频率分解, 文生视频]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 630
+papers: ["https://arxiv.org/abs/2411.17440"]
+repos: ["https://github.com/PKU-YuanGroup/ConsisID"]
+mathjax: true
+notify: false
+paper_title: "Identity-Preserving Text-to-Video Generation by Frequency Decomposition"
+paper_authors: "Shenghai Yuan, Jinfa Huang, Xianyi He, Yunyang Ge, Yujun Shi, Liuhan Chen, Jiebo Luo, Li Yuan"
+paper_affiliation: "北京大学 · 鹏城实验室 · 罗切斯特大学 · Rabbitpre Intelligence · 新加坡国立大学"
+paper_venue: "CVPR 2025 Highlight · arXiv 2411.17440"
+paper_url: "https://arxiv.org/abs/2411.17440"
+paper_code: "https://github.com/PKU-YuanGroup/ConsisID"
+hero_title: "ConsisID"
+hero_sub: "CVPR 2025 Highlight · PKU-YuanGroup"
+hero_tagline: "把身份拆成低频轮廓与高频纹理，分别补上 DiT 的两个先天缺陷"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.58</span><span class="label">FaceSim-Arc（ID-Animator 0.32）</span></div>
+  <div class="stat"><span class="num b">+0.5B</span><span class="label g">参数增量（5.7B vs 5.2B）</span></div>
+  <div class="stat"><span class="num">1.8k</span><span class="label">训练步数</span></div>
+  <div class="stat"><span class="num b">100+s</span><span class="label l">单身份推理（tuning-free）</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：当身份保持撞上 DiT 时代</div>
+
+身份保持文生视频（Identity-Preserving Text-to-Video，IPT2V）要解决的问题是：给定一张参考人脸图像和一段文本提示，生成一段既听从文本指令、又与参考人脸身份一致的高保真人像视频 #Yuan et al., 2024#。这是数字人内容生产里最直接的落地形态——一张自拍加一句"在巴黎铁塔下回眸微笑"，就应该得到一段"还是你、但场景动作全换"的视频。
+
+到 2024 年，这个任务在图像侧已经打完了上半场：<strong>IP-Adapter</strong>（2023.08）用 CLIP 特征加解耦 cross-attention 开创 tuning-free 范式，<strong>PhotoMaker</strong>（2023.12）把身份特征堆叠进文本 token #Li et al., 2023#，<strong>InstantID</strong>（2024.01）用 ArcFace 特征替换 CLIP，PuLID（2024.04）做对比 ID 对齐，Imagine Yourself（2024.09）走向工业规模 #Yuan et al., 2024#。但视频侧是完全另一番景象：骨干架构正随 Sora（2024.02）、CogVideoX（2024.08）从 U-Net 全面转向 DiT #Yang et al., 2024#，而视频 IPT2V 当时只有两个选项——Meta 的 MovieGen（闭源，30B DiT）#Polyak et al., 2024# 和开源的 ID-Animator；后者基于 U-Net、方法照搬图像模型，只能生成"类 talking head"的短视频，身份保持还差 #Yuan et al., 2024# #He et al., 2024#。换句话说，<mark>图像侧的 tuning-free 身份注入配方，没有一个被验证过能搬到 DiT 视频模型上</mark>。
+
+ConsisID（PKU-YuanGroup，CVPR 2025 Highlight）补上的正是这个空位：它是第一个开源、免微调（tuning-free）、基于 DiT 架构的身份保持文生视频模型 #Yuan et al., 2024#。它的核心武器不是又叠一个模块，而是换了一整套设计语言——<strong>频率分解</strong>。
+
+<div class="callout">
+<strong>本文一句话贡献：</strong>把参考人脸的身份信号按空间频率拆成两路——低频全局特征（脸型轮廓、五官比例）经 GFE 拼接进噪声潜变量浅层，高频内禀特征（眼唇纹理等身份标识）经 ArcFace+CLIP 双塔以 cross-attention 注入每个注意力块——用两处"对症下药"的注入位置补上 DiT 相对 U-Net 的两个先天频率缺陷，再配一套粗到细训练配方，把 CogVideoX-5B 改造成 IPT2V 模型，代价仅 +0.5B 参数。
+</div>
+
+<div class="photo">
+  <img src="media/images/consisid-2024/figure_1.webp" alt="ConsisID teaser" loading="lazy">
+  <div class="cap">图 1：ConsisID 能力总览。上：参考人脸按频率分解为低频全局特征与高频内禀特征，分别经 GFE（浅层拼接）与 LFE（注意力块内 cross-attention）注入 DiT；下：生成的身份保持视频可被文本灵活控制在不同场景、动作与装饰中（来源：Yuan et al., 2024, Fig.1）。</div>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：为什么 U-Net 的注入套路在 DiT 上会失灵</div>
+
+要理解频率分解的必要性，得先看论文问的那个别人没问的问题。现有 DiT 控制方法（Tora、PuLID、Camera_DiT、MovieGen 等）基本是把 U-Net 时代的注入套路——ControlNet、T2I-Adapter、Textual Inversion——直接搬过来用，<mark>"没有一项研究检验过这类做法为什么在 DiT 中有效"</mark>（no study has yet examined why this approach works with DiT）#Yuan et al., 2024#。ConsisID 的回答是：U-Net 和 DiT 在<strong>频率域</strong>上各有所长，身份信号不按频率选位置注入，就会撞墙。
+
+论文从扩散模型与 ViT 文献中提炼出两条 Finding，作为全部设计的公理（附录"Support for Key Findings"给出逐条出处，包括 FreeU 关于 U-Net 低频偏置的分析 #Si et al., 2024# 与 U-ViT 关于 ViT 骨干在扩散模型中表现的研究 #Bao et al., 2023#）#Yuan et al., 2024#：
+
+<div class="def-box">
+  <h3>Finding 1：DiT 缺低频补给线</h3>
+  浅层（低级、低频）特征对扩散模型的像素级预测至关重要，能让训练更容易收敛。U-Net 靠长跳连（long skip connections）把浅层特征聚合到解码器——DiT 没有这个机制。
+</div>
+
+<div class="def-box">
+  <h3>Finding 2：DiT 缺高频感知力</h3>
+  Transformer 对高频信息的感知有限，而高频恰恰是保持面部特征的关键。U-Net 的 encoder-decoder 结构天然拥有多尺度特征（高频丰富）——DiT 缺乏可比结构。
+</div>
+
+用素描来类比最直观：画一张脸，先用长线条勾出脸型轮廓、五官比例与位置——这是<strong>低频</strong>（缓慢变化的大结构，论文称之为 profile、proportions、facial shape）；再用短促细密的笔触刻画眼角纹理、唇纹、皮肤标识——这是<strong>高频</strong>（空间局部化、快速变化的信号，论文称之为 eye and lip textures、intrinsic identification，即不受姿态、年龄、化妆影响的身份标识）#Yuan et al., 2024#。
+
+U-Net 是天生带频率补给线的架构：长跳连不断把浅层低频送往解码器（利于逐像素预测、易收敛），多尺度金字塔天然富集高频。DiT 把这两条补给线全拆了：低频断供导致训练难收敛，高频感知弱导致面部细节糊掉。所以 U-Net 时代的身份注入配方照搬到 DiT 上，会同时撞上"收敛难 + 细节弱"两堵墙——这不是工程调参能绕过的，是<strong>架构级的频率缺陷</strong>。
+
+结论也就顺理成章：身份控制信号必须先按频率分家，再各自注入 DiT 最"缺"的位置。这就是 ConsisID 全部设计的出发点。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：GFE/LFE 双路，把身份按频率拆开注入</div>
+
+<h3 class="section-title">3.1 总览：一图看懂数据流</h3>
+
+ConsisID 架在 CogVideoX-5B（DiT 架构）之上 #Yang et al., 2024#。参考人脸图像同时喂进两条路：<strong>低频路</strong>（Global Facial Extractor，GFE）把"参考图 + 面部关键点 RGB 图"经 VAE 编码后与噪声潜变量在浅层拼接；<strong>高频路</strong>（Local Facial Extractor，LFE）用 ArcFace 与 CLIP 双塔提取特征、Q-Former 融合，再以 cross-attention 注入每个注意力块内部 #Yuan et al., 2024#。
+
+<div class="photo">
+  <img src="media/images/consisid-2024/model_pipeline.webp" alt="ConsisID architecture" loading="lazy">
+  <div class="cap">图 2：ConsisID 总体架构。上方火焰色路径为低频路：参考图与面部关键点图拼接后经 VAE 编码，与噪声潜变量拼接注入浅层；下方路径为高频路：参考图同时送入人脸识别塔与 CLIP 塔，Q-Former 融合后经 cross-attention 注入每个注意力块（Attention 与 FFN 之间）；右上角是三项一致性训练策略（Coarse-to-Fine / 动态掩码损失 / 动态换脸损失）。火焰 = 可训练，雪花 = 冻结（来源：Yuan et al., 2024, Fig.2）。</div>
+</div>
+
+{{< mermaid >}}
+flowchart LR
+  F["参考人脸图 f"] --> K["提取面部关键点<br/>转成 RGB 图"]
+  F --> CAT["与参考图拼接"]
+  K --> CAT
+  CAT --> VAE["VAE 编码"]
+  VAE -->|"低频：浅层拼接"| Z["噪声潜变量<br/>CogVideoX-5B DiT 主干"]
+  F --> ARC["ArcFace 塔<br/>倒数第二层 + 浅层多尺度"]
+  F --> CLIP["CLIP 图像塔"]
+  ARC --> QF["Q-Former 融合<br/>Dropout / DropToken"]
+  CLIP --> QF
+  QF -->|"高频特征 F：每个注意力块内"| CA["Cross-Attention<br/>Attention 与 FFN 之间"]
+  Z --> CA
+  Y["文本 prompt"] --> Z
+  CA --> OUT["49 帧身份保持视频"]
+{{< /mermaid >}}
+
+<h3 class="section-title">3.2 低频路 GFE：关键点图是一条"只通结构、不通外观"的旁路</h3>
+
+GFE 对应 Finding 1。最直接的做法是把参考人脸与噪声输入潜变量直接拼接（SVD 式参考帧拼接），但参考人脸同时含有高频细节与低频信息——由 Finding 2，高频过早进入 Transformer 既低效又阻碍低频处理；而且直接喂参考脸还会引入光照、阴影等无关噪声 #Yuan et al., 2024#。
+
+论文的解法很妙：<mark>先提取面部关键点，把关键点转成 RGB 图像，再与参考图拼接</mark>，整体经变分自编码器 \(\psi_\theta(\cdot)\) 编码后与噪声潜变量拼接 #Yuan et al., 2024#。为什么这能滤掉光照/阴影？关键点 RGB 图只编码稀疏的几何布局（眼、鼻、耳、轮廓的位置），不携带任何像素强度信息；光照与阴影属于光度外观属性，只存在于参考图的像素值里，无法经由纯几何通道传导。因此关键点图把模型注意力锚定在面部结构上，"聚焦低频信号，同时把无关特征的影响降到最低" #Yuan et al., 2024#。
+
+低频路的目标函数（在标准扩散损失上追加 \(\psi_\theta(f)\) 条件）：
+
+$$
+\mathcal{L}_{b}=\mathbb{E}_{x_0,\, t,\, y,\, f,\, \epsilon}\Bigl[\bigl\|\epsilon-\epsilon_\theta\bigl(x_0,\, t,\, \tau_\theta(y),\, \psi_\theta(f)\bigr)\bigr\|_2^2\Bigr]
+$$
+
+其中 \(\tau_\theta(\cdot)\) 是文本编码器，\(f\) 是参考图（论文注"此处为简洁忽略关键点"）#Yuan et al., 2024#。这条路的分量有多重？消融显示：去掉 GFE 后模型根本无法收敛，FaceSim-Arc/Cur 只有 0.05/0.05、FID 269.88（完整模型为 0.73/0.75）——低频浅层信号是整个训练能跑起来的前提 #Yuan et al., 2024#。
+
+<h3 class="section-title">3.3 高频路 LFE：法医与作家的双塔合奏</h3>
+
+LFE 对应 Finding 2。只用 GFE 不够——全局面部特征缺乏高频信息，而"认出是同一个人"靠的恰恰是高频身份标识 #Yuan et al., 2024#。LFE 的设计围绕一个两难展开：
+
+<ul>
+  <li><strong>纯 ArcFace 塔</strong>：人脸识别骨干提取的特征对表情、姿态、形状等非身份属性不变（年龄和化妆也不改变一个人的核心身份），身份一致性强；但它<strong>缺乏编辑所需的语义特征</strong>——说不出"这个人正在做什么"，没法按 prompt 改年龄改妆容。</li>
+  <li><strong>纯 CLIP 塔</strong>：语义丰富、可编辑；但 CLIP 没在人脸数据上专门训练过，提取的特征里混着大量与脸无关的信息，会损害身份保真 #Yuan et al., 2024#。</li>
+</ul>
+
+打个比方：ArcFace 是<strong>法医</strong>——只认人、不管场景，同一人微笑、侧脸、化浓妆的照片它都认得，但描述不了情境；CLIP 是<strong>作家</strong>——懂语义、会编剧，但没受过人脸专门训练，叙述里净是杂质。LFE 让两塔并行，再用 <strong>Q-Former 融合</strong>成"既能锁定身份、又能被编辑"的内禀身份特征 \(F\)；对 CLIP 特征施加 Dropout 与 DropToken，把作家叙述里的杂质抖掉，维持 Q-Former 输出中细粒度身份特征的主导地位 #Yuan et al., 2024#。
+
+ArcFace 塔有个关键细节：取骨干的<strong>倒数第二层</strong>（penultimate layer）而非输出层，因为它"保留了更多与身份相关的空间信息"（沿用 UniPortrait 的做法）#Ge et al., 2024# #Deng et al., 2019#。另外还把识别骨干的浅层多尺度特征（经插值）与 CLIP 特征拼接，补充空间细节 #Yuan et al., 2024#。
+
+融合后的特征 \(F\) 如何注入 DiT？答案是 cross-attention 残差，而且注入点相当讲究——<mark>每个注意力块内部，Attention 与 FFN 模块之间</mark> #Yuan et al., 2024#：
+
+$$
+Z_i^{\prime} = Z_i + \text{Attention}(Q_i^v,\, K_i^f,\, V_i^f)
+$$
+
+$$
+Q^{v} = Z_i W^{q}_i,\quad K^{f} = F W^{k}_i,\quad V^{f} = F W^{v}_i
+$$
+
+其中 \(Z_i\) 是第 \(i\) 个注意力块产生的视觉 token，\(F\) 是内禀身份特征，\(W^q\)、\(W^k\)、\(W^v\) 是可训练投影参数 #Yuan et al., 2024#。注意这个结构的巧妙之处：Query 来自视觉 token、Key/Value 来自身份特征——视觉 token <strong>主动查询</strong>身份信息，与文本 cross-attention 同构，因此能与文本条件共存不冲突；残差形式 \(Z_i + \text{Attention}(\cdot)\) 保证注入是"增强"而非"替换"。
+
+叠加高频路后的目标函数：
+
+$$
+\mathcal{L}_{c}=\mathbb{E}_{x_0,\, t,\, y,\, f,\, \epsilon}\Bigl[\bigl\|\epsilon-\epsilon_\theta\bigl(x_0,\, t,\, \tau_\theta(y),\, \psi_\theta(f),\, \varphi_\theta(f)\bigr)\bigr\|_2^2\Bigr]
+$$
+
+其中 \(\varphi_\theta(\cdot)\) 是局部面部提取器（LFE）#Yuan et al., 2024#。
+
+<h3 class="section-title">3.4 注入位置本身就是贡献：a–g 七方案消融</h3>
+
+ConsisID 最有说服力的部分，是它没有把注入位置当成工程巧合，而是做了系统的机制验证——七种注入方案的消融 #Yuan et al., 2024#：
+
+<div class="photo">
+  <img src="media/images/consisid-2024/model_ablation.webp" alt="Seven injection schemes" loading="lazy">
+  <div class="cap">图 3：七种身份信号注入方案 (a)–(g)。方案 (c) 为最终采用：低频（含关键点）注入噪声潜变量 + 高频注入每个注意力块内部（来源：Yuan et al., 2024, Fig.3）。</div>
+</div>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方案</th><th>注入方式</th><th>FaceSim-Arc ↑</th><th>FaceSim-Cur ↑</th><th>CLIPScore ↑</th><th>FID ↓</th><th>结果解读</th></tr></thead>
+    <tbody>
+      <tr><td>a</td><td>仅高频（无低频浅层拼接）</td><td>0.05</td><td>0.05</td><td>34.86</td><td>269.88</td><td>缺低频信号，无法收敛</td></tr>
+      <tr><td>b</td><td>仅低频（无高频块内注入）</td><td>0.66</td><td>0.68</td><td>34.48</td><td><strong>104.34</strong></td><td>生成脸"复制"参考图，prompt 控制失灵</td></tr>
+      <tr><td><strong>c</strong></td><td><strong>低频浅层 + 高频块内（完整版）</strong></td><td><strong>0.73</strong></td><td><strong>0.75</strong></td><td><strong>36.77</strong></td><td>127.42</td><td><strong>全面最优</strong></td></tr>
+      <tr><td>d</td><td>c 但低频路不含关键点</td><td>0.64</td><td>0.68</td><td>30.69</td><td>177.65</td><td>关键点聚焦低频、助训练提性能</td></tr>
+      <tr><td>e</td><td>c 但高频注入注意力块输出</td><td>0.62</td><td>0.66</td><td>33.61</td><td>164.15</td><td>只拼接特征、不引导注意力</td></tr>
+      <tr><td>f</td><td>c 但高频注入注意力块输入</td><td colspan="4">unstable training process</td><td>破坏 DiT 频域分布 → 梯度爆炸</td></tr>
+      <tr><td>g</td><td>仅高频、注入在注意力块之前</td><td colspan="4">unstable training process</td><td>同上，训练不稳定</td></tr>
+    </tbody>
+  </table>
+</div>
+
+（协议：30 身份 × 2 参考图 × 90 prompt。注：论文 §4.4 定义列表把 a/b 的频段写反了，但正文叙述与数值——a 行与"去 GFE"消融完全一致（0.05）、b 行与"去 LFE"完全一致（0.66）——表明 a 实为仅高频、b 实为仅低频，此处以数值为准 #Yuan et al., 2024#。）
+
+这张表是全文的机制核心，值得逐行读：
+
+<ul>
+  <li><strong>方案 a（仅高频）撞上 Finding 1 的墙</strong>：低频断供，训练难度大增，模型无法收敛，FaceSim 崩到 0.05。</li>
+  <li><strong>方案 b（仅低频）撞上 Finding 2 的墙</strong>：FaceSim 0.66 看似不差、FID 104.34 甚至全场最低，但生成的人脸只是在"复制参考图"——难以通过 prompt 控制表情、动作等特征。FID 最低恰是复制的副产品，这里已经埋下"FID 不可尽信"的伏笔。</li>
+  <li><strong>方案 e 证明"注入到块内"不是随便选的</strong>：同样在注意力块附近，从输出端注入只是特征堆叠（"merely concatenates features without directing focus"），0.62 vs 0.73；只有块内注入能让注意力权重直接参与身份 token 的选择。</li>
+  <li><strong>方案 f/g 直接证明注入位置错了连训练都完不成</strong>：往注意力块输入端或之前注入高频，会破坏 DiT 本意的频域分布，梯度爆炸 #Yuan et al., 2024#。</li>
+</ul>
+
+论文还用傅里叶变换做了直接的频域验证：对生成视频（仅人脸区域）做 Fourier 变换，频谱与对数幅度图显示，注入低频/高频信号确实增强了生成人脸对应频段的信息；低频信号"可以通过与面部关键点匹配进一步增强"；高频注入注意力块内部时"特征利用率最高"；完整方案 c 的高、低频响应都最强 #Yuan et al., 2024#。
+
+<div class="photo">
+  <img src="media/images/consisid-2024/injection_of_frequency.webp" alt="Fourier spectra validation" loading="lazy">
+  <div class="cap">图 4：注入机制的傅里叶谱验证。(a)–(e) 各注入方案生成人脸的频谱与 (f) log 幅度：注入低频/高频信号确实增强对应频段；方案 (c)（完整 ConsisID）的高、低频响应均最强（来源：Yuan et al., 2024, Fig.4）。</div>
+</div>
+
+<h3 class="section-title">3.5 与 ReferenceNet / Adapter 路线的本质差异</h3>
+
+把 ConsisID 放回身份保持方法的坐标系里，它和几条主流路线的差异就清楚了：
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方法</th><th>身份表示</th><th>注入机制与位置</th><th>骨干</th><th>任务域</th></tr></thead>
+    <tbody>
+      <tr><td>IP-Adapter</td><td>CLIP 图像特征（单塔）</td><td>解耦 cross-attention 注入 U-Net（单一位置）</td><td>U-Net</td><td>图像</td></tr>
+      <tr><td>PhotoMaker</td><td>CLIP 身份特征堆叠</td><td>拼接到文本 token 通道</td><td>U-Net</td><td>图像</td></tr>
+      <tr><td>InstantID</td><td>ArcFace 特征（单塔）+ 姿态网络</td><td>cross-attention + IdentityNet</td><td>U-Net</td><td>图像</td></tr>
+      <tr><td>ID-Animator</td><td>CLIP 路线（类图像方法）</td><td>face adapter 注入 U-Net</td><td>U-Net</td><td>视频（类 talking head）</td></tr>
+      <tr><td><strong>ConsisID</strong></td><td><strong>ArcFace 倒数第二层 + CLIP 双塔，Q-Former 融合</strong></td><td><strong>按频率分家：低频浅层拼接 + 高频每个注意力块内 cross-attention</strong></td><td><strong>DiT（CogVideoX-5B）</strong></td><td><strong>视频（49 帧可编辑）</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+三个关键差异值得强调：
+
+<ul>
+  <li><strong>没有 ReferenceNet</strong>。ReferenceNet 路线（如 AnimateDiff 时代的可控生成）要用一个与主干同量级的参考网络逐空间位置提取密集特征，代价沉重。ConsisID 用轻量的"识别编码器 + 语义编码器"双塔换掉了重型参考网络，整个身份通路只增加 0.5B 参数（5.7B vs 基座 5.2B）#Yuan et al., 2024#。代价是身份信号不再是逐位置对齐的密集特征，必须靠频率域分析决定注入位置来补偿——这正是 Finding 1/2 的用武之地。</li>
+  <li><strong>与 IP-Adapter 同构但不同命</strong>。注入算子上 ConsisID 的 cross-attention 与 IP-Adapter 的解耦 cross-attention 同构（Q 来自视觉、K/V 来自身份特征）#Ye et al., 2023#，但 IP-Adapter 是单一 CLIP 特征、U-Net 单一位置；ConsisID 是双塔特征、按频率分家的两个位置，并用两条 Finding 论证了为什么 U-Net 时代的单点注入不能照搬到 DiT #Yuan et al., 2024#。</li>
+  <li><strong>与 InstantID 同识 ArcFace 但用法不同</strong>。两者都看中了 ArcFace 的身份判别力 #Wang et al., 2024# #Deng et al., 2019#，但 InstantID 是图像域单塔 + 姿态网络；ConsisID 认为 ArcFace 单塔"缺乏编辑所需语义"，补了 CLIP 塔与 Q-Former，并把 ArcFace 特征显式定位为"高频"成分、只注入注意力块内 #Yuan et al., 2024#。想深入理解 ArcFace 为什么能提供这种"法医级"身份特征，可以读本站的 <a href="arcface-2018.html">ArcFace 深度解读</a>。</li>
+</ul>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training：一致性训练配方与 130K 数据管线</div>
+
+架构之外，ConsisID 的另一半贡献是一套<strong>一致性训练配方</strong>（Consistency Training Recipe）：粗到细训练（CFT）+ 动态掩码损失（DML）+ 动态换脸损失（DCL）#Yuan et al., 2024#。
+
+<h3 class="section-title">4.1 训练信号与损失链 L_a → L_f</h3>
+
+训练信号的构造很关键：从训练视频中<strong>随机选一帧</strong>，用 ArcFace 式 Crop &amp; Align 抽取人脸区域作为参考图——也就是说，训练时参考图与目标视频同源 #Yuan et al., 2024#。文本与参考图一起作为控制信号。
+
+先把损失的起点摆出来——标准的文生视频扩散噪声预测损失（把 \(x_0\) 换成 \(\mathcal{E}(x_0)\) 即得 ConsisID 采用的 latent diffusion 形式）：
+
+$$
+\mathcal{L}_{a}=\mathbb{E}_{x_0,\, t,\, y,\, \epsilon}\Bigl[\bigl\|\epsilon-\epsilon_\theta\bigl(x_0,\, t,\, \tau_\theta(y)\bigr)\bigr\|_2^2\Bigr]
+$$
+
+其中 \(\epsilon \sim \mathcal{N}(0,1)\) 是噪声，\(\tau_\theta(\cdot)\) 是文本编码器 #Yuan et al., 2024#。论文的方法叙事就是这条损失的六步演进，每一步追加一个身份相关组件：\(\mathcal{L}_a\)（无身份条件）→ \(\mathcal{L}_b\)（+低频 \(\psi_\theta(f)\)，Part 3）→ \(\mathcal{L}_c\)（+高频 \(\varphi_\theta(f)\)，Part 3）→ \(\mathcal{L}_d\)（人脸掩码约束）→ \(\mathcal{L}_e\)（动态切换）→ \(\mathcal{L}_f\)（动态换脸+噪声）。剩下的三步演进全部针对"怎么监督"：
+
+第一步，<strong>人脸掩码约束</strong>。对整幅场景算损失会混入冗余背景噪声，于是从视频提取人脸掩码，经<strong>三线性插值</strong>映射到潜变量空间（视频潜变量是 (T,H,W) 体素，三线性插值正好把逐帧 2D 掩码对齐到时空下采样后的潜变量网格），再逐元素约束损失 #Yuan et al., 2024#：
+
+$$
+\mathcal{L}_{d}=M \odot \mathcal{L}_{c}
+$$
+
+第二步，<strong>动态掩码损失（DML）</strong>。如果所有训练步都用 \(\mathcal{L}_d\) 监督，背景永远不受监督，推理时模型就生成不出自然背景 #Yuan et al., 2024#。解法是概率化切换：
+
+$$
+\mathcal{L}_{e} =
+\begin{cases}
+\mathcal{L}_{d}, & \text{if } p \gt \alpha \\
+\mathcal{L}_{c}, & \text{if } p \leq \alpha
+\end{cases}
+$$
+
+以概率 \(\alpha\) 决定本步用掩码约束还是全场景损失，\(\alpha=0.5\) #Yuan et al., 2024#。本质上是把"前景监督"与"全场景监督"做成数据层面的随机正则，模拟推理时"既要好脸也要好背景"的混合需求。
+
+第三步，<strong>动态换脸损失（DCL）</strong>。只用 \(\mathcal{L}_e\) 训练后，模型对训练数据之外的人脸表现差——根因是过拟合出了 <mark>"copy-paste 捷径"</mark>：模型只用训练帧里出现过的脸训练，学的是"复制参考图"而不是"迁移身份" #Yuan et al., 2024#。解法：
+
+$$
+\mathcal{L}_f =
+\begin{cases}
+\mathcal{L}_e \ \text{where} \ x_0 \cdot \zeta, & \text{if } p \gt \beta \\
+\mathcal{L}_e \ \text{where} \ x_c \cdot \zeta, & \text{if } p \leq \beta
+\end{cases}
+$$
+
+以概率 \(\beta\) 把参考图换成<strong>训练帧之外</strong>的人脸（cross-face，\(x_c\)），并对参考图统一施加轻微高斯噪声 \(\zeta\)，\(\beta=0.5\) #Yuan et al., 2024#。噪声打破参考图与生成目标之间像素级的确定性对应，cross-face 直接构造"参考图不在训练分布内"的样本，双管齐下逼模型走"特征级身份迁移"而非"图像级复制"。
+
+<div class="callout">
+<strong>一个通用技巧值得带走：</strong>DML 和 DCL 都是"概率化损失切换"——把两种互相冲突的监督信号按 0.5 概率混用，而不是设计复杂的加权。这比调损失权重更稳，也更接近数据增强的思想。
+</div>
+
+<h3 class="section-title">4.2 粗到细训练（CFT）：先学骨架，再抠细节</h3>
+
+CFT 是"分层策略：模型先全局学信息，再局部精修" #Yuan et al., 2024#。粗粒度阶段（对应 Finding 1）只用 GFE，模型优先学低频特征——面部轮廓与比例，快速从参考图获取身份、保证序列内一致性；细粒度阶段（对应 Finding 2）加入 LFE，焦点转向高频细节——眼唇纹理，提升表情保真与整脸相似度。
+
+为什么必须分阶段？消融给出了机制层面的答案：去掉 CFT 后"**GFE 与 LFE 表现出竞争行为**，模型难以准确区分该优先处理高频还是低频信息，收敛到次优点"——FaceSim-Arc 从 0.73 掉到 0.54 #Yuan et al., 2024#。两个提取器在同一阶段互相抢梯度方向，是"多条件注入训练不稳"的一个典型样本。
+
+<h3 class="section-title">4.3 数据管线：130K 高质量人本视频的四级漏斗</h3>
+
+现有人脸数据集（VoxCeleb、CelebV-Text 等）以人脸特写为主、背景被裁掉，不适合"日常生活场景"的 IPT2V，所以作者自建了 in-house 数据集 #Yuan et al., 2024#。管线分四级：
+
+<div class="photo">
+  <img src="media/images/consisid-2024/data_pipeline.webp" alt="Data curation pipeline" loading="lazy">
+  <div class="cap">图 5：ConsisID 数据管线。从左到右四级：原始视频 → 场景切分与美学/运动过滤 → YOLO 多视角人脸过滤与关键点检测 → IoU 前后向传播的同一性验证 → SAM2 分割 + Qwen2-VL-72B 标注，最终产出 130K 高质量 clip（来源：Yuan et al., 2024, Fig.data）。</div>
+</div>
+
+<ul>
+  <li><strong>检索</strong>：用 "human / woman / man" 关键词从互联网检索视频，剔除低播放、低点赞。</li>
+  <li><strong>粗过滤</strong>：PySceneDetect 场景切分 + 美学分数 + 运动分数过滤，得到 130K 高质量 clip（管线沿用同组 ChronoMagic-Bench 的做法）。</li>
+  <li><strong>多视角人脸过滤</strong>：YOLO-Box 逐帧抽取 face / head / person 三类 bbox，三类齐备才保留；YOLO-Pose 检测关键点（左右眼、左右耳、鼻）过滤关键点密度低的片段；"face" bbox 占帧面积比 <strong>&lt;6% 的 clip 直接丢弃</strong>。</li>
+  <li><strong>同一性验证 + 分割标注</strong>：不依赖 BoT-SORT/ByteTrack 等现成跟踪器（"缺乏鲁棒性"），而是自研轻量跟踪——首帧给每个 face bbox 分配唯一 ID，然后做 IoU <strong>前向传播 + 后向传播</strong>双向匹配；再由 SAM2 生成 face/head/person 掩码并用其跟踪信号修正 ID；最后用 Qwen2-VL-72B 做 Time-Aware 视频描述打标 #Yuan et al., 2024#。</li>
+</ul>
+
+<h3 class="section-title">4.4 训练配置披露表</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>训练数据</td><td>已披露</td><td>in-house 人本数据集 130K clip（细粒度消融用 ~30K 子集）；仅子集以 CC BY 4.0 开源</td></tr>
+      <tr><td>训练硬件</td><td>已披露</td><td>Nvidia H100 ×40 + A100 ×8，PyTorch</td></tr>
+      <tr><td>优化器</td><td>部分披露</td><td>AdamW；β1/β2/ε/weight decay 未披露</td></tr>
+      <tr><td>学习率</td><td>已披露</td><td>3×10⁻⁶，cosine_with_restarts 调度；warmup 未披露</td></tr>
+      <tr><td>Batch size</td><td>已披露</td><td>80（细粒度消融中降为 16）</td></tr>
+      <tr><td>训练步数</td><td>已披露</td><td>1.8k steps（细粒度消融：1 epoch）</td></tr>
+      <tr><td>训练时长</td><td>未披露</td><td>原文未给出 GPU-hours / 天数</td></tr>
+      <tr><td>模型参数量</td><td>已披露</td><td>总量 5.7B（基座 5.2B，+0.5B）；明确可训练的为每个注意力块的 W_q/W_k/W_v</td></tr>
+      <tr><td>精度格式</td><td>未披露</td><td>FP32/FP16/BF16 均未提及</td></tr>
+      <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>采样设定</td><td>已披露</td><td>480×720，每视频按步长 3 抽 49 连续帧；text dropout 0.1</td></tr>
+      <tr><td>动态损失概率</td><td>已披露</td><td>α = β = 0.5（DML / DCL 切换概率）</td></tr>
+    </tbody>
+  </table>
+</div>
+
+几个"复现陷阱"要提醒：ArcFace/CLIP/Q-Former/VAE 各自是否冻结、除 \(W_q/W_k/W_v\) 外哪些新模块参与训练、CFT 两阶段的步数划分、噪声 ζ 的具体形式与幅度，论文均未明确给出 #Yuan et al., 2024#。复现训练需要参照开源代码补齐这些细节。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference：tuning-free 推理、步数玄学与轻量性</div>
+
+<h3 class="section-title">5.1 推理配置</h3>
+
+推理时不需要任何逐身份微调：直接给定参考图与 prompt，用 DPM 采样器 50 步、classifier-free guidance 6.0 生成 49 帧 480×720、8fps 的视频 #Yuan et al., 2024#。8fps 低于人眼流畅感知阈值（约 16fps），论文建议接 RIFE 插帧后处理到 16fps——插帧后仍清晰，说明原始帧足够连贯 #Yuan et al., 2024#。
+
+<h3 class="section-title">5.2 步数不是越多越好：t=50 的峰值与频率时序</h3>
+
+推理步数消融藏着一个宝藏发现。在 60×1×1 协议（单张 H100、固定随机种子）下 #Yuan et al., 2024#：
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>步数 t</th><th>FaceSim-Arc ↑</th><th>FaceSim-Cur ↑</th><th>CLIPScore ↑</th><th>FID ↓</th><th>速度 (s) ↓</th></tr></thead>
+    <tbody>
+      <tr><td>25</td><td>0.50</td><td>0.53</td><td>30.43</td><td>184.44</td><td><strong>50+</strong></td></tr>
+      <tr><td><strong>50</strong></td><td><strong>0.52</strong></td><td>0.54</td><td><strong>33.08</strong></td><td><strong>163.68</strong></td><td>100+</td></tr>
+      <tr><td>75</td><td>0.43</td><td>0.52</td><td>31.92</td><td>200.86</td><td>160+</td></tr>
+      <tr><td>100</td><td>0.46</td><td><strong>0.55</strong></td><td>32.25</td><td>212.74</td><td>220+</td></tr>
+      <tr><td>125</td><td>0.42</td><td>0.51</td><td>32.38</td><td>185.85</td><td>270+</td></tr>
+      <tr><td>150</td><td>0.34</td><td>0.40</td><td>32.41</td><td>186.56</td><td>330+</td></tr>
+      <tr><td>175</td><td>0.35</td><td>0.42</td><td>29.98</td><td>186.99</td><td>390+</td></tr>
+      <tr><td>200</td><td>0.33</td><td>0.39</td><td>31.18</td><td>166.79</td><td>440+</td></tr>
+    </tbody>
+  </table>
+</div>
+
+指标随步数<strong>非线性</strong>变化，峰值在 t=50；定性退化同样有节奏：t=25 生成不完整花环；t=75 上半身衣物缺失；t&gt;125 丢失关键低频面部信息导致五官扭曲；t&gt;150 视觉清晰度持续劣化 #Yuan et al., 2024#。
+
+作者给出的解释把频率分解从"架构注入位置"延伸到了"去噪时间轴"：<mark>去噪早期由低频信息主导（生成人脸轮廓），后期由高频细节主导</mark>，t=50 恰好是两阶段的平衡点 #Yuan et al., 2024#。步数过大反而丢低频——这为"扩散去噪过程本身存在频率阶段结构"提供了行为证据，与 GFE/LFE 的空间分工互为印证。
+
+<h3 class="section-title">5.3 轻量插件的真实代价</h3>
+
+计算开销表（单张 A100，解码 49 帧 720×480）#Yuan et al., 2024#：
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>模型</th><th>显存</th><th>参数量</th><th>速度</th></tr></thead>
+    <tbody>
+      <tr><td>ID-Animator</td><td>8GB</td><td>1.5B</td><td>~11s</td></tr>
+      <tr><td>CogVideoX-5B-I2V（基座）</td><td>42GB</td><td>5.2B</td><td>~210s</td></tr>
+      <tr><td><strong>ConsisID</strong></td><td><strong>44GB</strong></td><td><strong>5.7B</strong></td><td><strong>~214s</strong></td></tr>
+      <tr><td>ConsisID + TeaCache（rel_l1_thresh=0.1）</td><td>44GB</td><td>5.7B</td><td>~137s</td></tr>
+      <tr><td>ConsisID + TeaCache（rel_l1_thresh=0.15）</td><td>44GB</td><td>5.7B</td><td>~103s</td></tr>
+      <tr><td>EasyAnimate v4（+PhotomakerV2 首帧）</td><td>15GB</td><td>1.8B</td><td>~78s+7s</td></tr>
+      <tr><td>DynamiCrafter（+PhotomakerV2 首帧）</td><td>17GB</td><td>2.4B</td><td>~26s+7s</td></tr>
+    </tbody>
+  </table>
+</div>
+
+读法：ConsisID 相对基座只多 <strong>0.5B 参数、2GB 显存、约 4 秒</strong>，就让 CogVideoX-5B 获得了它原本没有的 IPT2V 能力——"轻量插件"名副其实 #Yuan et al., 2024#。反过来看 ID-Animator：8GB/1.5B/11s，便宜约 40 倍，但 FaceSim 只有 0.32——开销与身份保真严重不成比例。再叠加免训练加速 TeaCache（显存不变、视觉质量损失很小），推理可压到 103 秒；GitHub README 还给出量化路径，最低可压到约 5GB 跑通 #Yuan et al., 2024#。
+
+<h3 class="section-title">5.4 零样本能力外溢</h3>
+
+只用真实人脸数据训练，ConsisID 仍零样本泛化出了<strong>动漫风格</strong>的身份保持风格迁移；把 frame 参数设为 1（或取视频首帧），它还能退化成身份保持<strong>图像生成</strong>模型 #Yuan et al., 2024#。频率分解学到的身份表示显然比训练分布更通用。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：全面但必须"带协议读"的数字</div>
+
+<h3 class="section-title">6.1 实验配置表</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>评测数据集</td><td>已披露</td><td>30 个训练外人物（覆盖名人、普通人、多样肤色）× 5 张参考图 × 90 条 prompt，主定量每模型生成 13,500 个视频</td></tr>
+      <tr><td>评测指标</td><td>已披露</td><td>FaceSim-Arc、<strong>FaceSim-Cur（本文提出，CurricularFace 特征空间）</strong>、CLIPScore、FID（人脸区域，InceptionV3 特征）</td></tr>
+      <tr><td>Baseline</td><td>已披露</td><td>唯一开源 tuning-free 对手 ID-Animator；tuning-based 三种（DreamVideo / MotionBooth / Magic-Me）；两阶段 I2V 四种；闭源 Vidu 1.5</td></tr>
+      <tr><td>评测硬件</td><td>部分披露</td><td>计算开销表为单张 A100；步数消融为单张 H100；主定量未逐一披露</td></tr>
+      <tr><td>评测协议</td><td>已披露</td><td>主表 30×5×90；消融 30×2×90；Vidu 对比与步数消融 60×1×1；其余多为 30×1×45（子集协议不同，跨表不可直接比较）</td></tr>
+      <tr><td>用户研究</td><td>已披露</td><td>103 份有效问卷，每份 80 题、观看 40 个视频片段，binary voting 四维度</td></tr>
+    </tbody>
+  </table>
+</div>
+
+先记住一个事实：FaceSim-Arc/Cur 衡量生成视频人脸区域与真实人脸图在 ArcFace/CurricularFace 特征空间的相似度，是本任务的核心指标；FaceSim-Cur 为本文提出（引入课程学习训练的人脸识别模型作第二裁判）#Yuan et al., 2024# #Deng et al., 2019#。
+
+<h3 class="section-title">6.2 主对比：vs 唯一开源对手 ID-Animator</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>方法</th><th>FaceSim-Arc ↑</th><th>FaceSim-Cur ↑</th><th>CLIPScore ↑</th><th>FID ↓</th></tr></thead>
+    <tbody>
+      <tr><td>ID-Animator</td><td>0.32</td><td>0.33</td><td>24.97</td><td><strong>117.46</strong></td></tr>
+      <tr><td><strong>ConsisID</strong></td><td><strong>0.58</strong></td><td><strong>0.60</strong></td><td><strong>27.93</strong></td><td>151.82</td></tr>
+    </tbody>
+  </table>
+</div>
+
+（协议：30×5×90 全量 13,500 视频/模型。）身份相似度提升近一倍（0.58 vs 0.32），文本响应也更好（27.93 vs 24.97）。<mark>FID 一列 ConsisID 反而更差——这不是笔误，而是本领域指标危机的直接体现，Part 7 详谈</mark> #Yuan et al., 2024#。定性上，ID-Animator 只能生成人脸区域（16 帧 512×512），无法按 prompt 生成动作、装饰与背景，且存在磨皮、皱纹、低频缺失致人脸扭曲等问题；ConsisID 是 49 帧 480×720 的全场景可编辑生成 #Yuan et al., 2024# #He et al., 2024#。
+
+<h3 class="section-title">6.3 vs tuning-based：快一个数量级，好一个数量级</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方法</th><th>FaceSim-Arc ↑</th><th>FaceSim-Cur ↑</th><th>CLIPScore ↑</th><th>FID ↓</th><th>单身份耗时 (s) ↓</th></tr></thead>
+    <tbody>
+      <tr><td>DreamVideo</td><td>0.03</td><td>0.03</td><td>26.03</td><td>237.91</td><td>3600+</td></tr>
+      <tr><td>MotionBooth</td><td>0.05</td><td>0.06</td><td>24.42</td><td>287.90</td><td>600+</td></tr>
+      <tr><td>Magic-Me</td><td>0.09</td><td>0.10</td><td>23.14</td><td>237.35</td><td>500+</td></tr>
+      <tr><td><strong>ConsisID</strong></td><td><strong>0.46</strong></td><td><strong>0.47</strong></td><td><strong>27.45</strong></td><td><strong>181.97</strong></td><td><strong>100+</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+（协议：30×1×45 子集；耗时含逐身份微调，单张 H100。）tuning-based 方法为每个新身份先微调再推理，慢 5–36 倍，身份指标反而低一个数量级（0.46 vs 0.03–0.09）#Yuan et al., 2024#。作者归因：这些方法面向开放域主体（人、物、动植物），"无法有效捕捉个体身份特征的细微差别" #Yuan et al., 2024# #Ma et al., 2024#。
+
+<h3 class="section-title">6.4 vs 两阶段 I2V：端到端才能对抗身份衰减</h3>
+
+"先用 PhotoMakerV2 生成身份首帧，再交给 I2V 基础模型续帧"是一条直觉上很稳的路线，但数据说明不然（协议 30×1×45）#Yuan et al., 2024#：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>方法（PhotomakerV2 首帧 + I2V）</th><th>FaceSim-Arc ↑</th><th>FaceSim-Cur ↑</th><th>CLIPScore ↑</th><th>FID ↓</th></tr></thead>
+    <tbody>
+      <tr><td>CogVideoX-5B-I2V</td><td>0.37</td><td>0.38</td><td><strong>28.53</strong></td><td>201.69</td></tr>
+      <tr><td>EasyAnimate v4</td><td>0.15</td><td>0.15</td><td>27.95</td><td>235.68</td></tr>
+      <tr><td>OpenSora-Plan v1.3</td><td>0.31</td><td>0.32</td><td>27.25</td><td>224.99</td></tr>
+      <tr><td>DynamiCrafter512</td><td>0.25</td><td>0.26</td><td>29.76</td><td>212.13</td></tr>
+      <tr><td><strong>ConsisID（端到端）</strong></td><td><strong>0.46</strong></td><td><strong>0.47</strong></td><td>27.45</td><td><strong>181.97</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+I2V 基础模型存在明显的<strong>身份时间衰减</strong>（temporal decay）——首帧再像，续帧过程中身份逐渐走样；只有端到端的 ConsisID 全程保持身份 #Yuan et al., 2024#。OpenSora-Plan 保真较高是因为它运动幅度低、"与真实视频不符"，属于靠"少动"换"像" #Yuan et al., 2024#。
+
+<h3 class="section-title">6.5 vs 闭源 Vidu 1.5</h3>
+
+与当时唯一支持 tuning-free IPT2V 的闭源模型 Vidu 1.5（4 秒、480p、官方默认设置）对比（协议 60 prompt × 1 参考图）：ConsisID 四项全优——FaceSim-Arc 0.52 vs 0.36、FaceSim-Cur 0.54 vs 0.39、CLIPScore 33.08 vs 32.87、FID 163.68 vs 215.42 #Yuan et al., 2024#。论文的定性批评是 Vidu 输出含明显伪影，"只保留了发色发型、脸型等特征，无法维持内禀 ID 特征"。（小注：论文此处把发型/脸型称作"高频"，与其惯常的"脸型=低频"划分不一致，引用时以论文标准 taxonomy 为准。）
+
+<h3 class="section-title">6.6 组件消融：每个部件都在扛事</h3>
+
+（协议 30×2×90；注意这是消融子集协议，完整模型在此协议下为 0.73，与主表 0.58 不可直接比。）#Yuan et al., 2024#
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>变体</th><th>FaceSim-Arc ↑</th><th>FaceSim-Cur ↑</th><th>CLIPScore ↑</th><th>FID ↓</th><th>失败的机制</th></tr></thead>
+    <tbody>
+      <tr><td>w/o GFE</td><td>0.05</td><td>0.05</td><td>34.86</td><td>269.88</td><td>无低频浅层信号 → 不收敛</td></tr>
+      <tr><td>w/o LFE</td><td>0.66</td><td>0.68</td><td>34.48</td><td><strong>104.34</strong></td><td>无高频 → 复制参考图、prompt 失控</td></tr>
+      <tr><td>w/o CFT</td><td>0.54</td><td>0.58</td><td>34.47</td><td>144.62</td><td>GFE/LFE 竞争 → 次优收敛</td></tr>
+      <tr><td>w/o DML</td><td>0.62</td><td>0.67</td><td>34.23</td><td>187.78</td><td>背景噪声干扰训练、降低人脸一致性</td></tr>
+      <tr><td>w/o DCL</td><td>0.65</td><td>0.69</td><td>32.21</td><td>117.80</td><td>copy-paste 过拟合 → 训练集外保真下降</td></tr>
+      <tr><td><strong>ConsisID</strong></td><td><strong>0.73</strong></td><td><strong>0.75</strong></td><td><strong>36.77</strong></td><td>127.42</td><td>—</td></tr>
+    </tbody>
+  </table>
+</div>
+
+掉点排序（FaceSim-Arc）：GFE（-0.68，灾难性）&gt; CFT（-0.19）&gt; DML（-0.11）&gt; DCL（-0.08）&gt; LFE（-0.07）。注意 w/o LFE 掉点最小但失败模式最隐蔽——0.66 的 FaceSim 配上全场最低的 FID 104.34，看起来"最好"，实际是复制粘贴的假繁荣；这再次说明单一指标会骗人 #Yuan et al., 2024#。
+
+附录还有一层细粒度消融（~30K 子集、batch 16、1 epoch）：去掉 CLIP 塔 → CLIPScore 从 27.38 降到 26.87（失去编辑语义）；去掉 FaceExtractor → FaceSim-Arc 从 0.40 掉到 0.36（身份一致性受损）；去掉噪声 ζ → 0.37（泛化变差）；损失比例 MSE:DML:DCL 从默认改成 1:1:2（过度强调 DCL）→ FaceSim 崩到 0.29，"可能无法收敛"；全量数据训练的完整模型（0.46）全面优于子集训练版（0.40），数据规模本身也是增益 #Yuan et al., 2024#。
+
+<h3 class="section-title">6.7 用户研究：103 份问卷的交叉验证</h3>
+
+自动指标之外，论文做了相当扎实的用户研究：103 份有效问卷，每份 80 题、观看 40 个视频片段，二选一投票（binary voting），覆盖身份保持、视觉质量、文本相关、运动幅度四个维度。质控规则详细到——视频顺序随机化、提交需滑动验证防机器人、每 IP 限一次、90% 以上答案全选同一选项的问卷作废、完成时间低于 2 分钟的剔除（正常需 2–5 分钟）#Yuan et al., 2024#。
+
+<div class="photo">
+  <img src="media/images/consisid-2024/human_evaluation.webp" alt="User study results" loading="lazy">
+  <div class="cap">图 6：用户研究结果。ConsisID vs ID-Animator 的二选一投票占比——Identity Preservation 69% vs 31%，Visual Quality 81% vs 19%，Text Relevance 92% vs 8%，Motion Amplitude 79% vs 21%（来源：Yuan et al., 2024, Fig.user study）。</div>
+</div>
+
+四项全部大幅胜出，其中文本相关性优势最大（92% vs 8%）——这正是"复制粘贴"与"可编辑生成"的用户侧证据。
+
+<div class="callout">
+<strong>引用本论文数字时的必备提醒（协议漂移）：</strong>同一模型的 FaceSim-Arc 在不同评估子集下为 0.73（30×2×90 消融）/ 0.58（30×5×90 主表）/ 0.52（60×1×1）/ 0.46（30×1×45）——跨表数字不可直接比较，引用时必须注明协议。
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：频率视角给了这个领域一套坐标系</div>
+
+<h3 class="section-title">7.1 指标危机：FID 与人类感知负相关</h3>
+
+<div class="admonition warning">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    FID 在这个任务上会"指鹿为马"
+  </div>
+  <div class="admonition-content"><p>论文用用户研究交叉验证自动指标后发现：<strong>FID 与人类感知呈反向关系</strong>——质量更差的 ID-Animator 反而拿到更好的 FID（117.46 vs 151.82），因此作者明确要求"正文中的定量结果应谨慎解读"，FID 仅作参考；CLIPScore 与人类感知的对齐也"仍然有限" #Yuan et al., 2024#。原因不难理解：ConsisID 的 FID 只在<strong>人脸区域</strong>上计算（InceptionV3 特征空间），而"生成一张和参考图几乎一样的脸"（复制粘贴）在这种分布距离上几乎必然得分——w/o LFE 变体 FID 最低（104.34）正是这个机制的极端体现。本系列此前讨论过的 <a href="face-consistency-benchmark-2025.html">Face Consistency Benchmark</a>、StyleID、ID-Sim 等评测工作，正是对这一指标危机的后续回应。</p></div>
+</div>
+
+<h3 class="section-title">7.2 局限</h3>
+
+<ul>
+  <li><strong>生成规格受限</strong>：49 帧 @8fps，需外挂 RIFE 插帧才能到流畅帧率；单次生成约 6 秒。</li>
+  <li><strong>复现细节缺口</strong>：提取器冻结策略、Q-Former 结构细节、CFT 阶段划分、ζ 噪声形式、训练时长等 8 项细节未披露；in-house 数据仅开源子集（CC BY 4.0），完整复现训练需自建数据管线 #Yuan et al., 2024#。</li>
+  <li><strong>单身份设计</strong>：全部实验为单参考人脸，多身份/多主体是后续工作（Concat-ID、Phantom、SkyReels-A2、HunyuanCustom 等）的增量方向。</li>
+  <li><strong>指标之痛</strong>（作者自认）：现有指标无法准确评估 ID 保持能力，未来需要更贴近人类感知的指标——这一痛点后来由同组的 OpenS2V-Nexus 基准接续解决。</li>
+</ul>
+
+<h3 class="section-title">7.3 在数字人地图上的位置</h3>
+
+ConsisID 的行业意义在于把身份保持从 U-Net 时代（ID-Animator 限于 talking head）带入 DiT 时代：被引已超 160 次，快手 Phantom、昆仑万维 SkyReels-A2、腾讯 HunyuanCustom 等工业工作在讨论 DiT 注入位置时都以它的"低频浅层 + 高频注意力块内"配方为参照系 #Yuan et al., 2024#。它的"DiT 频率二分法"（两条 Finding）也为解释"为什么身份控制信号要分层注入 DiT"提供了通用框架。
+
+放在本站的系列文章里看：ConsisID 代表的是<strong>训练时机制</strong>路线中的频率分解分支——它讲的是"身份信号怎么注入基座"；而 <a href="paper-hunyuan-avatar.html">HunyuanVideo-Avatar</a> 代表的是 MM-DiT 上音频驱动人物动画路线，讲的是"音频怎么驱动已有一致性的角色"（有意思的是，HunyuanVideo-Avatar 并不引用 ConsisID——两者分属音频驱动与 IPT2V 两条文献链，真正引用 ConsisID 的混元系工作是 HunyuanCustom）；想理解 LFE 为什么选 ArcFace 做身份塔，可以回看 <a href="arcface-2018.html">ArcFace 深度解读</a>中关于加性角度间隔损失的推导；而它所依附的"视频基模"这一层，则属于本站 <a href="digital-human-diffusion-foundation-avatar.html">数字人系列（五）：扩散基模与整帧数字人路线</a>的讨论范围。
+
+<h3 class="section-title">7.4 可操作启发</h3>
+
+<div class="callout">
+<strong>给做数字人的工程师四点带走的东西：</strong><br/>
+1. <strong>给 DiT 注入条件前，先问频率</strong>——低频信号拼浅层、高频信号进注意力块内（Attention 与 FFN 之间），这个配方有 a–g 消融和傅里叶谱双重背书，可迁移到任意 DiT 条件注入任务；<br/>
+2. <strong>注入位置错了连训练都完不成</strong>——往注意力块输入端注入会梯度爆炸，输出端注入只是无脑拼特征；位置本身就是一个需要消融的关键超参；<br/>
+3. <strong>反捷径训练用"概率化损失切换"就够了</strong>——DML（α=0.5）防背景退化、DCL（β=0.5）+ 噪声 ζ 防 copy-paste，比复杂加权更简单有效；<br/>
+4. <strong>引用这个领域的 FID 数字前先看人评</strong>——FID 与人类感知负相关是论文自己盖章的事实，FaceSim 类指标 + 用户研究才是这个任务的正确量尺。
+</div>
+
+<div class="review-box">
+  <h3>复习速查</h3>
+  <ul>
+    <li><strong>两条 Finding</strong>：DiT 无长跳连缺低频（难收敛）；Transformer 高频感知弱（细节糊）。</li>
+    <li><strong>双路设计</strong>：GFE（参考图+关键点 RGB 图 → VAE → 浅层拼接）补低频；LFE（ArcFace 倒数第二层 + CLIP 双塔 → Q-Former → 每个注意力块内 cross-attention）补高频。</li>
+    <li><strong>损失链</strong>：L_a 标准 → L_b +低频 → L_c +高频 → L_d 掩码 → L_e 动态切换（α=0.5）→ L_f 动态换脸+噪声（β=0.5）。</li>
+    <li><strong>训练配方</strong>：CFT 粗到细（先 GFE 后 LFE）+ DML + DCL。</li>
+    <li><strong>关键数字</strong>：FaceSim-Arc 0.58 vs ID-Animator 0.32（主表）；+0.5B 参数、1.8k steps、t=50 峰值；FID 与人类感知反向。</li>
+  </ul>
+</div>
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Yuan-et-al.-2024">Yuan, S. et al. (2024). <strong>Identity-Preserving Text-to-Video Generation by Frequency Decomposition (ConsisID)</strong>. CVPR 2025 Highlight. <a href="https://arxiv.org/abs/2411.17440" target="_blank">arXiv:2411.17440</a></li>
+    <li data-cite-key="Yang-et-al.-2024">Yang, Z. et al. (2024). <strong>CogVideoX: Text-to-Video Diffusion Models with An Expert Transformer</strong>. <a href="https://arxiv.org/abs/2408.06072" target="_blank">arXiv:2408.06072</a></li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, J. et al. (2019). <strong>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</strong>. CVPR 2019. <a href="https://arxiv.org/abs/1801.07698" target="_blank">arXiv:1801.07698</a> · <a href="arcface-2018.html" class="paper-link">站内精读 →</a></li>
+    <li data-cite-key="He-et-al.-2024">He, X. et al. (2024). <strong>ID-Animator: Zero-Shot Identity-Preserving Human Animation</strong>. <a href="https://arxiv.org/abs/2404.15275" target="_blank">arXiv:2404.15275</a></li>
+    <li data-cite-key="Ye-et-al.-2023">Ye, H. et al. (2023). <strong>IP-Adapter: Text Compatible Image Prompt Adapter for Text-to-Image Diffusion Models</strong>. <a href="https://arxiv.org/abs/2308.06721" target="_blank">arXiv:2308.06721</a></li>
+    <li data-cite-key="Wang-et-al.-2024">Wang, Q. et al. (2024). <strong>InstantID: Zero-shot Identity-Preserving Generation in Seconds</strong>. <a href="https://arxiv.org/abs/2401.07519" target="_blank">arXiv:2401.07519</a></li>
+    <li data-cite-key="Ge-et-al.-2024">Ge, Y. et al. (2024). <strong>UniPortrait: Empowering Unified Single and Multi-Subject Personalization</strong>. <a href="https://arxiv.org/abs/2407.05512" target="_blank">arXiv:2407.05512</a></li>
+    <li data-cite-key="Li-et-al.-2023">Li, Z. et al. (2023). <strong>PhotoMaker: Customizing Realistic Human Photos via Stacked ID Embedding</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2312.04461" target="_blank">arXiv:2312.04461</a></li>
+    <li data-cite-key="Polyak-et-al.-2024">Polyak, A. et al. (2024). <strong>Movie Gen: A Cast of Media Foundation Models</strong>. Meta. <a href="https://arxiv.org/abs/2410.13720" target="_blank">arXiv:2410.13720</a></li>
+    <li data-cite-key="Ma-et-al.-2024">Ma, Z. et al. (2024). <strong>Magic-Me: Identity-Sanitized Personalization for Text-to-Video Generation</strong>. ECCV 2024. <a href="https://arxiv.org/abs/2402.09334" target="_blank">arXiv:2402.09334</a></li>
+    <li data-cite-key="Si-et-al.-2024">Si, C. et al. (2024). <strong>FreeU: Free Lunch in Diffusion U-Net</strong>. CVPR 2024. <a href="https://arxiv.org/abs/2312.07235" target="_blank">arXiv:2312.07235</a></li>
+    <li data-cite-key="Bao-et-al.-2023">Bao, F. et al. (2023). <strong>All are Worth Words: A ViT Backbone for Diffusion Models (U-ViT)</strong>. ICLR 2023. <a href="https://arxiv.org/abs/2209.12152" target="_blank">arXiv:2209.12152</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="face-consistency-benchmark-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">Face Consistency Benchmark，GenAI 视频的角色面部一致性专项基准</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+  <a class="nav-card nav-next" href="collaborative-face-experts-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">MoFE，多面部专家融合攻克大姿态身份一致性</span></a>
+</div>
