@@ -1,0 +1,426 @@
+---
+title: "数字人论文精读（六十一）：ID-Sim，聚焦身份而非外观的相似度度量"
+description: "身份版 LPIPS 时刻：冻结 DINOv3 + LoRA + 双头对比训练，对背景/视角/光照不变、对身份修改敏感的选择性相似度度量，49 个评测场景拿下 48 项第一"
+date: 2026-09-01T00:00:00
+created_at: 2026-09-01T00:00:00
+updated_at: 2026-09-03T15:27:06
+tags: [数字人, 论文精读, 身份一致性, 相似度度量, 鲁棒性]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 610
+papers: ["https://arxiv.org/abs/2604.05039"]
+repos: ["https://github.com/JuliaChae/id_sim"]
+notify: false
+mathjax: true
+hero_title: "ID-Sim"
+hero_sub: "CVPR 2026 · MIT CSAIL × Adobe Research"
+hero_tagline: "对背景/视角/光照不变，对身份修改敏感——把人类的选择性敏感训练成一个前馈度量"
+paper_title: "ID-Sim: An Identity-Focused Similarity Metric"
+paper_authors: "Julia Chae†, Nicholas Kolkin, Jui-Hsien Wang, Richard Zhang, Sara Beery*, Cusuh Ham*（†于 Adobe 实习期间完成；*共同指导，随机排序）"
+paper_affiliation: "MIT CSAIL；Adobe Research"
+paper_venue: "CVPR 2026（poster，session 2026-06-05）；arXiv:2604.05039"
+paper_url: "https://arxiv.org/abs/2604.05039"
+paper_code: "https://github.com/JuliaChae/id_sim（MIT License）＋ HuggingFace: chaenayo/id-sim_dinov3_vitb16_cls_patch（注意为 ViT-B/16 变体）"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">48/49</span><span class="label">评测场景超越对手</span></div>
+  <div class="stat"><span class="num b">10k</span><span class="label g">三元组（30k 图）训练</span></div>
+  <div class="stat"><span class="num">0.15→0.44</span><span class="label">PerSAM 分割 mAP</span></div>
+  <div class="stat"><span class="num b">100×</span><span class="label l">少于 UNED 冠军的标注量</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：度量的"LPIPS 时刻"，这次轮到身份</div>
+
+  2018 年，一篇标题带着"unreasonable effectiveness"的论文改变了一个领域的评价方式：PSNR 和 SSIM 这类逐像素信号度量统治图像生成评测多年之后，LPIPS 证明了深度特征之间的加权距离与人类"看起来像不像"的判断对齐得更好 #Zhang et al., 2018#。此后 LPIPS 成为生成模型论文的标配指标，一个度量重构了一个领域的研究议程。八年后的这篇 ID-Sim 想在另一个维度上重演这一幕：外观相似之后，轮到<strong>身份一致</strong>了——两张图里的主体是不是"同一个"，而不是"长得像不像" #Chae et al., 2026#。
+
+  这个问题的实际背景正是本系列正在梳理的身份一致性主题。在数字人生成评测里，行业事实标准是 CSIM：把参考人脸与生成人脸分别送进 ArcFace 编码器，算余弦相似度。但我们在 <a href="arcface-2018.html">ArcFace 深度解读</a>里已经看到，ArcFace 的训练目标是把不同人的特征推开（判别），而不是对齐人类"是否同一人"的判断（感知）；更麻烦的是，它对光照、姿态、背景这些与身份无关的变化并不鲁棒。当评测用的度量本身对环境变化敏感时，生成模型完全可能学会"讨好度量"——保持特征距离近，却不真的保持了那张脸。
+
+  人类恰好不会犯这种错。我们可以认出换了发型、逆光、侧面 45 度的老朋友，同时一眼看出双胞胎兄弟"不是同一个人"。论文把这种能力命名为 <strong>selective sensitivity（选择性敏感）</strong>：对上下文变化（背景、视角、光照、姿态）不变，对身份修改敏感 #Chae et al., 2026#。teaser 图左半给出了直观版本：同一只狗在草地、沙滩、圣诞树前都是"同一只"；换一只毛色相近的狗，才是"不同身份"。
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/teaser_FINAL.webp" alt="ID-Sim teaser：选择性敏感概念与人机对比实验" loading="lazy">
+    <div class="cap">图 1：ID-Sim 的动机与结果。左侧：身份聚焦的度量应当具有选择性敏感——对上下文变化（背景、姿态、光照）不变，对身份修改敏感；右侧：给定参考图与候选图，人类投票与各模型投票的对比——ID-Sim（星标）与人类判断对齐，而 DINOv3、DreamSim、通用嵌入模型各有误判（来源：Chae et al., 2026, Fig.1）。</div>
+  </div>
+
+  团队配置也值得点名：六人小团队来自 MIT CSAIL 与 Adobe Research，其中 Richard Zhang 正是当年 LPIPS 的一作，Sara Beery（MIT）带来野生动物重识别的跨域视角，Cusuh Ham（Adobe）来自个性化生成评测一线 #Chae et al., 2026#。一作 Julia Chae 的工作完成于 Adobe 实习期间。感知度量的谱系在团队层面直接延续到身份度量。
+
+  论文的贡献按原文列了三条 #Chae et al., 2026#：其一，<strong>一个新的身份聚焦感知度量 ID-Sim</strong>，用真实加合成的实例级数据训练出模仿人类选择性敏感的度量；其二，<strong>一套统一的身份感知 benchmark</strong>，整合跨域实例级任务并新发布人工标注的 Subjects2k 生成评测集；其三，<strong>一次系统的敏感度分析</strong>，用受控生成编辑量化视角、光照、背景变化对身份一致性感知的影响。三条合起来，不只是"一个新模型"，而是给"身份一致性度量"这个被 CSIM 事实垄断的问题提出了第一个成体系的替代方案。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：三类度量，各有各的失明区</div>
+
+  <h3 class="section-title">先把"身份"定义清楚</h3>
+
+  现有文献里 "identity" 或 "instance" 的口径五花八门——从宽泛语义类别（城市、产品类型）到唯一物理对象都在用。ID-Sim 的第一步是给出一个属性化的定义，把歧义压掉 #Chae et al., 2026#：
+
+  <div class="def-box">
+    <h3>视觉身份与实例（论文核心定义）</h3>
+    <p><strong>Visual identity（视觉身份）</strong>：一个物体固有的视觉属性集合——形状、纹理、颜色。<br>
+    <strong>Instance（实例）</strong>：共享同一视觉身份的物体。</p>
+    <p>判定边界：两张图展示<strong>视觉上不可区分的物体</strong>（哪怕两把工厂同一批次的螺丝刀）算同一实例，可以叠加姿态、视角、光照等外在变化；反之，视觉身份变了就是不同实例——包括小猫长成大猫（显著时间变化）、椅子重新刷漆（物理改动）#Chae et al., 2026#。</p>
+  </div>
+
+  这个定义对生成评测有一层直接的推论：生成模型改掉了主体的纹理或形状，在 ID-Sim 的口径下就是"换了实例"——无论画面整体多像。认知科学的根基是 DiCarlo 与 Cox 的"untangling"叙事：好的表征让同一身份的多样外观在表征空间里聚得紧、不同身份分得开 #DiCarlo & Cox, 2007#。
+
+  <h3 class="section-title">三类现有度量为什么都不合格</h3>
+
+  论文在 Related Works 里把已有方案切成三类，每类点出一个结构性缺陷 #Chae et al., 2026#：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>类别</th><th>代表方法</th><th>结构性缺陷</th></tr></thead>
+      <tbody>
+        <tr><td>感知度量</td><td>LPIPS #Zhang et al., 2018#、DreamSim #Fu et al., 2023#、DiffSim #Song et al., 2025#</td><td>优化的是<strong>整体外观相似</strong>而非身份一致性，会被与身份无关的上下文变化带偏——同一姿势的两个相似钱包，得分可能高于换了姿势的同一钱包</td></tr>
+        <tr><td>对比学习表征</td><td>SimCLR / MoCo #Chen et al., 2020# #He et al., 2020#、DINO 系、CLIP #Radford et al., 2021#</td><td>增广策略（裁剪、颜色抖动、模糊）把对低级全局变化的不变性直接编码进表征；CLIP 对齐图文，<strong>为高层语义相似度压缩细粒度视觉差异</strong></td></tr>
+        <tr><td>Re-ID / 实例检索系统</td><td>ArcFace #Deng et al., 2019# 谱系、WildlifeReID、UNED 冠军 #Shao et al., 2023#</td><td>(i) 高度域特化，域 X 的模型在域 Y 失效；(ii) 依赖大量域内细粒度标注；(iii) <strong>优化类间间隔（判别）而非人类相似度判断（感知对齐）</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这张表里第三行对本系列读者最重要，值得展开成三层。第一层，<strong>CSIM 的谱系定位</strong>：ArcFace 是人脸域的判别损失，训练时把不同 ID 的特征沿角度间隔推开——它度量的是"特征空间里的可分性"，不是"人类看了觉得是不是同一个人"。第二层，<strong>域特化的实证</strong>：ID-Sim 的训练与评测横跨 13 种宠物、航拍牛群、时尚单品、地标雕塑、家居物件、艺术品、日常物品——人脸专用度量在这些域无处发力，而 ID-Sim 证明了跨域统一度量可行。第三层，<strong>回应方式</strong>：ID-Sim 不去做"人脸版 CSIM 替代品"，而是把"身份一致性"还原成属性化定义 + 可训练的选择性敏感目标 + 跨域统一的评测协议 #Chae et al., 2026#。环境鲁棒性在这里不再是祈祷模型自己学到的性质，而是显式的训练目标。
+
+  <div class="callout"><strong>核心 Insight：</strong>三类度量的失败不是实现不够好，而是<strong>没有一个在优化"身份判断"本身</strong>——感知度量优化外观、对比表征优化增广不变性、ReID 优化类间判别。selective sensitivity 第一次被当作一等公民的训练目标。</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：冻结 DINOv3 上的全局-局部双层对比</div>
+
+  如果只看架构，ID-Sim 简单得近乎朴素：冻结的 DINOv3 ViT 骨干，加 LoRA 适配器和两个 MLP 投影头，用双层对比损失微调 #Chae et al., 2026#。论文的重心其实压在数据与目标函数上——先看整体数据流：
+
+  {{< mermaid >}}
+  flowchart LR
+    A["三元组 x0 / x+ / x-<br/>anchor · positive · hard negative"] --> B["冻结 DINOv3 ViT-L/16 @448<br/>+ LoRA rank16（注意力/FFN）"]
+    B --> C["CLS token c' + patch tokens Z'"]
+    C --> D["双头 MLP 投影<br/>MLP_CLS → c ｜ MLP_Patch → Z"]
+    D --> E["全局损失 L_CLS<br/>InfoNCE + 余弦相似度"]
+    D --> F["局部损失 L_Patch<br/>Sinkhorn OT 距离代入 InfoNCE"]
+    E --> G["L_total = L_CLS + λ·L_Patch<br/>（λ=1，CLS:Patch=1:1）"]
+    F --> G
+  {{< /mermaid >}}
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/method_final.webp" alt="ID-Sim 训练管线：双路对比监督" loading="lazy">
+    <div class="cap">图 2：ID-Sim 训练管线。anchor/positive/negative 三路各自过 ViT 得到 CLS token 与 patch tokens，双头 MLP 投影后分别进入全局 CLS 损失（InfoNCE）与局部 patch 损失（Sinkhorn 距离），绿箭头为拉近、红箭头为推远（来源：Chae et al., 2026, Fig.3）。</div>
+  </div>
+
+  <h3 class="section-title">三元组：anchor、positive 与"难"负样本</h3>
+
+  训练沿用监督对比学习框架 #Khosla et al., 2021#。每个 batch 从数据集 \(\mathcal{D}\) 的 \(M\) 个实例里构造三元组 \((x_0, x^+, \{x_i^-\}_{i=1}^N)\)：anchor 与 positive 是同一实例的两张图；第一个负样本 \(x_1^-\) 是<strong>hard negative</strong>——要么是后文 S2b 的身份修改编辑，要么是用预训练 DINOv3 嵌入空间最近邻挖出来的"视觉相似但不同"的真实实例；其余 \(N-1\) 个负样本从 batch 内其他实例采样 #Chae et al., 2026#。难负样本挖掘放在 DINOv3 空间做，等价于先用一个通用表征粗筛出"最容易混淆"的对，再让度量学得比这个粗筛更精细。
+
+  <h3 class="section-title">全局头：CLS token 上的 InfoNCE</h3>
+
+  每张图过骨干 \(f_\theta\) 后得到全局 CLS token \(c'\) 与 patch tokens 集合 \(Z'\)。两者捕获的信息互补，因此用双头 MLP 分别投影到独立嵌入空间：\(c = \mathrm{MLP}_{CLS}(c')\)，\(Z = \mathrm{MLP}_{Patch}(z')\)。全局头用标准 InfoNCE #Oord et al., 2018#：
+
+  <div class="def-box">
+    <h3>联合目标与全局 CLS 损失</h3>
+    \[ \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{CLS}}(c) + \lambda\, \mathcal{L}_{\text{Patch}}(Z) \]
+    \[ \mathcal{L}_{\text{CLS}} = -\log \frac{e^{s^{+}}}{e^{s^{+}} + \sum_{i=1}^{N} e^{s_i^{-}}}, \qquad s^{+} = \mathrm{sim}(c_0, c^{+})/\tau, \quad s_i^{-} = \mathrm{sim}(c_0, c_i^{-})/\tau \]
+    <p>其中 \(\mathrm{sim}(\cdot,\cdot)\) 为余弦相似度，\(\tau\) 是温度参数，\(c_0, c^{+}, c_i^-\) 分别是 anchor、positive、第 \(i\) 个负样本投影后的 CLS token；\(\lambda\) 取 1（训练配置中 CLS 与 patch 权重 1:1）#Chae et al., 2026#。</p>
+  </div>
+
+  <h3 class="section-title">局部头：patch 之间的最优传输对齐</h3>
+
+  patch tokens 编码细粒度局部线索，但这里有个容易被忽略的坑：两张图里实例的空间布局经常是错位的——视角一转，狗头在图 A 的左上、在图 B 的中间。逐位置直接比较 patch 特征因此不可靠。ID-Sim 的解法是把两图的 patch tokens 当作<strong>无序的局部描述符集合</strong>，用软对齐来度量相似度——具体就是熵正则最优传输的 Sinkhorn 距离 #Feydy et al., 2019#：
+
+  <div class="def-box">
+    <h3>patch 级相似度：Sinkhorn 最优传输</h3>
+    \[ \mathrm{sim}_{\text{patch}}(A, B) = -\,\mathcal{S}_\varepsilon(A, B) \]
+    <p>给定投影后的 patch 嵌入 \(A, B \in \mathbb{R}^{P \times D}\)，\(\mathcal{S}_\varepsilon\) 是在 patch 上取均匀权重的 Sinkhorn 距离，用 GeomLoss 实现。\(\mathcal{L}_{\text{Patch}}\) 由把 \(\mathrm{sim}_{\text{patch}}\) 代入 InfoNCE 目标得到 #Chae et al., 2026#。</p>
+  </div>
+
+  直觉上，最优传输在解一个"运输问题"：把 A 的每个 patch 看作产地的一堆货，B 的每个 patch 是销地，运输代价是两两特征距离，Sinkhorn 迭代求出总代价最小的软匹配方案。狗头 patch 会被运给狗头 patch，无论它们各自在图里的哪个位置——<strong>空间错位被运输计划自动吸收</strong>。与之对照，DenseCL #Wang et al., 2021# 在同一张图的增广视图间建 hard 最近邻对应；ID-Sim 的对象是同一实例的<strong>不同图像</strong>，对应关系只能通过软的全局 OT 计划隐式学习。消融数据也支持这个选择：Sinkhorn 版本比余弦 patch 度量的 Identity Validation ROC AUC 高出 0.025（0.965 vs 0.940）#Chae et al., 2026#。
+
+  <h3 class="section-title">推理：一个公式，两种特征</h3>
+
+  训练完成后，任意两张图 \(x, y\) 的相似度就是：
+
+  \[ D(x, y; f_\theta) = 1 - \mathrm{sim}\big(f_\theta(x),\, f_\theta(y)\big) \]
+
+  特征选择 \(f_\theta(\cdot)\) 与相似函数 \(\mathrm{sim}\) 是可替换的组合：CLS token + 余弦相似度做全局打分（主实验全部这么用）；patch 集合做密集任务——后文 PerSAM 分割与多实体消歧会展示这条分支 #Chae et al., 2026#。一个前馈网络，两种即插即用的用法。
+
+  <h3 class="section-title">轻量适配：冻结骨干 + LoRA</h3>
+
+  骨干选 DINOv3 ViT-L/16、输入 448×448，全程冻结；可训练的只有 2 层双头 MLP（512 维隐层）和挂在注意力与前馈层上的 rank-16 LoRA 适配器 #Chae et al., 2026# #Simeoni et al., 2025# #Hu et al., 2021#。骨干消融确认了两个事实：DINOv3 全面优于 DINOv2（Identity Validation 0.965 vs 0.895），且对 DINOv3 而言 448 与 224 分辨率结果相同——身份线索不在超细粒度里。这套"冻结强骨干 + 轻量头"的配方，让整个训练在 10k 三元组、3 个 epoch 上就能收敛。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：一份 10k 三元组的数据配方</div>
+
+  <h3 class="section-title">训练数据需要三种信号，没有现成数据集同时提供</h3>
+
+  要训出选择性敏感，数据必须同时给出三种互补信号：上下文多样性（支撑对背景/光照/视角的不变性）、视觉身份多样性（支撑对细微差异的敏感性）、域多样性（支撑跨类别泛化）。论文的判断是<strong>没有任何现有数据集同时提供三者</strong>，于是自己策展 #Chae et al., 2026#。最终配方：10k 三元组（30k 图）、约 10k 实例、10 个数据集，三类来源各占三分之一——纯真实图、生成保身份正样本、生成改身份负样本 1:1:1 均分。
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/dataset_curation_figure.webp" alt="ID-Sim 数据策展管线：S1 真实数据 + S2a/S2b 生成编辑" loading="lazy">
+    <div class="cap">图 3：数据策展管线。上：Subset 1 的六类真实实例数据（地标/时尚/物体/平面物/艺术品/动物），每列展示一个 anchor–positive–negative 三元组；下左：S2a 对视频帧做保身份的上下文编辑（换背景/光照）；下右：S2b 借助掩码做改身份的前景编辑，制造细粒度硬负样本（来源：Chae et al., 2026, Fig.2）。</div>
+  </div>
+
+  <h3 class="section-title">S1 真实数据：平衡采样 + 定义过滤</h3>
+
+  真实数据从 8 个实例级数据集的初始池（80k+ 实例）出发，走两步清洗。第一步<strong>平衡采样</strong>：各数据集实例数悬殊（MET 734 个 vs DeepFashion2 3 万个），按规模比例采样会让模型偏向大域；改为每数据集配额均分、小数据集全取、剩余预算迭代均摊。仅这一步就把验证 ROC AUC 从 0.693 提到 0.752 #Chae et al., 2026#。第二步<strong>按实例定义过滤</strong>——这是全文最见功力的细节：FORB 的 Logo 类被整个移除，因为"LV 缩写"与"Louis Vuitton 全称"被混进同一实例标签；GLDv2 只保留灯塔、雕塑、风车等 12 类"两张随机图大概率拍的是同一物理结构"的标签，删除城市、山脉这类宽地理类；SOP 整体移除（同 ID 混入不同配色版本的产品）；WildlifeReID 只留花纹稳定的猫狗子集；MVImgNet 因"多视角丰富但背景光照单一"出局。过滤后再平衡，AUC 从 0.752 跳到 0.890 #Chae et al., 2026#。<strong>数据是否符合"视觉身份"定义，比数据量更重要。</strong>
+
+  <h3 class="section-title">S2a 保身份编辑：用生成模型造上下文变化</h3>
+
+  真实数据的短板是上下文变化不足。S2a 对视频数据集（UCO3D、LaSOT、YouTubeVIS、GOT-10k）抽帧后做<strong>保身份的上下文编辑</strong>：每帧配前景掩码，前景缩放后合成到白色画布上，交给 Qwen-Image-Edit（Lightning LoRA、8 步推理、bfloat16、固定种子），prompt 只允许替换白色背景像素、前景尺寸位置外观一律不动、光照做融合 #Chae et al., 2026# #Wu et al., 2025#。背景与光照 prompt 按"类别超类→场景→光照"的链条采样，全部由 GPT-4o 生成。白画布这个预处理技巧值得记住——它把"只许换背景"这条约束从自然语言要求变成了输入图像的结构性先验。训练时正对从{原图+编辑图、编辑图+原图、编辑图+编辑图}里均匀采。加入 S2a（与 S1 按 1:1 混合）后 AUC 从 0.890 升到 0.937。
+
+  <h3 class="section-title">S2b 改身份编辑：用 inpainting 造硬负样本</h3>
+
+  S2b 反过来：<strong>改掉身份、保住类别语义</strong>。只对带高质量掩码的 DeepFashion2 #Ge et al., 2019# 与 UCO3D 做（其余数据集掩码质量不够）：用 FLUX.1-Fill-dev 的 FluxFillPipeline 在前景区域 inpainting，随机沿横/纵轴遮掉 40–60% 前景制造遮挡多样性，prompt 干脆只有一句 "Photo of a &lt;object&gt;"，编辑强度 0.5–0.8、50 步、guidance 2.5——模型在"重新画一件这个类别的衣服"时自由发挥纹理与颜色，恰好得到"同类不同实例"的硬负样本 #Chae et al., 2026# #Black Forest Labs, 2024#。
+
+  这里有一个宝藏级的防作弊细节：当三元组包含编辑负样本时，论文给 anchor 和 positive 也叠加强度 0.1 的轻度生成噪声——内容不变，但<strong>抹掉"编辑图特有的生成伪影"</strong>，防止模型学会靠伪影而非身份差异来认负样本 #Chae et al., 2026#。对比学习里"负样本分布泄漏捷径信号"是个常见暗坑，这个 0.1 强度的噪声是极简的工程答案。加入 S2b（1:1:1）后 AUC 到达最终配置的 0.965。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据配置</th><th>平衡</th><th>正编辑</th><th>负编辑</th><th>配比</th><th>验证 ROC AUC</th></tr></thead>
+      <tbody>
+        <tr><td>全部数据集</td><td>✗</td><td>✗</td><td>✗</td><td>—</td><td>0.693</td></tr>
+        <tr><td>全部数据集</td><td>✓</td><td>✗</td><td>✗</td><td>—</td><td>0.752</td></tr>
+        <tr><td>过滤后数据集</td><td>✓</td><td>✗</td><td>✗</td><td>—</td><td>0.890</td></tr>
+        <tr><td>过滤后数据集</td><td>✓</td><td>✓</td><td>✗</td><td>1:1</td><td>0.937</td></tr>
+        <tr><td><strong>过滤后数据集</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>1:1:1</strong></td><td><strong>0.965</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout"><strong>五级台阶各就各位：</strong>平衡 +0.06、按定义过滤 +0.14、保身份正编辑 +0.05、改身份负编辑 +0.03。最大单笔收益来自"按实例定义清洗数据"——先想清楚身份是什么，再谈数据规模。</div>
+
+  规模消融补了一个反直觉注脚：5k→10k→20k 缓慢爬升，<strong>30k 时 Identity Validation 反而崩到 0.91</strong>（20k 为 0.98）#Chae et al., 2026#。主要收益在中等规模就已拿到，10k 是稳定高效的工作点。
+
+  <h3 class="section-title">训练配置披露表</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>10k 三元组（30k 图）、~10k 实例、10 数据集，S1/S2a/S2b = 1:1:1</td></tr>
+        <tr><td>训练硬件</td><td>未披露</td><td>原文未给出（结论仅称成本为 MLLM 方案的一小部分）</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>AdamW，lr 3×10⁻⁴，weight decay 0</td></tr>
+        <tr><td>学习率 schedule / warmup</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>8 × 4 梯度累积 = 有效 32</td></tr>
+        <tr><td>训练步数 / 轮数</td><td>已披露</td><td>3 epochs</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>模型参数量</td><td>部分披露</td><td>可训练部分：2 层双 MLP 头（512 维隐层）+ LoRA rank 16（α=32、dropout 0.05）；骨干冻结</td></tr>
+        <tr><td>精度格式</td><td>已披露</td><td>bfloat16</td></tr>
+        <tr><td>Checkpoint 策略</td><td>已披露</td><td>双验证集联合选择：Real Instance Validation（accuracy）+ Identity Validation（5 个 Flux 生成实例 + Photoshop 编辑，ROC AUC）</td></tr>
+        <tr><td>数据增强</td><td>已披露</td><td>Random resized crop（scale 0.9–1.0）、color jitter（亮度 0.2/对比度 0.2/饱和度 0.08，p=0.8）、高斯模糊（7×7，p=0.5）</td></tr>
+        <tr><td>Sinkhorn 配置</td><td>已披露</td><td>geomloss.SamplesLoss，p=2，正则 0.05，blur 0.05，最大 1024 tokens，patch 特征 L2 归一化</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：前馈、确定、可插拔</div>
+
+  推理链路短到可以用一句话说完：两张图各过一次 \(f_\theta\)（DINOv3 ViT-L/16 @448 + LoRA + 投影头），按所选特征与相似函数算一个标量。没有采样、没有 prompt、没有迭代——<strong>确定性前馈</strong>是论文反复强调的工程属性，也是它对 MLLM 评测方案的核心比较优势 #Chae et al., 2026#。
+
+  <h3 class="section-title">用法一：CLS 全局相似度</h3>
+
+  全局用法即 \(D(x,y) = 1 - \cos(c_x, c_y)\)，主实验的全部 ViT 系 baseline 统一用 CLS token 计算相似度做对齐比较 #Chae et al., 2026#。对个性化生成评测，这就是 CSIM 的直接替身：参考图与生成图各算一次嵌入、一次余弦——只是嵌入换成了跨域训练的身份度量，而不是人脸判别模型。
+
+  <h3 class="section-title">用法二：patch 密集特征与定位能力</h3>
+
+  patch 分支把 ID-Sim 从"打分器"升级成"定位器"。两个证据：其一把 patch 特征喂进个性化分割框架 PerSAM #Zhang et al., 2023#——该框架用 patch 相似度为 SAM 的点提示定位并给分割预测打分——PODS 上 mAP 从 0.153 提升到 <strong>0.436</strong>、F1 从 0.18 到 0.409，接近三倍；即便去掉 patch 监督只训 CLS 的变体也有 0.214 mAP #Chae et al., 2026#。其二在多实体场景（同图两件衬衫）里，patch 相似度热图能区分 query 指向的是哪一件——全局 prompt-free 度量"不知道评哪个"的局限，恰好被空间化特征补上了天然接口。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集（patch 级评测）</th><th>指标</th><th>DINOv3</th><th>ID-Sim（无 patch 监督）</th><th>ID-Sim</th></tr></thead>
+      <tbody>
+        <tr><td>DeepFashion2</td><td>mAP</td><td>0.4071</td><td>0.4765</td><td><strong>0.7967</strong></td></tr>
+        <tr><td>AerialCattle2017</td><td>mAP</td><td>0.4516</td><td>0.5471</td><td><strong>0.6245</strong></td></tr>
+        <tr><td>CUTE</td><td>Acc</td><td>0.6561</td><td>0.6439</td><td><strong>0.8189</strong></td></tr>
+        <tr><td>DreamBench++</td><td>Spearman</td><td>0.5479</td><td>0.5913</td><td><strong>0.6834</strong></td></tr>
+        <tr><td>PetFace</td><td>mAP</td><td>0.7849</td><td>0.8377</td><td><strong>0.8446</strong></td></tr>
+        <tr><td>PODS</td><td>mAP</td><td>0.5825</td><td><strong>0.8181</strong></td><td>0.7907</td></tr>
+        <tr><td>Subjects2k</td><td>AP</td><td>0.2314</td><td>0.2348</td><td><strong>0.3674</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  论文的量化总结：只训 CLS 的变体比 DINOv3 patch 特征高约 13%，显式 patch 监督把这个相对优势放大到约 40% #Chae et al., 2026#。细看表格还有一处诚实的例外：PODS 上无 patch 监督的变体（0.8181）反而高于完整版（0.7907）——patch 监督不是处处占优的单调改进，密集对齐目标与检索任务之间存在轻微的目标错位。
+
+  <h3 class="section-title">与 MLLM 评测的成本对比</h3>
+
+  另一条务实理由：用 GPT-4o/GPT-5/Gemini 做"是否同一实例"的判断，受 prompt 措辞与模型版本影响巨大，输出带随机性，且逐对比较的成本在检索类任务上不可扩展；ID-Sim 一次前馈给出确定分数，论文以"MLLM 基础模型一小部分的推理成本、训练成本与数据需求"概括这个差距 #Chae et al., 2026#。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      复现提示：官方 checkpoint 是 ViT-B 版
+    </div>
+    <div class="admonition-content"><p>HuggingFace 上的官方权重 chaenayo/id-sim_dinov3_vitb16_cls_patch 是 <strong>ViT-B/16 变体</strong>；论文主配置是 DINOv3 ViT-L/16 @448（骨干消融中 ViT-B@448 的 Identity Validation 为 0.921，低于 ViT-L 的 0.965）#Chae et al., 2026#。复现论文数字需要按仓库训练管线自训 ViT-L 版。另外 DINOv3 骨干权重需从 Meta 手动下载，DINOv2 则自动下载。</p></div>
+  </div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：49 个评测场景，拿下 48 项第一</div>
+
+  <h3 class="section-title">实验配置</h3>
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>7 个：Subjects2k（2,000 对）、DreamBench++（6,921 对/110 主体）、PODS（1,200 query/300 gallery/100 实例）、DeepFashion2（1,668 query/3,065 gallery）、PetFace（3,250 对/13 物种）、AerialCattle2017（2,329 图/23 个体）、CUTE（1,800 三元组，Hard 模式）；全部与训练集不相交（DF2 例外：评测 split 严格不重叠）</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>AP / Spearman（生成）、mAP / nDCG（检索）、mAP（Re-ID）、Acc（三元组）、ROC-AUC（补充）；ID-Sim 报 10 个随机种子均值±标准差</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>感知度量：DreamSim（ViT-B）、LPIPS、DiffSim（U-Net）；基础模型：DINOv3、CLIP、OpenCLIP（ViT-L）；实例检索：UNED 挑战赛冠军方案（ViT-H）；另与 GPT-4o/GPT-5/Gemini 对比</td></tr>
+        <tr><td>推理硬件</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>448×448（ViT-L/16）</td></tr>
+        <tr><td>推理环境</td><td>部分披露</td><td>GeomLoss（Sinkhorn 实现）；框架/版本未给出</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">主结果：两类选择性敏感增益</h3>
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/results_FINAL.webp" alt="ID-Sim 与三类基线的雷达图对比" loading="lazy">
+    <div class="cap">图 4：ID-Sim 对三类对手的性能雷达图——感知度量（左）、基础模型（中）、通用嵌入检索模型（右）。六轴为 CUTE/DeepFashion2/PetFace/AerialCattle/Subjects2k/DreamBench++。橙色（Ours）在前两组几乎全面包住对手；对 UNED 冠军则在多数轴领先、DeepFashion2 与 PetFace 两轴互有胜负（来源：Chae et al., 2026, Fig.4）。</div>
+  </div>
+
+  49 个评测设置（7 数据集 × 多指标）里 ID-Sim 拿下 48 项第一 #Chae et al., 2026#。增益最强的两类场景恰好对应选择性敏感的两根轴：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>数据集</th><th>指标</th><th>最强基线（数值）</th><th>ID-Sim</th></tr></thead>
+      <tbody>
+        <tr><td>PODS（实例检索）</td><td>AP</td><td>UNED 0.671</td><td><strong>0.7727 ± 0.0106</strong></td></tr>
+        <tr><td>DeepFashion2（跨域检索）</td><td>mAP</td><td>UNED 0.714</td><td><strong>0.8045 ± 0.0119</strong></td></tr>
+        <tr><td>AerialCattle2017（航拍牛 Re-ID）</td><td>mAP</td><td>DINOv3 0.516</td><td><strong>0.6786 ± 0.0123</strong></td></tr>
+        <tr><td>CUTE（三元组，Hard）</td><td>Acc</td><td>UNED 0.777</td><td><strong>0.8559 ± 0.0124</strong></td></tr>
+        <tr><td>PetFace（13 物种验证）</td><td>AP</td><td>DINOv3 0.884</td><td><strong>0.8958 ± 0.0101</strong></td></tr>
+        <tr><td>Subjects2k（生成评测）</td><td>AP</td><td>UNED 0.356</td><td><strong>0.4113 ± 0.0060</strong></td></tr>
+        <tr><td>DreamBench++（生成评测）</td><td>Spearman</td><td><strong>DreamSim 0.716</strong></td><td>0.6856 ± 0.0103</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  轴一，<strong>跨上下文认出同一实例</strong>：PODS（同一家居物件在不同背景/姿态/干扰物下）与 DeepFashion2（店内在售 vs 街拍上身），论文报告相对第二/第三名方法分别有 +0.11 与 +0.30 的 mAP 增益 #Chae et al., 2026#。轴二，<strong>分辨细微身份差异</strong>：Subjects2k 上数以百计的负样本对只有细微细节之差，ID-Sim 超第二名 +0.05。唯一没拿下的高地是 DreamBench++ 的 Spearman/Kendall——DreamSim 以 0.716 领先，与它的人类对齐训练目标一致；ID-Sim 在自己的人工重标集 Subjects2k 上则明显反超（0.4113 vs 次优 UNED 的 0.356）。
+
+  UNED 冠军这个对手值得单独说：它是 Google Universal Embedding 挑战赛的第一名方案，ViT-H 骨干、百万级实例标注——ID-Sim 用小一号的 ViT-L 和不到其 1/100 的标注量在总体成绩上压过它 #Chae et al., 2026# #Shao et al., 2023#。精心配方的 10k 三元组，打赢了规模堆料。
+
+  <h3 class="section-title">对 MLLM：便宜、稳定、可复现</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>模型</th><th>Subjects2k (AP)</th><th>DreamBench++ (Spearman)</th></tr></thead>
+      <tbody>
+        <tr><td>ID-Sim</td><td>ViT-L</td><td><strong>0.4063</strong></td><td>0.697</td></tr>
+        <tr><td>MLLM*（原版 prompt）</td><td>GPT-4o</td><td>0.2901</td><td><strong>0.748</strong></td></tr>
+        <tr><td>MLLM（受控 prompt）</td><td>GPT-5</td><td>0.3159</td><td>0.3554</td></tr>
+        <tr><td>MLLM（受控 prompt）</td><td>Gemini</td><td>0.3354</td><td>0.70</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  最有说服力的不是单点数字，而是<strong>稳定性</strong>：用 DreamBench++ 原版 rubric prompt 时 GPT-4o 拿到 0.748；换成受控的身份判断 prompt 后，GPT-5 只得 0.3554——评测结论随 prompt 措辞与模型选择翻倍级波动，而 ID-Sim 没有这个自由度 #Chae et al., 2026#。
+
+  <h3 class="section-title">Subjects2k：连评测基准本身也被重做了一遍</h3>
+
+  概念保留评测（DreamBooth 式 subject-driven 生成 #Ruiz et al., 2023# 的概念保留）的现成基准 DreamBench++ 每图只有两个人类评分、且是 0–4 的 rubric 打分而非直接的"同/不同"判断，标注噪声不小 #Peng et al., 2024#。ID-Sim 团队从 GPT-4o 标注、Flux 生成的 Subjects200k #Tan et al., 2024# 里分层采样 2,000 对，在 Prolific 上重做了人工标注：每批混入 7 个已知答案的哨兵对，哨兵错一题的标注者全部作废；3 人起标、有分歧最多补到 9 人，平均每对 5.01 个标注；按"same"票占比 0.8 的阈值二值化，得到 473 正 / 1,527 负，平均标注一致率 0.864 #Chae et al., 2026#。
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/subjects2k_fixed.webp" alt="GPT-4o 评分与人类判断的分歧示例" loading="lazy">
+    <div class="cap">图 5：Subjects2k 重标的动机示例。左：GPT-4o 给 5/5 满分的图像对，人类多数票判"不同"（两块不同的木屏风）；右：GPT-4o 给 0/5 的对，人类判"相同"（同一只抱枕的不同场景照片）。GPT 分数与人类身份判断存在系统性错位（来源：Chae et al., 2026, Fig.5）。</div>
+  </div>
+
+  图 5 的两个案例把"GPT 分数 ≠ 人类身份判断"拍在了桌面上：满分的对人类判"不同"，零分的对人类判"相同"。用 MLLM 自动标注做生成评测的黄金标准，这件事本身需要被人工标注校验——这是论文除了模型之外的第二个交付物。
+
+  <h3 class="section-title">敏感度分析：度量"度量"的受控实验</h3>
+
+  最见方法论野心的部分来了：怎么证明一个度量真的具有选择性敏感？ID-Sim 的答案是<strong>受控变量实验</strong>。取 MVImgNet 的 100 个 held-out 物体（训练评测都没见过），用生成编辑构造四个变化轴的网格——身份（Qwen-Edit 前景 inpainting，强度 0.4–1.0 共 7 档）、背景（14 组场景 prompt）、视角（MVImgNet 自然多视角）、光照（多组光照 prompt）——每张编辑图回算与原图的相似度，对每实例拟合线性回归，敏感度即相似度对单位变化的负斜率，跨 100 实例平均，再以 1,000 次 bootstrap 给出置信区间 #Chae et al., 2026#。
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/analysis_final.webp" alt="选择性敏感分析：四轴敏感度散点与相似度趋势" loading="lazy">
+    <div class="cap">图 6：敏感度分析。上排：身份敏感度（纵轴，越高越好）对背景/光照/视角敏感度（横轴，越低越好）的散点——ID-Sim（星标）稳定落在左上角；下排：沿四个变化轴逐步加大扰动时的平均相似度曲线，ID-Sim 只在身份轴显著下降（来源：Chae et al., 2026, Fig.6）。</div>
+  </div>
+
+  结果矩阵清晰地给每个对手定了性：DreamSim 身份敏感中等，但背景与光照也跟着敏感；DINOv3 与 UNED 对视角/光照不变性强，却对背景变化敏感；CLIP、OpenCLIP、LPIPS 身份敏感性全场最弱——它们度量的是语义或图像级相似 #Chae et al., 2026#。ID-Sim 是唯一把"高身份敏感 + 低上下文敏感"同时拿下的。
+
+  <h3 class="section-title">光照 tradeoff：如实呈现的例外</h3>
+
+  <div class="photo">
+    <img src="media/images/id-sim-2026/lighting_grid_annotated.webp" alt="光照×身份编辑网格实验" loading="lazy">
+    <div class="cap">图 7：光照变化 × 身份变化网格。行方向为逐步加大的身份编辑强度（0.4→1.0），列方向为不同光照 prompt；上两行参照组分别固定光照、固定身份。理想度量的相似度只应沿行方向下降、不随列方向漂移（来源：Chae et al., 2026, 补充材料）。</div>
+  </div>
+
+  敏感度分析也暴露了 ID-Sim 的一个坦诚例外：<strong>光照鲁棒性略弱于 DINOv3</strong>。原文的解释是"为了保留身份相关的细粒度颜色线索而做出的权衡"（a tradeoff to preserve fine-grained color cues for identity）#Chae et al., 2026#。这不难理解——毛色、花纹、面料颜色都是身份线索，度量对色彩信息越敏感，就越难同时做到对光照色温完全不变。换句话说，ID-Sim 的环境鲁棒性是"背景/视角强、光照中等"的<strong>选择性鲁棒</strong>，不是无条件全气候鲁棒。把它引入自己的评测管线时，强光照变化场景里应当心里有数。
+
+  <h3 class="section-title">损失函数与骨干消融</h3>
+
+  训练侧消融与数据台阶互相印证：InfoNCE + Sinkhorn（0.8715 / 0.965）优于 InfoNCE + 余弦 patch（0.8655 / 0.940）、Hinge + Sinkhorn（0.8705 / 0.945）、BCE + Sinkhorn（0.8395 / 0.923）；联合 CLS+patch 训练优于单 patch（0.8665 / 0.908）与单 CLS（0.8065 / 0.893）；DINOv3-L@448 与 @224 结果一致（0.8715 / 0.965），DINOv3-B@448 掉到 0.834 / 0.921 #Chae et al., 2026#。Sinkhorn 的 OT 对齐、双层的联合监督、够大的骨干——每个组件都有数字背书。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：把"对什么敏感"变成训练目标</div>
+
+  <h3 class="section-title">方法论层面真正的新东西</h3>
+
+  回头看，ID-Sim 的架构几乎全是现成件的组装——DINOv3、LoRA、InfoNCE、Sinkhorn。真正值得搬走的是三件"非架构"资产。第一，<strong>选择性敏感作为显式训练目标</strong>：以往的不变性要么来自增广的副作用（对比学习），要么来自判别任务的副产品（ReID），ID-Sim 用生成编辑把"哪个变量该变、哪个不该变"写进了数据配方——环境鲁棒性是训出来的，不是选骨干选出来的。第二，<strong>元评测方法论</strong>：49 个 setup 评"度量准不准"，再用受控编辑网格 + 回归斜率评"度量的敏感结构对不对"——度量本身也需要被度量，这套两层验证可以直接搬去审任何身份指标，包括 CSIM。第三，<strong>评测基准的标注质量本身是研究对象</strong>：DreamBench++ 的噪声被量化、Subjects2k 以哨兵质控 + 多数票重标——用 MLLM 自动标注的基准，需要人类标注来兜底。
+
+  <h3 class="section-title">论文自认的局限</h3>
+
+  三条 #Chae et al., 2026#：其一，实例定义只覆盖"视觉身份一致"，老化、配饰、风格化这类需要用户指定不变性的广义身份不在其内——数字人场景里"同一个人化了妆"按论文定义已是不同实例，这个口径要按业务重新约定。其二，全局 prompt-free 度量在多实体场景无法指定评哪个身份，需要外部条件（掩码或文本提示）——patch 特征的热图演示了补救接口，但条件化本身留给了后续工作（论文点到同期工作 Omni-Attribute）。其三，就是上节的光照 tradeoff。另外值得注意：DeepFashion2 一部分参与了训练数据（S1 与 S2b 的编辑源），评测用的是不相交的标准 split——七个评测集中唯一有域重叠的一个，引用该数据集数字时可留意。
+
+  <h3 class="section-title">对数字人身份评测的直接启示</h3>
+
+  放回本系列的语境，ID-Sim 给 CSIM 痛点提供了三块拼图。其一，<strong>痛点的形式化</strong>："对环境不鲁棒 + 对身份不够敏感"被提炼成 selective sensitivity 这一个可优化的目标函数。其二，<strong>跨域可行性的证明</strong>：13 种宠物、航拍牛、时尚单品、地标雕塑、家居物件、艺术品共用一个度量且 48/49 项第一——身份度量不必然绑死在人脸域，那么数字人评测里"主体是卡通角色/虚拟形象/非人角色"时，CSIM 直接失效，而通用身份度量有现成的理论位置。其三，<strong>可操作的替代路线</strong>：冻结 DINOv3 + 身份对比微调的配方，换一组数字人域的三元组（真实人像 + 保身份重绘正样本 + 换脸/改脸负样本）就能复刻一个数字人版——生成侧的身份保持可参考本系列的 <a href="styleid-2026.html">StyleID 精读</a>，ID-Sim 补上的是评测侧的尺子。
+
+  <div class="callout"><strong>一句话收束：</strong>LPIPS 之于外观相似，正如 ID-Sim 之于身份一致——当一个领域开始争论"该用什么尺子量"时，往往说明尺子对应的那个能力真的开始被批量生产了。对数字人生成而言，身份一致性正走到这一步。</div>
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Chae-et-al.-2026">Chae, J., Kolkin, N., Wang, J.-H., Zhang, R., Beery, S., Ham, C. (2026). <strong>ID-Sim: An Identity-Focused Similarity Metric</strong>. CVPR 2026; arXiv:2604.05039. <a href="https://arxiv.org/abs/2604.05039" target="_blank">arXiv:2604.05039</a> · <a href="https://github.com/JuliaChae/id_sim" target="_blank">GitHub</a> · <a href="https://juliachae.github.io/id_sim.github.io/" target="_blank">项目主页</a></li>
+    <li data-cite-key="Zhang-et-al.-2018">Zhang, R., Isola, P., Efros, A. A., Shechtman, E., Wang, O. (2018). <strong>The Unreasonable Effectiveness of Deep Features as a Perceptual Metric (LPIPS)</strong>. CVPR 2018. <a href="https://arxiv.org/abs/1801.03924" target="_blank">arXiv:1801.03924</a></li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, J., Guo, J., Xue, J., Zafeiriou, S. (2019). <strong>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</strong>. CVPR 2019. <a href="https://arxiv.org/abs/1801.07698" target="_blank">arXiv:1801.07698</a> · <a href="arcface-2018.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Simeoni-et-al.-2025">Simeoni, O. et al. (2025). <strong>DINOv3: Self-Supervised Vision Transformers at Scale</strong>. Meta AI / ICLR 2025. <a href="https://arxiv.org/abs/2501.16422" target="_blank">arXiv:2501.16422</a></li>
+    <li data-cite-key="Fu-et-al.-2023">Fu, S. et al. (2023). <strong>DreamSim: Learning New Dimensions of Human Visual Similarity Using Synthetic Data</strong>. NeurIPS 2023. <a href="https://arxiv.org/abs/2306.09344" target="_blank">arXiv:2306.09344</a></li>
+    <li data-cite-key="Song-et-al.-2025">Song, K. et al. (2025). <strong>DiffSim: Perceptual Similarity via Diffusion</strong>. CVPR 2025. <a href="https://arxiv.org/abs/2411.17704" target="_blank">arXiv:2411.17704</a></li>
+    <li data-cite-key="Peng-et-al.-2024">Peng, Z. et al. (2024). <strong>DreamBench++: A Human-Aligned Benchmark for Personalized Image Generation</strong>. ICLR 2024. <a href="https://arxiv.org/abs/2405.01435" target="_blank">arXiv:2405.01435</a></li>
+    <li data-cite-key="Tan-et-al.-2024">Tan, S. et al. (2024). <strong>Subjects200k / OmniGen: Unified Image Generation</strong>. arXiv:2409.11340. <a href="https://arxiv.org/abs/2409.11340" target="_blank">arXiv:2409.11340</a></li>
+    <li data-cite-key="Shao-et-al.-2023">Shao, Z. et al. (2023). <strong>Global Utility for Embeddings (GU2E): 1st Place Solution for Google Universal Embedding Challenge</strong>. CVPRW 2023. <a href="https://arxiv.org/abs/2310.05770" target="_blank">arXiv:2310.05770</a></li>
+    <li data-cite-key="Khosla-et-al.-2021">Khosla, P. et al. (2020). <strong>Supervised Contrastive Learning</strong>. NeurIPS 2020. <a href="https://arxiv.org/abs/2004.11362" target="_blank">arXiv:2004.11362</a></li>
+    <li data-cite-key="Oord-et-al.-2018">van den Oord, A., Li, Y., Vinyals, O. (2018). <strong>Representation Learning with Contrastive Predictive Coding (InfoNCE)</strong>. arXiv:1807.03748. <a href="https://arxiv.org/abs/1807.03748" target="_blank">arXiv:1807.03748</a></li>
+    <li data-cite-key="Feydy-et-al.-2019">Feydy, J., Séjourné, T., Vialard, F.-X., Amari, S.-i., Trouvé, A., Peyré, G. (2019). <strong>Interpolating between Optimal Transport and MMD using Sinkhorn Divergences (GeomLoss)</strong>. AISTATS 2019. <a href="https://arxiv.org/abs/1810.08278" target="_blank">arXiv:1810.08278</a></li>
+    <li data-cite-key="Hu-et-al.-2021">Hu, E. J. et al. (2021). <strong>LoRA: Low-Rank Adaptation of Large Language Models</strong>. ICLR 2022. <a href="https://arxiv.org/abs/2106.09685" target="_blank">arXiv:2106.09685</a></li>
+    <li data-cite-key="Wang-et-al.-2021">Wang, X. et al. (2021). <strong>Dense Contrastive Learning for Self-Supervised Visual Pre-Training (DenseCL)</strong>. CVPR 2021. <a href="https://arxiv.org/abs/2011.09157" target="_blank">arXiv:2011.09157</a></li>
+    <li data-cite-key="Zhang-et-al.-2023">Zhang, R. et al. (2024). <strong>Personalize Segment Model (PerSAM)</strong>. NeurIPS 2024. <a href="https://arxiv.org/abs/2305.03048" target="_blank">arXiv:2305.03048</a></li>
+    <li data-cite-key="Radford-et-al.-2021">Radford, A. et al. (2021). <strong>Learning Transferable Visual Models From Natural Language Supervision (CLIP)</strong>. ICML 2021. <a href="https://arxiv.org/abs/2103.00020" target="_blank">arXiv:2103.00020</a></li>
+    <li data-cite-key="Chen-et-al.-2020">Chen, T. et al. (2020). <strong>A Simple Framework for Contrastive Learning of Visual Representations (SimCLR)</strong>. ICML 2020. <a href="https://arxiv.org/abs/2002.05709" target="_blank">arXiv:2002.05709</a></li>
+    <li data-cite-key="He-et-al.-2020">He, K. et al. (2020). <strong>Momentum Contrast for Unsupervised Visual Representation Learning (MoCo)</strong>. CVPR 2020. <a href="https://arxiv.org/abs/1911.05722" target="_blank">arXiv:1911.05722</a></li>
+    <li data-cite-key="DiCarlo-Cox-2007">DiCarlo, J. J., Cox, D. D. (2007). <strong>Untangling Invariant Object Recognition</strong>. Trends in Cognitive Sciences 11(8). <a href="https://doi.org/10.1016/j.tics.2007.06.010" target="_blank">DOI</a></li>
+    <li data-cite-key="Wu-et-al.-2025">Wu, S. et al. (2025). <strong>Qwen-Image Technical Report (Qwen-Image-Edit)</strong>. arXiv:2508.02324. <a href="https://arxiv.org/abs/2508.02324" target="_blank">arXiv:2508.02324</a></li>
+    <li data-cite-key="Black-Forest-Labs-2024">Black Forest Labs (2024). <strong>FLUX.1-Fill-dev</strong>. <a href="https://blackforestlabs.ai" target="_blank">blackforestlabs.ai</a></li>
+    <li data-cite-key="Ge-et-al.-2019">Ge, Y., Zhang, R., Wu, L., Wang, X., Tang, X., Luo, P. (2019). <strong>DeepFashion2: A Versatile Benchmark for Detection, Pose Estimation, Segmentation and Retrieval</strong>. CVPR 2019. <a href="https://arxiv.org/abs/1901.07973" target="_blank">arXiv:1901.07973</a></li>
+    <li data-cite-key="Ruiz-et-al.-2023">Ruiz, N. et al. (2023). <strong>DreamBooth: Fine Tuning Text-to-Image Diffusion Models for Subject-Driven Generation</strong>. CVPR 2023. <a href="https://arxiv.org/abs/2208.12242" target="_blank">arXiv:2208.12242</a></li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列导航</div>
+  <div class="ch-title">数字人论文精读系列</div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="styleid-2026.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（六十）：StyleID</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+    <a class="nav-card nav-next" href="face-consistency-benchmark-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">数字人论文精读（六十二）：Face Consistency Benchmark</span></a>
+  </div>
+</div>

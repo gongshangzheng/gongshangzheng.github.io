@@ -1,0 +1,407 @@
+---
+title: "数字人论文精读（六十二）：Face Consistency Benchmark，GenAI 视频的角色面部一致性专项基准"
+description: "TCL Research 出品的零训练评测基准：把 6 个现成人脸识别模型当量尺，用「参考帧锚定」与「随机帧对」双协议测 GenAI 视频的角色面部一致性，再用真实视频同协议校准——发现 FR 模型间分歧高达 2.7 倍、双协议排名反转、最强模型距真实视频仍有 1.25–4 倍差距"
+date: 2026-09-01T09:00:00
+created_at: 2026-09-03T12:18:25
+updated_at: 2026-09-03T15:27:06
+tags: [数字人, 论文精读, 身份一致性, benchmark, 时序一致性]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 620
+papers: ["https://arxiv.org/abs/2505.11425"]
+repos: []
+notify: false
+mathjax: true
+hero_title: "FCB"
+hero_sub: "PP-RAI 2025 · TCL Research Europe/America"
+hero_tagline: "把 CSIM 从工程默会升格为可复现基准：6 个 FR 裁判 × 2 种问法 × 1 条真实视频底线"
+paper_title: "Face Consistency Benchmark for GenAI Video"
+paper_authors: "Michal Podstawski, Malgorzata Kudelska, Haohong Wang"
+paper_affiliation: "TCL Research Europe（华沙）；TCL Research America（圣何塞）"
+paper_venue: "PP-RAI 2025（第 6 届波兰人工智能会议，2025 年 4 月 7–9 日，卡托维兹）；arXiv:2505.11425"
+paper_url: "https://arxiv.org/abs/2505.11425"
+paper_code: "未开源（截至 2026.09 未见官方仓库；FR 部分依赖开源 DeepFace 库可复拼）"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">6</span><span class="label">个 FR 评测量尺</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label g">种评测协议</span></div>
+  <div class="stat"><span class="num">30</span><span class="label">视频 / 模型</span></div>
+  <div class="stat"><span class="num b">1.25–4×</span><span class="label l">最强模型距真实差距</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：榜单繁荣之下的"隐藏短板"</div>
+
+  <p>打开 VBench 排行榜，头部文生视频模型的总分一个比一个高：场景构图、运动平滑度、美学质量都在快速逼近"看起来真实"的门槛 #Huang et al., 2023#。但如果你做的是数字人、角色叙事视频，有一个问题榜单回答不了：<strong>第 1 帧里的那个人，到了第 240 帧还是同一个人吗？</strong></p>
+
+  <p>这不是一个边缘问题，而是角色视频的生死线。一部短片只要主角中途"换了脸"——眼睛间距变了、鼻梁形状漂了、肤色纹理走了——叙事立刻崩塌，观众立刻出戏。而现有综合基准恰恰把这一环处理得最粗放：以 VBench 的 subject consistency 维度为例，它用 DINO 通用视觉特征在<strong>整帧画面</strong>上比相似度，背景、光影、构图全都混进信号里，"人脸身份"只是被稀释的众多成分之一。综合基准测的是"画面整体像不像"，不是"这个人还是不是这个人"。</p>
+
+  <p>有意思的是，工业界其实早就有了答案的一半。做数字人生成、Talking Head、ID 保持的团队，几乎都在用同一招：拿人脸识别（FR）模型抽 embedding（把人脸映射成一个可比对的向量），算余弦相似度——也就是 <strong>CSIM</strong>。<a href="digital-human-training-inference-benchmark.html">评测指标选型那篇</a>里我们讨论过它的关键陷阱（判别性嵌入与生成质量的脱节），但"陷阱存在"不等于"不该用它"——它仍是目前最接近"身份"语义的自动指标。真正缺的是：<strong>没有人把这套工程默会知识协议化、基准化，变成学界可复现、可比较的评测框架</strong>。</p>
+
+  <p>这正是 Face Consistency Benchmark（FCB）要做的事 #Podstawski et al., 2025#。它来自 TCL Research Europe（华沙）与 TCL Research America（圣何塞）——一家做电视大屏的公司研究部门，关注 AI 生成内容上屏后的可用性，角色一致性直接决定内容能不能用，动机非常"工业界"。论文只有 4 页，发表在 PP-RAI 2025（第 6 届波兰人工智能会议），但设计上的三个选择值得精读：</p>
+
+  <ul>
+    <li><strong>零训练</strong>：不发明新模型、不训练新网络，直接复用 6 个现成人脸识别模型当"量尺"——评测成本几乎为零，任何人拿 DeepFace 库就能复拼整条管线；</li>
+    <li><strong>双协议</strong>：把"身份一致性"拆成两种问法——"每帧都像参考帧吗"（锚定保真）与"任意两帧互相像吗"（无锚时序相干）——后文会看到，这个拆分直接导致了一次戏剧性的排名反转；</li>
+    <li><strong>真实校准</strong>：同一套协议也跑在真实视频上，给所有分数一条"真实世界底线"，让余弦距离从裸数值变成有绝对参照的差距倍数。</li>
+  </ul>
+
+  <p>本系列此前精读过其中的核心量尺 <a href="arcface-2018.html">ArcFace</a> #Deng et al., 2019#——当年它是为了"识别得更准"而生；这篇论文则展示了它的另一个身份：<strong>当裁判</strong>。接下来我们按"量尺 → 问法 → 配置 → 管线 → 结果 → 批判"的顺序拆解。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">六个裁判：把人脸识别模型变成视频评测量尺</div>
+
+  <h3 class="section-title">2.1 核心思想：身份判别器的二次就业</h3>
+
+  <p>FCB 的第一个设计决定是不训任何东西。它注意到一个被忽视的事实：<strong>人脸识别模型本身就是"身份距离函数"</strong>。FR 模型为了完成识别任务，必须把"同一个人的不同照片"映射到 embedding 空间的相近位置、把"不同人"推开——这个性质正是身份一致性评测需要的全部。用生成式评测的语言说：FR 模型天然就是一个免训练的、以身份为语义的感知度量。</p>
+
+  <p>论文选了 6 个横跨近十年 FR 发展史的模型，全部通过开源的 DeepFace 库统一调用 #Serengil and Ozpinar, 2024#：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>模型</th><th>年份</th><th>来源机构</th><th>Embedding 维度</th><th>训练范式</th><th>在本基准中的角色</th></tr></thead>
+      <tbody>
+        <tr><td>VGG-Face</td><td>2015</td><td>Oxford</td><td>2622（分类式）</td><td>softmax 分类</td><td>最老代际代表 #Parkhi et al., 2015#</td></tr>
+        <tr><td>FaceNet</td><td>2015</td><td>Google</td><td>128</td><td>triplet loss</td><td>产业 CSIM 惯例源头 #Schroff et al., 2015#</td></tr>
+        <tr><td>Facenet512</td><td>—</td><td>社区改进版</td><td>512</td><td>triplet loss</td><td>工程界最常用的 CSIM 量尺（DeepFace 内置的 512 维 FaceNet 变体，无正式论文，故年份记"—"）</td></tr>
+        <tr><td>ArcFace</td><td>2019</td><td>Imperial College 等</td><td>512</td><td>角度间隔损失</td><td>学术 FR 金标准 #Deng et al., 2019#</td></tr>
+        <tr><td>SFace</td><td>2022</td><td>Fraunhofer IGD</td><td>512</td><td>合成数据训练（监督+自监督结合）</td><td>合成域代表 #Boutros et al., 2022#</td></tr>
+        <tr><td>GhostFaceNet</td><td>2023</td><td>Khalifa Univ.</td><td>128</td><td>轻量化 cheap ops</td><td>边缘部署视角 #Alansari et al., 2023#</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这 6 个"裁判"的选型逻辑不是"挑最强的"，而是<strong>横跨代际与范式</strong>：从 2015 年的分类式 VGG-Face 到 2023 年的轻量 GhostFaceNet，从度量学习派（FaceNet/ArcFace）到合成数据派（SFace）。这个选择事后被证明是论文最有价值的实验设计——因为 6 个裁判对同一个视频打出的分数<strong>并不一致</strong>，这个"分歧"本身成了全文最核心的发现之一（Part 6 详述；论文正文未展开此分析，系博主读表结论）。</p>
+
+  <h3 class="section-title">2.2 度量：余弦距离，CSIM 的镜像</h3>
+
+  <div class="def-box">
+    <h3>定义：FR 余弦距离</h3>
+    <p>给定两帧人脸的 FR embedding $x, y$，FCB 的基本度量是余弦距离：</p>
+    $$
+    D_{\cos}(x, y) = 1 - \frac{x \cdot y}{\lVert x \rVert \, \lVert y \rVert}
+    $$
+    <p>它与数字人领域熟悉的 CSIM（余弦相似度）是同一枚硬币的两面：$D_{\cos} = 1 - \text{CSIM}$。<strong>分数越低越一致</strong>——与"越高越好"的 CSIM 相反，读表时务必注意方向。论文同时支持切换为欧氏距离/归一化欧氏距离，但对归一化向量两者单调等价（见 Part 7 的等价式）。</p>
+  </div>
+
+  <p>一个论文没有展开、但值得读者留意的细节：VGG-Face 的 2622 维输出本质上是<strong>分类 logits 风格的 embedding</strong>，与 FaceNet/ArcFace 那种显式度量学习得到的 embedding 在几何性质上并不同构——余弦距离在两种空间里的"含义"有微妙差别。这为后文"6 个裁判打架"埋下了伏笔，也是复现者需要警惕的坑。</p>
+
+  <p>另一个值得玩味的选型是 SFace：它用<strong>合成人脸数据</strong>训练，按直觉应该最贴合"生成人脸"这个分布外场景、对 AI 生成的人脸最友好。但后文数据会给出一个反直觉的答案——合成训练分布并没有自动转化为对生成分布的判别力。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">双协议设计：身份一致性的两种问法</div>
+
+  <h3 class="section-title">3.1 直觉：一张成绩单问不出三种病</h3>
+
+  <p>"视频里的角色脸崩了吗"其实至少拆成三种独立的失效模式，各自需要不同的问法：</p>
+
+  <ul>
+    <li><strong>稳定错脸</strong>：模型从第一帧起就把脸"画错了"，然后稳定地错下去——帧与帧之间高度相似，但都不是"那个人"。注意一个关键细节：FCB 的代表帧取自视频<strong>自身</strong>，没有外部身份参考图，所以这种失效在 Mode 1 和 Mode 2 下都查不出来——分数可能相当好看。<strong>这是整个基准的共同盲区</strong>（7.5 节会回收这一点）；</li>
+    <li><strong>慢漂移</strong>：第 1 帧很像锚点，但随时间推移悄悄变形，第 100 帧已经是另一张脸。Mode 1 对此敏感（每帧都被拉去和锚点比），但 Mode 2 只能看到约 $T/3$ 的端到端漂移（7.3 节推导）——它测"平均两两相干"，是漂移的下界式代理；</li>
+    <li><strong>参考帧偏置</strong>：Mode 1 的成绩押在代表帧上——代表帧恰好是视频里"最好看"的一帧，整段视频跟着受益；恰好人脸被遮挡/侧脸的一帧，整段被判死刑。Mode 2 完全不依赖锚点，天然免疫这种偏置——这正是它的独立价值。</li>
+  </ul>
+
+  <p>所以双协议不是冗余设计：Mode 1 管"对锚的保真"、Mode 2 管"无锚的相干"，两种问法交叉验证才能圈出问题。而"稳定错脸"测不出来这件事提醒我们：FCB 测的是<strong>视频内部自一致性</strong>，不是"生成了 prompt 指定的那个人"——后者需要带外部参考图的身份保真协议（7.5 节展开）。</p>
+
+  <h3 class="section-title">3.2 Mode 1：锚定保真——"每帧都像代表帧吗"</h3>
+
+  <p>Mode 1 从每个视频选出一个<strong>代表帧</strong>（reference frame），其余所有帧的 embedding 都与代表帧的 embedding 比余弦距离，再取平均：</p>
+
+  $$
+  \text{FCB}_{M1} = \frac{1}{T} \sum_{t=1}^{T} D_{\cos}(e_{\text{ref}}, e_t)
+  $$
+
+  <p>其中 $e_t$ 是第 $t$ 帧人脸经某个 FR 模型抽出的 embedding，$e_{\text{ref}}$ 是代表帧的 embedding，$T$ 为有效帧数（无人脸的帧会被跳过）。这个协议测的是<strong>整段视频对锚点的保真度</strong>——它与 VBench subject consistency 的思路一脉相承（VBench 为每帧 vs 首帧与前一帧双参照取平均），但把特征从 DINO 全帧换成 FR 裁脸、把参照收拢为单一代表帧。分数低，说明角色从头到尾都"像同一个人"；分数高，说明中途跑偏了。</p>
+
+  <h3 class="section-title">3.3 Mode 2：无锚时序相干——"任意两帧互相像吗"</h3>
+
+  <p>Mode 2 换了一种完全不同的问法：不要锚点，每个视频随机采 <strong>200 对帧</strong>（帧允许跨对重复出现），算每对 embedding 的余弦距离再平均：</p>
+
+  $$
+  \text{FCB}_{M2} = \frac{1}{200} \sum_{(i,j) \sim \mathcal{P}} D_{\cos}(e_i, e_j)
+  $$
+
+  <p>其中 $\mathcal{P}$ 是均匀随机采出的 200 个有序帧对（论文未说明采样分布，此处按均匀处理）。这个协议完全不看参考帧，测的是<strong>视频内部两两帧之间的身份相干性</strong>——它是"时序一致性"更纯粹的操作化：如果模型生成的人脸在时间轴上随机游走，Mode 2 会诚实地反映"平均而言任意两帧差多远"。</p>
+
+  <p>为什么两种协议都不可省？Part 6 的数据会给出最有说服力的答案：同一个模型在 Mode 1 与 Mode 2 下的<strong>排名会反转</strong>——有的模型锚定得好但帧间互相漂移（Mode 1 优、Mode 2 崩），有的相反。只看单一协议，会把两种完全不同的病误诊成同一种。</p>
+
+  <div class="callout"><strong>协议对比速记</strong>：Mode 1 = 有锚，测"对参考的保真"（fidelity to anchor）；Mode 2 = 无锚，测"帧间相干"（temporal coherence）。前者继承单图 ID 保持评测的血统，后者才是真正面向"视频"这个媒介的量。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">评测配置：一份可以直接抄作业的协议清单</div>
+
+  <p>这是一篇零训练的基准论文，所以本系列的"训练配置披露表"在这里整体退化为"不适用"——但正因为论文的全部实体就是评测协议本身，它的评测配置反而值得逐项披露、逐项检查。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>FCB 的选择</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>被测模型</td><td>Runway Gen-3 Alpha、HunyuanVideo、CogVideoX-1.5-5B、Vchitect-2.0</td><td>按 VBench 榜单选头部梯队；闭源 API 与开源权重混合 #Kong et al., 2024# #Yang et al., 2024#</td></tr>
+        <tr><td>视频数量</td><td>每模型 30 个视频</td><td>4 模型共 120 个生成视频；表中数值均为 30 视频上的平均</td></tr>
+        <tr><td>分辨率</td><td>720×720</td><td>统一分辨率排除清晰度干扰；更高分辨率模型输出被降采样对齐</td></tr>
+        <tr><td>Prompt 来源</td><td>真实视频帧 + ChatGPT 生成描述</td><td>让生成视频与真实视频内容可比——校准的前提</td></tr>
+        <tr><td>内容多样性</td><td>真实基视频刻意覆盖性别、年龄、光照变化</td><td>避免单一题材偏置，多样性同步反映到生成 prompt</td></tr>
+        <tr><td>动作难度</td><td>刻意包含头部旋转、垂直运动等对生成 AI 有难度的动作</td><td>评测明确要"考难不考易"，测试复杂运动下的身份保持</td></tr>
+        <tr><td>真实视频 baseline</td><td>真实视频走完全相同的评测协议</td><td>论文最关键的设计之一：给所有分数一条"真实底线"</td></tr>
+        <tr><td>人脸提取</td><td>从全帧检测人脸并裁剪</td><td>不是全帧过 FR，是裁出人脸区域再编码</td></tr>
+        <tr><td>无人脸帧</td><td>跳过</td><td>不惩罚"没有脸的帧"，只统计有脸帧的距离</td></tr>
+        <tr><td>Embedding 提取器</td><td>6 个 FR 模型，经 DeepFace 库统一调用</td><td>零训练，全部现成</td></tr>
+        <tr><td>Mode 1 设置</td><td>全部帧 vs 1 个代表帧</td><td>代表帧的选取规则论文未披露</td></tr>
+        <tr><td>Mode 2 设置</td><td>每视频 200 个随机帧对</td><td>帧允许跨对重复</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>对照本系列惯例的 10 项训练配置披露（数据集/骨干/损失/优化器/学习率/批次/迭代/数据增强/EMA/训练时长），本文逐项均为<strong>结构性不适用</strong>——FCB 没有任何训练环节，这 10 项从根上不存在。另一类信息则属于<strong>论文未披露</strong>：被测 4 个模型各自的参数量与精度格式（除引用原论文外本文未汇总）、每视频的帧数/时长/fps、真实基线的视频数量、代码与 benchmark 数据发布（截至 2026.09 未开源）。两类状态要分开看：前者是基准论文的正常形态，后者才是可复现性的真实损失。而恰恰在协议层，论文也留了几个硬缺口：代表帧怎么选、人脸检测用哪个型号、FR checkpoint 是哪个版本、随机种子是否固定、每格数值的方差是多少——全部未披露。协议框架可以照抄，数值想精确复现基本不可能（Part 7 展开）。</p>
+
+  <div class="callout"><strong>给复现者的提示</strong>：想复拼 FCB，能确定的是"6 FR × 2 协议 × 真实校准"这个骨架（DeepFace 一个 pip 就能装）；不能确定的是每个数值的确切身份。把它当"协议模板"用，不要当"排行榜"用。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">双协议计算管线：从视频到分数的完整流水线</div>
+
+  <p>把前两部分拼起来，FCB 的完整计算管线如下图。对每个视频 × 每个 FR 模型，管线独立跑一遍，最终产出 5 行 × 6 列 × 2 协议共 60 个数值（即论文的两张主表）。</p>
+
+  <div class="code-tabs">
+    <div class="code-tabs-header">
+      <button class="code-tab-btn active" data-tab="fcb-flow">流程图</button>
+      <button class="code-tab-btn" data-tab="fcb-algorithm">算法伪代码</button>
+    </div>
+    <div class="code-tab-content active" data-panel="fcb-flow">
+      {{< mermaid >}}
+flowchart TD
+    A["输入视频（720×720，T 帧）"] --> B["逐帧人脸检测与裁剪"]
+    B --> C{"有人脸？"}
+    C -->|"否"| D["跳过该帧"]
+    C -->|"是"| E["FR 模型编码 e_t<br/>（6 个 FR 各跑一遍）"]
+    E --> F["有效帧 embedding 序列"]
+    F --> G["Mode 1：选代表帧 e_ref"]
+    F --> H["Mode 2：随机采 200 帧对"]
+    G --> I["M1 = mean D_cos(e_ref, e_t)"]
+    H --> J["M2 = mean D_cos(e_i, e_j)"]
+    I --> K["每 FR 模型一个分数"]
+    J --> K
+    K --> L["真实视频同协议<br/>→ 校准底线"]
+    L --> M["差距倍数 + 跨模型排名"]
+      {{< /mermaid >}}
+    </div>
+    <div class="code-tab-content" data-panel="fcb-algorithm">
+      <pre><code class="language-text">Algorithm: FCB scoring (per video, per FR model)
+Input: video V with T frames; FR model f
+E := []                          # valid embeddings
+for t in 1..T:
+    face := detect_and_crop(V[t])
+    if face is None: continue    # skip no-face frames
+    E.append(f.embed(face))      # e_t
+# Mode 1: anchored fidelity
+ref := representative_frame(E)   # selection rule undisclosed
+M1 := mean( D_cos(ref, e) for e in E )
+# Mode 2: anchor-free coherence
+M2 := mean( D_cos(E[i], E[j]) for (i,j) in random_pairs(E, 200) )
+Output: M1, M2                   # lower is better</code></pre>
+    </div>
+  </div>
+
+  <p>管线上有三个容易忽略的细节。<strong>第一</strong>，"跳过无人脸帧"意味着 FCB 不惩罚"视频里没有脸"——它纯粹测"有脸的帧之间身份是否一致"，镜头切到风景的帧被静默忽略。<strong>第二</strong>，6 个 FR 模型对管线是<strong>并行独立</strong>的：同一个人脸裁剪区域会被 6 个模型分别编码，各自产出自己的分数——这就是"6 个裁判"的机制来源。<strong>第三</strong>，真实视频 baseline 走的是<strong>完全相同</strong>的管线：同样的检测、裁剪、编码、双协议——这保证了"生成视频分数 ÷ 真实视频分数"这个比值是有意义的（同样的系统偏差被分子分母同时携带，近似相消）。</p>
+
+  <p>顺带算一笔成本账，体会"零训练基准"的工程含义。一个 240 帧的视频，人脸检测跑 240 次；FR 编码则是 <strong>240 帧 × 6 模型 = 1440 次前向</strong>；Mode 2 的 200 个帧对只是 embedding 向量间的点积，开销可忽略。120 个生成视频加上真实基线，总编码次数在十万量级——全部是推理，没有任何训练。一张消费级 GPU（甚至纯 CPU）数小时可以跑完全库，这与动辄数百 GPU 时的生成式评测（如需要参考模型的 FVD）形成鲜明对比。<strong>评测成本约等于零，是这套协议能被社区快速采纳的最大卖点</strong>。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">结果：六个裁判打架、双协议反转、距真实还有多远</div>
+
+  <p>现在看论文的两张主表。每张表 5 行（真实视频 + 4 个生成模型）× 6 列（FR 模型），全部是余弦距离——<strong>越小越好</strong>；加粗为该列表现最优的<strong>生成模型</strong>（真实视频是底线参照，不参与加粗）。先交代归属：论文正文对两表只有笼统点评（HunyuanVideo/Runway 相对更好、距真实仍有明显差距），下面三个"发现"均系博主基于原表数值的读表结论。</p>
+
+  <h3 class="section-title">6.1 Mode 1：锚定保真成绩单</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Mode 1（↓）</th><th>VGG-Face</th><th>Facenet</th><th>Facenet512</th><th>ArcFace</th><th>SFace</th><th>GhostFaceNet</th></tr></thead>
+      <tbody>
+        <tr><td>Real Video（底线）</td><td>0.0636</td><td>0.0650</td><td>0.0514</td><td>0.0843</td><td>0.1267</td><td>0.1391</td></tr>
+        <tr><td>Runway Gen-3</td><td>0.2827</td><td><strong>0.1408</strong></td><td><strong>0.1511</strong></td><td>0.2346</td><td><strong>0.1584</strong></td><td><strong>0.2668</strong></td></tr>
+        <tr><td>HunyuanVideo</td><td><strong>0.2542</strong></td><td>0.1784</td><td>0.2229</td><td><strong>0.1734</strong></td><td>0.2746</td><td>0.2946</td></tr>
+        <tr><td>Vchitect-2.0</td><td>0.4042</td><td>0.3295</td><td>0.2951</td><td>0.4843</td><td>0.4554</td><td>0.5215</td></tr>
+        <tr><td>CogVideoX1.5-5B</td><td>0.3294</td><td>0.2412</td><td>0.1813</td><td>0.3005</td><td>0.3310</td><td>0.3541</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><em>表 1：Mode 1 锚定保真——全部帧 vs 代表帧的 FR embedding 余弦距离（越小越好；加粗 = 该列最优生成模型；来源：Podstawski et al., 2025, Table 1）。</em></p>
+
+  <h3 class="section-title">6.2 Mode 2：无锚时序相干成绩单</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Mode 2（↓）</th><th>VGG-Face</th><th>Facenet</th><th>Facenet512</th><th>ArcFace</th><th>SFace</th><th>GhostFaceNet</th></tr></thead>
+      <tbody>
+        <tr><td>Real Video（底线）</td><td>0.0798</td><td>0.0805</td><td>0.0498</td><td>0.1027</td><td>0.1119</td><td>0.1308</td></tr>
+        <tr><td>Runway Gen-3</td><td><strong>0.2493</strong></td><td>0.1987</td><td>0.2319</td><td>0.2441</td><td><strong>0.1641</strong></td><td>0.3441</td></tr>
+        <tr><td>HunyuanVideo</td><td>0.2655</td><td><strong>0.1955</strong></td><td>0.2307</td><td><strong>0.1896</strong></td><td>0.2842</td><td><strong>0.3161</strong></td></tr>
+        <tr><td>Vchitect-2.0</td><td>0.5255</td><td>0.3447</td><td><strong>0.1962</strong></td><td>0.4997</td><td>0.4798</td><td>0.5266</td></tr>
+        <tr><td>CogVideoX1.5-5B</td><td>0.5101</td><td>0.3744</td><td>0.4162</td><td>0.3215</td><td>0.4469</td><td>0.5213</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><em>表 2：Mode 2 无锚时序相干——每视频 200 个随机帧对的 FR embedding 余弦距离（越小越好；加粗 = 该列最优生成模型；来源：Podstawski et al., 2025, Table 2）。</em></p>
+
+  <div class="photo">
+    <img src="media/images/face-consistency-benchmark-2025/plot.webp" alt="FCB 论文主结果图：Mode 1 与 Mode 2 双联柱状图" loading="lazy">
+    <div class="cap">图 1：论文原图——6 个 FR 模型在 Mode 1（左）与 Mode 2（右）下对真实视频与 4 个生成模型的余弦距离柱状对比。每个 FR 分组内蓝色 Real Video 柱一致最矮，红色 Vchitect-2.0 与紫色 CogVideoX 柱普遍最高；同一颜色横跨 6 个分组的高度起伏，直观呈现"同视频跨裁判分数不一致"（来源：Podstawski et al., 2025, Fig. 1）。</div>
+  </div>
+
+  <h3 class="section-title">6.3 发现一：六个裁判打架，分歧最高约 2.7 倍</h3>
+
+  <p>先看最不起眼却最重要的一行：<strong>真实视频</strong>。同一批真实视频，Facenet512 给出 0.0514（Mode 1），而 GhostFaceNet 给出 0.1391——<strong>同一种视频、同一套协议，换个裁判分数差 2.7 倍</strong>。生成模型那边同样悬殊：以 Mode 2 的 Vchitect-2.0 为例，Facenet512 判 0.1962，GhostFaceNet 判 0.5266，相差 2.68 倍；CogVideoX 在 Mode 2 的 Facenet512（0.4162）与 VGG-Face（0.5101）之间也拉开明显差距。</p>
+
+  <p>这意味着<strong>裸数值没有可比性</strong>：你在论文 A 里看到的 CSIM 0.25 和论文 B 里的 0.35，如果用的不是同一个 FR 模型，谁高谁低根本无从谈起。FCB 的六裁判设计把这个长期被忽视的问题摆上了台面——但它只呈现分歧，没有裁决分歧（哪个裁判更可信？论文没有回答，这是它留下的最大开放问题）。</p>
+
+  <h3 class="section-title">6.4 发现二：双协议排名反转</h3>
+
+  <p>这是两张表读出的最戏剧性的结果（论文正文未做协议间对比，此为博主读表结论）。看 Facenet512 这一列：</p>
+
+  <ul>
+    <li><strong>Mode 1</strong>（锚定保真）：CogVideoX 0.1813 优于 Vchitect-2.0 的 0.2951——CogVideoX 领先，Vchitect 垫底梯队；</li>
+    <li><strong>Mode 2</strong>（无锚相干）：Vchitect-2.0 <strong>0.1962</strong> 反超所有模型成为该列第一，而 CogVideoX 崩到 0.4162。</li>
+  </ul>
+
+  <p>两个模型交换了位置。解读：CogVideoX 属于<strong>"锚定尚可、帧间漂移"型</strong>——它能生成一个像参考帧的脸，但这个脸在时间轴上不稳定，任意两帧之间平均差得很远；Vchitect-2.0 在 Facenet512 眼里则是<strong>"帧间相干尚可、锚定偏差"型</strong>。把六列平均，Mode 2 下 Vchitect（均值约 0.4288）甚至整体略好于 CogVideoX（约 0.4317）——与 Mode 1 的格局完全对调。如果只测一种协议，你会对这两个模型做出<strong>相反的结论</strong>。</p>
+
+  <p>顺带一提，Vchitect-2.0 是 VBench 团队自己的后续模型，VBench 总分榜上的尖子生，却在 FCB 的多数列里垫底（Mode 2 的 VGG-Face/GhostFaceNet 列冲到 0.52+）。这坐实了 FCB 的核心论点：<strong>综合榜单排名不能外推到面部身份一致性</strong>——总分高不等于脸不崩。</p>
+
+  <h3 class="section-title">6.5 发现三：最强模型距真实还有 1.25–4 倍</h3>
+
+  <p>真实视频底线让所有分数有了绝对参照。把"该列最优生成模型 ÷ 真实视频"算成差距倍数：</p>
+
+  <div class="photo">
+    <img src="media/images/face-consistency-benchmark-2025/gap-ratio.webp" alt="最强生成模型相对真实视频的差距倍数（Mode 1 与 Mode 2，6 个 FR 模型）" loading="lazy">
+    <div class="cap">图 2：各 FR 模型视角下"最优生成模型 ÷ 真实视频"的余弦距离倍数（左 Mode 1、右 Mode 2；虚线 1.0× 为真实视频水平）。柱色标注"最优生成模型"花落谁家：橙 = Runway Gen-3、绿 = HunyuanVideo、红 = Vchitect-2.0——注意右侧 Facenet512 列的红色柱（Vchitect，3.9×），正是 6.4 节排名反转的视觉证据（数据来源：Podstawski et al., 2025, Table 1–2；本图由笔者据原表数值绘制）。</div>
+  </div>
+
+  <p>模式很清晰：<strong>没有任何模型在任何裁判眼里接近真实</strong>。差距最小的组合（SFace，Mode 1）也有 1.25 倍（图 2 柱顶标注按一位小数舍入显示为 1.3×）；最悬殊的（Facenet512，Mode 2 与 VGG-Face，Mode 1）达到约 3.9–4.0 倍。换个角度说：当下最好的文生视频模型，其角色人脸的 FR 空间稳定性距离真实拍摄仍有数倍差距——这正是数字人赛道"最后一公里"的量化注脚。</p>
+
+  <p>还记不记得 Part 2 埋的 SFace 伏笔？看真实视频那一行：SFace 给真实视频的底线（Mode 1: 0.1267）在六裁判中<strong>几乎最差</strong>，是 Facenet512（0.0514）的 2.5 倍。用合成人脸训练的 FR，并没有因此对"真实人脸"或"生成人脸"更宽容或更敏锐——<strong>合成训练分布没有自动转化为判别力优势</strong>。这个反直觉的观察对"该选哪个 FR 当裁判"的讨论很有价值。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">批判性审视：这个基准教会我们什么，还差什么</div>
+
+  <h3 class="section-title">7.1 它对 VBench 的批评，站得住吗？</h3>
+
+  <p>论文对现有基准的批评可以概括为一句："VBench 们不专门处理角色面部一致性"——这里的"们"包括同样走综合路线的 AIGCBench 等后续基准 #Fan et al., 2024#。把 VBench 的 subject consistency 算法摊开对照，这个批评<strong>基本站得住，但表述略过头</strong>：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>VBench subject consistency</th><th>FCB</th></tr></thead>
+      <tbody>
+        <tr><td>特征</td><td>DINO（通用自监督视觉特征）</td><td>6 个 FR embedding（身份监督特征）</td></tr>
+        <tr><td>探测区域</td><td>整帧（不裁脸）</td><td>检测并裁剪人脸区域</td></tr>
+        <tr><td>参照方式</td><td>每帧 vs 首帧与前一帧（双参照取平均）</td><td>Mode 1 代表帧锚 + Mode 2 无锚双协议</td></tr>
+        <tr><td>度量方向</td><td>余弦相似度（↑）</td><td>余弦距离（↓）</td></tr>
+        <tr><td>绝对校准</td><td>无真实底线</td><td>真实视频同协议 baseline</td></tr>
+        <tr><td>判别力</td><td>头部模型分数挤在一起</td><td>距真实视频 1.25–4×（各列最优生成模型 ÷ 真实底线）+ 跨 FR 分歧最高约 2.7×</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>说"站得住"：DINO 全帧特征确实把身份语义稀释在了画面整体相似里，一张脸轻微漂移但背景纹丝不动的视频，VBench 可能给高分，FR 裁脸的 FCB 会如实报警——两者的信号来源根本不同。说"略过头"：VBench 的"每帧 vs 首帧与前一帧（双参照）取平均"本身就同时含锚定成分（对首帧）与相邻帧成分（对前一帧），并非完全不管一致性——真正的差异在特征语义与探测区域，而不是"测不测"。公正地说：FCB 不是推翻 VBench，而是把它 16 个维度中的一个做深做透——综合基准与专项基准的关系，如同 MMLU 之于 GSM8K。</p>
+
+  <h3 class="section-title">7.2 度量等价性：切换欧氏还是余弦，其实是一回事</h3>
+
+  <p>先把 Part 2 def-box 里埋的线头收掉。论文报告余弦距离，同时提一句支持切换为欧氏/归一化欧氏距离——这不是三选一的自由度，而是同一份信息的不同读数。对归一化后的 embedding $\hat{x}, \hat{y}$（DeepFace 输出即归一化向量），有：</p>
+
+  $$
+  \lVert \hat{x} - \hat{y} \rVert^2 = \lVert \hat{x} \rVert^2 + \lVert \hat{y} \rVert^2 - 2\,\hat{x} \cdot \hat{y} = 2\,\bigl(1 - \hat{x} \cdot \hat{y}\bigr) = 2\,D_{\cos}(\hat{x}, \hat{y})
+  $$
+
+  <p>即归一化欧氏距离的平方恒等于余弦距离的两倍，两者严格单调等价——<strong>换度量只改变分数的刻度，不改变任何模型排名</strong>。所以"用哪个距离"是无所谓的，真正要紧的是 Part 2.2 说的另一件事：换<strong>特征空间</strong>（哪个 FR）会剧烈改变结论。</p>
+
+  <h3 class="section-title">7.3 Mode 2 的结构性盲区：随机帧对低估漂移</h3>
+
+  <p>FCB 的 Mode 2 用随机帧对测时序相干，这个设计有一个论文未讨论的数学性质。帧对 $(i,j)$ 均匀随机时，两帧间隔的期望是：</p>
+
+  $$
+  \mathbb{E}\,|i - j| = \frac{T^2 - 1}{3T} \approx \frac{T}{3}
+  $$
+
+  <div class="theorem-box">
+    <h3>随机帧对只看到约三分之一的端到端漂移</h3>
+    <p>设人脸身份随时间线性漂移（每帧漂移量为常数），则任意两帧的距离与 $|i-j|$ 成正比。随机帧对的期望间隔约为 $T/3$，因此 Mode 2 期望捕捉到的"漂移信号"只有<strong>首尾帧距离（真正的端到端漂移）的约三分之一</strong>。若身份按平方根或更缓的曲线漂移，低估比例还会更高。</p>
+  </div>
+
+  <div class="example-box">
+    <h3>例：240 帧视频的漂移低估</h3>
+    <p><strong>题目</strong>：一个 240 帧的视频，角色身份从第 1 帧到第 240 帧线性漂移，首尾两帧的余弦距离为 0.60。Mode 2 的 200 个随机帧对平均能看到多大的距离？</p>
+    <p><strong>答案</strong>：$\mathbb{E}|i-j| \approx 240/3 = 80$ 帧，即期望捕捉 $80/239 \approx 1/3$ 的漂移量，约 $0.60 \times 0.33 \approx 0.20$。真实端到端漂移 0.60 的视频，Mode 2 只报出约 0.20——<strong>看起来温和得多</strong>。</p>
+    <div class="callout"><strong>易错点</strong>：这不是实现 bug，是均匀随机采样协议的内在性质。想要对端到端漂移敏感，应补充"首尾帧对"或"分层采样（分桶内/桶间）"协议。读 Mode 2 分数时请记住：它衡量的是"平均两两相干"，是端到端漂移的<strong>下界式代理</strong>。</div>
+  </div>
+
+  <h3 class="section-title">7.4 统计严谨性与可复现性审计</h3>
+
+  <p>以更严格的标准审视，这篇 4 页论文留下五处可指摘的缺口——它们不影响"方向性结论"，但影响"数值的可信度"：</p>
+
+  <ul>
+    <li><strong>零方差、零显著性</strong>：每模型仅 30 个视频，两表共 60 个单元格，没有任何标准差或置信区间。头部模型间的 0.01 级差距（如 Mode 1 的 Facenet 列 Runway 0.1408 vs Hunyuan 0.1784）在 30 样本下是否显著，无从判断；</li>
+    <li><strong>多重比较未校正</strong>：6 FR × 2 协议 × 4 模型组合出大量配对比较，读者很容易挑出"对自己有利"的那个单元格——Vchitect 的 Facenet512 Mode 2 第一名就是被这样"挑"出来的叙事；</li>
+    <li><strong>幸存者偏差</strong>：只测 4 个头部模型，且都来自 VBench 榜单——中腰部模型、开源小模型的面部一致性生态完全没有画像；</li>
+    <li><strong>FR 裁决缺位</strong>：六裁判分歧最高约 2.7 倍却不下结论。哪个 FR 对生成人脸更可靠？SFace 的反直觉表现暗示"选裁判"本身就是个开放研究问题；</li>
+    <li><strong>细节未披露</strong>：代表帧选取规则、人脸检测器型号、FR checkpoint 版本（DeepFace 不锁版本）、随机种子——数值级复现基本不可能。协议级复现（跑通框架、验证方向性结论）估计七成可行。</li>
+  </ul>
+
+  <h3 class="section-title">7.5 对数字人身份一致性研究意味着什么</h3>
+
+  <p>回到本系列的 survey 主题——数字人/视频生成中的身份一致性评测。FCB 的贡献与局限可以这样定位：</p>
+
+  <p><strong>它回应了的</strong>：把 CSIM 从工程默会升格为协议化基准（选型、配置、底线一条龙）；用双协议显式区分"锚定保真"与"无锚时序相干"，正面回答了"时序身份一致性怎么测"；用真实视频校准给了 CSIM 一个绝对参照系，让"0.25 是好是坏"变成"距真实 3 倍差距"这样可解释的陈述。Vchitect 案例还顺带证明：综合榜单总分无法替代专项评测。</p>
+
+  <p><strong>它没回应的</strong>：本 survey 反复强调的"CSIM 在时序上的可靠性"问题只解决了一半——Mode 2 承认了时序维度，但随机帧对在结构上低估端到端漂移（7.3 节）；FR 间分歧没有裁决机制，六裁判打架时工程上仍然只能"都报一遍"；没有任何与训练侧的接口——它是纯黑盒评测，不能反传梯度、不能指导模型改进；与 ID-preserving 生成文献（IP-Adapter、InstantID 一系）完全零对话，被测对象也不含任何 ID 条件生成模型。后者其实是顺理成章的下一步：FCB 协议 + ID 条件生成模型，才是数字人赛道真正关心的组合。</p>
+
+  <p>对数字人赛道还有一条更根本的缺口：<strong>FCB 全程没有外部身份参考</strong>。锚点与帧对全部来自视频自身，测的是"视频内部自一致性"——它回答"这张脸稳不稳"，不回答"这是不是 <em>指定那个人</em>"。而数字人产业的主流用法是 CSIM-with-reference-ID：拿用户提供的参考人脸比对每一帧。要覆盖这个场景，FCB 只需把 Mode 1 的代表帧换成外部参考图即可——论文没走出这一步，属于"最可惜的一厘米"。另两条审计补充：论文也没有做人类感知对齐验证（VBench 有人评偏好标注，FCB 的分数与人类判断的相关性未验证）；论文自认"仅覆盖面部、不含全身一致性"的局限，本文的多角色场景展望之外，角色躯干/服装一致性同样在射程之外。</p>
+
+  <p><strong>展望</strong>：沿着 FCB 指出的裂缝，有三个显然的后续方向——(1) 裁决 FR 分歧（用人工标注或合成已知漂移的视频标定哪个裁判对生成人脸最可靠）；(2) 协议升级（分层帧对采样、外部参考图身份保真协议、长视频、多角色场景、人脸检测器鲁棒性）；(3) 与训练闭环（把双协议信号做成可微 reward，喂给 ID 条件生成的 RLHF 环节）。这三个方向每一个都够一篇新论文。</p>
+
+  <div class="review-box">
+    <h3>复习速查</h3>
+    <ul>
+      <li><strong>一句话</strong>：FCB = 6 个现成 FR 模型 × 双协议（Mode 1 锚定 / Mode 2 无锚）× 真实视频底线，零训练测 GenAI 视频角色面部一致性。</li>
+      <li><strong>度量</strong>：余弦距离 $D_{\cos} = 1 - \text{CSIM}$，越小越好；FR embedding 经 DeepFace 统一提取。</li>
+      <li><strong>三个发现</strong>：FR 间分歧最高约 2.7×；双协议排名反转（Vchitect Facenet512 列 0.2951→0.1962，CogVideoX 0.1813→0.4162）；最强模型距真实 1.25–4×。</li>
+      <li><strong>三个缺口</strong>：随机帧对只看约 $T/3$ 漂移（$\mathbb{E}|i-j| = \frac{T^2-1}{3T}$）；无方差无显著性；六裁判分歧未裁决。</li>
+      <li><strong>使用姿势</strong>：当协议模板抄，别当排行榜用。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Podstawski-et-al.-2025">Podstawski, M., Kudelska, M., &amp; Wang, H. (2025). <strong>Face Consistency Benchmark for GenAI Video</strong>. PP-RAI 2025 (6th Polish Conference on Artificial Intelligence); arXiv:2505.11425. <a href="https://arxiv.org/abs/2505.11425" target="_blank">arXiv:2505.11425</a></li>
+    <li data-cite-key="Huang-et-al.-2023">Huang, Z., He, Y., Yu, J., et al. (2023). <strong>VBench: Comprehensive Benchmark Suite for Video Generative Models</strong>. arXiv:2311.17982. <a href="https://arxiv.org/abs/2311.17982" target="_blank">arXiv:2311.17982</a></li>
+    <li data-cite-key="Fan-et-al.-2024">Fan, F., Luo, C., Gao, W., &amp; Zhan, J. (2024). <strong>AIGCBench: Comprehensive Evaluation of Image-to-Video Content Generated by AI</strong>. arXiv:2401.01651. <a href="https://arxiv.org/abs/2401.01651" target="_blank">arXiv:2401.01651</a></li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, J., Guo, J., Yang, J., et al. (2019). <strong>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</strong>. CVPR 2019; TPAMI 2022 扩展版. <a href="https://arxiv.org/abs/1801.07698" target="_blank">arXiv:1801.07698</a> · <a href="arcface-2018.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Schroff-et-al.-2015">Schroff, F., Kalenichenko, D., &amp; Philbin, J. (2015). <strong>FaceNet: A Unified Embedding for Face Recognition and Clustering</strong>. CVPR 2015. <a href="https://www.cv-foundation.org/content_cvpr_2015/html/Schroff_FaceNet_A_Unified_2015_CVPR_paper.html" target="_blank">CVPR 2015</a></li>
+    <li data-cite-key="Parkhi-et-al.-2015">Parkhi, O. M., Vedaldi, A., &amp; Zisserman, A. (2015). <strong>Deep Face Recognition</strong>. BMVC 2015. <a href="https://www.robots.ox.ac.uk/~vgg/publications/2015/Parkhi15/parkhi15.pdf" target="_blank">BMVC 2015 PDF</a></li>
+    <li data-cite-key="Boutros-et-al.-2022">Boutros, F., Huber, M., Siebke, P., Rieber, T., &amp; Damer, N. (2022). <strong>SFace: Privacy-friendly and Accurate Face Recognition using Synthetic Data</strong>. arXiv:2206.10520. <a href="https://arxiv.org/abs/2206.10520" target="_blank">arXiv:2206.10520</a></li>
+    <li data-cite-key="Alansari-et-al.-2023">Alansari, M., Hay, O. A., Javed, S., Shoufan, A., Zweiri, Y., &amp; Werghi, N. (2023). <strong>GhostFaceNets: Lightweight Face Recognition Model From Cheap Operations</strong>. IEEE Access. <a href="https://ieeexplore.ieee.org/document/10203475" target="_blank">IEEE Access</a></li>
+    <li data-cite-key="Serengil-and-Ozpinar-2024">Serengil, S. I., &amp; Ozpinar, A. (2024). <strong>A Benchmark of Facial Recognition Pipelines and Co-Usability Performances of Modules</strong>. Journal of Information Technologies, 17(2). <a href="https://doi.org/10.17671/gazibtd.1399077" target="_blank">DOI:10.17671/gazibtd.1399077</a></li>
+    <li data-cite-key="Kong-et-al.-2024">Kong, W., Tian, Q., Zhang, Z., et al. (2024). <strong>HunyuanVideo: A Systematic Framework for Large Video Generative Models</strong>. arXiv:2412.03603. <a href="https://arxiv.org/abs/2412.03603" target="_blank">arXiv:2412.03603</a></li>
+    <li data-cite-key="Yang-et-al.-2024">Yang, Z., Teng, J., Zheng, W., et al. (2024). <strong>CogVideoX: Text-to-Video Diffusion Models with An Expert Transformer</strong>. arXiv:2408.06072. <a href="https://arxiv.org/abs/2408.06072" target="_blank">arXiv:2408.06072</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="id-sim-2026.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（六十一）：ID-Sim</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <a class="nav-card nav-next" href="consisid-2024.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">数字人论文精读（六十三）：ConsisID</span></a>
+</div>

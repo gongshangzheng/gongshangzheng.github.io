@@ -1,0 +1,465 @@
+---
+title: "数字人论文精读（六十四）：MoFE，多面部专家融合攻克大姿态身份一致性"
+description: "arXiv 2508.09476（v4 更名 CoFE）：用 ArcFace/CLIP/DINOv2 三个面部专家 + 逐 DiT 层门控融合，替换单源静态人脸特征注入，把 Wan2.1/Wan2.2 的 FaceSim-Arc 推到 0.770/0.814；配套 LaFID-180K 大姿态数据集与 LaFID-Bench。"
+date: 2026-09-01
+created_at: 2026-09-03T12:25:28
+updated_at: 2026-09-03T15:27:06
+tags: [数字人, 论文精读, 身份一致性, 大姿态, 视频生成]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 640
+papers: ["https://arxiv.org/abs/2508.09476"]
+repos: ["https://github.com/rain152/LFA-Video-Generation"]
+notify: false
+mathjax: true
+paper_title: "Collaborative Face Experts Fusion in Video Generation: Boosting Identity Consistency Across Large Face Poses"
+paper_authors: "Yuji Wang, Moran Li, Xiaobin Hu, Ran Yi, Jiangning Zhang, Chengming Xu, Weijian Cao, Yabiao Wang, Chengjie Wang, Lizhuang Ma"
+paper_affiliation: "上海交通大学；腾讯优图实验室；新加坡国立大学"
+paper_venue: "arXiv 2508.09476（2025-08 首版，2025-12 v4；CVPR 2026 在投）"
+paper_url: "https://arxiv.org/abs/2508.09476"
+paper_code: "部分开源：数据处理管线（github.com/rain152/LFA-Video-Generation），模型与 CoFE 模块代码未发布"
+hero_title: "CoFE（曾用名 MoFE）"
+hero_sub: "arXiv 2025 · 上海交大 & 腾讯优图 & NUS"
+hero_tagline: "三个面部专家 + 逐层门控：把身份一致性从正脸扩展到大姿态"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">0.814</span><span class="label">FaceSim-Arc（LaFID-Bench）</span></div>
+  <div class="stat"><span class="num b">+18.5%</span><span class="label g">参数增量</span></div>
+  <div class="stat"><span class="num">180K</span><span class="label">LaFID 大姿态视频片段</span></div>
+  <div class="stat"><span class="num b">3</span><span class="label l">面部专家</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：数字人一转头，身份就"换人"了</div>
+
+做数字人视频生成的人大概都遇到过这样的时刻：模型给的正面像非常稳，五官、脸型、肤色都对得严丝合缝；可一旦剧情需要角色转头、回眸、低头沉思，生成的人脸就开始"变形"——眼睛的形状变了，下颌线跑了，严重的时候整张脸像换了个人。这不是错觉：人类视觉对人像身份的不一致比对任何其他主体都敏感，尤其在人脸姿态大幅变化时 #Wang et al., 2025#。对一个讲故事的数字人产品来说，主角在第二个镜头里"换了张脸"，沉浸感就当场崩塌。
+
+这篇论文用一张图把这个痛点的量级摆了出来：在同一个大姿态序列上，CogVideoX 生成结果与参考身份的人脸相似度只有 0.402，Wan2.2 也只有 0.464，而给 Wan2.2 装上本文提出的模块后，这个数字拉到 0.612——相对提升约 32% #Wang et al., 2025#。我们要读的，就是这背后的方法。
+
+论文来自上海交通大学、腾讯优图实验室与新加坡国立大学的合作团队（共同一作 Yuji Wang、Moran Li、Xiaobin Hu）#Wang et al., 2025#。先说一个容易踩坑的细节：这篇论文在 arXiv 上经历了改名——2025 年 8 月的 v1 版本标题是 <em>From Large Angles to Consistent Faces: Identity-Preserving Video Generation via Mixture of Facial Experts</em>，方法名叫 <strong>MoFE</strong>（Mixture of Facial Experts，面部专家混合）；2025 年 12 月的 v4 版本改题为 <em>Collaborative Face Experts Fusion in Video Generation</em>，方法名也随之改为 <strong>CoFE</strong>（Collaborative Face Experts Fusion，协同面部专家融合）。两个名字指的是同一个方法，社区里流传的 MoFE 就是它，本篇以最新的 CoFE 为准 #Wang et al., 2025#。
+
+<div class="callout">
+  <strong>一句话贡献：</strong>CoFE 用三个互补的面部专家（ArcFace 管身份结构、CLIP 管语义属性、DINOv2 管像素细节）替代"单一静态人脸特征"，在每个 DiT block 上用可学习门控动态决定"这一层该听哪个专家的"，再把融合特征作为与文本流、首帧流并行的第三路 cross-attention 注入；配套 LaFID-180K 大姿态数据集与 LaFID-Bench 评测集，在两个基准上把身份相似度全面推到 SOTA #Wang et al., 2025#。
+</div>
+
+<div class="photo">
+  <img src="media/images/collaborative-face-experts-2025/teaser_v2.webp" alt="大姿态下身份保持对比：CogVideoX、Wan2.2 与 Wan2.2 w/ CoFE 的生成帧与 FaceSim 分数" loading="lazy">
+  <div class="cap">图 1：大姿态序列上的身份保持对比。同一参考人脸下，CogVideoX 的 FaceSim 仅 0.402，Wan2.2 为 0.464，加装 CoFE 后达 0.612（来源：Wang et al., 2025, teaser 图）。</div>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：单源静态注入的两大死穴</div>
+
+要理解 CoFE 在改什么，得先看清现有方法是怎么"保身份"的。
+
+<strong>现状一：底座模型靠首帧特征。</strong>DiT 架构的 I2V 模型（CogVideoX、Wan2.1/2.2 等）通过把首帧的 VAE 特征注入 DiT 来保证内容一致 #Yang et al., 2024# #Wan et al., 2025#。这在"画面不漂"上有效，但首帧特征里人脸只占很小一块，身份信号天然稀薄。
+
+<strong>现状二：人脸专精模型靠单一人脸特征。</strong><a href="consisid-2024.html">ConsisID</a> 这类工作往前走了一步：从参考帧提取人脸特征（ConsisID 用的是频率分解的 ArcFace 表示），注入 DiT 的 cross-attention #Yuan et al., 2025#。但论文指出，这类设计与底座模型共享两个致命假设 #Wang et al., 2025#：
+
+<div class="info-box">
+  <h3>单源静态注入的两大限制（论文原文归纳）</h3>
+  <p><strong>限制一：单源混叠。</strong>单一特征把身份、语义、细节压在一个表示里，缺乏专化——一个 ArcFace 向量既要回答"这是谁"，又要回答"发型如何、皮肤质感如何"，顾此失彼。</p>
+  <p><strong>限制二：静态注入。</strong>同一特征被均匀地（uniformly）用在所有 timestep、所有 DiT 层上，无法适应姿态变化带来的外观改变，也无法匹配不同层各自不同的注意力需求。</p>
+</div>
+
+为什么这两个限制在<strong>大姿态</strong>下被急剧放大？我们可以从特征与几何两端看。特征端，<a href="arcface-2018.html">ArcFace</a> 这类人脸识别 embedding 本质上是从训练分布里学出来的——正面与侧面可用像素差异巨大，侧脸输入时特征本身就会退化，这正是身份一致性评测（CSIM）在侧脸场景失效的底层原因之一。几何端，大姿态意味着当前帧与首帧参考的姿态差越拉越大，"抄首帧"这条捷径越来越不可靠。论文的实验也印证了这一点：ConsisID 在 VIP-Test（全身运动、人脸小且姿态多变）上 FaceSim-Arc 只有 0.269，全场垫底 #Wang et al., 2025#。
+
+数据侧同样有结构性缺陷。现有人体中心视频数据集要么面向动作（UCF101、NTU RGB+D），要么以骨架姿态为标注主体（OpenHumanVid，13.2M 视频），普遍缺乏大姿态覆盖、人脸质量过滤与跨帧身份一致性保障 #Wang et al., 2025# #Li et al., 2025#。换句话说，就算架构对了，喂给模型的数据也学不出姿态鲁棒的身份表示。
+
+那"多源互补"这个思路从哪来？论文给了一个很漂亮的实证起点：把 ArcFace、CLIP、DINOv2 三种特征分别注入生成器，观察它们在人脸上的 cross-attention 热图——ArcFace 聚焦眼睛、鼻子、嘴等姿态不变的五官结构；CLIP 关注发型、表情等高层语义区域；DINOv2 则铺在皮肤纹理与结构边缘上。三张热图几乎互补 #Wang et al., 2025#。这就是 CoFE 的直觉：与其赌一个特征全能，不如让三个各管一摊的专家协同工作。
+
+<div class="photo">
+  <img src="media/images/collaborative-face-experts-2025/cross_attn.webp" alt="不同专家的交叉注意力可视化：Identity (ArcFace)、Semantic (CLIP)、Detail (DINOv2) 与 CoFE 融合后的注意力分布" loading="lazy">
+  <div class="cap">图 2：不同专家的交叉注意力热图（暖色为注意力更强）。ArcFace 盯五官结构、CLIP 盯语义属性、DINOv2 盯细纹理，三者互补；CoFE 融合后的注意力覆盖三者（来源：Wang et al., 2025, Fig. cross_attn）。</div>
+</div>
+
+<div class="callout">
+  <strong>Insight：</strong>身份保持不是"找一个更强的特征"，而是"承认没有单一特征够强，让多个互补特征按需出场"。前者是 Arc2Face 一系的路线（用生成数据强化 ArcFace 的姿态覆盖），后者就是 CoFE 的路线。
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：CoFE 模块全解</div>
+
+CoFE（Collaborative Face Experts Fusion）是一个插在 DiT 底座上的即插模块，整体分四步：人脸预处理 → 三专家编码 → 逐层门控融合 → 三路 cross-attention 注入 #Wang et al., 2025#。我们先看整体架构图，再逐模块拆解。
+
+<div class="photo">
+  <img src="media/images/collaborative-face-experts-2025/overview_1114.webp" alt="CoFE 整体架构：三专家编码、共享投影、逐 DiT block 专家融合与门控、三路 cross-attention 注入" loading="lazy">
+  <div class="cap">图 3：CoFE 整体架构。人脸经 Identity/Semantic/Detail 三个编码器与共享投影层后，在每个 DiT block 内由专属专家精炼、门控加权融合，作为第三路 cross-attention 注入；火焰标记为可训练组件，雪花为冻结（来源：Wang et al., 2025, Fig. pipeline）。</div>
+</div>
+
+<h3 class="section-title">3.1 人脸预处理：先给专家一张干净的脸</h3>
+
+输入图像先经过一个 face preprocessor：RetinaFace 检测人脸框 #Deng et al., 2020#，face parsing 模型做人脸解析，得到裁剪、对齐且去除了背景的人脸区域图 #Wang et al., 2025#。这一步的意义在于让三个专家的输入"只有脸"——不被服装、背景干扰。一个自然的疑问是：为什么不用全身图直接编码？因为注入的目标本来就是人脸身份，让专家在无关区域上浪费容量（甚至被背景语义带偏）纯属浪费。
+
+<h3 class="section-title">3.2 三个面部专家：各管一摊</h3>
+
+预处理后的人脸分别送入三个预训练编码器 #Wang et al., 2025#：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>专家</th><th>编码器</th><th>捕获内容</th><th>注意力模式（图 2）</th></tr></thead>
+    <tbody>
+      <tr><td>Identity Expert（身份专家）</td><td><a href="arcface-2018.html">ArcFace</a> #Deng et al., 2019#</td><td>跨姿态不变的身份特征（cross-view consistency）</td><td>眼睛、鼻、嘴等姿态不变 landmark</td></tr>
+      <tr><td>Semantic Expert（语义专家）</td><td>CLIP #Radford et al., 2021#</td><td>高层视觉概念：发型、表情等</td><td>语义属性区域</td></tr>
+      <tr><td>Detail Expert（细节专家）</td><td>DINOv2 #Oquab et al., 2023#</td><td>像素级属性：皮肤纹理、颜色梯度</td><td>细粒度纹理与结构边缘</td></tr>
+    </tbody>
+  </table>
+</div>
+
+这个组合的巧思在于"分工即互补"：ArcFace 的训练目标决定了它对姿态变化最鲁棒，但牺牲了细节；DINOv2 的自监督表示细节最丰富，但没有人脸先验；CLIP 恰好补上"这是什么样的脸"的语义层。后面消融会量化验证这一点——单用任何一个都不如三者融合。
+
+<h3 class="section-title">3.3 共享投影 + 逐层专家：一次全局对齐，多次局部特化</h3>
+
+三个专家输出的特征（$\mathbf{f}_{\text{id}}, \mathbf{f}_{\text{sem}}, \mathbf{f}_{\text{det}}$）维度与语义空间各不相同，直接拼进 DiT 显然不行。CoFE 的做法分两级 #Wang et al., 2025#：
+
+- <strong>全局共享投影层</strong> $P_{\text{id}}, P_{\text{sem}}, P_{\text{det}}$：把三个特征投到与预训练 DiT block 兼容的统一特征空间，所有注入位置共享——保证跨层的一致性；
+- <strong>逐 DiT block 的专家层</strong> $\mathcal{E}^i_{\text{id}}, \mathcal{E}^i_{\text{sem}}, \mathcal{E}^i_{\text{det}}$：第 $i$ 个被注入的 block 各配三个专属专家做二次精炼——让每个 block 按自己在去噪中的角色特化。
+
+形式化地，第 $i$ 个 block 的专家精炼为：
+
+$$
+\mathbf{e}^i_\text{attr} = \mathcal{E}^i_\text{attr}\big(P_\text{attr}(\mathbf{f}_\text{attr})\big),\quad \text{attr} \in \{\text{id}, \text{sem}, \text{det}\}
+$$
+
+<h3 class="section-title">3.4 门控融合：让每个 block 自己决定听谁的</h3>
+
+这是全文最核心的设计。三个精炼特征拼接为 $\mathbf{e}^i_{\text{c}} = [\mathbf{e}^i_{\text{id}}, \mathbf{e}^i_{\text{sem}}, \mathbf{e}^i_{\text{det}}]$，一个可学习门控 $\mathcal{G}$（论文正文写 learnable MLP，架构图标注为 Linear → GeLU → Linear → Softmax）输出加权系数 #Wang et al., 2025#：
+
+$$
+\mathbf{w}^i = \text{Softmax}\big( \mathcal{G}(\mathbf{e}^i_{\text{c}}) \big)
+$$
+
+$$
+\mathbf{f}^i_{\text{fused}} = \mathbf{w}^i \cdot \mathbf{e}^i_c
+$$
+
+其中 $\mathbf{w}^i = [w^i_{\text{id}}, w^i_{\text{sem}}, w^i_{\text{det}}]$，三个权重和为 1。请注意这里的两个"动态"来源：其一，门控的输入是<strong>内容本身</strong>——正脸场景与侧脸场景、纹理丰富的脸与素颜的脸，会得到不同的权重组合；其二，每个 DiT block 有<strong>独立的门控</strong>——浅层 block 与深层 block 在去噪中承担的角色不同，需要的专家配比也不同。这与"静态注入"形成了根本对照：ConsisID 们把同一个特征以同一种方式用在所有层所有时刻，CoFE 则让权重随层、随内容自适应变化。
+
+<h3 class="section-title">3.5 三路 cross-attention 注入：人脸流与文本流、首帧流并行</h3>
+
+融合特征 $\mathbf{f}^i_{\text{fused}}$ 如何进入 DiT？答案是与既有两路并行、再加一路 #Wang et al., 2025#。DiT 的 cross-attention 原本有文本流（T5 编码的 prompt 提供 $\mathbf{k}^i_{\text{ctx}}, \mathbf{v}^i_{\text{ctx}}$）与首帧流（首帧 VAE 特征提供 $\mathbf{k}^i_{\text{img}}, \mathbf{v}^i_{\text{img}}$）；CoFE 增加人脸流：$\mathbf{f}^i_{\text{fused}}$ 经可学习矩阵投影出 $\mathbf{k}^i_{\text{fused}}, \mathbf{v}^i_{\text{fused}}$。三路共享同一个 query（视频潜变量 $\mathbf{q}^i$），输出直接相加：
+
+$$
+\begin{aligned}
+\mathbf{o}^i &= \text{attn}^i(\mathbf{q}^i, \mathbf{k}^{i}_{\text{ctx}}, \mathbf{v}^i_{\text{ctx}}) + \text{attn}^i(\mathbf{q}^i, \mathbf{k}^i_{\text{img}}, \mathbf{v}^i_{\text{img}}) \\
+&\quad + \text{attn}^i(\mathbf{q}^i, \mathbf{k}^i_{\text{fused}}, \mathbf{v}^i_{\text{fused}})
+\end{aligned}
+$$
+
+下面这张流程图把整个注入结构串起来：
+
+{{< mermaid >}}
+flowchart TB
+    A["输入首帧"] --> B["RetinaFace 检测 + Face Parsing<br/>裁剪对齐去背景"]
+    B --> C1["Identity Expert<br/>ArcFace"]
+    B --> C2["Semantic Expert<br/>CLIP"]
+    B --> C3["Detail Expert<br/>DINOv2"]
+    C1 --> D1["共享投影 P_id"]
+    C2 --> D2["共享投影 P_sem"]
+    C3 --> D3["共享投影 P_det"]
+    D1 --> E["DiT block i 专属专家<br/>E_id / E_sem / E_det"]
+    D2 --> E
+    D3 --> E
+    E --> F["拼接 + 门控 MLP<br/>Softmax 权重"]
+    F --> G["融合特征 f_fused^i"]
+    H["文本 prompt（T5）"] --> K["k_ctx / v_ctx"]
+    I["首帧 VAE 特征"] --> L["k_img / v_img"]
+    G --> M["k_fused / v_fused"]
+    K --> N["三路 cross-attention<br/>输出相加"]
+    L --> N
+    M --> N
+    N --> O["更新视频潜变量<br/>（偶数层注入，DiT 其余冻结）"]
+    style G fill:#fff3cd,stroke:#e6a817
+    style N fill:#e8f4fd,stroke:#4a90d9
+{{< /mermaid >}}
+
+最后是工程取舍：CoFE 只注入<strong>偶数编号</strong>的 DiT block（与 VACE 的做法一致 #Jiang et al., 2025#），在能力与效率间取平衡——参数增量只有 18.5% #Wang et al., 2025#。底座选了两个型号：Wan2.1-I2V-1.3B 与 Wan2.2-TI2V-5B #Wan et al., 2025#，这也让"小底座 + CoFE 能不能打大底座"成为一个可检验的问题（Part 6 给出答案）。
+
+<div class="callout">
+  <strong>设计哲学小结：</strong>全局共享投影保一致性（所有层看到的是同一组对齐特征），逐层专家 + 门控保灵活性（每层按需特化），并行三流保解耦（人脸信号不与文本/首帧信号互相挤压）。这套"共享-特化-解耦"三件套是模块化条件注入的一个干净范例。
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：LaFID-180K 数据炼金术</div>
+
+如果说 CoFE 模块回答"怎么注入"，那 LaFID-180K（<strong>La</strong>rge <strong>F</strong>ace Pose for <strong>I</strong>dentity <strong>P</strong>reservation <strong>D</strong>ataset）回答"拿什么学"。论文的立场很明确：架构与数据是同一个问题的两面，大姿态身份保持必须配大姿态数据。
+
+<h3 class="section-title">4.1 数据集构成</h3>
+
+LaFID-180K 由 OpenHumanVid（CVPR 2025 的大规模人体数据集）加上自采高质量视频清洗而来 #Wang et al., 2025# #Li et al., 2025#：180K 条短片，时长 2–6 秒，分辨率 720P–1080P，每条配 45–75 词的精细 caption（显式标注说话状态与外观属性）。与现有数据集的对比一目了然：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>数据集</th><th>领域</th><th>视频量</th><th>标注</th><th>分辨率</th><th>身份一致?</th><th>身份聚类?</th></tr></thead>
+    <tbody>
+      <tr><td>Koala-36M #Wang et al., 2025b#</td><td>开放域</td><td>36M</td><td>—</td><td>720P</td><td>✗</td><td>✗</td></tr>
+      <tr><td>OpenHumanVid #Li et al., 2025#</td><td>人体</td><td>13.2M</td><td>骨架姿态</td><td>720P</td><td>✗</td><td>✗</td></tr>
+      <tr><td><strong>LaFID-180K</strong></td><td>人体</td><td>180K</td><td>骨架姿态 + <strong>3D 人脸姿态</strong></td><td>720P / 1080P</td><td><strong>✓</strong></td><td><strong>✓</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+注意那个反差：13.2M 的 OpenHumanVid 清洗后进入 LaFID 的只有 180K 量级的片段——数十倍的压缩比本身就是论文的核心主张之一：身份保持训练要的不是更多数据，而是<strong>每一条都过筛</strong>的数据。
+
+<h3 class="section-title">4.2 三段式数据管线</h3>
+
+清洗管线分三步，每步都有明确阈值 #Wang et al., 2025#：
+
+<div class="photo">
+  <img src="media/images/collaborative-face-experts-2025/data_process_2.webp" alt="LaFID-180K 数据处理管线：Face Constraints Filtering、Identity Consistency Analysis、Speech Disambiguation" loading="lazy">
+  <div class="cap">图 4：LaFID-180K 数据处理管线总览（来源：Wang et al., 2025, Fig. datapipeline）。</div>
+</div>
+
+<strong>第一步 · Face Constraints Filtering（人脸约束过滤）。</strong>每 3 帧采样 1 帧做人脸检测与姿态估计，执行三条硬约束：(i) 人脸数——任何采样帧出现无脸或多脸即整条剔除，保证单人连续；(ii) 人脸占比——人脸框占比低于 10% 的剔除，保证人脸细节可学；(iii) 姿态多样性——只保留有大姿态变化（极端 pitch/yaw/roll）的视频 #Wang et al., 2025#。
+
+<strong>第二步 · Identity Consistency Analysis（身份一致性分析）。</strong>用 ArcFace 逐帧提特征，计算 clip 内两两余弦相似度的平均值 $\overline{s}$，$\overline{s} \leq 0.6$ 的整条丢弃 #Wang et al., 2025#：
+
+$$
+\text{sim}(\mathbf{d}_i, \mathbf{d}_j) = \frac{\mathbf{d}_i \cdot \mathbf{d}_j}{\|\mathbf{d}_i\| \|\mathbf{d}_j\|} \quad (i \neq j)
+$$
+
+再用 FAISS 的 IVF-PQ 索引在 ArcFace 空间做两阶段层次聚类——高阈值先形成紧身份簇，低阈值回收弱相关的同身份样本——以此保证训练与测试身份完全不相交 #Douze et al., 2024# #Wang et al., 2025#。这一步对评测公正性至关重要：如果测试身份在训练里出现过，FaceSim 的高分可能是"背题"而非"认人"。
+
+<strong>第三步 · Speech Disambiguation（说话消歧）。</strong>这是全文最容易被忽视、但消融显示最值钱的创新之一。动机：LaFID 主要来自 OpenHumanVid 的影视素材，大量视频里人物嘴唇在动，caption 却没写"他在说话"。模型学到这种错位后，会在与说话无关的 prompt 下生成"永远在动嘴"的视频。解法两步：whisper 检测音频中是否真有语音、且与主体唇动对齐 #Radford et al., 2023#；若 caption 缺少说话描述，用 LLM（Qwen/Llama 类）追加一句语境化描述（如 "The man is talking."）#Wang et al., 2025#。
+
+<h3 class="section-title">4.3 训练配置与一个反直觉 trick</h3>
+
+训练只更新 CoFE 模块新增参数，DiT 底座其余部分全部冻结 #Wang et al., 2025#。另有一个针对"copy-paste 捷径"的对策值得注意：对帧数超出训练窗口的 clip，把<strong>非训练帧</strong>的人脸特征也并入输入——模型在训练时就见惯了"参考人脸姿态 ≠ 当前帧姿态"的情况，推理时大姿态才不至于把首帧特征生搬硬套 #Wang et al., 2025#。
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>训练数据</td><td>已披露</td><td>LaFID-180K（180K 片段，2–6s，720P–1080P）</td></tr>
+      <tr><td>训练硬件</td><td>未披露</td><td>原文未给出 GPU 型号与数量</td></tr>
+      <tr><td>优化器</td><td>已披露</td><td>Adam（β 参数未给出）</td></tr>
+      <tr><td>学习率</td><td>已披露</td><td>1e-5（schedule / warmup 未给出）</td></tr>
+      <tr><td>Batch size</td><td>已披露</td><td>256（全局/per-GPU 口径未说明）</td></tr>
+      <tr><td>训练步数</td><td>已披露</td><td>4,000 iterations</td></tr>
+      <tr><td>训练时长</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>模型参数量</td><td>部分披露</td><td>底座 Wan2.1-I2V-1.3B / Wan2.2-TI2V-5B；CoFE 增量 +18.5%</td></tr>
+      <tr><td>精度格式</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>训练帧数范围</td><td>已披露</td><td>49–129 帧，aspect ratio bucketing，最小 480p</td></tr>
+    </tbody>
+  </table>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：一次生成里发生了什么</div>
+
+推理时，CoFE 的链路可以完整走一遍 #Wang et al., 2025#：
+
+<strong>输入准备。</strong>用户提供首帧图像（含目标人脸）与文本 prompt。首帧经 RetinaFace + face parsing 得到对齐人脸图；prompt 经 T5 编码为文本序列；首帧整图经 VAE 编码为图像潜变量。
+
+<strong>特征计算（一次性前置）。</strong>对齐人脸并行通过 ArcFace、CLIP、DINOv2 三个编码器得到 $\mathbf{f}_{\text{id}}, \mathbf{f}_{\text{sem}}, \mathbf{f}_{\text{det}}$，再过共享投影层。注意这一步与去噪步数无关——三个专家特征只算一次，之后每个去噪步复用。
+
+<strong>迭代去噪（每个 timestep）。</strong>视频潜变量在 DiT block 间流转。在每个被注入的偶数 block：投影后特征先经该 block 专属的三个专家精炼，拼接后过门控 MLP 得到权重，加权求和出 $\mathbf{f}^i_{\text{fused}}$，投影成第三路 K/V，与文本流、首帧流的 cross-attention 输出相加。由于门控权重依赖当前特征（而非 timestep 的显式输入），同一视频内不同 block、不同内容下权重各不相同。论文未披露推理采样器与步数（原文未明确给出）。
+
+<strong>解码输出。</strong>去噪完成的潜变量经 VAE 解码为视频帧序列。
+
+<h3 class="section-title">评测协议与两个基准</h3>
+
+评测沿用 <a href="consisid-2024.html">ConsisID</a> 协议 #Yuan et al., 2025# #Wang et al., 2025#：身份保持用 FaceSim-Arc（ArcFace 余弦相似度）与 FaceSim-Cur（CurricularFace）#Deng et al., 2019# #Huang et al., 2020#；文本相关性用 CLIP-Score；人脸保真用 FID；整体质量用 VBench 的四个子项——美学质量 AQ、成像质量 IQ、时序闪烁 TF、运动平滑 MS #Huang et al., 2024#。
+
+两个测试集分工明确 #Wang et al., 2025#：
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>基准</th><th>来源</th><th>构成</th><th>考察点</th></tr></thead>
+    <tbody>
+      <tr><td><strong>LaFID-Bench</strong></td><td>LaFID-180K held-out 身份</td><td>50 个身份 × 4 prompt，全部大姿态（极端 yaw/pitch）</td><td>大姿态身份保持（论文新设）</td></tr>
+      <tr><td><strong>VIP-Test</strong>（含 SDXL 参考图子集）</td><td>IPVG Challenge #VIP-Test, 2025#</td><td>50 身份 × 4 prompt，全身动态运动</td><td>泛化：小脸、时序不稳的全身场景</td></tr>
+    </tbody>
+  </table>
+</div>
+
+顺带一提，这个双基准设计本身值得借鉴：一个"专测你声称解决的场景"（大姿态），一个"测你没专门优化的场景"（全身运动）——后者防止方法只是过拟合到人脸特写。
+
+<div class="admonition info">
+  <div class="admonition-title">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+    指标口径提醒
+  </div>
+  <div class="admonition-content"><p>FaceSim 是"生成帧 vs 首帧参考"的 ArcFace/CurricularFace 余弦相似度，度量的是相对参考的身份保持而非绝对身份正确性；FID 度量人脸分布距离。二者都不直接覆盖口型同步与动作自然度（本文无音频输入，不涉及音画同步），长时稳定性依赖 TF/MS 侧面反映。评价身份类工作时建议交叉核对多指标，本系列 <a href="paper-hunyuan-avatar.html">HunyuanVideo-Avatar</a> 一篇对音画同步类指标有更多讨论。</p></div>
+</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：数字会说话</div>
+
+<h3 class="section-title">6.1 实验配置</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td>评测数据集</td><td>已披露</td><td>LaFID-Bench（50 身份 × 4 prompt，大姿态）+ VIP-Test（50 × 4）</td></tr>
+      <tr><td>评测指标</td><td>已披露</td><td>FaceSim-Arc↑ / FaceSim-Cur↑ / CLIP-Score↑ / FID↓ / AQ·IQ·TF·MS↑</td></tr>
+      <tr><td>Baseline 方法</td><td>已披露</td><td>CogVideoX-5B、LTX-2B、ConsisID、Wan2.1-I2V-1.3B、Wan2.2-TI2V-5B</td></tr>
+      <tr><td>推理硬件</td><td>未披露</td><td>原文未给出</td></tr>
+      <tr><td>推理分辨率</td><td>部分披露</td><td>训练最小 480p（bucketing 多分辨率），评测具体分辨率未逐一给出</td></tr>
+      <tr><td>推理环境</td><td>未披露</td><td>采样器/步数/框架版本未给出</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3 class="section-title">6.2 主实验：大姿态基准 LaFID-Bench</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方法</th><th>FaceSim-Arc↑</th><th>FaceSim-Cur↑</th><th>CLIP↑</th><th>FID↓</th><th>AQ↑</th><th>IQ↑</th><th>TF↑</th><th>MS↑</th></tr></thead>
+    <tbody>
+      <tr><td>CogVideoX-5B</td><td>0.629</td><td>0.636</td><td>29.331</td><td>104.214</td><td>0.499</td><td>0.598</td><td>0.976</td><td>0.986</td></tr>
+      <tr><td>LTX-2B</td><td>0.438</td><td>0.440</td><td>28.800</td><td>151.773</td><td>0.513</td><td>0.581</td><td>0.980</td><td>0.992</td></tr>
+      <tr><td>ConsisID</td><td>0.567</td><td>0.573</td><td><strong>31.184</strong></td><td>123.967</td><td>0.560</td><td>0.670</td><td>0.979</td><td>0.990</td></tr>
+      <tr><td>Wan2.1-I2V-1.3B</td><td>0.654</td><td>0.656</td><td>29.200</td><td>72.322</td><td>0.553</td><td>0.660</td><td>0.989</td><td>0.993</td></tr>
+      <tr><td>Wan2.1 w/ CoFE</td><td>0.770</td><td>0.775</td><td>29.125</td><td><strong>63.799</strong></td><td>0.570</td><td>0.673</td><td>0.990</td><td>0.994</td></tr>
+      <tr><td>Wan2.2-TI2V-5B</td><td>0.776</td><td>0.786</td><td>28.761</td><td>76.728</td><td>0.588</td><td>0.666</td><td>0.995</td><td>0.996</td></tr>
+      <tr><td><strong>Wan2.2 w/ CoFE</strong></td><td><strong>0.814</strong></td><td><strong>0.827</strong></td><td>28.729</td><td>70.727</td><td><strong>0.591</strong></td><td><strong>0.669</strong></td><td><strong>0.996</strong></td><td><strong>0.996</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+读数要点 #Wang et al., 2025#：其一，Wan2.1 加 CoFE 后 FaceSim-Arc 从 0.654 涨到 0.770（+0.116），FID 从 72.322 降到 63.799——一个 1.3B 模型加装约 18.5% 参数的模块后，身份分数已逼近裸的 5B 模型（0.776）。其二，5B 模型加 CoFE 依然有 +0.038（0.776→0.814）与 FID 降 6（76.728→70.727）的空间，说明强底座与显式身份先验并不冗余。其三，ConsisID 拿了全场最高 CLIP-Score（31.184）但 FaceSim 只有 0.567——论文的解释是它过度聚焦人脸对齐反而生成模糊畸变脸，文本跟随与身份保持存在张力。
+
+<h3 class="section-title">6.3 主实验：全身运动场景 VIP-Test</h3>
+
+<div class="table-wrap wide">
+  <table>
+    <thead><tr><th>方法</th><th>FaceSim-Arc↑</th><th>FaceSim-Cur↑</th><th>CLIP↑</th><th>FID↓</th><th>AQ↑</th><th>IQ↑</th><th>TF↑</th><th>MS↑</th></tr></thead>
+    <tbody>
+      <tr><td>CogVideoX-5B</td><td>0.462</td><td>0.474</td><td>28.947</td><td>163.001</td><td>0.512</td><td>0.585</td><td>0.926</td><td>0.948</td></tr>
+      <tr><td>LTX-2B</td><td>0.301</td><td>0.323</td><td>28.403</td><td>203.516</td><td>0.510</td><td>0.586</td><td>0.944</td><td>0.975</td></tr>
+      <tr><td>ConsisID</td><td>0.269</td><td>0.289</td><td>29.601</td><td>206.924</td><td>0.566</td><td>0.638</td><td>0.946</td><td>0.976</td></tr>
+      <tr><td>Wan2.1-I2V-1.3B</td><td>0.471</td><td>0.480</td><td>29.825</td><td>129.116</td><td>0.554</td><td>0.659</td><td>0.940</td><td>0.967</td></tr>
+      <tr><td>Wan2.1 w/ CoFE</td><td>0.502</td><td>0.510</td><td><strong>30.167</strong></td><td>126.676</td><td>0.558</td><td><strong>0.679</strong></td><td>0.947</td><td>0.971</td></tr>
+      <tr><td>Wan2.2-TI2V-5B</td><td>0.541</td><td>0.552</td><td>29.819</td><td>125.893</td><td>0.574</td><td>0.667</td><td>0.934</td><td>0.964</td></tr>
+      <tr><td><strong>Wan2.2 w/ CoFE</strong></td><td><strong>0.605</strong></td><td><strong>0.615</strong></td><td>29.834</td><td><strong>113.850</strong></td><td><strong>0.583</strong></td><td>0.668</td><td><strong>0.948</strong></td><td><strong>0.979</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+VIP-Test 上最有信息量的对比是 ConsisID 的 0.269：一个在人脸对齐基准上表现尚可的模型，到了"人脸小、姿态杂"的全身场景直接崩盘（连 CogVideoX 裸模型的 0.462 都远不如）#Wang et al., 2025#。需要公平地说，这里面有底座差异的混淆因素——ConsisID 基于 CogVideoX 训练，裸 CogVideoX 本身也只有 0.462，不能把差距全归因于其人脸特征的"2D 姿态错配"。CoFE 在 Wan2.2 上拿到 0.605（+0.064）、FID 降约 12（125.893→113.850），说明<strong>与全身运动解耦的局部人脸先验，在小脸场景依然有效</strong>——这是论文最重要的泛化性证据 #Wang et al., 2025#。
+
+<h3 class="section-title">6.4 消融一：融合策略——门控到底值多少</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>注入策略（Wan2.1 底座，LaFID-Bench）</th><th>FaceSim-Arc↑</th><th>FaceSim-Cur↑</th><th>CLIP↑</th><th>FID↓</th></tr></thead>
+    <tbody>
+      <tr><td>基线（无注入）</td><td>0.654</td><td>0.656</td><td>29.200</td><td>72.322</td></tr>
+      <tr><td>仅 Identity Expert（ArcFace）</td><td>0.661</td><td>0.665</td><td><strong>29.402</strong></td><td>80.305</td></tr>
+      <tr><td>仅 Semantic Expert（CLIP）</td><td>0.681</td><td>0.684</td><td>29.181</td><td>73.702</td></tr>
+      <tr><td>仅 Detail Expert（DINOv2）</td><td>0.672</td><td>0.675</td><td>29.079</td><td>75.467</td></tr>
+      <tr><td>三专家朴素拼接（Concat）</td><td>0.732</td><td>0.735</td><td>29.143</td><td><strong>63.418</strong></td></tr>
+      <tr><td><strong>CoFE（门控融合）</strong></td><td><strong>0.770</strong></td><td><strong>0.775</strong></td><td>29.125</td><td>63.799</td></tr>
+    </tbody>
+  </table>
+</div>
+
+这张表的信息密度很高 #Wang et al., 2025#：单专家各有提升但各有短板——ArcFace 缺眼型等细节且 FID 反而恶化到 80.305（纯身份特征注入有画质代价），CLIP 肤色不稳，DINOv2 大姿态下轮廓模糊；朴素拼接已能到 0.732（多源信息的价值大头）；门控再拿到 +0.038 到 0.770。同一个消融在 Wan2.2 底座上规律复现且更干净：Concat 0.805 → CoFE 0.814，FID 从 74.323 降到 70.727 #Wang et al., 2025#。
+
+<div class="callout">
+  <strong>关键发现：</strong>"多源"贡献了从 0.654 到 0.732 的大部分增益，"自适应"再贡献 0.732→0.770——两者是叠加关系而非替代关系。只做拼接（很多工程实现止步于此）会白白丢掉最后一截，但指望门控单独撑起提升也不现实。
+</div>
+
+<h3 class="section-title">6.5 消融二：数据管线——写清楚"他在说话"值 2.4 个 FID</h3>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>训练数据（Wan2.2 w/ CoFE）</th><th>FaceSim-Arc↑</th><th>FaceSim-Cur↑</th><th>CLIP↑</th><th>FID↓</th></tr></thead>
+    <tbody>
+      <tr><td>OpenHumanVid 原始子集</td><td>0.801</td><td>0.813</td><td>28.659</td><td>75.578</td></tr>
+      <tr><td>LaFID 去掉 Speech Disambiguation</td><td>0.807</td><td>0.816</td><td>28.634</td><td>73.128</td></tr>
+      <tr><td><strong>LaFID 完整管线</strong></td><td><strong>0.814</strong></td><td><strong>0.827</strong></td><td><strong>28.729</strong></td><td><strong>70.727</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+姿态过滤把 FID 从 75.578 拉到 73.128，Speech Disambiguation 再从 73.128 拉到 70.727 #Wang et al., 2025#。换句话说，<strong>仅"在 caption 里写清楚人在不在说话"这一项标注修正，就值 2.4 个 FID 点</strong>外加 0.007 的 FaceSim——数据标注质量对生成模型的影响，在这里被量化得明明白白。
+
+<h3 class="section-title">6.6 定性结果与失败模式</h3>
+
+<div class="photo">
+  <img src="media/images/collaborative-face-experts-2025/visual_abla_0731.webp" alt="CoFE 与其他人脸特征注入方法的定性对比，大角度姿态变化序列" loading="lazy">
+  <div class="cap">图 5：融合策略消融的定性对比——大角度变化序列中各注入策略的身份保持表现（来源：Wang et al., 2025, Fig. abla）。</div>
+</div>
+
+定性层面论文报告的失败模式（各 baseline 的）：ConsisID 给侧脸参考时正面细节渲染差；CogVideoX 与 Wan2.2 在大幅转头时身份漂移畸变；LTX-Video 帧不稳定、模糊、丢细节 #Wang et al., 2025# #HaCohen et al., 2024#。CoFE 自身的短板从表格也能读出：CLIP-Score 从未拿到最佳（LaFID-Bench 上 28.729 vs ConsisID 的 31.184），强人脸先验注入与文本跟随之间存在可察觉的张力。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：在地图上的位置</div>
+
+把 CoFE 放回身份保持视频生成的演进线上，它的位置很清楚：ID-Animator 确立 tuning-free 路线 #He et al., 2024#，<a href="consisid-2024.html">ConsisID</a> 把频率分解的人脸特征引入 DiT #Yuan et al., 2025#，FantasyID 加 3D 人脸先验 #Zhang et al., 2025#，VACE 与 SkyReels-A2 走 reference branch #Jiang et al., 2025# #Fei et al., 2025#——这些注入方案都是静态的；CoFE 的卡位就是<strong>"从静态注入到逐层动态门控"的范式转变</strong>，外加把"大姿态"从隐含场景升格为显式评测对象（LaFID-Bench）#Wang et al., 2025#。与同期用强化学习优化人脸细节训练的 IPRO 路线 #Wang et al., 2025#，两者正交、理论上可叠加。
+
+局限也要看清楚。第一，<strong>单人限定</strong>：多人场景会产生身份干扰，源码注释中作者自述 future work 是用 mask 分割做逐人特征注入——多人身份保持仍是开放问题。第二，<strong>评测口径</strong>：FaceSim 仍是相对首帧的 2D 相似度，"侧脸生成侧脸"时参考本身信息量就低，0.814 的绝对含义要打折理解。第三，<strong>开源不完整</strong>：截至本篇撰写，官方仓库只开源了数据处理管线（含 calc_face_info.py、speech_disambiguation.py 等脚本与 Data List），CoFE 模块代码与模型权重均未发布，社区复现只能照论文公式自行实现 #Wang et al., 2025#。
+
+可带走的启发有三条：
+
+1. <strong>互补优于更强。</strong>大姿态下身份一致性的瓶颈不在"特征不够强"而在"单一特征覆盖不了"，CoFE 用三专家 + 门控绕开了单特征的姿态盲区——这个思路对任何"单模态特征在分布边缘失效"的问题都适用。
+2. <strong>数据标注是被低估的杠杆。</strong>Speech Disambiguation 的 2.4 FID 增益提醒我们：生成模型会忠实地学习数据里的错位标注。花在"把 caption 写对"上的功夫，回报可能不亚于架构创新。
+3. <strong>评测要为场景定制。</strong>LaFID-Bench 的价值在于把"大姿态"变成可复现的评测协议。做数字人产品的团队完全可以照这个配方（50 身份 × 4 prompt × 极端姿态）自建内部基准，避免"正脸测试全绿、侧脸上线翻车"。
+
+<div class="review-box">
+  <h3>速查卡</h3>
+  <ul>
+    <li><strong>方法名</strong>：v1 = MoFE（Mixture of Facial Experts）→ v4 = CoFE（Collaborative Face Experts Fusion），同一方法</li>
+    <li><strong>三专家</strong>：ArcFace（身份）+ CLIP（语义）+ DINOv2（细节），逐（偶数）DiT block 门控融合，第三路 cross-attention 注入</li>
+    <li><strong>核心公式</strong>：$\mathbf{w}^i = \text{Softmax}(\mathcal{G}([\mathbf{e}^i_{\text{id}}, \mathbf{e}^i_{\text{sem}}, \mathbf{e}^i_{\text{det}}]))$，$\mathbf{f}^i_{\text{fused}} = \mathbf{w}^i \cdot \mathbf{e}^i_c$</li>
+    <li><strong>关键数字</strong>：Wan2.2+CoFE FaceSim-Arc 0.814 / FID 70.727（LaFID-Bench）；参数增量 +18.5%；训练 4,000 iter × bs 256 × lr 1e-5</li>
+    <li><strong>数据资产</strong>：LaFID-180K（180K 片段，2–6s，3D 人脸姿态标注）；管线阈值：人脸占比 ≥10%、身份相似度 &gt;0.6、1/3 帧采样</li>
+  </ul>
+</div>
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Wang-et-al.-2025">Wang, Y. et al. (2025). Collaborative Face Experts Fusion in Video Generation: Boosting Identity Consistency Across Large Face Poses. arXiv:2508.09476（v1 2025-08，v4 2025-12；v1 曾用名 MoFE）. <a href="https://arxiv.org/abs/2508.09476" target="_blank">arXiv:2508.09476</a> · <a href="https://rain152.github.io/CoFE/" target="_blank">项目页</a> · <a href="https://github.com/rain152/LFA-Video-Generation" target="_blank">代码（数据管线）</a></li>
+    <li data-cite-key="Wan-et-al.-2025">Wan, Z. et al. (2025). Wan: Open and Advanced Large-Scale Video Generative Models. arXiv:2503.20314. <a href="https://arxiv.org/abs/2503.20314" target="_blank">arXiv:2503.20314</a></li>
+    <li data-cite-key="Yuan-et-al.-2025">Yuan, P. et al. (2025). Identity-Preserving Text-to-Video Generation by Frequency Decomposition (ConsisID). CVPR 2025. <a href="https://arxiv.org/abs/2411.17440" target="_blank">arXiv:2411.17440</a> · <a href="consisid-2024.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Jiang-et-al.-2025">Jiang, T. et al. (2025). VACE: All-in-One Video Creation and Editing. arXiv:2503.07598. <a href="https://arxiv.org/abs/2503.07598" target="_blank">arXiv:2503.07598</a></li>
+    <li data-cite-key="Li-et-al.-2025">Li, X. et al. (2025). OpenHumanVid: A Large-Scale High-Quality Dataset for Enhancing Human-Centric Video Generation. CVPR 2025. <a href="https://arxiv.org/abs/2503.01833" target="_blank">arXiv:2503.01833</a></li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, J. et al. (2019). ArcFace: Additive Angular Margin Loss for Deep Face Recognition. CVPR 2019. <a href="https://arxiv.org/abs/1801.07698" target="_blank">arXiv:1801.07698</a> · <a href="arcface-2018.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Radford-et-al.-2021">Radford, A. et al. (2021). Learning Transferable Visual Models From Natural Language Supervision (CLIP). ICML 2021. <a href="https://arxiv.org/abs/2103.00020" target="_blank">arXiv:2103.00020</a></li>
+    <li data-cite-key="Oquab-et-al.-2023">Oquab, M. et al. (2023). DINOv2: Learning Robust Visual Features Without Supervision. arXiv:2304.07193. <a href="https://arxiv.org/abs/2304.07193" target="_blank">arXiv:2304.07193</a></li>
+    <li data-cite-key="Deng-et-al.-2020">Deng, J. et al. (2020). RetinaFace: Single-Shot Multi-Level Face Localisation in the Wild. CVPR 2020. <a href="https://arxiv.org/abs/1905.00641" target="_blank">arXiv:1905.00641</a></li>
+    <li data-cite-key="Zhang-et-al.-2025">Zhang, Y. et al. (2025). FantasyID: Face Knowledge Enhanced ID-Preserving Video Generation. arXiv:2502.13995. <a href="https://arxiv.org/abs/2502.13995" target="_blank">arXiv:2502.13995</a></li>
+    <li data-cite-key="Fei-et-al.-2025">Fei, H. et al. (2025). SkyReels-A2: Compose Anything in Video Diffusion Transformers. arXiv:2504.02436. <a href="https://arxiv.org/abs/2504.02436" target="_blank">arXiv:2504.02436</a></li>
+    <li data-cite-key="He-et-al.-2024">He, C. et al. (2024). ID-Animator: Zero-Shot Identity-Preserving Human Video Generation. arXiv:2404.15275. <a href="https://arxiv.org/abs/2404.15275" target="_blank">arXiv:2404.15275</a></li>
+    <li data-cite-key="Yang-et-al.-2024">Yang, Z. et al. (2024). CogVideoX: Text-to-Video Diffusion Models with An Expert Transformer. arXiv:2408.06072. <a href="https://arxiv.org/abs/2408.06072" target="_blank">arXiv:2408.06072</a></li>
+    <li data-cite-key="HaCohen-et-al.-2024">HaCohen, N. et al. (2024). LTX-Video: Realtime Video Latent Diffusion. arXiv:2501.00103. <a href="https://arxiv.org/abs/2501.00103" target="_blank">arXiv:2501.00103</a></li>
+    <li data-cite-key="Huang-et-al.-2024">Huang, Z. et al. (2024). VBench: Comprehensive Benchmark Suite for Video Generative Models. CVPR 2024. <a href="https://arxiv.org/abs/2311.17982" target="_blank">arXiv:2311.17982</a></li>
+    <li data-cite-key="Huang-et-al.-2020">Huang, Y. et al. (2020). CurricularFace: Adaptive Curriculum Learning Loss for Deep Face Recognition. CVPR 2020. <a href="https://arxiv.org/abs/2004.00288" target="_blank">arXiv:2004.00288</a></li>
+    <li data-cite-key="Radford-et-al.-2023">Radford, A. et al. (2023). Robust Speech Recognition via Large-Scale Weak Supervision (Whisper). ICML 2023. <a href="https://arxiv.org/abs/2212.04356" target="_blank">arXiv:2212.04356</a></li>
+    <li data-cite-key="Douze-et-al.-2024">Douze, M. et al. (2024). The FAISS Library. arXiv:2401.08281. <a href="https://arxiv.org/abs/2401.08281" target="_blank">arXiv:2401.08281</a></li>
+    <li data-cite-key="Wang-et-al.-2025b">Wang, T. et al. (2025). Koala-36M: A Large-Scale Video Dataset Improving Consistency Between Fine-Grained Conditions and Video Content. CVPR 2025. <a href="https://arxiv.org/abs/2410.08634" target="_blank">arXiv:2410.08634</a></li>
+    <li data-cite-key="VIP-Test-2025">HiDream-ai (2025). Identity-Preserving Video Generation Challenge (VIP-Test / VIP-200K). <a href="https://hidream-ai.github.io/ipvg-challenge.github.io/" target="_blank">Challenge 页面</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <a class="nav-card nav-prev" href="consisid-2024.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（六十三）：ConsisID</span></a>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+  <a class="nav-card nav-next" href="arc2face-2024.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">数字人论文精读（六十五）：Arc2Face</span></a>
+</div>

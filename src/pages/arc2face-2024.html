@@ -1,0 +1,416 @@
+---
+title: "数字人论文精读（六十五）：Arc2Face，把 ArcFace 身份嵌入直接变成生成条件"
+description: "ECCV 2024 Oral：InsightFace 系团队把 ArcFace 的 512 维身份嵌入当唯一生成条件，用 GFPGAN 恢复的 2100 万张 WebFace42M 人脸把 SD v1.5 改造成 ID-to-Face 基础模型——它既是 CSIM 度量合理性的正面证据，也标出了 CSIM 天花板的位置"
+date: 2026-09-01T09:00:00
+created_at: 2026-09-01T09:00:00
+updated_at: 2026-09-03T15:27:06
+tags: [数字人, 论文精读, 身份一致性, ArcFace, 人脸生成]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 650
+notify: false
+papers: ["https://arxiv.org/abs/2403.11641"]
+repos: ["https://github.com/foivospar/Arc2Face"]
+mathjax: true
+hero_title: "Arc2Face"
+hero_sub: "ECCV 2024 Oral · Imperial College London × FAU Erlangen–Nürnberg"
+hero_tagline: "把 ArcFace 的 512 维身份嵌入当唯一生成条件：纯 ID、无文本、2100 万张恢复人脸训练的 ID-to-Face 基础模型"
+paper_title: "Arc2Face: A Foundation Model for ID-Consistent Human Faces"
+paper_authors: "Foivos Paraperas Papantoniou, Alexandros Lattas, Stylianos Moschoglou, Jiankang Deng, Bernhard Kainz, Stefanos Zafeiriou"
+paper_affiliation: "Imperial College London；FAU Erlangen–Nürnberg（InsightFace 团队）"
+paper_venue: "ECCV 2024（Oral）"
+paper_url: "https://arxiv.org/abs/2403.11641"
+paper_code: "开源：github.com/foivospar/Arc2Face；权重托管于 HuggingFace FoivosPar/Arc2Face"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">~0.85</span><span class="label">未见 ID 的 CSIM 峰值</span></div>
+  <div class="stat"><span class="num b">71%</span><span class="label g">用户研究胜过 InstantID</span></div>
+  <div class="stat"><span class="num">21M</span><span class="label">恢复训练图 / 1M 身份</span></div>
+  <div class="stat"><span class="num b">91.73</span><span class="label l">合成数据 FR 平均验证率</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1</div>
+  <div class="ch-title">引言：当"考官"亲自下场画画</div>
+
+  如果你读过本系列的 <a href="arcface-2018.html">ArcFace 深度解读</a>，你会记得那篇论文做的事情：把一张人脸压成一个 512 维向量，让同一个人的向量互相靠近、不同人的向量按角度间隔分开。此后整个数字人行业都在用这个向量当<strong>考官</strong>——算生成脸和参考脸的余弦相似度（CSIM），得分高就判"身份保持得好"。考官只管打分，不管画画：它见过这张脸，却说不出这张脸长什么样。
+
+  Arc2Face 做的事情一句话就能讲完：<strong>让考官把脸画出来</strong>。给定任意一张人脸的 ArcFace 嵌入——注意，只有这 512 个数字，没有原图、没有文本描述——模型能生成这个人在各种姿态、表情、光照、场景下的高质量照片 #Paraperas Papantoniou et al., 2024#。如果 512 维向量真的足以重建出这个人的脸，那就从生成侧证明了：FR 嵌入确实编码了"足以唯一刻画一张人脸"的身份信息。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/teaser.webp" alt="Arc2Face teaser：输入图提取 ArcFace ID 向量后批量生成同一人的多样人脸，右半为 ControlNet 姿态表情控制" loading="lazy">
+    <div class="cap">图 1：从输入图提取 ArcFace ID 向量（左），Arc2Face 批量生成同一人的多样人脸（中）；配合 ControlNet 还能显式控制姿态与表情（右）（来源：Paraperas Papantoniou et al., 2024, Fig. 1）。</div>
+  </div>
+
+  这篇论文对"数字人/视频生成中的身份一致性"这个主题有一层特殊意义。我们的调研一直围绕 CSIM 的缺陷展开——它被 illumination、妆容、姿态干扰，它对人脸细节麻木，它会被对抗样本欺骗。Arc2Face 提供的是一枚硬币的两面：<strong>正面</strong>，它证明 ArcFace 嵌入包含足够还原整张脸的信息，所以拿 CSIM 当身份一致性度量是有信息论基础的；<strong>反面</strong>，模型作者自己承认生成能力"受限于人脸嵌入编码器（ArcFace）的容量" #Paraperas Papantoniou et al., 2024#——你能生成出来的上限，就是嵌入能表达的上限。CSIM 的天花板，就埋在这篇论文的 Limitations 一节里。
+
+  这是一篇 ECCV 2024 <strong>口头报告</strong>论文，来自 Imperial College London 的 Zafeiriou 组与 FAU Erlangen–Nürnberg，作者列表里有 Jiankang Deng——InsightFace 与 ArcFace 的缔造者之一 #Paraperas Papantoniou et al., 2024#。这个背景解释了论文最"豪"的一个前提：他们能拿到 WebFace42M，这个全球最大的公开人脸识别数据集（约 4200 万张图、约 200 万个身份）的使用权 #Zhu et al., 2021#。模型与权重全部开源，GitHub 与 HuggingFace 都能直接拉取 #Paraperas Papantoniou et al., 2024#。
+
+  <div class="callout"><strong>一句话预告</strong>：Arc2Face = 微调后的 Stable Diffusion v1.5，条件通道从"文本嵌入"换成"ArcFace 嵌入"——改动极小，但它用 2100 万张恢复人脸回答了一个大问题：纯 ID 条件到底能把身份一致性推多高。</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2</div>
+  <div class="ch-title">问题剖析：横在面前的两道墙</div>
+
+  2024 年初，"给定一张人脸照片，生成这个人的新照片"这条赛道已经非常拥挤。DreamBooth 范式要为每个主体做微调，太慢；tuning-free 方法把主体信息作为附加条件注入 Stable Diffusion，其中 InstantID、IP-Adapter-FaceID 已经用上了 ArcFace 嵌入 #Wang et al., 2024# #Ye et al., 2023#。看起来 ID 条件化已经被解决了，Arc2Face 还能研究什么？论文的 Introduction 冷静地指出了两道墙。
+
+  <h3 class="section-title">墙一：文本与身份在特征空间里互相打架</h3>
+
+  当时的所有主流方法都是"文本 + 主体嵌入"双条件。问题在于，CLIP 特征本身就包含 ID 相关信息——否则你没法用一句"a photo of Morgan Freeman"生成摩根·弗里曼的脸；同时它又包含与身份矛盾的特征——你完全可以让"a Viking warrior"的文本描述叠加一张中国人的 ID 嵌入 #Paraperas Papantoniou et al., 2024#。两路条件各带各的身份立场，模型生成时只能折中。
+
+  后果被论文一句话戳破：这些方法"struggle to decouple identity and text，通常需要对给定人脸的一段描述才能达到可接受的相似度" #Paraperas Papantoniou et al., 2024#。也就是说，你用 PhotoMaker 或 FastComposer 时如果不写"一个灰色胡子的中年男人"，身份相似度就会明显掉档——身份信息实际上被摊薄在文本条件里。而 Arc2Face 的立场非常极端：<strong>把文本通道整个拆掉</strong>，让身份信息独占条件通道，看看上限在哪。
+
+  <h3 class="section-title">墙二：高质量人脸数据的"身份多样性"瓶颈</h3>
+
+  第二道墙更隐蔽。生成社区默认的高质量人脸数据集是 FFHQ（7 万张图）和 CelebA-HQ，它们画质好、构图完整，但<strong>几乎每张图都是不同的人</strong>——单图/人意味着类内方差为零。而 ID-to-face 映射需要模型学到"同一个人在不同姿态、表情、光照下长什么样"，这恰恰要求每人多图。
+
+  论文用一个小型从零训练实验把这道墙量化了。作者训了三个 latent diffusion 模型（同样的条件 LDM 架构、标准去噪损失），只换训练数据：FFHQ 降采样到 256×256、WebFace42M 的 10% 子集（约 400 万图 / 20 万身份）、以及完整 WebFace42M。对 500 个合成 ID 和 400 个 AgeDB 真实 ID 各生成 5 张图，统计输入与输出的 ArcFace 相似度分布 #Paraperas Papantoniou et al., 2024#。结果一边倒：FFHQ 训出的模型相似度峰只在 0.6 上下徘徊；WebFace42M 即使砍到 10%，峰也升到 0.78 左右；完整版再推到约 0.85 #Paraperas Papantoniou et al., 2024#。补充材料里的可视化更直观：FFHQ 模型生成的"同一个人"连自己都认不出。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/id_sim_small_synth.webp" alt="从零训练的 ID 条件 LDM 在 FFHQ、WebFace42M-10%、WebFace42M 三种数据上的输入输出 ArcFace 相似度分布对比" loading="lazy">
+    <div class="cap">图 2：数据规模实验。同样的 ID 条件 LDM 架构，FFHQ（70K 单人图）训练的模型 ID 相似度分布整体左移，WebFace42M-10% 与全量则显著更高——百万级身份多图数据是 ID 条件生成的硬门槛（来源：Paraperas Papantoniou et al., 2024, Fig. 3a，Synth-500 评测集）。</div>
+  </div>
+
+  这就把问题钉死了：<strong>ID 条件生成需要的不是"高质量"，而是"高身份多样性 + 类内变化"</strong>。这种数据的天然产地是人脸识别界——WebFace42M 平均每人约 20 张图、身份量级 200 万，且作为最大公开 FR 数据集恰好可以拿到 #Zhu et al., 2021#。代价是 FR 数据全是 112×112 的紧裁剪低清图，这个矛盾在方法部分用一条相当昂贵的流水线解决。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3</div>
+  <div class="ch-title">模型结构：改动最小的条件化，抛弃最彻底的文本</div>
+
+  Arc2Face 的方法章节读起来几乎有点"朴素"：没有新损失、没有新注意力机制、没有新网络结构，全部创新浓缩在两个决策里——<strong>条件怎么注入</strong>，以及<strong>数据从哪来</strong>。我们先看注入。
+
+  <h3 class="section-title">3.1 特征提取：冻结的 ArcFace，唯一的真相来源</h3>
+
+  给定裁剪对齐后的人脸图 $x \in \mathbb{R}^{H \times W \times C}$，用一个预训练 ArcFace 网络 $\phi$ 提取身份嵌入：
+
+  $$
+  \mathbf{w} = \phi(x) \in \mathbb{R}^{512}
+  $$
+
+  论文特别强调两点：$\phi$ 全程冻结、推理训练都不更新；并且<strong>只取最终 512 维输出，不碰任何中间层</strong> #Paraperas Papantoniou et al., 2024#。这是一个黑盒设定——理论上你可以换成任何 FR 网络。补充材料里作者用 AdaFace 嵌入重新跑了一遍评测协议，结论不变 #Kim et al., 2022#。选 ArcFace 的理由也很"识别侧"：角度间隔损失训出来的嵌入天然过滤姿态、表情、场景信息（这些全被当作类内变化压掉了），留下的恰好是"与身份强相关"的那部分信号。嵌入在使用前归一化到单位长度。
+
+  <h3 class="section-title">3.2 条件注入：借文本编码器的壳，装身份嵌入的魂</h3>
+
+  底座是 stable-diffusion-v1-5，它的条件通道设计为 CLIP 文本嵌入。Arc2Face 的做法不是加一条新分支，而是<strong>直接复用这条老通道</strong>：固定一条伪提示 "photo of a &lt;id&gt; person"，tokenize 后得到 token 序列，然后把 $\langle$id$\rangle$ 位置上的 token 嵌入替换成零填充到 768 维的 ArcFace 向量：
+
+  $$
+  s = \{\mathbf{e}_1, \mathbf{e}_2, \mathbf{e}_3, \hat{\mathbf{w}}, \mathbf{e}_5\}, \qquad
+  C = \tau(s) \in \mathbb{R}^{N \times 768}
+  $$
+
+  其中 $\hat{\mathbf{w}} \in \mathbb{R}^{768}$ 是 $\mathbf{w} \in \mathbb{R}^{512}$ 零填充的结果，$\mathbf{e}_i \in \mathbb{R}^{768}$ 是 CLIP 词嵌入，$\tau$ 是<strong>被微调的</strong> CLIP 文本编码器，$N$ 是 tokenizer 的最大句长 #Paraperas Papantoniou et al., 2024#。输出序列 $C$ 照常通过交叉注意力进入 UNet——SD 的 UNet 一行都不用改。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/arc2face.webp" alt="Arc2Face 方法总览：检测裁剪人脸、ArcFace 提取 ID 嵌入、伪提示 token 替换、CLIP 编码器与 UNet 微调、输出生成" loading="lazy">
+    <div class="cap">图 3：方法总览。输入图检测裁剪后过冻结的 ArcFace 得到 ID 嵌入；伪提示 "photo of a &lt;id&gt; person" 的 &lt;id&gt; token 被替换为（零填充的）ID 嵌入；CLIP 编码器与 UNet 是仅有的两个可训练模块，VAE 冻结（来源：Paraperas Papantoniou et al., 2024, Fig. 2）。</div>
+  </div>
+
+  为什么不学 PhotoMaker、Face0、DreamIdentity 那样用一个小 MLP 把 512 维投影到 CLIP 空间 #Li et al., 2023#？作者的论证很实际：SD 的 UNet 从预训练起就在"吃"CLIP 编码器产出的嵌入分布，让同一个编码器去消化 ArcFace 向量，是顺着模型已有习惯的自然延伸；MLP 则要从头学一个到 CLIP 潜空间的映射。消融实验站在他们这边：同样训练预算下，4 层 MLP 版的生成 ID 相似度明显更低（详见 Part 6）#Paraperas Papantoniou et al., 2024#。
+
+  还有一个不显眼的好处：$\tau$ 是带 self-attention 的 Transformer，$\hat{\mathbf{w}}$ 注入后，ID 信息会扩散到输出序列的每个位置，等于给 UNet 的每一层交叉注意力都喂了"加了工"的身份信号——比单 token 的 MLP 投影丰富得多。
+
+  <h3 class="section-title">3.3 训练目标：标准得不能再标准的去噪损失</h3>
+
+  值得划重点的是这里<strong>没有任何 ID 专用损失</strong>。没有 ID 相似度损失、没有感知损失、没有对抗损失——条件化的全部压力都压在交叉注意力上，训练目标就是 LDM 的原始形态：
+
+  $$
+  \mathcal{L} = \mathbb{E}_{x_t, t, \epsilon \sim \mathcal{N}(\mathbf{0}, \mathbf{I})} \left[ \| \epsilon - \epsilon_\theta(x_t, t) \|_2^2 \right]
+  $$
+
+  其中 $\epsilon_\theta$ 是去噪 UNet，条件版本为 $\epsilon_\theta(z_t, t, C)$（$z = \mathcal{E}(x)$ 是 VAE 潜码）#Paraperas Papantoniou et al., 2024#。这延续了 Kansy 等人 2023 年的观察：只要条件信号本身足够有信息量，条件扩散模型不需要额外的身份损失就能学会 embedding-to-image 映射 #Kansy et al., 2023#。Arc2Face 把这个观察推到了 100 万身份的规模上。
+
+  {{< mermaid >}}
+  graph LR
+    A["输入人脸图 x"] --> B["检测 + 对齐"]
+    B --> C["ArcFace φ（冻结）"]
+    C --> D["w ∈ R^512<br/>单位归一化"]
+    D --> E["零填充 → ŵ ∈ R^768"]
+    F["伪提示<br/>photo of a ⟨id⟩ person"] --> G["Tokenizer"]
+    G --> H["e₁ e₂ e₃ [ŵ] e₅"]
+    E --> H
+    H --> I["CLIP Text Encoder τ<br/>（微调）"]
+    I --> J["条件序列 C ∈ R^(N×768)"]
+    K["潜码 z_t"] --> L["SD v1.5 UNet（微调）<br/>交叉注意力注入"]
+    J --> L
+    L --> M["VAE 解码（冻结）"]
+    M --> N["512×512 生成人脸"]
+  {{< /mermaid >}}
+
+  <h3 class="section-title">3.4 数据流水线：GFPGAN 恢复的 2100 万张脸</h3>
+
+  WebFace42M 解决了"身份多样性"，但它的人脸是 FR 训练模板：112×112、只裁到眉眼到下巴的紧致区域，而 SD v1.5 需要 512×512 级别的输入。论文的解法是一条相当豪放的离线流水线：用 GFPGAN v1.4——一个带对抗损失与 ID 保持损失的盲人脸恢复 GAN——对 WebFace42M 的相当大一部分做退化去除加 4 倍上采样，恢复到 448×448：
+
+  $$
+  \hat{x} = \gamma(x), \qquad \gamma = \text{GFPGAN v1.4}
+  $$
+
+  受算力限制，最终恢复出约 <strong>2100 万张图、100 万个身份</strong> #Paraperas Papantoniou et al., 2024# #Wang et al., 2021#。这 2100 万张仍然只是紧裁剪的人脸区域，构图上"顶天立地"。于是再加第二阶段：在构图更自由的 FFHQ 与 CelebA-HQ 上继续微调，把输出拉到完整人脸构图。最终模型生成 512×512、FFHQ 对齐的图像 #Paraperas Papantoniou et al., 2024#。
+
+  训练时<strong>所有图像共用同一条伪提示</strong>，没有任何文本标注。这是一个刻意为之的"饥饿疗法"：文本通道永远吃到同一个无信息 prompt，编码器的注意力只能落在 ID 向量上。大量微调之后，论文的说法是"我们实际上把文本编码器改造成了一个 face 编码器"，最终模型"只服从 ID 嵌入，抛弃了它最初的语言引导" #Paraperas Papantoniou et al., 2024#。
+
+  <div class="callout"><strong>设计哲学小结</strong>：Arc2Face 的聪明之处不在复杂，而在"删得干净"——删文本、删 ID 损失、删新模块，把全部赌注押在两件事上：一个信息量足够的条件向量，和一份数量足够的身份多样数据。</div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4</div>
+  <div class="ch-title">Training Pipeline：两阶段 2100 万图的算力豪赌</div>
+
+  完整训练分两阶段，先把 ID 先验吃透，再把画面质量补上。
+
+  <strong>阶段一（学"任何身份长什么样"）</strong>：在 2100 万张 GFPGAN 恢复的 WebFace42M 图像上，以 448×448 分辨率训练 5 个 epoch。这一阶段建立的是"ID 向量 → 人脸结构"的核心映射，百万身份保证覆盖。 <strong>阶段二（学"完整的画面"）</strong>：在 FFHQ + CelebA-HQ 上以 512×512 继续微调 15 个 epoch，把紧裁剪人脸扩展为带头发、肩部、背景的完整构图 #Paraperas Papantoniou et al., 2024#。可训练模块只有两个：CLIP 文本编码器与 UNet；VAE 与 ArcFace 全程冻结。
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>训练数据</td><td>已披露</td><td>阶段1：WebFace42M 恢复子集，约 21M 图 / 1M 身份，GFPGAN v1.4 恢复至 448×448；阶段2：FFHQ + CelebA-HQ，512×512，无文本标注</td></tr>
+        <tr><td>训练硬件</td><td>已披露</td><td>8 × NVIDIA A100</td></tr>
+        <tr><td>优化器</td><td>已披露</td><td>AdamW（β 参数未披露）</td></tr>
+        <tr><td>学习率</td><td>已披露</td><td>1e-6（schedule 与 warmup 未披露）</td></tr>
+        <tr><td>Batch size</td><td>已披露</td><td>4 / GPU（全局 32）</td></tr>
+        <tr><td>训练轮数</td><td>已披露</td><td>阶段1：5 epochs（448×448）；阶段2：15 epochs（512×512）</td></tr>
+        <tr><td>训练时长</td><td>未披露</td><td>原文未给出（数据侧另有 21M 张 GFPGAN 恢复的离线成本）</td></tr>
+        <tr><td>模型参数量</td><td>未披露</td><td>底座 SD v1.5（UNet + CLIP text encoder 可训练，VAE 冻结）；确切数值未给出</td></tr>
+        <tr><td>精度格式</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>Checkpoint 策略</td><td>未披露</td><td>原文未给出</td></tr>
+        <tr><td>ID 嵌入提取器</td><td>已披露</td><td>冻结 IR-100 ArcFace（WebFace42M 训练），嵌入归一化到单位长度</td></tr>
+        <tr><td>条件构造</td><td>已披露</td><td>固定伪提示 "photo of a &lt;id&gt; person"，&lt;id&gt; token 替换为零填充 ArcFace 向量</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  计算成本要分两头看。<strong>训练侧</strong>：8×A100 的卡时只是显性成本，隐性成本是 2100 万张 GFPGAN 恢复（论文明说"受我们的算力限制"只恢复了 42M 的一部分）加上 WebFace42M 本身的许可门槛——个人与小型团队几乎不可能复训，这在 FR 数据集出身的方法里是常态 #Paraperas Papantoniou et al., 2024#。 <strong>推理侧</strong>：就是 SD v1.5 的开销，消费级单卡即可，官方仓库还提供 LCM-LoRA 路径把采样压到 2–4 步（见 Part 5）。
+
+  <div class="admonition tip">
+    <div class="admonition-title">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      复现者的实用建议
+    </div>
+    <div class="admonition-content"><p>不要试图复现训练——直接拉 HuggingFace 权重。若想做 ID 条件生成的自有变体（换底座、加控制），官方仓库的 diffusers 管线、antelopev2 检测权重与 arcface.onnx 已经把"图 → 嵌入 → 生成"的整条链路打通，在其上做 adapter 是性价比最高的路径。</p></div>
+  </div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5</div>
+  <div class="ch-title">Inference Pipeline：从一个向量到任意场景的脸</div>
+
+  <h3 class="section-title">5.1 标准链路：四步出图</h3>
+
+  推理的完整输入准备只有四步：(1) InsightFace antelopev2 检测并对齐人脸；(2) 冻结 IR-100 ArcFace 提取 512 维嵌入；(3) 归一化到单位长度、零填充到 768 维；(4) 塞进伪提示的 $\langle$id$\rangle$ 位置。随后是标准 SD 采样：<strong>DPM-Solver，25 步，classifier-free guidance 尺度 3</strong>——论文说这是经验上"产生高度真实图像"的组合 #Paraperas Papantoniou et al., 2024# #Lu et al., 2022#。输出 512×512、FFHQ 对齐。CFG 在这里语义有点特殊：模型已经没有文本概念，无条件的对照分支同样来自伪提示路径——CFG 更像是在调"贴嵌入的力度"。
+
+  <h3 class="section-title">5.2 嵌入的四种玩法：单图只是开始</h3>
+
+  因为条件是向量而不是图像，推理侧天然获得四种操作，这也是 Arc2Face 作为"基础模型"的弹性所在：
+
+  <ul>
+    <li><strong>单图条件</strong>：默认形态，一张参考照的嵌入直接生成。</li>
+    <li><strong>多图平均</strong>：同一个人的多张照片的嵌入取平均再生成。补充材料显示这能带来轻微但可见的保真度提升——FR 嵌入虽以判别为主，仍会夹带少量表情、外观等 ID 无关噪声，跨照片平均相当于对噪声做了一次均值滤波 #Paraperas Papantoniou et al., 2024#。</li>
+    <li><strong>线性插值</strong>：两个人的嵌入做线性混合，模型在两人之间生成一串"渐变脸"，轨迹上的每张脸都保持合理——说明嵌入空间本身就支持连续的身份运算。</li>
+    <li><strong>PCA 采样造新身份</strong>：在 WebFace42M 全体嵌入上做 PCA，从主成分分布里采样全新 ID 向量（同 ID 的多张图之间保证足够类内方差，生成身份之间相似度低于 0.3 才保留）——这就是 Part 6 合成 FR 数据集的生产方式 #Paraperas Papantoniou et al., 2024#。</li>
+  </ul>
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/multiple_images.webp" alt="多图平均嵌入对生成保真度的影响：随着平均的嵌入数量增加，生成脸与输入身份越来越像" loading="lazy">
+    <div class="cap">图 4：多图平均的效果。左下角数字为参与平均的嵌入数量，随着数量增加，生成结果的 ID 保真度逐步提升（来源：Paraperas Papantoniou et al., 2024, Supp. Fig. 13）。</div>
+  </div>
+
+  <h3 class="section-title">5.3 外挂控制：ControlNet 补上姿态与表情</h3>
+
+  纯 ID 条件的代价是没有可控性——你说不出"让他转头""让他笑"。论文的补法是标准的 <a href="controlnet.html">ControlNet</a>：用 EMOCA v2 在 FFHQ 上做 3D 重建，以 FLAME 模型渲染的法线图作为 ControlNet 的空间条件训练一个控制模块 #Zhang et al., 2023# #Danvevcek et al., 2022#。推理时，从一张参考图提取表情与姿态参数、渲染出目标法线图，就能让源身份按指定的姿态表情"摆拍"，而身份由 Arc2Face 主干保证。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/controlnet_camready.webp" alt="Arc2Face + ControlNet：以 EMOCA 重建的 FLAME 法线图为条件，控制源身份的姿态与表情" loading="lazy">
+    <div class="cap">图 5：Arc2Face + ControlNet。每个子图中，左为目标人的 3DMM 法线渲染（规定姿态与表情），右侧为源身份按该姿态表情的生成结果——身份来自 ID 嵌入，姿态表情来自法线条件（来源：Paraperas Papantoniou et al., 2024, Fig. 6）。</div>
+  </div>
+
+  官方仓库在论文之外又放出了两个扩展件：Expression Adapter（FLAME blendshape 参数经 IP-Adapter 式机制注入，做精确表情控制）与 Reference Adapter（引入参考图保留外观与背景），加上 LCM-LoRA 可把采样压到 2–4 步 #Paraperas Papantoniou et al., 2024#。这套"ID 主干 + 可插拔控制件"的组合，本质上就是后来数字人管线里"身份 LoRA/Adapter + 控制 Adapter"的标准形态。
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6</div>
+  <div class="ch-title">实验验证：CSIM 分布大战与一场反记忆自证</div>
+
+  <h3 class="section-title">6.1 评测协议：把文本方法拉到同一条起跑线</h3>
+
+  评测集两组：Synth-500（500 个从未见过的合成身份，由 tpdne 生成）与 AgeDB 挑出的 400 张高分辨率真实图；每个身份用所有方法各生成 5 张 #Moschoglou et al., 2017#。关键设计在 prompt：所有对比方法统一用抽象 prompt "photo of a person"，禁止描述性文本 #Paraperas Papantoniou et al., 2024#。这不是刁难——文本方法的产品形态本来就允许写描述，但论文要测的是"纯 ID 条件化能力"，描述性 prompt 会把文本通道的身份信息掺进来，测的就不干净了。
+
+  指标四个方向：ID 相似度（输入 vs 生成的 ArcFace 余弦相似度分布）、多样性（同 ID 生成图两两 LPIPS，计算前先用 face-parsing 去背景；表情与姿态多样性用 EMOCA v2 预测的 FLAME 参数算 L2 距离）、质量（人脸检测对齐后的 FID）#Paraperas Papantoniou et al., 2024#。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>配置项</th><th>披露状态</th><th>值 / 说明</th></tr></thead>
+      <tbody>
+        <tr><td>评测数据集</td><td>已披露</td><td>Synth-500（500 合成身份）+ AgeDB 400 张真实图；每 ID 生成 5 样本</td></tr>
+        <tr><td>评测指标</td><td>已披露</td><td>ID 相似度（ArcFace CSIM）↑ / LPIPS 多样性↑ / FLAME 表情·姿态 L2 多样性↑ / FID↓</td></tr>
+        <tr><td>Baseline 方法</td><td>已披露</td><td>FastComposer、PhotoMaker、InstantID、IPA-FaceID（SDXL）/ Plus / Plusv2（均官方实现默认超参）</td></tr>
+        <tr><td>推理硬件</td><td>未披露</td><td>原文未给出（SD1.5 级别，消费级单卡可跑）</td></tr>
+        <tr><td>推理分辨率</td><td>已披露</td><td>512×512（FFHQ 对齐）</td></tr>
+        <tr><td>推理环境</td><td>已披露</td><td>采样器 DPM-Solver 25 步，CFG=3（框架版本未披露）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title">6.2 主结果：相似度、多样性、质量三杀</h3>
+
+  先看 CSIM 分布——这是本系列最关心的图。Arc2Face 的相似度峰在 0.85 附近，次优的 InstantID 峰在 0.7 左右，而 CLIP 系的 PhotoMaker 与 FastComposer 只在 0.3–0.5 档徘徊 #Paraperas Papantoniou et al., 2024#。差距之大值得停一下：在统一无描述 prompt 的条件下，"纯 ID 条件"对"文本+ID 混合"几乎是碾压——这正是 Part 2 墙一的定量版。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/id_sim_synth-500.webp" alt="Synth-500 上七个方法的输入输出 ArcFace 相似度分布：Arc2Face 峰值约 0.85，InstantID 约 0.7，CLIP 系方法 0.3-0.5" loading="lazy">
+    <div class="cap">图 6：Synth-500 上的 ID 相似度分布。Arc2Face（蓝）峰值约 0.85；InstantID（橙）约 0.7；依赖 CLIP 特征的 PhotoMaker、FastComposer 明显左移（来源：Paraperas Papantoniou et al., 2024, Fig. 4a）。</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/comp.webp" alt="Arc2Face 与 FastComposer、PhotoMaker、IPA-FaceID 系列、InstantID 的可视化对比：统一抽象 prompt 下各方法的身份保真" loading="lazy">
+    <div class="cap">图 7：统一抽象 prompt "photo of a person" 下的可视化对比。IPA-FaceID（SDXL）出现明显面部伪影，CLIP 系方法身份漂移，Arc2Face 列在保持身份细节（眼镜、胡须、耳环）上最稳（来源：Paraperas Papantoniou et al., 2024, Fig. 5）。</div>
+  </div>
+
+  定量表更完整。多样性指标上 Arc2Face 全线最高（LPIPS 0.506/0.508，表情 L2 6.375/5.966），质量上 FID 全场最低（5.673/6.628）#Paraperas Papantoniou et al., 2024#：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>LPIPS↑<br>Synth / AgeDB</th><th>表情 L2↑<br>Synth / AgeDB</th><th>姿态 L2↑<br>Synth / AgeDB</th><th>FID↓<br>Synth / AgeDB</th></tr></thead>
+      <tbody>
+        <tr><td>FastComposer</td><td>0.389 / 0.487</td><td>3.597 / 4.678</td><td>0.163 / 0.225</td><td>13.517 / 31.736</td></tr>
+        <tr><td>PhotoMaker</td><td>0.410 / 0.424</td><td>3.920 / 4.283</td><td>0.167 / 0.165</td><td>13.295 / 8.410</td></tr>
+        <tr><td>InstantID</td><td>0.386 / 0.437</td><td>3.733 / 4.569</td><td><strong>0.059 / 0.082</strong></td><td>22.859 / 18.598</td></tr>
+        <tr><td>IPA-FaceID（SDXL）</td><td>0.402 / 0.462</td><td>4.648 / 5.812</td><td>0.181 / 0.197</td><td>7.104 / 24.105</td></tr>
+        <tr><td>IPA-FaceID-Plus</td><td>0.320 / 0.384</td><td>2.706 / 3.518</td><td>0.150 / 0.194</td><td>14.880 / 11.817</td></tr>
+        <tr><td>IPA-FaceID-Plusv2</td><td>0.356 / 0.429</td><td>3.147 / 4.092</td><td>0.185 / 0.236</td><td>9.752 / 10.798</td></tr>
+        <tr><td><strong>Arc2Face</strong></td><td><strong>0.506 / 0.508</strong></td><td><strong>6.375 / 5.966</strong></td><td><strong>0.317 / 0.273</strong></td><td><strong>5.673 / 6.628</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  这张表里最有意思的反例是 InstantID 的姿态 L2：0.059 / 0.082，全场最低——不是它不好，而是它用输入人脸的稀疏关键点做条件，生成姿态被锁死在输入附近，多样性天然受限 #Paraperas Papantoniou et al., 2024#。这也提醒我们：读身份一致性论文时，<strong>相似度和多样性是一对此消彼长的指标</strong>，只报告相似度不报告多样性的方法要多个心眼（本系列的 <a href="id-sim-2026.html">ID-Sim 精读</a>会从度量设计侧继续这个问题）。
+
+  用户研究补了人评维度：50 名用户对 30 个随机身份，并排盲选"哪边更像输入脸"，Arc2Face 拿下 <strong>71.0%</strong>，InstantID 29.0% #Paraperas Papantoniou et al., 2024#。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/user_study.webp" alt="用户研究饼图：Arc2Face 获 71% 的身份相似度投票，InstantID 29%" loading="lazy">
+    <div class="cap">图 8：用户研究。50 名用户、30 个随机身份、并排盲选"更像输入脸"的一方：Arc2Face 71.0% vs InstantID 29.0%（来源：Paraperas Papantoniou et al., 2024, Fig. 4c）。</div>
+  </div>
+
+  <h3 class="section-title">6.3 反向验证：用 Arc2Face 造数据，反过来训 ArcFace</h3>
+
+  如果 Arc2Face 真的掌握了"ID 嵌入 → 人脸"的映射，那用它批量生成的数据应该能反过来训出好的人脸识别模型——这是对本篇核心命题最强的一次验证。作者用 Part 5.2 的 PCA 采样法生成合成 FR 数据集，沿用 DCFace 的训练方案（IR-SE-50 骨干 + AdaFace 损失），在 LFW、CFP-FP、CPLFW、AgeDB、CALFW 五个验证集上测 #Qiu et al., 2021# #Bae et al., 2023# #Kim et al., 2023#：
+
+  <div class="table-wrap wide">
+    <table>
+      <thead><tr><th>方法</th><th>Venue</th><th>规模</th><th>LFW</th><th>CFP-FP</th><th>CPLFW</th><th>AgeDB</th><th>CALFW</th><th>平均</th></tr></thead>
+      <tbody>
+        <tr><td>SynFace</td><td>ICCV21</td><td>0.5M</td><td>91.93</td><td>75.03</td><td>70.43</td><td>61.63</td><td>74.73</td><td>74.75</td></tr>
+        <tr><td>DigiFace</td><td>WACV23</td><td>0.5M</td><td>95.4</td><td>87.4</td><td>78.87</td><td>76.97</td><td>78.62</td><td>83.45</td></tr>
+        <tr><td>DCFace</td><td>CVPR23</td><td>0.5M</td><td>98.55</td><td>85.33</td><td>82.62</td><td>89.70</td><td>91.60</td><td>89.56</td></tr>
+        <tr><td><strong>Arc2Face</strong></td><td>—</td><td>0.5M</td><td><strong>98.81</strong></td><td><strong>91.87</strong></td><td><strong>85.16</strong></td><td><strong>90.18</strong></td><td><strong>92.63</strong></td><td><strong>91.73</strong></td></tr>
+        <tr><td>DigiFace</td><td>WACV23</td><td>1.2M</td><td>96.17</td><td>89.81</td><td>82.23</td><td>81.10</td><td>82.55</td><td>86.37</td></tr>
+        <tr><td>DCFace</td><td>CVPR23</td><td>1.2M</td><td>98.58</td><td>88.61</td><td>85.07</td><td>90.97</td><td>92.82</td><td>91.21</td></tr>
+        <tr><td><strong>Arc2Face</strong></td><td>—</td><td>1.2M</td><td><strong>98.92</strong></td><td><strong>94.58</strong></td><td><strong>86.45</strong></td><td><strong>92.45</strong></td><td><strong>93.33</strong></td><td><strong>93.14</strong></td></tr>
+        <tr><td>CASIA-WebFace（真实）</td><td>—</td><td>0.49M</td><td>99.42</td><td>96.56</td><td>89.73</td><td>94.08</td><td>93.32</td><td>94.62</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  0.5M 档平均 91.73 对 DCFace 的 89.56（提升 2.17 个点），1.2M 档 93.14 对 91.21（提升 1.93）#Paraperas Papantoniou et al., 2024#。最刺眼的是 CFP-FP（正脸 vs 侧脸协议，专测大姿态）：0.5M 档 91.87 对 DCFace 的 85.33，差出 6.5 个点——因为 Arc2Face 的类内方差大，合成数据天然覆盖大姿态。距真实数据 CASIA-WebFace 的 94.62 也只剩 1.5 个点左右的差距。<strong>生成 ↔ 识别在这里完成了一次闭环</strong>：ArcFace 嵌入训出的生成器，造出的数据又能训出逼近真实数据的 ArcFace 类模型。
+
+  <h3 class="section-title">6.4 三组消融与一场反记忆自证</h3>
+
+  <strong>消融一（数据规模）</strong>已在 Part 2 讲过：FFHQ 不行，WebFace42M-10% 已接近全量。<strong>消融二（注入方式）</strong>：4 层 MLP 替换微调 CLIP 编码器，同样训练设置下生成 ID 相似度更低——"SD 是吃 CLIP 嵌入长大的，用同一个编码器是更自然的选择" #Paraperas Papantoniou et al., 2024#。<strong>消融三（嵌入的内在维度）</strong>：对 WebFace42M 的 ArcFace 嵌入做 PCA，保真生成需要 <strong>300–400 个主成分</strong>，再少就出现明显畸变——512 维嵌入几乎满负荷携带身份信息，"显著压缩 ArcFace 嵌入是困难的" #Paraperas Papantoniou et al., 2024#。这个数字对度量设计有直接含义：别指望用几维"身份流形"去解释 CSIM 的行为。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/pca_curve.webp" alt="WebFace42M ArcFace 嵌入的 PCA 累积方差曲线" loading="lazy">
+    <div class="cap">图 9：ArcFace 嵌入的 PCA 累积方差曲线。维持面部保真需要 300–400 个主成分，嵌入的信息密度接近满秩使用（来源：Paraperas Papantoniou et al., 2024, Fig. 7a）。</div>
+  </div>
+
+  最后是论文最让人有好感的实验——<strong>反记忆自证</strong>。扩散模型的训练数据记忆是公认风险（Related Works 里专门引了 Somepalli 等人的分析）#Somepalli et al., 2023#。作者的检验方式：对 Synth-500 的 500 个未见身份各生成 5 张（共 2500 张），每张都在训练集（恢复版 WebFace42M + FFHQ + CelebA-HQ）里检索 ID 相似度最高的训练图。结果是：生成图与输入嵌入平均相似度 <strong>0.74</strong>，与最近训练样本只有 <strong>0.37</strong>——生成的脸牢牢贴着自己的条件向量，而不是贴着任何一张见过的训练图，模型学到的是映射而非查表 #Paraperas Papantoniou et al., 2024#。
+
+  <div class="photo">
+    <img src="media/images/arc2face-2024/closest_train_sample_plot.webp" alt="生成图与输入、与最近训练样本的相似度分布：前者峰约 0.74，后者峰约 0.37" loading="lazy">
+    <div class="cap">图 10：反记忆实验。蓝分布为"生成 ↔ 输入嵌入"（峰约 0.74），橙分布为"生成 ↔ 最近训练样本"（峰约 0.37）——生成结果没有在复述训练数据（来源：Paraperas Papantoniou et al., 2024, Fig. 8a）。</div>
+  </div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7</div>
+  <div class="ch-title">讨论与启发：CSIM 的地板、天花板与闭环</div>
+
+  现在可以把开头的论辩收拢了。Arc2Face 对"数字人身份一致性"这个主题的启示可以压成三句话。
+
+  <strong>第一句：CSIM 的地板是实的。</strong>512 维 ArcFace 嵌入足以唯一重建任意未见身份的人脸（未见 ID 的生成相似度 0.74–0.85，用户研究 71% 胜率）#Paraperas Papantoniou et al., 2024#。这为"拿 CSIM 当身份一致性度量"提供了生成侧的合法性：度量所依赖的那个向量，确实装着一张完整的脸。当我们抱怨 CSIM 只是个代理指标时，Arc2Face 恰好证明这个代理的信息含量高得惊人。
+
+  <strong>第二句：CSIM 的天花板也是它。</strong>论文 Limitations 原话说得直白：
+
+  <div class="quote">
+    <p>「Our method is limited by the capacity of the face embeddings encoder, as well as the datasets used, both of which are fortunately state-of-the-art.」</p>
+    <div class="who">— Paraperas Papantoniou et al., 2024, Limitations and Impact</div>
+  </div>
+
+  生成模型的表现被嵌入编码器的容量封顶——嵌入里没有的信息（某些细粒度纹理、发际线细节、耳朵形状），生成器造不出来，CSIM 也奖励不到。同一个逻辑反过来用于评测：两个生成结果 CSIM 打平，不代表身份观感打平，只代表它们在 ArcFace 眼里打平。这也是为什么后续工作（本系列里的 <a href="consisid-2024.html">ConsisID</a>、<a href="id-sim-2026.html">ID-Sim</a> 等）都在尝试补充或修正纯 CSIM 评测。<strong>用 ArcFace 当考官的论文，都在 ArcFace 划定的考场里答题。</strong>
+
+  <strong>第三句：嵌入是可运算的。</strong>平均降噪、插值出合理中间脸、PCA 采样造新身份——Arc2Face 展示的这三种向量运算，让"身份"第一次变成了一个可编程的对象。对数字人工程，这意味着身份资产管理可以完全在嵌入空间完成：存向量而不是存照片，合成新数字人时从分布采样而不是找模特。
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>Arc2Face</th><th>InstantID</th><th>IPA-FaceID</th></tr></thead>
+      <tbody>
+        <tr><td>条件信号</td><td>纯 ArcFace 嵌入（无文本）</td><td>ArcFace + 稀疏关键点 + 文本</td><td>ArcFace + 文本（解耦注意力）</td></tr>
+        <tr><td>注入方式</td><td>微调 CLIP 编码器整体吃嵌入</td><td>IdentityNet（类 ControlNet）+ IP-Adapter</td><td>解耦 cross-attention 旁路</td></tr>
+        <tr><td>训练数据</td><td>WebFace42M 恢复 21M/1M ID</td><td>LAION-Face + 10M 网络图</td><td>未公开</td></tr>
+        <tr><td>文本可控性</td><td>无（主动移除）</td><td>有</td><td>有</td></tr>
+        <tr><td>CSIM 峰值（本文口径）</td><td>~0.85</td><td>~0.7</td><td>0.5–0.65</td></tr>
+        <tr><td>姿态多样性</td><td>最高（0.317/0.273）</td><td>最低（0.059/0.082，被关键点锁死）</td><td>中</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  局限与边界也要记全：模型一张图只能生成一个人；输出被 512×512 FFHQ 对齐的构图框住；可控性全部依赖外挂（ControlNet/adapter）；伦理上作者刻意把训练数据限定在人脸区域，并强调这类技术须配合伪造内容检测、关注在不同人群上保持均衡效果 #Paraperas Papantoniou et al., 2024#；以及最重要的——<strong>它是"嵌入到图"的模型，不是视频模型</strong>，帧间的时序身份一致性、运动中的身份保持（语音驱动动画这条线可回看本系列的 <a href="makeittalk-2020.html">MakeItTalk 精读</a>），Arc2Face 一概没有触碰。它是数字人管线里的"身份条件发生器"与"身份资产底座"，而不是完整的数字人生成器。官方后续把它扩展到了 blendshape 精确表情控制（ICCVW 2025），Vox2Face、Arc2Morph 等工作则直接把它用作语音驱动与 morphing 的身份骨干 #Paraperas Papantoniou et al., 2024#。
+
+  <div class="callout"><strong>给工程同学的三条带走</strong>：其一，ID 条件注入优先考虑"复用预训练编码器路径"而非新 MLP 分支，消融有数据支持；其二，身份相似度和姿态/表情多样性是跷跷板，评测体系必须两端都测；其三，需要大量"新身份"数据时，嵌入分布采样 + 相似度阈值去重（&lt;0.3）是比网络爬取干净得多的生产方式。</div>
+
+  对本系列的调研主线，Arc2Face 是一个坐标原点：此后讨论的每篇身份一致性工作——无论是补 CSIM 的短板还是换掉 CSIM——都在回答这篇论文用 Limitations 留下的问题：<strong>当你的度量、你的条件、你的天花板是同一个东西时，怎么跳出这个循环？</strong>
+
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Paraperas-Papantoniou-et-al.-2024">Paraperas Papantoniou, F., Lattas, A., Moschoglou, S., Deng, J., Kainz, B., Zafeiriou, S. (2024). <strong>Arc2Face: A Foundation Model for ID-Consistent Human Faces</strong>. <em>ECCV 2024（Oral）</em>. <a href="https://arxiv.org/abs/2403.11641" target="_blank">arXiv:2403.11641</a> · <a href="https://arc2face.github.io/" target="_blank">项目页</a> · <a href="https://github.com/foivospar/Arc2Face" target="_blank">代码</a></li>
+    <li data-cite-key="Deng-et-al.-2019">Deng, J., Guo, J., Yang, J., Xue, N., Kotsia, I., Zafeiriou, S. (2019). <strong>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</strong>. <em>CVPR 2019</em>. <a href="https://arxiv.org/abs/1801.07698" target="_blank">arXiv:1801.07698</a> · <a href="arcface-2018.html" class="paper-link">精读 →</a></li>
+    <li data-cite-key="Zhu-et-al.-2021">Zhu, Z., Huang, G., Deng, J., Ye, Y., Huang, J., Chen, X., Zhu, J., Yang, T., Lu, J., Du, D., Zafeiriou, S. (2021). <strong>WebFace260M: A Benchmark Unveiling the Power of Million-Scale Deep Face Recognition</strong>. <em>CVPR 2021</em>. <a href="https://arxiv.org/abs/2103.04098" target="_blank">arXiv:2103.04098</a></li>
+    <li data-cite-key="Rombach-et-al.-2022">Rombach, R., Blattmann, A., Lorenz, D., Esser, P., Ommer, B. (2022). <strong>High-Resolution Image Synthesis with Latent Diffusion Models</strong>（Stable Diffusion）. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2112.10752" target="_blank">arXiv:2112.10752</a></li>
+    <li data-cite-key="Wang-et-al.-2024">Wang, Q., Bai, X., Wang, W., Cui, F., Chen, Y. (2024). <strong>InstantID: Zero-shot Identity-Preserving Generation in Seconds</strong>. <a href="https://arxiv.org/abs/2401.07519" target="_blank">arXiv:2401.07519</a></li>
+    <li data-cite-key="Ye-et-al.-2023">Ye, H., Zhang, J., Liu, S., Han, X., Yang, W. (2023). <strong>IP-Adapter: Text Compatible Image Prompt Adapter for Text-to-Image Diffusion Models</strong>. <a href="https://arxiv.org/abs/2308.06721" target="_blank">arXiv:2308.06721</a></li>
+    <li data-cite-key="Li-et-al.-2023">Li, Z., Cao, M., Wang, X., Qi, Z., Cheng, M.-M., Zhang, Y. (2023). <strong>PhotoMaker: Customizing Realistic Human Photos via Stacked ID Embedding</strong>. <em>CVPR 2024</em>. <a href="https://arxiv.org/abs/2312.04461" target="_blank">arXiv:2312.04461</a></li>
+    <li data-cite-key="Xiao-et-al.-2023">Xiao, C., Zhang, T., Cao, X., Zeng, W., Yin, L. (2023). <strong>FastComposer: Multi-Subject Image Generation with Attention-Localized Subject Conditioning</strong>. <em>NeurIPS 2023</em>. <a href="https://arxiv.org/abs/2305.10431" target="_blank">arXiv:2305.10431</a></li>
+    <li data-cite-key="Kim-et-al.-2023">Kim, M., Liu, F., Jain, A. K., Liu, X. (2023). <strong>DCFace: Synthetic Face Generation with Dual Condition Diffusion Model</strong>. <em>CVPR 2023</em>. <a href="https://arxiv.org/abs/2304.07060" target="_blank">arXiv:2304.07060</a></li>
+    <li data-cite-key="Kim-et-al.-2022">Kim, M., Liu, F., Jain, A. K. (2022). <strong>AdaFace: Quality Adaptive Margin for Face Recognition</strong>. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2204.00964" target="_blank">arXiv:2204.00964</a></li>
+    <li data-cite-key="Qiu-et-al.-2021">Qiu, H., Gong, B., Liu, Z., Zhou, H., Bansal, M., Tyagi, A. (2021). <strong>SynFace: Face Recognition with Synthetic Data</strong>. <em>ICCV 2021</em>. <a href="https://arxiv.org/abs/2108.07960" target="_blank">arXiv:2108.07960</a></li>
+    <li data-cite-key="Bae-et-al.-2023">Bae, G., de La Gorce, M., Baltrusaitis, T., et al. (2023). <strong>DigiFace-1M: 1 Million Digital Face Images for Face Recognition</strong>. <em>WACV 2023</em>. <a href="https://arxiv.org/abs/2210.02579" target="_blank">arXiv:2210.02579</a></li>
+    <li data-cite-key="Kansy-et-al.-2023">Kansy, P., Gwak, R. S. J., Hilsmann, A., Eisert, P., Seibold, M. (2023). <strong>Controllable Face Synthesis with Latent Space Exploration</strong>. <em>WACV 2023</em>. <a href="https://arxiv.org/abs/2306.00899" target="_blank">arXiv:2306.00899</a></li>
+    <li data-cite-key="Zhang-et-al.-2023">Zhang, L., Rao, A., Agrawala, M. (2023). <strong>Adding Conditional Control to Text-to-Image Diffusion Models</strong>（ControlNet）. <em>ICCV 2023</em>. <a href="https://arxiv.org/abs/2302.05543" target="_blank">arXiv:2302.05543</a> · <a href="controlnet.html" class="paper-link">解读 →</a></li>
+    <li data-cite-key="Wang-et-al.-2021">Wang, X., Yu, K., Wu, S., Gu, J., Liu, Y., Dong, C., Qiao, Y., Loy, C. C. (2021). <strong>Towards Real-World Blind Face Restoration with Generative Facial Prior</strong>（GFPGAN）. <em>CVPR 2021</em>. <a href="https://arxiv.org/abs/2101.04061" target="_blank">arXiv:2101.04061</a></li>
+    <li data-cite-key="Danvevcek-et-al.-2022">Danvevcek, R., Triantafyllou, E., Chaudhuri, V., et al. (2022). <strong>EMOCA: Emotion Driven Monocular Face Capture and Animation</strong>. <em>CVPR 2022</em>. <a href="https://arxiv.org/abs/2204.11312" target="_blank">arXiv:2204.11312</a></li>
+    <li data-cite-key="Lu-et-al.-2022">Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., Zhu, J. (2022). <strong>DPM-Solver: A Fast ODE Solver for Diffusion Probabilistic Model Sampling in Around 10 Steps</strong>. <em>NeurIPS 2022</em>. <a href="https://arxiv.org/abs/2206.00927" target="_blank">arXiv:2206.00927</a></li>
+    <li data-cite-key="Somepalli-et-al.-2023">Somepalli, G., Singla, V., Goldstein, M., Li, J., Dickstein, K., Goldblum, M., Geiping, J., Shrivastava, A. (2023). <strong>Diffusion Art or Digital Forgery? Investigating Data Replication in Diffusion Models</strong>. <em>CVPR 2024</em>. <a href="https://arxiv.org/abs/2303.10189" target="_blank">arXiv:2303.10189</a></li>
+    <li data-cite-key="Moschoglou-et-al.-2017">Moschoglou, S., Papa, A., Kotsia, I., Zafeiriou, S. (2017). <strong>AgeDB: The First Manually Collected, In-the-Wild Age Database</strong>. <em>CVPR Workshops 2017</em>. <a href="https://ibug.doc.ic.ac.uk/resources/agedb/" target="_blank">项目页</a></li>
+    <li data-cite-key="Radford-et-al.-2021">Radford, A., Kim, J. W., Hallacy, C., et al. (2021). <strong>Learning Transferable Visual Models From Natural Language Supervision</strong>（CLIP）. <em>ICML 2021</em>. <a href="https://arxiv.org/abs/2103.00020" target="_blank">arXiv:2103.00020</a></li>
+  </ul>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">系列导航</div>
+  <div class="ch-title">数字人论文精读系列</div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="collaborative-face-experts-2025.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">数字人论文精读（六十四）：MoFE</span></a>
+    <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人研究枢纽</span></a>
+    <a class="nav-card nav-next" href="vbench2-2025.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">数字人评测参考：VBench-2.0</span></a>
+  </div>
+</div>
