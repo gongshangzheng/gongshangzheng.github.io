@@ -54,7 +54,7 @@ metadata:
 
 ## 搜索策略
 
-Phase 2 (INVESTIGATION) 涉及网络搜索时，遵循 `web-search` skill 的策略。
+Phase 2 (INVESTIGATION) 涉及网络搜索时，遵循用户级 `web-search` skill（`~/.agents/skills/web-search/SKILL.md`）的策略：通道选择、代理探测与可复用脚本（search.py / wiki.py / arxiv.py）都在那里。
 
 ### 何时主要依赖 web 搜索
 
@@ -68,10 +68,10 @@ Phase 2 (INVESTIGATION) 涉及网络搜索时，遵循 `web-search` skill 的策
 
 1. **先判定意图**：`factual / status / comparison / tutorial / exploratory / news / resource`
 2. **再生成 query bundle**：围绕主题生成 3-5 个互补搜索变体
-3. **按优先级检索**：`web_search` → `mcp_MiniMax_web_search` → `ddgs_search.py`
+3. **按优先级检索**：`~/.venv/bin/python ~/.agents/skills/web-search/scripts/search.py "<query>"`（自动探测代理：在线→DDG，离线→搜狗直连；离线时先告知用户「Proxy 没开」）；维基/arXiv 用同目录 `wiki.py` / `arxiv.py`
 4. **去重与初排**：优先保留官方来源、原始来源
 5. **必要时线程深挖**：对 GitHub issue / PR、论坛帖子继续追踪
-6. **内容抽取**：对高价值 URL 先 `web_fetch`，不完整时再 `browser`
+6. **内容抽取**：对高价值 URL 用 `curl` 抓正文（代理在线加 `-x http://127.0.0.1:7890`；JS 渲染页改用该站 API 或搜索摘要）
 7. **结构化输出**：搜索结果按统一 contract 整理
 
 ### 关键边界
