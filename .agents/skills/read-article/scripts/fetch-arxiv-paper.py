@@ -108,7 +108,7 @@ def download_tarball(arxiv_id, output_path):
     url = f"https://arxiv.org/e-print/{arxiv_id}"
     print(f"  下载 tarball: {url}")
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'})
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = resp.read()
             output_path.write_bytes(data)
@@ -259,7 +259,7 @@ def download_html(arxiv_id, output_path):
     url = f"https://arxiv.org/html/{arxiv_id}"
     print(f"  下载 HTML: {url}")
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'})
         with urllib.request.urlopen(req, timeout=30) as resp:
             html = resp.read().decode('utf-8', errors='ignore')
             output_path.write_text(html)
@@ -275,7 +275,7 @@ def download_pdf(arxiv_id, output_path):
     url = f"https://arxiv.org/pdf/{arxiv_id}"
     print(f"  下载 PDF: {url}")
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'})
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = resp.read()
             output_path.write_bytes(data)
