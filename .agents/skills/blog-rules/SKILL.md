@@ -17,6 +17,9 @@ description: |
 | `references/series-rules.md` | 系列文章 sub_id、Hub 页、编号、跨篇连续性 | read-article, academic-research, deep-research, content-creator |
 | `references/image-priority.md` | 配图来源优先级、arXiv 图片提取、HTML 格式 | read-article, academic-research, deep-research |
 | `references/publishing.md` | build.js + git push 发布流程、邮件通知、发布前验证 | read-article, academic-research, deep-research |
+| `references/pre-generation-search.md` | 生成前库内检索（新建 / 扩充 / 接力草稿的判定） | read-article, academic-research, deep-research |
+| `references/openspec-gate.md` | 内容类产出的 OpenSpec 门禁（何时必须建 change、模板位置、审批门禁、豁免清单、路径口径） | read-article, academic-research, deep-research, historical-narrative, book-to-blog, course-notes, github-repo-read |
+| `templates/content-change/` | 内容类 change 的 proposal / design / tasks 模板（`design.md` 含审批核心「文章内容大纲」） | 所有内容类 skill 建 change 时 |
 
 ## 使用方式
 

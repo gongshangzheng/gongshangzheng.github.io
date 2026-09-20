@@ -44,6 +44,22 @@ metadata:
 
 ---
 
+## Phase 0 · OpenSpec 门禁 [full only]
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+`full` 模式产出已发布文章，**必须先建 change 并取得用户确认**，之后才进入 Phase 1：
+
+1. `openspec new change "<slug>"`（一批多篇用主题名）
+2. 按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 `proposal.md` / `design.md` / `tasks.md`；其中 `design.md` 的**「文章内容大纲」**是审批核心——逐节写清"这一节写什么 + 素材来源 + 必备表/公式/图"
+3. 把大纲贴给用户待确认；**未确认不得进入 Phase 1，不得写 `src/pages/`**
+
+`draft` / `collect` 模式豁免（只产草稿/素材，不发表），豁免时在回复中说明理由。
+
+Phase 4 按 change 中已批准的大纲落笔；大纲需变更时走 `openspec-update-change` 回写，不直接改稿。
+
+---
+
 ## draft 模式 · 草稿调研路线
 
 为 blog-drafts 草稿读一篇论文，**只提取核心信息与核心图片落进草稿**。与 `collect` 的区别：collect 产 raw 素材层（四份分析文件）供后续写作复用；draft 直接面向草稿小节，轻量、即时。库内查重由调用方负责（草稿流程通常已做）。
@@ -84,7 +100,7 @@ metadata:
 1. **必须创建 todo**：读本文后，立即创建全阶段 todo 清单。todo note 必须记录论文标题、slug、原始 URL/PDF/arXiv ID、目标 HTML、raw 目录和已分配 subagents。
 2. 必须按 Phase 顺序推进；不得把中间结果当作完成态停下。
 3. Phase 1-3 的产物只用于后续分析和写作，默认不作为最终交付。
-4. 进入 Phase 5 前，必须完成 Phase 4（文章架构规划）。
+4. 进入 Phase 5 前，必须完成 Phase 4（文章架构规划）。full 模式还必须在 Phase 1 之前完成 Phase 0 门禁（建 change + 用户确认「文章内容大纲」）。
 5. 进入 Phase 5 前，必须读取 `~/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
 6. **默认生成博客**：用户若未明确要求"只做分析/只 collect/不生成博客"，默认执行到 HTML 文章生成 + 构建校验 + 发布准备完成。
 7. **配图优先级**：用户截图 > arXiv source tarball 原始图片 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图（脚本 `scripts/crop-figures-from-docling.py`）> 代码绘制 > 网络搜图。AI 生图完全禁止；Docling 自家 144 DPI referenced 渲染图禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
@@ -105,6 +121,9 @@ metadata:
 
 ```
 输入: URL / PDF 路径 / 论文标题
+  │
+  ▼
+Phase 0 · 门禁 [full only] ── 建 change + 用户确认「文章内容大纲」；draft/collect 跳过
   │
   ▼
 Phase 1 · 提取 ──────────── raw/<slug>/sources/* + figures/*
@@ -230,15 +249,15 @@ Slug：<slug>
 
 ---
 
-## Phase 4 · 文章架构规划 [full only]
+## Phase 4 · 文章架构落地 [full only]
 
 > 进入本阶段前，读取 `references/article-structure-template.md`。
 
-在动笔写 HTML 之前，先规划文章骨架：
+Phase 0 的 change 已定下「文章内容大纲」（每节写什么 + 素材来源 + 必备元素），本阶段把它落到 7-Part 结构上：
 
-1. **分析全部素材**：通读 synthesis.md（导航索引）+ Phase 2 的四份分析产出 + 原文，了解有什么可用
-2. **设计文章结构**：给出 2-3 种章节组织方案，推荐其一
-3. **用户确认**：用户确认后进入 HTML 写作；用户无偏好时直接按推荐执行
+1. **对齐素材**：通读 synthesis.md（导航索引）+ Phase 2 的四份分析产出 + 原文，逐节核对大纲里承诺的素材是否齐备；缺料先补
+2. **映射到 7-Part**：把大纲各节映射到标准 7-Part 结构，列出映射表；字数下限与质量底线按 `references/article-structure-template.md` 执行
+3. **偏离处理**：需增删节次或调整叙事顺序时，先走 `openspec-update-change` 回写 change 的「文章内容大纲」再动笔；不得默默偏离已批准的大纲
 
 标准 7-Part 结构、字数下限和质量底线见 `references/article-structure-template.md`。
 
