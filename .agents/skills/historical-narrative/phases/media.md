@@ -60,7 +60,7 @@ graph TD
 
 ## 背景音乐（可选）
 
-正文完成后生成音乐。**先读取 `~/.agents/skills/music-gen/SKILL.md`**（如果存在）获取乐理知识和 Prompt 写法。
+正文完成后生成音乐。若本机存在 `music-gen` skill（当前未安装；先查 `~/.agents/skills/` 与 `~/.hanako/skills/`），读取其 SKILL.md 获取乐理知识与 Prompt 写法；否则按通用配乐提示自行生成。
 
 若 music-gen skill 不存在，使用 mmx 命令直接生成：
 

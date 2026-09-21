@@ -26,19 +26,19 @@
 
 ## 5. 第二批：其余 6 个 skill 铺开（需第 4 组冒烟通过）
 
-- [ ] 5.1 `academic-research`：管线开头插入门禁小节（产 survey/系列文章时必须先建 change，含各篇内容大纲；纯检索/collect 豁免）
-- [ ] 5.2 `deep-research`：输出为 HTML 报告/文章时接门禁；仅对话内结论时豁免（在门禁小节写明判定）
-- [ ] 5.3 `historical-narrative`：接门禁，计划中「文章内容大纲」为编年分节骨架
-- [ ] 5.4 `book-to-blog`：接门禁（full 模式全书转写必须先列章节清单与每章内容要点；extract 单篇精读按内容级增补判定）
-- [ ] 5.5 `course-notes`：接门禁（生成/重写/扩展课程笔记并发布时先出计划；批量课件按一次 change 覆盖多节）
-- [ ] 5.6 `github-repo-read`：接门禁（源码解读成文前先出计划，含代码分析章节骨架）
-- [ ] 5.7 六个 skill 的门禁小节统一为 3-5 行 + 指向库内 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`（不得写全局 `~/.agents/skills/` 路径），不复制流程正文；逐个自查无重复正文
-- [ ] 5.8 铺开时若发现形态不适配（如 book-to-blog 的章节清单、course-notes 的批量课件）→ 允许按形态增删模板节次并回写模板；若属根本性不适配则回退第 4 组重修
+- [x] 5.1 `academic-research`：管线开头插入门禁小节（产 survey/系列文章时必须先建 change，含各篇内容大纲；纯检索/collect 豁免）
+- [x] 5.2 `deep-research`：输出为 HTML 报告/文章时接门禁；仅对话内结论时豁免（在门禁小节写明判定）
+- [x] 5.3 `historical-narrative`：接门禁，计划中「文章内容大纲」为编年分节骨架
+- [x] 5.4 `book-to-blog`：接门禁（full 模式全书转写必须先列章节清单与每章内容要点；extract 单篇精读按内容级增补判定）
+- [x] 5.5 `course-notes`：接门禁（生成/重写/扩展课程笔记并发布时先出计划；批量课件按一次 change 覆盖多节）
+- [x] 5.6 `github-repo-read`：接门禁（源码解读成文前先出计划，含代码分析章节骨架）
+- [x] 5.7 六个 skill 的门禁小节统一为 3-5 行 + 指向库内 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`（不得写全局 `~/.agents/skills/` 路径），不复制流程正文；逐个自查无重复正文
+- [x] 5.8 铺开时若发现形态不适配（如 book-to-blog 的章节清单、course-notes 的批量课件）→ 允许按形态增删模板节次并回写模板；若属根本性不适配则回退第 4 组重修
 
 ## 6. 校验
 
-- [ ] 6.1 `openspec validate content-skills-openspec-gate --strict` 通过
-- [ ] 6.2 负例检查：确认 `draft` 模式（如"把这篇存到草稿"）确实不触发门禁，且回复中带有豁免理由
-- [ ] 6.3 清空冒烟产生的临时 change（或转为正式使用），`openspec list` 状态正常
-- [ ] 6.4 与 `fix-stale-skill-paths` 交叉确认：本次新增引用的路径写法与该 change 的口径一致（库内 skill 用库内锚定路径）
+- [x] 6.1 `openspec validate content-skills-openspec-gate --strict` 通过
+- [x] 6.2 负例检查：确认 `draft` 模式（如"把这篇存到草稿"）确实不触发门禁，且回复中带有豁免理由
+- [x] 6.3 清空冒烟产生的临时 change（或转为正式使用），`openspec list` 状态正常
+- [x] 6.4 与 `fix-stale-skill-paths` 交叉确认：本次新增引用的路径写法与该 change 的口径一致（库内 skill 用库内锚定路径）
 - [ ] 6.5 在本 change 的 tasks 完成项打勾后提请 archive

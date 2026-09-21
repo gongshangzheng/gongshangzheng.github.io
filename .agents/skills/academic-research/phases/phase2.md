@@ -17,7 +17,7 @@
 > Phase 0-1 只负责定方向与选样本；真正可进入综述正文的证据、数据、图表、方法细节，主要来自这里。
 > 如无特殊说明，不得跳过本阶段直接进入 Phase 3/4。
 >
-> **章节利用策略**：进入本阶段前，读取 `~/.agents/skills/read-article/references/paper-section-guide.md`。
+> **章节利用策略**：进入本阶段前，读取 `~/gongshangzheng.github.io/.agents/skills/read-article/references/paper-section-guide.md`。
 > 该指南定义了论文每个章节在不同分析维度下的阅读深度和利用方式。特别注意：
 > - **Introduction** → Phase 2a（动机+贡献声明）+ Phase 2b（技术定位）
 > - **Related Works** → Phase 2b（taxonomy + 引用链 + 共性缺陷）+ Phase 2.4（论文池回流）

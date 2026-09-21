@@ -53,6 +53,14 @@ tags: [book, pdf, epub, translation, chinese, html-blog, review, series, hub]
 
 模式由用户意图决定：明确要"全部""整本"→ full；只要"精读""提取""一篇""核心"→ extract。模糊时问一句。
 
+## Phase 0 · OpenSpec 门禁
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+两种模式都产出已发布 HTML，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**中，`full` 模式逐篇给章节清单与每章内容要点（一篇对应原书一章/一类），`extract` 模式给单篇分节骨架，经用户确认后才进入写作。
+
+豁免：小修（错字、错链、字段）与用户显式跳过；豁免时在回复中说明理由。
+
 ## 输出
 
 `full` 模式默认完整产出：
@@ -75,6 +83,8 @@ tags: [book, pdf, epub, translation, chinese, html-blog, review, series, hub]
 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` | HTML 写作规范、capture.js、组件语法 | Phase 4 撰写前必读 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-syntax/references/html-components.md` | 全部 HTML 组件语法 | 写正文时 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` | 发布流程、验证清单 | 发布时 |
+| `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` | 内容类产出的 OpenSpec 门禁（何时建 change、模板、审批、豁免） | 开始前 |
+| `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` | 内容类 change 的 proposal / design / tasks 模板 | 建 change 时 |
 
 ## 路由决策
 
@@ -83,7 +93,7 @@ tags: [book, pdf, epub, translation, chinese, html-blog, review, series, hub]
 | Phase 1 · 提取与清洗 | `phases/extraction.md` |
 | Phase 2 · 结构规划（拆篇 + Hub） | `phases/structure.md` |
 | Phase 3 · 中文转写规范 | `phases/translation.md` + `references/translation-standards.md` |
-| Phase 4 · HTML 撰写 | `~/.agents/skills/html-blog/SKILL.md` + `phases/composition.md` |
+| Phase 4 · HTML 撰写 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/composition.md` |
 | Phase 5 · 三路 Review | `phases/review.md` + `subagents/review-*.md` |
 | Phase 6 · Hub + 发布 | `phases/publish.md` |
 | 目录式条目（人物/词条类书） | `references/entry-format.md` |
@@ -96,14 +106,14 @@ tags: [book, pdf, epub, translation, chinese, html-blog, review, series, hub]
 4. **Phase 2 结构规划**：读取 `phases/structure.md`，决定单篇 vs 系列、按什么维度拆篇、Hub 设计；输出结构图，用户确认后继续
 5. **注册分类**：若书归入新 subcategory（如 `categories/读书笔记/<书名>`），按 `blog-categories` SKILL 注册到 `data/category-names.json`、删 `taxonomy-slugs.json`、`node build.js`、登记到 `subcategory-organization.md`
 6. **Phase 3 转写**：读取 `phases/translation.md` + `references/translation-standards.md`，确定人名/地名/术语处理、OCR 清洗规则
-7. **Phase 4 撰写**：读取 `~/.agents/skills/html-blog/SKILL.md` + `phases/composition.md`；**必须用 capture.js 建骨架**（系列文章用默认模板，Hub 用 `--hub`）；逐篇写 frontmatter + 中文正文
+7. **Phase 4 撰写**：读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/composition.md`；**必须用 capture.js 建骨架**（系列文章用默认模板，Hub 用 `--hub`）；逐篇写 frontmatter + 中文正文
 8. **Phase 5 Review**：同时派出 3 个 Review subagent（`review-fidelity` / `review-completeness` / `review-html-format`），汇总修复 P0/P1
 9. **Phase 6 Hub + 发布**：读取 `phases/publish.md`，建/更新 Hub，`node build.js`，git push
 10. 用 `node lib/lint-html.js <page.html>` 逐页校验
 
 ## 硬规则
 
-- **必须调用 capture.js**：文章创建走 `node ~/.agents/skills/html-blog/capture.js <slug>`，Hub 走 `--hub`，禁止徒手写 frontmatter
+- **必须调用 capture.js**：文章创建走 `node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug>`，Hub 走 `--hub`，禁止徒手写 frontmatter
 - **每步执行前先读对应 phase/references 文档**，不要跳过
 - 开始执行前先创建 todo 清单
 - **忠实但精炼**：转写去 OCR 噪声、保留全部事实（人名、日期、数字、地点、罪名、关系），但不逐字硬译、不继承乱码

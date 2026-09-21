@@ -8,7 +8,7 @@ description: Phase 5 HTML 撰写指引。配合 read-article/SKILL.md 使用。
 基于 Phase 4 确认的文章架构 + Phase 3 的 synthesis.md + 4 份分析结果，撰写教学式 HTML 深度解读。
 
 > ⚠️ **前置条件**：
-> 1. 已读取 `~/.agents/skills/html-blog/SKILL.md`
+> 1. 已读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`
 > 2. 已完成 Phase 4 文章架构规划
 > 3. 已用 capture.js 创建 HTML 骨架
 
@@ -17,7 +17,7 @@ description: Phase 5 HTML 撰写指引。配合 read-article/SKILL.md 使用。
 ## 5.1 创建 HTML 骨架
 
 ```bash
-node ~/.agents/skills/html-blog/capture.js <slug> --notify
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --notify
 ```
 
 产出：`~/gongshangzheng.github.io/src/pages/<slug>.html`

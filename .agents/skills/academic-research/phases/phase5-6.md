@@ -3,7 +3,7 @@
 **所有 HTML 生成必须遵循 html-blog 技能**：
 
 ```
-读取 ~/.agents/skills/html-blog/SKILL.md 全文
+读取 ~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md 全文
 ```
 
 本 phase 中的 HTML 生成规范以此文件为准，不重复其内容。
@@ -38,14 +38,14 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 原始素材：~/gongshangzheng.github.io/raw/<slug>/
 
 读取模板：
-- review-fidelity：~/.agents/skills/read-article/subagents/review-fidelity.md
-- review-completeness：~/.agents/skills/read-article/subagents/review-completeness.md
-- review-html-format：~/.agents/skills/read-article/subagents/review-html-format.md
+- review-fidelity：~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-fidelity.md
+- review-completeness：~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-completeness.md
+- review-html-format：~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-html-format.md
 
 按模板要求逐项检查并输出报告。
 ```
 
-> 注：academic-research 的 Review 模板路径与 read-article 相同（`~/.agents/skills/read-article/subagents/review-*.md`），但调用上下文独立——Review 时需同时检查 survey 整体一致性，而非仅单篇论文。
+> 注：academic-research 的 Review 模板路径与 read-article 相同（`~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-*.md`），但调用上下文独立——Review 时需同时检查 survey 整体一致性，而非仅单篇论文。
 
 ### 汇总与修复
 
@@ -97,7 +97,7 @@ node build.js
 由 html-blog 统一控制邮件发送。在调用 capture.js 创建文章时加 `--notify`：
 
 ```bash
-node ~/.agents/skills/html-blog/capture.js <slug> --notify
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --notify
 ```
 
 html-blog 发布流程会自动检查 frontmatter 中的 `notify` 字段并发送通知。
@@ -132,9 +132,9 @@ html-blog 发布流程会自动检查 frontmatter 中的 `notify` 字段并发�
    - **形态 2（独立中枢页）**：当需要图文导览（stats + 知识地图三视图 + period-card）时，新建独立 Hub 页：
      ```bash
      cd ~/gongshangzheng.github.io
-     node ~/.agents/skills/html-blog/capture.js <topic>-hub --hub
+     node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <topic>-hub --hub
      ```
-     读取 `~/.agents/skills/html-blog/templates/hub-template.html` 填充：引论、章节目录（`chapter-list` 布局，按 `sub_id` 排序）、研究资源索引（可选）。Hub 页同样要加 `aliases` 接管 subcategory index。
+     读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/templates/hub-template.html` 填充：引论、章节目录（`chapter-list` 布局，按 `sub_id` 排序）、研究资源索引（可选）。Hub 页同样要加 `aliases` 接管 subcategory index。
 4. **构建验证**：`node build.js` + git push
 
 ### 情况 B：产出为单篇文章 → 更新已有 Hub 页

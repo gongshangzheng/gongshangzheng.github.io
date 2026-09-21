@@ -38,10 +38,19 @@ metadata:
 
 | 引用文件 | 内容 | 何时读取 |
 |---------|------|---------|
-| `~/.agents/skills/read-article/references/paper-section-guide.md` | 论文章节利用策略：何时读什么、读多深、用来做什么 | Phase 0-1 筛选 + Phase 2 深读时 |
+| `~/gongshangzheng.github.io/.agents/skills/read-article/references/paper-section-guide.md` | 论文章节利用策略：何时读什么、读多深、用来做什么 | Phase 0-1 筛选 + Phase 2 深读时 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md` | sub_id、Hub 页、编号规则 | 规划系列文章时 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md` | 配图来源优先级、arXiv 图片提取 | 配图时 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` | 发布流程、验证清单 | 发布时 |
+| `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` | 内容类产出的 OpenSpec 门禁（何时建 change、模板、审批、豁免） | 开始生成前 |
+
+## Phase 0 · OpenSpec 门禁
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+产 HTML（`survey-full`、`deep-read-only` 的公开参考页、`revision` 的内容级增补）MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 `proposal.md` / `design.md` / `tasks.md`；`design.md` 的**「文章内容大纲」**（逐篇分节骨架 + 素材来源 + 必备表·公式·图）经用户确认后才进入写作，**未确认不得写 `src/pages/`**。
+
+豁免：`paper-pool` / `spine-only` 等不产 HTML 的阶段、纯检索与 `read-article` 的 `collect` 线路（只产素材）、小修；豁免时在回复中说明理由。
 
 ## Survey / 综述任务标准
 
@@ -107,7 +116,7 @@ Phase 2 通过 `read-article` 读取论文全文。`core-survey` 和 `must-read-
 7. 进入 Phase 3 前，核心 survey 必须已完整深读并默认发布参考页；must-read-paper 必须完成 read-article 深读
 8. 进入 Phase 4 前，Phase 3 必须完成统一的 `survey-spine`
 9. **默认生成博客**：用户若未明确要求"只做侦察/不生成博客"，必须执行到 HTML 生成 + 构建校验
-10. 进入 Phase 5-6 前，必须读取 `~/.agents/skills/html-blog/SKILL.md`
+10. 进入 Phase 5-6 前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`
 11. **重要事实性句子必须带引用**：至少覆盖研究问题定义、时间线、定量结果、方法比较
 12. Phase 5-6 fidelity review 必须**回原始来源核对**
 13. **扁平数据流**：Phase 2 的 paper packets 是唯一的事实存储层，Phase 3 的 survey-spine 是导航索引，Phase 4 直接从 paper packets + 原文写 HTML。三类产物各司其职，不需要额外的中间重组层。
@@ -210,8 +219,8 @@ Phase 7 · 更新 Hub 页 ──── 匹配并更新枢纽页
 ### arXiv 检索脚本
 
 ```bash
-cd ~/.agents/skills/arxiv-paper-digest
-~/.agents/skills/arxiv-paper-digest/.venv/bin/python << 'PYEOF'
+cd ~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest
+~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest/.venv/bin/python << 'PYEOF'
 from src.arxiv_search import Query, Taxonomy, search_arxiv
 
 keywords = ["your", "topic", "keywords"]

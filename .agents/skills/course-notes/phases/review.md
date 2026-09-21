@@ -23,7 +23,7 @@ HTML 初稿完成后，**同时派出 3 个 Review subagent**，从不同角度�
 章节：<chapter>
 HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 课件原文：<ppt/pdf 路径>
-模板文件：~/.hanako/skills/course-notes/subagents/<review-name>.md
+模板文件：~/gongshangzheng.github.io/.agents/skills/course-notes/subagents/<review-name>.md
 
 读取模板文件后，按模板要求逐项检查并输出报告。
 ```

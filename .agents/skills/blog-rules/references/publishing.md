@@ -18,6 +18,7 @@
 | 6 | MathJax 语法正确 | 无裸 `λ`、`_`、`->` 等被 mark 误识别 |
 | 7 | frontmatter 完整 | `updated_at` 已更新 |
 | 8 | 正文无元叙述 | 无"这篇专门讲""按要求生成""旧文"等任务过程表述 |
+| 9 | skill 交叉引用路径可解析 | `~/.venv/bin/python3 scripts/check-skill-paths.py` 退出码 0（死路径 0 处）
 
 ---
 
@@ -25,16 +26,16 @@
 
 ```bash
 # 普通文章
-node ~/.agents/skills/html-blog/capture.js <slug>
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug>
 
 # 需要邮件通知
-node ~/.agents/skills/html-blog/capture.js <slug> --notify
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --notify
 
 # Hub 页
-node ~/.agents/skills/html-blog/capture.js <slug> --hub
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --hub
 
 # 课程笔记
-node ~/.agents/skills/html-blog/capture.js <slug> --course
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --course
 ```
 
 输出路径：`~/gongshangzheng.github.io/src/pages/<slug>.html`
@@ -76,7 +77,7 @@ https://gongshangzheng.github.io/<slug>.html
 由 html-blog 统一控制。创建文章时使用 `--notify` 参数即可：
 
 ```bash
-node ~/.agents/skills/html-blog/capture.js <slug> --notify
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --notify
 ```
 
 html-blog 发布流程会自动检查 frontmatter 中的 `notify` 字段并发送通知。
@@ -108,4 +109,4 @@ html-blog 发布流程会自动检查 frontmatter 中的 `notify` 字段并发�
 4. 每篇文章 frontmatter 加 `hub: <hub-slug>`
 5. 编号与 Hub 一致性检查（参见 series-rules.md §分配前检查）
 
-详见 `~/.agents/skills/blog-rules/references/series-rules.md`。
+详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md`。

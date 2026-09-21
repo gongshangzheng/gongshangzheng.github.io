@@ -23,12 +23,12 @@ Phase 0-1
 
 基于 Phase 0 的领域地图，设计检索策略。**严禁使用 Bing/Google 搜索 arXiv 论文**，统一使用 `arxiv-paper-digest` 内置检索能力。
 
-> **查询构建参考**：`~/.agents/skills/arxiv-paper-digest/SKILL.md`
+> **查询构建参考**：`~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest/SKILL.md`
 
 ### 检索脚本
 
 ```bash
-cd ~/.agents/skills/arxiv-paper-digest
+cd ~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest
 .venv/bin/python << 'PYEOF'
 from src.arxiv_search import Query, Taxonomy, search_arxiv
 
@@ -63,7 +63,7 @@ PYEOF
 
 ### 目标论文筛选
 
-> 章节利用策略见 `~/.agents/skills/read-article/references/paper-section-guide.md` §1（总览表）和 §2.1（Abstract）。
+> 章节利用策略见 `~/gongshangzheng.github.io/.agents/skills/read-article/references/paper-section-guide.md` §1（总览表）和 §2.1（Abstract）。
 
 筛选不只是看 abstract。对每篇候选论文，至少扫读以下章节辅助判断：
 
@@ -135,8 +135,8 @@ def is_survey(paper) -> bool:
 如需验证环境：
 
 ```bash
-cd ~/.agents/skills/arxiv-paper-digest
+cd ~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-查询能力、`Query` / `Taxonomy` 用法与 `search_arxiv` / `search_by_keywords` 示例，见 `~/.agents/skills/arxiv-paper-digest/SKILL.md`。
+查询能力、`Query` / `Taxonomy` 用法与 `search_arxiv` / `search_by_keywords` 示例，见 `~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest/SKILL.md`。

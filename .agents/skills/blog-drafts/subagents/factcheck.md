@@ -23,7 +23,7 @@ read-article skill 的 `subagents/review-fidelity.md`——本流程借鉴其 P0
 - 草稿：`~/gongshangzheng.github.io/drafts/<slug>.md`
 - 草稿参考资料：草稿正文末尾"参考资料"节
 - 候选事实陈述（可选起点）：`scripts/draft.py factcheck <slug>` 的启发式提取结果
-- 参考模板：`~/.claude/skills/read-article/subagents/review-fidelity.md`
+- 参考模板：`~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-fidelity.md`
 
 ## 第一步：区分陈述类型
 

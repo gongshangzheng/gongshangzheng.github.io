@@ -5,7 +5,7 @@ description: Phase 4 HTML 撰写。配合 book-to-blog/SKILL.md 使用。
 
 # Phase 4 · HTML 撰写
 
-**目标**：用 capture.js 建骨架，逐篇写 frontmatter + 中文正文。进入本阶段前**必须读取** `~/.agents/skills/html-blog/SKILL.md`。
+**目标**：用 capture.js 建骨架，逐篇写 frontmatter + 中文正文。进入本阶段前**必须读取** `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`。
 
 ## 4.1 建骨架
 
@@ -13,9 +13,9 @@ description: Phase 4 HTML 撰写。配合 book-to-blog/SKILL.md 使用。
 
 ```bash
 # 系列文章
-node ~/.agents/skills/html-blog/capture.js <slug>-ch01
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug>-ch01
 # Hub 页
-node ~/.agents/skills/html-blog/capture.js <slug>-hub --hub
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug>-hub --hub
 ```
 
 禁止徒手写 frontmatter。capture.js 会写入 `created_at`/`updated_at`（写一次后不再改 created_at，编辑后手改 updated_at）。

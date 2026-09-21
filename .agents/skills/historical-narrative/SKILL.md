@@ -41,13 +41,23 @@ metadata:
 
 ---
 
+## Phase 0 · OpenSpec 门禁 [full only]
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+`full` 模式产出已发布文章，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**以编年分节骨架给出（每节：写什么 + 史料来源 + 必备时间线/地图/图表），经用户确认后才进入写作。
+
+豁免：`oral` 模式（只在对话内讲述、不发布）不建 change；豁免时说明理由。
+
+---
+
 ## 执行规则
 
 1. **必须创建 todo**：读本文后，立即创建全阶段 todo 清单。todo note 必须记录主题、slug、目标 HTML、raw 目录和已分配 subagents。
 2. 必须按 Phase 顺序推进；不得把中间结果当作完成态停下。
 3. Phase 1-3 的产物只用于后续分析和写作，默认不作为最终交付。
 4. 进入 Phase 5 前，必须完成 Phase 4（文章架构规划）。
-5. 进入 Phase 5 前，必须读取 `~/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
+5. 进入 Phase 5 前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
 6. **默认生成博客**：用户若未明确要求"只口头讲讲/只分析/不发布"，默认执行到 HTML 文章生成 + 构建校验 + 发布准备完成。
 7. **配图优先级**：真实历史照片 > 档案扫描件 > 博物馆/机构藏品 > Wiki Commons > 地图/示意图 > 代码绘制 > 网络搜图。AI 生图在历史叙事中**原则上禁止**；若史料完全缺失且用户同意，最多 1-2 张氛围示意，必须在 caption 中明确标注"AI 想象图"。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 8. **中间文件保留完整事实**：Phase 2 的史料分析保留所有具体时间、地点、人物、数字、引语、来源争议；`synthesis.md` 是导航索引，记录"哪个事实在哪个文件"，用指针连接而非复制。
@@ -105,7 +115,7 @@ Phase 9 · 交叉引用回链 [full only]
 |---|---|
 | 进入 Phase 2 前 | `references/source-guide.md`（史料来源等级与利用策略） |
 | 进入 Phase 4 前 | `references/article-structure-template.md`（编年体文章结构模板） |
-| 进入 Phase 5 前 | `~/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md` |
+| 进入 Phase 5 前 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md` |
 | 进入 Phase 6 前 | `subagents/review-*.md` |
 | 配图时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md` |
 | 发布时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` |
@@ -159,7 +169,7 @@ Phase 1 完成后，**同时派出 4 个 subagent**：
 派发 prompt 模板：
 ```
 任务：执行 Phase 2a（时间线重建）。
-读取模板：~/.agents/skills/historical-narrative/subagents/timeline.md
+读取模板：~/gongshangzheng.github.io/.agents/skills/historical-narrative/subagents/timeline.md
 主题：<主题>
 已提取史料：<路径>
 Slug：<slug>
@@ -211,7 +221,7 @@ Slug：<slug>
 
 ## Phase 5 · 多阶段 HTML 撰写 [full only]
 
-> ⚠️ 进入本阶段前，必须读取 `~/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md`。
+> ⚠️ 进入本阶段前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md`。
 
 Phase 5 拆分为 6 个子阶段，按 **5a → 5b → (5c ∥ 5d) → 5e → 5f** 顺序执行：
 

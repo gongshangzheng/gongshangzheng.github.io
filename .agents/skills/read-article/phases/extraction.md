@@ -41,18 +41,18 @@ Slug：<slug>
    # 使用全局 venv（见 SKILL.md Python 环境章节）
 
    # Markdown：默认不导出图片
-   ~/.venv/bin/python3 ~/.agents/skills/docling/scripts/convert.py \
+   ~/.venv/bin/python3 ~/.hanako/skills/docling/scripts/convert.py \
      "<url>" --format markdown --table-mode accurate \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.md
 
    # JSON（结构化：tables/formulas/layout；pictures[].prov 含 figure 页码+bbox，
    #   是优先级 D 脚本 scripts/crop-figures-from-docling.py 的输入）
-   ~/.venv/bin/python3 ~/.agents/skills/docling/scripts/convert.py \
+   ~/.venv/bin/python3 ~/.hanako/skills/docling/scripts/convert.py \
      "<url>" --format json \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.json
 
    # 只有需要临时定位 figure 时，才允许额外跑 referenced；产物不得进入最终 images/ 或博客 assets
-   ~/.venv/bin/python3 ~/.agents/skills/docling/scripts/convert.py \
+   ~/.venv/bin/python3 ~/.hanako/skills/docling/scripts/convert.py \
      "<url>" --format json --image-export-mode referenced \
      --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>-with-temp-images.json
 
@@ -188,7 +188,7 @@ PY
    脚本同时写 `figures/<slug>/figures-manifest.json`，记录每张图的 page_no / bbox / self_ref / caption / 尺寸 / 空白嫌疑，供后续 HTML 配 `cap` 使用。如某张 `blank_suspect: true`，说明矢量渲染可能失败，需人工复核或回退到更高 DPI。
 
    **优先级 E：blog-images 搜到的可靠公开图片（补充来源）**
-   - 当论文原始来源图不足，或需要背景配图/作者照片/机构示意图时，先读取并遵循 `~/.agents/skills/blog-images/SKILL.md`。
+   - 当论文原始来源图不足，或需要背景配图/作者照片/机构示意图时，先读取并遵循 `~/gongshangzheng.github.io/.agents/skills/blog-images/SKILL.md`。
    - 只接受来源可靠、分辨率足够、与正文事实一致的图片；必须下载到本地，禁止 hotlink。
 
    **质量门槛**
@@ -252,7 +252,7 @@ fi
 
 7. 如果 Docling 失败：
    - 下载 PDF 本地：curl -L "<url>" -o /tmp/<slug>.pdf
-   - 重试本地：~/.venv/bin/python3 ~/.agents/skills/docling/scripts/convert.py \
+   - 重试本地：~/.venv/bin/python3 ~/.hanako/skills/docling/scripts/convert.py \
        /tmp/<slug>.pdf --format markdown --max-pages 10 --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.md
    - 或换 OCR：--ocr tesseract --force-ocr
 

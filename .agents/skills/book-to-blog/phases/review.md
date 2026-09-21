@@ -19,7 +19,7 @@ description: Phase 5 三路并行 Review。配合 book-to-blog/SKILL.md 使用�
 
 ```
 任务：执行保真度审查。
-读取模板：~/.agents/skills/book-to-blog/subagents/review-fidelity.md
+读取模板：~/gongshangzheng.github.io/.agents/skills/book-to-blog/subagents/review-fidelity.md
 书名：<title>
 Slug：<slug>
 原文：~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.clean.txt

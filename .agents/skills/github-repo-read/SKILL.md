@@ -42,6 +42,14 @@ metadata:
 7. **图片优先级**：用户笔记图 > GitHub 仓库中的 README/docs/assets/figures 图片 > arXiv source > PDF crop。所有图片本地化，详见 `blog-images` skill。
 8. **默认只读**：除非用户明确要求修改代码，否则只 clone/read，不写入仓库内部文件。
 
+## Phase 0 · OpenSpec 门禁 [blog / blog-multi]
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+`blog` / `blog-multi` 模式产出已发布 HTML，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**给出分节骨架（每节：讲什么 + 源码/文档依据 + 必备时序图/代码片段/Mermaid 图），`blog-multi` 逐篇分列，经用户确认后才进入写作。
+
+豁免：只读分析（不产 HTML）模式、小修；豁免时在回复中说明理由。
+
 ## 执行规则
 
 1. **创建 todo**：读本文后，立即创建全阶段 todo 清单。todo note 记录 repo、ref、输出模式、源码目录、目标文章 slug。这样在长流程中不会丢失上下文。
@@ -61,8 +69,8 @@ metadata:
 |------|---------|
 | 每个 Phase 开始前 | 对应的 `phases/<phase>.md` |
 | 配图时 | `~/gongshangzheng.github.io/.agents/skills/blog-images/SKILL.md` |
-| 写 HTML 前 | `~/.agents/skills/html-blog/SKILL.md` |
-| HTML 组件语法 | `~/.agents/skills/blog-syntax/` 对应 reference |
+| 写 HTML 前 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` |
+| HTML 组件语法 | `~/gongshangzheng.github.io/.agents/skills/blog-syntax/` 对应 reference |
 | blog 模式确定分类时 | `~/gongshangzheng.github.io/.agents/skills/blog-categories/SKILL.md` |
 | 确定 subcategory 后填写 title/sub_id 时 | ① 先用 `blog-search` skill 检索该 subcategory 下的现有文章，确认系列结构和下一个可用编号；② 再读 `~/gongshangzheng.github.io/.agents/skills/blog-categories/references/subcategory-organization.md` |
 | 发布时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` |

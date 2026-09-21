@@ -31,7 +31,7 @@ mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,figures}
 **PDF**：
 1. `pdftotext`（poppler）— 最快，适合文本层 PDF：`pdftotext -layout "<pdf>" ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.txt`
 2. `pypdf` — 文本层 fallback：`~/.venv/bin/python -c "from pypdf import PdfReader; ..."`
-3. `docling` — 技术书（表格/代码/公式）或扫描件 OCR：`~/.venv/bin/python ~/.agents/skills/docling/scripts/convert.py "<pdf>" --format markdown --output ...`
+3. `docling` — 技术书（表格/代码/公式）或扫描件 OCR：`~/.venv/bin/python ~/.hanako/skills/docling/scripts/convert.py "<pdf>" --format markdown --output ...`
 4. 扫描件无文本层 → `pdftotext` 出空 → 用 docling `--ocr tesseract --force-ocr`，或 `pdftoppm` 渲染页为 PNG 后视觉确认
 
 **EPUB**：`ebooklib` + `beautifulsoup4` 优先，stdlib `zipfile` fallback。

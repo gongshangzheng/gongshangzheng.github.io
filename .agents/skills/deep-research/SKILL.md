@@ -36,6 +36,15 @@ metadata:
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md` | sub_id、Hub 页、编号规则 | 规划系列文章时 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md` | 配图来源优先级 | 配图时 |
 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` | 发布流程、验证清单 | 发布时 |
+| `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` | 内容类产出的 OpenSpec 门禁（何时建 change、模板、审批、豁免） | 开始生成前 |
+
+## Phase 0 · OpenSpec 门禁
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+最终产出含可发布 HTML（长报告 / 文章 / 系列）时，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**（逐篇分节骨架 + 素材来源 + 必备表·图）经用户确认后才进入写作。
+
+豁免：结论仅在对话内输出时（不产 HTML）不建 change；豁免时在回复中说明理由。
 
 ## 执行规则
 
@@ -118,7 +127,7 @@ Phase 2 (INVESTIGATION) 涉及网络搜索时，遵循用户级 `web-search` ski
 2. **创建 Hub 页**：
    ```bash
    cd ~/gongshangzheng.github.io
-   node ~/.agents/skills/html-blog/capture.js <hub-slug> --hub
+   node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <hub-slug> --hub
    ```
 3. **填充 Hub 页**：引论 + 章节目录 + 研究资源索引
 4. **编号一致性检查**：先列出同一 subcategory 的现有 sub_id，确认无重复

@@ -15,7 +15,7 @@
 
 1. **创建文件（必须用 capture.js）**：
    ```bash
-   node ~/.agents/skills/html-blog/capture.js <slug> [--notify]
+   node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> [--notify]
    ```
    > ⚠️ 禁止手动 cp article-template.html，capture.js 自动注入 `created_at` / `updated_at` 时间戳。
 2. **边界**: 本 subagent 不得独立决定最终主线，不得整篇外包生成后交付；只能按主 agent 给定的 `survey-spine` 生成局部 HTML 或初稿骨架。

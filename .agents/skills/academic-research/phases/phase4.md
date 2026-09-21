@@ -34,7 +34,7 @@
 研究领域：<topic>
 Phase 0-1 素材：~/Org/roam/note/<topic>/phase0-1-*.org
 Phase 3 素材：~/Org/roam/note/<topic>/phase3-*.org
-读取模板：~/.agents/skills/academic-research/subagents/terminology-problem.md
+读取模板：~/gongshangzheng.github.io/.agents/skills/academic-research/subagents/terminology-problem.md
 输出文件：~/Org/roam/note/<topic>/terminology-problem.md
 ```
 
@@ -141,7 +141,7 @@ Phase 3 的 `survey-spine` 已经是统一结构底稿。Phase 4 不再重新堆
 使用 capture.js 创建 HTML 骨架：
 
 ```bash
-node ~/.agents/skills/html-blog/capture.js <slug> [--notify]
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> [--notify]
 ```
 
 产出：`~/gongshangzheng.github.io/src/pages/<slug>.html`
@@ -312,7 +312,7 @@ graph LR
 
 ## 4.6 · HTML 生成
 
-> 进入本节前，必须读取 `~/.agents/skills/html-blog/SKILL.md`。
+> 进入本节前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`。
 > academic-research 不自行定义博客 HTML 规范；`html-blog` 是唯一事实来源。
 
 使用 `subagents/html-gen.md` 模板。
@@ -320,7 +320,7 @@ graph LR
 ### 创建文章
 
 ```bash
-node ~/.agents/skills/html-blog/capture.js <slug> [--notify]
+node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> [--notify]
 ```
 
 ### 参考来源格式（必须）

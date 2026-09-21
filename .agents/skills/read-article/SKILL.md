@@ -101,7 +101,7 @@ Phase 4 按 change 中已批准的大纲落笔；大纲需变更时走 `openspec
 2. 必须按 Phase 顺序推进；不得把中间结果当作完成态停下。
 3. Phase 1-3 的产物只用于后续分析和写作，默认不作为最终交付。
 4. 进入 Phase 5 前，必须完成 Phase 4（文章架构规划）。full 模式还必须在 Phase 1 之前完成 Phase 0 门禁（建 change + 用户确认「文章内容大纲」）。
-5. 进入 Phase 5 前，必须读取 `~/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
+5. 进入 Phase 5 前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
 6. **默认生成博客**：用户若未明确要求"只做分析/只 collect/不生成博客"，默认执行到 HTML 文章生成 + 构建校验 + 发布准备完成。
 7. **配图优先级**：用户截图 > arXiv source tarball 原始图片 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图（脚本 `scripts/crop-figures-from-docling.py`）> 代码绘制 > 网络搜图。AI 生图完全禁止；Docling 自家 144 DPI referenced 渲染图禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 8. **中间文件保留完整事实**：Phase 2 的四份分析保留所有具体数值、公式、表格、超参数、实验配置。synthesis.md 是导航索引，记录"哪个事实在哪个文件"，用指针连接而非复制。
@@ -166,8 +166,8 @@ Phase 9 · 交叉引用回链 [full only]
 |---|---|
 | 进入 Phase 2 前 | `references/paper-section-guide.md`（论文章节利用策略） |
 | 进入 Phase 4 前 | `references/article-structure-template.md` |
-| 进入 Phase 5 前 | `~/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md` |
-| 进入 Phase 5e 前 | `~/.agents/skills/github-repo-read/SKILL.md`（若有代码仓库） |
+| 进入 Phase 5 前 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md` |
+| 进入 Phase 5e 前 | `~/gongshangzheng.github.io/.agents/skills/github-repo-read/SKILL.md`（若有代码仓库） |
 | 进入 Phase 6 前 | `subagents/review-*.md` |
 | 配图时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md` |
 | 发布时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` |
@@ -221,7 +221,7 @@ Phase 1 完成后，**同时派出 4 个 subagent**：
 派发 prompt 模板：
 ```
 任务：执行 Phase 2a（背景调研）。
-读取模板：~/.agents/skills/read-article/subagents/background.md
+读取模板：~/gongshangzheng.github.io/.agents/skills/read-article/subagents/background.md
 论文标题：<title>
 摘要：<abstract>
 Slug：<slug>
@@ -265,7 +265,7 @@ Phase 0 的 change 已定下「文章内容大纲」（每节写什么 + 素材�
 
 ## Phase 5 · 多阶段 HTML 撰写 [full only]
 
-> ⚠️ 进入本阶段前，必须读取 `~/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md`。
+> ⚠️ 进入本阶段前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md`。
 
 Phase 5 拆分为 7 个子阶段，按 **5a → 5b → (5c ∥ 5d ∥ 5e) → 5f → 5g** 顺序执行：
 
@@ -330,7 +330,7 @@ synthesis.md 仅作为导航索引（"去哪里找什么"），不作为内容�
 
 ### Frontmatter 规范
 
-**标题**（`title`）必须遵循系列命名规则（见 `~/.agents/skills/blog-rules/references/series-rules.md`）：
+**标题**（`title`）必须遵循系列命名规则（见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md`）：
 
 | 文章类型 | 标题格式 | 示例 |
 |---------|---------|------|
@@ -367,7 +367,7 @@ paper_doi: "10.3390/ani16111589"
 paper_code: "未开源（截至 2026.06 未找到官方仓库）"
 ```
 
-**sub_id** 必须遵循编号规则（见 `~/.agents/skills/blog-aliases/SKILL.md` §5 + `~/gongshangzheng.github.io/.agents/skills/blog-categories/references/subcategory-organization.md`）：
+**sub_id** 必须遵循编号规则（见 `~/gongshangzheng.github.io/.agents/skills/blog-aliases/SKILL.md` §5 + `~/gongshangzheng.github.io/.agents/skills/blog-categories/references/subcategory-organization.md`）：
 
 1. 分配前**必须运行检查命令**：
    ```bash
@@ -438,8 +438,8 @@ HTML 写作完成后，**同时派出 3 个 Review subagent**：
 4. `node build.js` 重新构建
 
 **必读**：
-- 系列命名规则：`~/.agents/skills/blog-rules/references/series-rules.md`
-- sub_id 编号规则：`~/.agents/skills/blog-aliases/SKILL.md` §5
+- 系列命名规则：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md`
+- sub_id 编号规则：`~/gongshangzheng.github.io/.agents/skills/blog-aliases/SKILL.md` §5
 - 现有分类路径分布：`~/gongshangzheng.github.io/.agents/skills/blog-categories/references/subcategory-organization.md`（按需读取）
 
 ---
@@ -554,12 +554,12 @@ HTML 写作完成后，**同时派出 3 个 Review subagent**：
 ```bash
 # 方案 1：下载 PDF 本地提取
 curl -L "<url>" -o /tmp/${SLUG}.pdf
-~/.venv/bin/python ~/.agents/skills/docling/scripts/convert.py \
+~/.venv/bin/python ~/.hanako/skills/docling/scripts/convert.py \
   /tmp/${SLUG}.pdf --format markdown --max-pages 10 \
   --output ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.md
 
 # 方案 2：OCR 扫描件
-~/.venv/bin/python ~/.agents/skills/docling/scripts/convert.py \
+~/.venv/bin/python ~/.hanako/skills/docling/scripts/convert.py \
   /tmp/${SLUG}.pdf --ocr tesseract --force-ocr \
   --format markdown --output ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.md
 ```

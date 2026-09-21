@@ -1,20 +1,28 @@
 ## Context
 
-实测基线（2026-09，扫描 `~/gongshangzheng.github.io/.agents/skills/`）：
+实测基线（2026-09，`scripts/check-skill-paths.py` 全库扫描，不含 `openspec/`）：
 
-- 该目录下 `~/.agents/skills/<name>` 形式的引用共 70 处，其中仅 4 处指向全局真实存在的 skill（`web-search`），**66 处是死路径**
-- 死路径按 skill 归类：`html-blog` 30 处、`read-article` 8 处、`blog-rules` 6 处、`arxiv-paper-digest` 6 处、`docling` 7 处、`blog-aliases` 2 处、`blog-images` / `blog-syntax` / `github-repo-read` / `book-to-blog` / `academic-research` / `historical-narrative` / `music-gen` 各 1 处
-- 按文件归类：19 个文件，最重的三个是 `read-article/SKILL.md` 11 处、`academic-research/phases/phase5-6.md` 8 处、`blog-rules/references/publishing.md` 6 处
-- `.agents/` 之外的 scripts / lib / docs / README / raw **无**死路径 → 范围收敛在 skill 文档内
+- 共 199 处 skill 路径引用，**69 处死路径**，全部是"指错树"（skill 存在，但引用指向另一个树）
+- 按目标 skill 归类：`html-blog` 30、`read-article` 8+1（另一处写在 `~/.claude/skills/`）、`docling` 7、`blog-rules` 6、`arxiv-paper-digest` 6、`blog-aliases` 2、`course-notes` 2（写在 `~/.hanako/skills/`）、`blog-images` / `blog-syntax` / `github-repo-read` / `book-to-blog` / `academic-research` / `historical-narrative` / `music-gen` 各 1
+- 按文件归类：21 个文件，最重的三个是 `read-article/SKILL.md` 11 处、`academic-research/phases/phase5-6.md` 8 处、`blog-rules/references/publishing.md` 6 处
+
+本机现有 skill 树（引用可合法指向的集合）：
+
+| 树 | 内容 |
+|----|------|
+| `~/gongshangzheng.github.io/.agents/skills/` | 博客相关 skill（28 个） |
+| `~/.agents/skills/` | 跨项目工具 skill（asu / docx / web-search / ego-browser …） |
+| `~/.hanako/skills/` | 另一 harness 的 skill（含 `docling`、`html-blog`、`read-article`、`web-search`、`org-roam-capture`、`send-email`） |
+| `~/.pi/agent/skills/` | pi 专属 skill |
 
 两个特殊对象：
 
-| 对象 | 处数 | 事实 | 来源 |
+| 对象 | 处数 | 事实 | 处置 |
 |------|------|------|------|
-| `docling` | 7 | `import docling` 失败（非 python 包）；全盘无该 skill；git 无删除记录 | 不明 |
-| `music-gen` | 1 | 全盘无该 skill；原引用已带"（如果存在）"兜底 | `historical-narrative/phases/media.md` |
+| `docling` | 7 | 写作 `~/.agents/skills/docling/...`；实际位于 `~/.hanako/skills/docling/`（`scripts/convert.py` 存在）；不是 python 包 | 改指 hanako 树（见 D3） |
+| `music-gen` | 1 | 任何树都不存在；原引用已带"（如果存在）"兜底 | 改条件式（见 D4） |
 
-成因判断：这批 skill 原在全局 `~/.agents/skills/`，后迁入库内。迁移时大部分引用改成库内锚定（89+ 处正确），少部分漏改。**不是设计意图，是存量漂移。**
+成因：这批 skill 原在全局，后迁入库内；迁移时大部分引用改了（含 130 处正确引用），少部分漏改，形成"指错树"的存量漂移。
 
 ## Goals / Non-Goals
 
@@ -33,26 +41,33 @@
 
 ## Decisions
 
-### D1：口径判据 = "SKILL.md 在哪个 tree"
+### D1：口径判据 = "skill 实际在哪棵树"
 
 - 库内 skill → `~/gongshangzheng.github.io/.agents/skills/<name>/<相对路径>`
-- 全局 skill → `~/.agents/skills/<name>/<相对路径>`
+- 全局工具 skill → `~/.agents/skills/<name>/<相对路径>`
+- 仅其他 harness 有的 skill（如 `docling`）→ 指向其所属树 `~/.hanako/skills/<name>/...`
 
-备选：改成按 skill 名引用（"读取 html-blog skill"），路径永不过期、且 harness 无关。被否——多数指令需要 `cat`/`read` 一个具体文件（如 `phases/html-writing.md`），名字引用表达不了；且现有 89+ 处都是路径写法，改成名字反而制造第三种风格。
+判据是 **`SKILL.md` 的实际位置**，不是"哪个目录看起来更正式"。
+
+备选：改成按 skill 名引用（"读取 html-blog skill"），路径永不过期、且 harness 无关。被否——多数指令需要 `cat`/`read` 一个具体文件（如 `phases/html-writing.md`），名字引用表达不了；且现有正确引用都是路径写法，改成名字反而制造第三种风格。
 
 ### D2：不用 symlink 兼容
 
 在 `~/.agents/skills/html-blog` 建软链指向库内，能让旧路径"碰巧能用"。被否：① 掩盖问题，下次搬迁再犯；② pi 的 skill 发现是递归扫描含 SKILL.md 的目录，全局与库内出现同名 skill 会告警并保留先发现的，行为不确定；③ 全局目录会被其他 harness 读取，污染跨项目环境。
 
-### D3：`docling` 先查证再处置
+### D3：`docling` 改指 hanako 树（不是删除）
 
-事实：不是 python 包、无 skill、无 git 记录 → 无法直接"改对路径"。三条候选处置，按序尝试：
+查证结果推翻了初版假设：`docling` **不是不存在的工具**，而是位于另一棵 skill 树。
 
-1. **（首选）改走既有提取链**：`read-article` 的 Phase 1 本来就有 arXiv source tarball → arXiv HTML → PDF 结构化提取的三级优先级；把 docling 段落改写成"PDF 结构化提取"，依赖既有 `phases/extraction.md` 流程
-2. **保留能力但标注前提**：若 `book-to-blog` 的技术书 OCR 确实依赖 docling，改写为条件句"若环境已安装 docling（`pip install docling`）则用它处理表格/公式密集的技术书，否则回退到既有提取链"
-3. **删除引用**：若上述都不成立
+事实：
 
-默认按 1 → 2 → 3 的顺序落，具体在实施时按文件语境逐个判定；**不静默删除**，每处改动都在 tasks 里注明处置方式。
+- `~/.hanako/skills/docling/scripts/convert.py` **存在**
+- `import docling` 失败（它本来就不是 python 包，而是 skill + 脚本）
+- 同一文件内已有其他引用写成了正确的 hanako 路径（6 处）
+
+处置：7 处 `~/.agents/skills/docling/scripts/convert.py` → `~/.hanako/skills/docling/scripts/convert.py`。能力（PDF/表格/公式提取与 OCR）保持不变，不改成条件句、不删除。
+
+影响面：`read-article/SKILL.md`(2)、`read-article/phases/extraction.md`(4)、`book-to-blog/phases/extraction.md`(1)。
 
 ### D4：`music-gen` 修正路径并保留可选语义
 
@@ -60,14 +75,16 @@
 
 ### D5：校验脚本 `scripts/check-skill-paths.py`
 
-扫描范围：全库（排除 `node_modules` / `.git` / `raw`），匹配两类引用：
+扫描范围：全库（排除 `node_modules` / `.git` / `raw` / `openspec` / `public` / `media`），匹配两类形式：
 
-- `~/.agents/skills/<name>` → 检查 `~/.agents/skills/<name>` 是否存在
-- `~/gongshangzheng.github.io/.agents/skills/<name>` → 检查库内是否存在
+- `~/gongshangzheng.github.io/.agents/skills/<name>` → 校验库内
+- `~/<tree>/skills/<name>`（通用，覆盖 `~/.agents`、`~/.hanako`、`~/.pi/agent` 等）→ 按匹配到的树解析
 
-输出死路径清单（文件:行 + 目标），退出码非 0 表示有问题。不接入 pre-commit；列入 `blog-rules/references/publishing.md` 的发布前验证清单。
+输出死路径清单（文件:行 + 原引用 + 解析出的树），退出码非 0 表示有问题。
 
-理由：本次的根因是"引用与实体分离且无人校验"，只修不校验必然复发。脚本 30 行内可写完，成本低于一次排查。
+**实现中的教训（已修）**：初版把任意 `~/.X/skills/` 都按 `~/.agents/skills/` 解析，导致 hanako 树下的有效引用被误报为死路径，并让一次临时统计把 130 处正确引用误标成 108 处死路径。现在解析根取匹配到的实际 tree 路径。另外必须忽略占位写法（`<name>`、`...`），模板里的示例路径不算死路径。
+
+不接入 pre-commit；列入 `blog-rules/references/publishing.md` 的发布前验证清单。
 
 ## Risks / Trade-offs
 

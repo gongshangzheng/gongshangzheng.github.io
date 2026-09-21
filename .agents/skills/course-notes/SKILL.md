@@ -21,6 +21,14 @@ tags: [course, notes, ppt, homework, web-research, html-blog, template, docling,
 
 > **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
 
+## Phase 0 · OpenSpec 门禁
+
+> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
+
+课程笔记必须发布为 HTML，因此 MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**逐节给出知识点骨架（每节：讲什么概念 + 课件/教材来源 + 必备图/公式/速查表），经用户确认后才进入写作。批量课件（多节/多章）用一个 change 覆盖，大纲按节分列。
+
+豁免：仅做前期分析不发布（用户明确说"只分析"）、小修；豁免时在回复中说明理由。
+
 ## 执行规则
 
 1. 读本文后，立即用 `todo_write` 创建全阶段 todo 清单。
@@ -127,7 +135,7 @@ Phase 5 完成后，**同时派出 3 个 Review subagent**，从不同角度并�
 章节：<chapter>
 HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 课件原文：<ppt/pdf 路径>
-模板文件：~/.hanako/skills/course-notes/subagents/<review-name>.md
+模板文件：~/gongshangzheng.github.io/.agents/skills/course-notes/subagents/<review-name>.md
 
 读取模板文件后，按模板要求逐项检查并输出报告。
 ```
