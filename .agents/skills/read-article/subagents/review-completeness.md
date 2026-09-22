@@ -1,10 +1,16 @@
 ---
 name: review-completeness
-description: 检查 HTML 论文深度解读的内容完整性——是否有重要信息被遗漏，字数和配图是否达标。
-trigger: 论文精读 HTML Review · 完整性审查
+description: 按需 Review lane：论文解读内容完整性审查（重要信息是否遗漏、字数与配图是否达标）。
+trigger: read-article Phase 7 完整性维度按需委派
 ---
 
-# Review Agent: 完整性审查
+# Review lane · 完整性审查
+
+> **按需 Review lane 定位（read-article Phase 7）**
+> - **默认由主 agent 按 `references/review-checklist.md` 的维度 B 执行**，不派 Review subagent。
+> - 仅当综述/长文核对工作量大时才委派本 lane。
+> - 本 lane 只输出问题清单（P0/P1/P2 + 可补充内容），**不得直接修改 HTML**。
+> - 被 academic-research / book-to-blog / course-notes / deep-research / historical-narrative 引用时，按那些 skill 自己的流程执行。
 
 ## 职责
 

@@ -265,7 +265,7 @@ cp media/images/<slug>/*.webp drafts/assets/<slug>/
 | | paper-note | read-article |
 |---|---|---|
 | 目标 | 快速记笔记 | 发布深度解读 HTML |
-| subagents | 无（单次） | 4 + 写作 + 3 review |
+| subagents | 无（单次） | direct 默认 0；复杂论文才按需启 1-3 个 analysis lane |
 | 产出 | `drafts/<slug>.md` | `src/pages/<slug>.html` |
 | 图片 | `drafts/assets/<slug>/` | `media/images/<slug>/` |
 | 后续 | 可升级为 read-article | — |

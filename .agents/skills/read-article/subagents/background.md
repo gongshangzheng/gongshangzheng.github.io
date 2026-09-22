@@ -1,10 +1,17 @@
 ---
 name: read-article-background
-description: Phase 2a 背景调研 subagent 模板。配合 read-article/SKILL.md 使用。
-trigger: read-article Phase 2a 背景调研
+description: Phase 2 可选 analysis lane：背景调研。配合 read-article/SKILL.md 使用。
+trigger: read-article Phase 2 背景调研 lane（按需）
 ---
 
-# Phase 2a · 背景调研 subagent
+# Phase 2 lane · 背景调研
+
+> **lane 定位（read-article Phase 2 按需分析）**
+> - **默认不启动**：主 agent 能直接读原文时不需要本 lane。需要补领域脉络、作者团队或社区影响时启用。
+> - 输入：`raw/<slug>/sources/`（+ `raw/<slug>/figures/`）
+> - 输出：`raw/<slug>/analysis/background.md`（旧路径 `raw/<slug>/subagents/background.md` 兼容读取）
+> - 输出格式：**事实 + 来源指针 + 不确定性**；来源指针必须能回源（`file:line` / 章节标题 / table·figure 编号 / URL）
+> - 禁止：创建或修改 OpenSpec change、修改 `src/pages/`、写最终 HTML、绕过用户确认
 
 ## 任务
 

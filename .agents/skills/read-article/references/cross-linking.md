@@ -193,6 +193,23 @@ for name, target_file in name_to_paper.items():
         # ... find safe position and add <a> tag (see full script)
 ```
 
+## 自动化脚本
+
+read-article Phase 8.2 的扫描与补全可用 `scripts/cross-link.py` 一键完成：
+
+```bash
+# 完整回链（清理已有链接 + 重建 .sources 链接 + 重建正文链接）
+~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py
+
+# 只查看会做什么修改（dry-run）
+~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py --dry-run
+
+# 只补全 .sources 链接（跳过正文）
+~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py --sources-only
+```
+
+脚本只改链接，不修改正文语义。手动执行时按上面各节规则逐一处理。
+
 ## 验证
 
 验证 `.sources` 链接正确性时，**必须逐个 `<li>` 匹配**，不要让 regex 跨越 `</li>` 边界：

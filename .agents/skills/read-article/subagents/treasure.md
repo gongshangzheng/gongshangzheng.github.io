@@ -1,10 +1,16 @@
 ---
 name: read-article-treasure
-description: Phase 2c 宝藏挖掘 subagent 模板。配合 read-article/SKILL.md 使用。
-trigger: read-article Phase 2c 宝藏挖掘
+description: 旧版 Phase 2c 宝藏挖掘 lane。新流程请优先用 subagents/experiment.md。
+trigger: read-article Phase 2 实验 lane（旧模板）
 ---
 
-# Phase 2c · 宝藏挖掘 subagent
+# Phase 2c · 宝藏挖掘 lane（旧编号，兼容保留）
+
+> **lane 定位**
+> - 本文件是旧编号下的 Phase 2c lane。新流程已把它重组为 `subagents/experiment.md`（实验、超参、计算成本、失败案例与表格提取）。
+> - **新任务请优先读 `subagents/experiment.md`**；本文件保留是为了兼容 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/design.md` 等既有引用。
+> - 若启用本 lane，输出统一写入 `raw/<slug>/analysis/experiment.md`（事实按实验/超参/计算成本/失败案例归入）；不再单独产出 `analysis/treasure.md`。
+> - 也不得创建/修改 OpenSpec change，不得写 `src/pages/` 或最终 HTML。
 
 ## 任务
 
@@ -14,7 +20,7 @@ trigger: read-article Phase 2c 宝藏挖掘
 
 > 详细章节利用方式见 `references/paper-section-guide.md` §2.5（Experiments）和 §2.8（Appendix）。
 
-本 subagent 的核心信息源是论文的 **Experiments** 和 **Appendix/Supplementary** 章节，辅以 Method 中的内联超参数。
+本 lane 的核心信息源是论文的 **Experiments** 和 **Appendix/Supplementary** 章节，辅以 Method 中的内联超参数。
 
 **Experiments 精读**：
 1. 数据集详情：名称、规模、类别数、划分、预处理
@@ -84,6 +90,6 @@ trigger: read-article Phase 2c 宝藏挖掘
 - 将 JSON 中的 tables 转为 org-mode 表格
 - 标注每个表格在原文中的位置和用途
 
-## 输出格式（org-mode）
+## 输出格式（Markdown）
 
 每个维度至少 5 行。所有数值必须来自原文，不得编造。信息不足处标注"原文未明确给出"。只做调研，不修改任何文件。

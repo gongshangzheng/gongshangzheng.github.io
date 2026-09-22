@@ -34,11 +34,11 @@
 
 | 节 | 这一节写什么 | 素材来源 | 必备元素 |
 |----|------------|---------|---------|
-| 1 引言 | | `raw/<slug>/subagents/background.md` §x | — |
-| 2 问题剖析 | | `raw/<slug>/sources/<file>` §x + `subagents/methodology.md` §x | 与 <对比对象> 的机制对比表 |
-| 3 方法 | | `subagents/methodology.md` §x | 架构图 `figures/<name>.png`；核心公式（MathJax）；超参数 ≥3 个 |
-| 4 训练/推理 | | `subagents/treasure.md` §x | 训练配置表（逐项标注） |
-| 5 实验 | | `subagents/methodology.md` §x | 主结果表（含具体数值）；消融发现 ≥1 |
+| 1 引言 | | `raw/<slug>/analysis/background.md` §x（旧路径 `subagents/background.md` 兼容） | — |
+| 2 问题剖析 | | `raw/<slug>/sources/<file>` §x + `analysis/methodology.md` §x | 与 <对比对象> 的机制对比表 |
+| 3 方法 | | `analysis/methodology.md` §x | 架构图 `figures/<name>.png`；核心公式（MathJax）；超参数 ≥3 个 |
+| 4 训练/推理 | | `analysis/experiment.md` §x | 训练配置表（逐项标注） |
+| 5 实验 | | `analysis/experiment.md` §x | 主结果表（含具体数值）；消融发现 ≥1 |
 | 6 讨论 | | 综合分析 | — |
 
 **关键数据点**（必须出现在正文，且核对过口径）

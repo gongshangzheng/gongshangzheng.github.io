@@ -1,20 +1,29 @@
 ---
 name: read-article-image-collection
-description: Phase 5f 配图 subagent 模板
-trigger: read-article Phase 5f 配图
+description: Phase 2 可选 analysis lane：配图采集与筛选。
+trigger: read-article Phase 2 配图 lane（按需）；也被 historical-narrative 等 skill 复用
 ---
 
-# Phase 5f · 配图 subagent
+# Phase 2 lane · 配图采集
+
+> **lane 定位（read-article Phase 2 按需分析）**
+> - **默认不启动**：图片较多、需要系统筛图时启用。
+> - 输入：`raw/<slug>/sources/` + `raw/<slug>/figures/`
+> - 输出：`raw/<slug>/analysis/image-collection.md`（候选图清单）+ 已下载到 `raw/<slug>/figures/<slug>/` 的图片
+> - 输出格式：**候选图清单 + 来源锚点 + 价值判断 + 目标章节映射**；每张图说明它能替代哪段文字
+> - 禁止：AI 生图、Docling 144 DPI 渲染图、hotlink 远程 URL、自行改画数据、创建或修改 OpenSpec change、写最终 HTML
+> - 配图优先级与转换规则见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`；本文件下文保留具体命令
+> - 说明：旧编号中的「Phase 5f」表示它曾经是写作 subagent；现在它是 Phase 2 的按需 analysis lane，图片在 Phase 6 由主 agent 入稿
 
 ## 任务
 
-根据方法写作和实验写作中的配图计划，收集、下载、处理图片，并生成图片 HTML 片段。
+收集、下载、处理候选图片，并给出配图清单与目标章节建议。
 
 ## 输入
 
 - 论文标题：<title>
 - Slug：<slug>
-- 配图计划：来自 5c/5d 产出中的 `[配图 N：描述（来源）]` 标注
+- 配图计划：来自已确认大纲的必备元素 + 相关 analysis lane（methodology / experiment）中的 `[配图 N：描述（来源）]` 标注
 - 代码仓库：本地路径（若有）
 
 ## 配图优先级

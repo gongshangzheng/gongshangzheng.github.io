@@ -1,10 +1,16 @@
 ---
 name: review-fidelity
-description: 深度检查 HTML 论文解读的保真度——内容是否忠于原始论文，数据是否被正确提取。
-trigger: 论文精读 HTML Review · 保真度审查
+description: 按需 Review lane：论文解读保真度审查（内容是否忠于原文、数据是否正确提取）。
+trigger: read-article Phase 7 保真度维度按需委派
 ---
 
-# Review Agent: 保真度审查
+# Review lane · 保真度审查
+
+> **按需 Review lane 定位（read-article Phase 7）**
+> - **默认由主 agent 按 `references/review-checklist.md` 的维度 A 执行**，不派 Review subagent。
+> - 仅当文章很长、需要逐条回原文核对大量数值时才委派本 lane。
+> - 本 lane 只输出问题清单（P0/P1/P2 + 原文出处），**不得直接修改 HTML**。
+> - 被 academic-research / book-to-blog / course-notes / deep-research / historical-narrative 引用时，按那些 skill 自己的流程执行。
 
 ## 职责
 

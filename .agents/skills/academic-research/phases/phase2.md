@@ -11,7 +11,7 @@
 
 为什么区分：`core-survey` 和 `must-read-paper` 是最终 survey 正文的核心证据来源，需要完整的三路 Review 和博客发布，确保事实准确且可公开追溯。`route-representative` 和 `context-only` 只作为背景或对比参考，collect 模式的素材即可满足需求。
 
-`read-article` 的提取阶段必须遵守 source-first 优先级：arXiv source / LaTeX 源文件（使用 `scripts/fetch-arxiv-paper.py` 一键提取）→ arXiv/官方 HTML → PDF Docling + `pdftotext -layout`。禁止只读 abstract、搜索结果片段或项目页简介。
+`read-article` 的提取阶段必须遵守 source-first 优先级：arXiv source / LaTeX 源文件（使用 `~/gongshangzheng.github.io/.agents/skills/read-article/scripts/fetch-arxiv-paper.py` 一键提取）→ arXiv/官方 HTML → PDF Docling + `pdftotext -layout`。禁止只读 abstract、搜索结果片段或项目页简介。
 
 > 本阶段是 academic-research 的信息主采样阶段。
 > Phase 0-1 只负责定方向与选样本；真正可进入综述正文的证据、数据、图表、方法细节，主要来自这里。
@@ -19,9 +19,9 @@
 >
 > **章节利用策略**：进入本阶段前，读取 `~/gongshangzheng.github.io/.agents/skills/read-article/references/paper-section-guide.md`。
 > 该指南定义了论文每个章节在不同分析维度下的阅读深度和利用方式。特别注意：
-> - **Introduction** → Phase 2a（动机+贡献声明）+ Phase 2b（技术定位）
-> - **Related Works** → Phase 2b（taxonomy + 引用链 + 共性缺陷）+ Phase 2.4（论文池回流）
-> - **Conclusion** → Phase 2a（局限性+未来方向）+ Phase 2.4（开放问题缺口）
+> - **Introduction** → `background` lane（动机+贡献声明）+ `citation` lane（技术定位）
+> - **Related Works** → `citation` lane（taxonomy + 引用链 + 共性缺陷）+ 论文池回流
+> - **Conclusion** → `background` lane（局限性+未来方向）+ Phase 3 synthesis 的开放问题缺口标记
 
 ## 2.1 并行执行
 
@@ -54,7 +54,7 @@
 
 ## 2.4 迭代发现闭环（Related Works 回流）
 
-Phase 2 不只是“消费”Phase 0-1 的论文列表——它必须**反哺**论文池。`read-article` 的 Phase 2b（引用链挖掘）和 Phase 2c（宝藏挖掘）会产出大量新论文线索，这些线索必须形成闭环：
+Phase 2 不只是“消费”Phase 0-1 的论文列表——它必须**反哺**论文池。`read-article` 的 `citation`（引用链）与 `experiment`（实验/附录线索）analysis lane 会产出大量新论文线索，这些线索必须形成闭环：
 
 ### 操作步骤
 
@@ -62,7 +62,7 @@ Phase 2 不只是“消费”Phase 0-1 的论文列表——它必须**反哺**�
    - 提取论文作者对已有方法的分类方式和分类标准
    - 记录论文指出的已有方法共性缺陷
    - 列出 Related Works 中被反复引用但不在我们论文池中的论文
-2. **引用链交叉比对**：将 `read-article` Phase 2b 产出的引用链（top 3-5 核心引用）与当前论文池交叉比对：
+2. **引用链交叉比对**：将 `read-article` 的 `citation` lane 产出的引用链（top 3-5 核心引用）与当前论文池交叉比对：
    - 如果某篇引用被 2+ 篇论文同时引用，且不在论文池中 → 升级为 `route-representative` 候选
    - 如果某篇引用被 3+ 篇论文同时引用，且不在论文池中 → 升级为 `must-read-paper` 候选
 3. **新论文快筛**：对新发现的候选论文，执行轻量搜索（标题 + abstract），判断是否属于调研范围

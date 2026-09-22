@@ -18,6 +18,12 @@
 
 ## 三步操作
 
+> **read-article full 模式的前置**：该 skill 先完成素材获取与分析（Phase 1–3），再生成可交互的
+> planning draft（Phase 4），与用户确认后才建 change（Phase 5）。planning draft 落
+> `raw/<slug>/planning-draft.md`（或 change 已存在时的 `openspec/changes/<slug>/draft.md`），
+> 不是已批准的 change，不得据它写 `src/pages/`。详见
+> `read-article/references/planning-draft-template.md`。
+
 ### 1. 建 change
 
 ```bash

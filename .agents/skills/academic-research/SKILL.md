@@ -74,7 +74,7 @@ metadata:
 Phase 2 通过 `read-article` 读取论文全文。`core-survey` 和 `must-read-paper` 使用 **full 模式**（生成博客 + Review + 发布），`route-representative` 和 `context-only` 使用 **collect 模式**（只产素材）。禁止只依赖 abstract 或搜索结果片段。
 
 **全文提取优先级**：
-1. 首选 arXiv source tarball（`arxiv.org/e-print/<id>`），使用 `scripts/fetch-arxiv-paper.py` 一键提取
+1. 首选 arXiv source tarball（`arxiv.org/e-print/<id>`），使用 `~/gongshangzheng.github.io/.agents/skills/read-article/scripts/fetch-arxiv-paper.py` 一键提取
 2. 次选 arXiv HTML / 官方 HTML
 3. 第三选择 PDF 结构化提取（Docling + pdftotext）
 

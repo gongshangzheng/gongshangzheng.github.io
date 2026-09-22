@@ -18,7 +18,7 @@
 - 图片源文件放 `media/images/<slug>/`，HTML 引用 `media/images/<slug>/<filename>`
 - 生成后执行 `node build.js` 验证
 
-调研笔记完成后，**同时派出 3 个 Review subagent**，从不同角度并行审查报告质量。
+调研笔记完成后，按三个维度**统一审校**报告质量：保真度、完整性、HTML 与站点规范。默认由主 agent 连续执行（read-article Phase 7 同样口径）；仅当某一维度仍有独立且耗时的核查需求时，才按需委派对应的 Review lane。
 
 | Review Agent | 职责 | 检查文件 |
 |---|---|---|
@@ -45,11 +45,13 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 按模板要求逐项检查并输出报告。
 ```
 
-> 注：academic-research 的 Review 模板路径与 read-article 相同（`~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-*.md`），但调用上下文独立——Review 时需同时检查 survey 整体一致性，而非仅单篇论文。
+> 注：下面三个模板位于 `~/gongshangzheng.github.io/.agents/skills/read-article/subagents/review-*.md`，
+> 在 read-article 中已是**按需 Review lane**（默认由主 agent 执行）。academic-research 调用时上下文独立——
+> Review 时需同时检查 survey 整体一致性，而非仅单篇论文；工作量大时可按需并行委派。
 
 ### 汇总与修复
 
-主 agent 汇总 3 个 Review 报告，按优先级执行修复。
+主 agent 汇总审校发现，按优先级执行修复。
 
 ---
 
@@ -57,7 +59,7 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 
 进入 Phase 6 前必须同时满足：
 
-1. **三路 Review 完成**：`review-fidelity`、`review-completeness`、`review-html-format` 均已完成，不能等待中就发布。
+1. **三个维度审校完成**：保真度、完整性、HTML 规范均已检查并记录报告，不能等待中就发布。
 2. **P0/P1 已修复**：所有事实错误、遗漏关键论文、引用缺失、图片不可用、**论文原图缺失或被代码绘制图替代**、HTML 构建失败、结构不完整等阻断问题均已修复。
 3. **回源核验完成**：fidelity review 已回到原始论文、原始 survey 全文、reference packet、官方项目页、仓库 README 或数据集文档核对。
 4. **降级记录明确**：无法核验的结论已删除或降级，不能留在最终正文中。
@@ -85,7 +87,7 @@ git push
 
 ### 6.1b 交叉引用回链
 
-发布后运行交叉引用回链（与 read-article Phase 9 对齐，但 academic-research 可能在一次调研中发布多篇文章，需在所有文章发布完成后统一执行一次）：
+发布后运行交叉引用回链（与 read-article Phase 8.2 对齐，但 academic-research 可能在一次调研中发布多篇文章，需在所有文章发布完成后统一执行一次）：
 
 ```bash
 ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py

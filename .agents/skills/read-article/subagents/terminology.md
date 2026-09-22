@@ -1,10 +1,18 @@
 ---
 name: read-article-terminology
-description: Phase 5a 术语表 + 前置知识 subagent 模板
-trigger: read-article Phase 5a 术语表
+description: Phase 2 可选 analysis lane：术语表 + 前置知识。
+trigger: read-article Phase 2 术语 lane（按需）；也被 historical-narrative 等 skill 复用
 ---
 
-# Phase 5a · 术语表 + 前置知识 subagent
+# Phase 2 lane · 术语表 + 前置知识
+
+> **lane 定位（read-article Phase 2 按需分析）**
+> - **默认不启动**：术语密集、符号较多或公式容易混淆时启用。
+> - 输入：`raw/<slug>/sources/` + 已产出的 analysis lane
+> - 输出：`raw/<slug>/analysis/terminology.md`（旧路径 `raw/<slug>/subagents/terminology.md` 兼容读取）
+> - 输出格式：**事实 + 来源指针 + 不确定性**；术语/符号必须能回源到首次出现的章节
+> - 禁止：创建或修改 OpenSpec change、修改 `src/pages/`、写最终 HTML、绕过用户确认
+> - 说明：旧编号中的「Phase 5a」表示它曾经是写作 subagent；现在它是 Phase 2 的按需 analysis lane，术语表可直接被主 agent 写进正文
 
 ## 任务
 

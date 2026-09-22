@@ -1,12 +1,14 @@
 # 文章架构模板
 
-> read-article Phase 4 的参考文件。定义论文解读博客的标准章节结构、字数要求和质量底线。
+> read-article Phase 4/6 的参考文件。定义论文解读博客的**推荐**章节结构、字数要求和质量底线。
+> 骨架可按论文实际内容合并或调整（如纯理论论文无 Training Pipeline），但调整必须记录在
+> OpenSpec change 中并获用户确认。
 
 ---
 
-## 标准文章结构（7 个必选 Part）
+## 推荐文章结构（7 个 Part）
 
-所有论文解读博客必须包含以下 Part，不可省略、不可合并。每个 Part 对应博客的一个 `.ch` 章节。
+论文解读博客推荐包含以下 Part，每个 Part 对应博客的一个 `.ch` 章节。部分 Part 可按论文类型合并或略写（见下方「可按需调整的 Part」）。
 
 **章节层级硬规则**：`.ch-label` 只用于顶层章节（Part 1–7）。Part 3 内的多个模块使用 `<h3 class="section-title">` 或更低层级标题，不要新开 `.ch`。
 
@@ -21,6 +23,16 @@
 | **Part 5 · Inference Pipeline** | "如何在线跑起来" | 完整描述推理链路 | 输入准备→生成/解码→后处理→输出；实时论文须含 Streaming Pipeline |
 | **Part 6 · 实验验证** | "实验配置与结果" | 呈现实验结果并分析 | 实验配置表→指标与基线→主实验→消融→失败案例 |
 | **Part 7 · 讨论与启发** | "在地图上的位置" | 定位贡献，给出启发 | 竞品对比表→局限性→可操作启发 |
+
+### 可按需调整的 Part
+
+| Part | 可调整条件 |
+|------|-----------|
+| Part 4 · Training Pipeline | 纯理论/无训练论文可省略，但须在 change 的「口径与取舍」中说明 |
+| Part 5 · Inference Pipeline | 非系统型论文可合并进 Part 3 或 Part 6 |
+| 代码分析 | 无代码仓库或用户不关心复现时省略 |
+
+**不可省略**：Part 1–3、Part 6、Part 7 —— 否则读者无法建立问题→方法→验证的完整闭环。
 
 ### 各 Part 写作节奏
 
@@ -126,7 +138,9 @@
 
 ---
 
-## 架构规划输出格式
+## 架构规划输出格式（planning draft 用）
+
+Phase 4 的 planning draft 按 `references/planning-draft-template.md` 输出；其中「候选文章结构」可参考以下紧凑格式：
 
 ```
 选定结构: [方案名称]
@@ -177,19 +191,19 @@
 
 | 必须包含 | 来源 | 最低量 |
 |---------|------|--------|
-| 核心问题与 Insight | Phase 2 | ≥ 250 字 |
-| 完整方法 pipeline | Phase 2d | ≥ 1000 字 |
-| Training Pipeline | Phase 2c/2d | 系统型必须有；含训练配置披露表（10 项） |
-| Inference Pipeline | Phase 2c/2d | 系统型必须有；实时还须含 Streaming |
-| 至少 2 个完整公式 | Phase 2c | — |
-| 至少 1 个 baseline 对比表 | Phase 2c/2d | 含数值 |
-| 实验配置表 | Phase 2c/2d | 6 项必含基础项，逐项标注披露状态 |
-| 至少 3 个超参数 | Phase 2c | — |
-| 计算成本 | Phase 2c | 训练/推理分开 |
-| 至少 1 个消融发现 | Phase 2c | — |
-| 失败案例或局限 | Phase 2c | — |
-| 引用链 top 3 | Phase 2b | — |
-| 关键图片 | Phase 1 | ≥ 3 张 |
+| 核心问题与 Insight | `analysis/background.md` + 原文 | ≥ 250 字 |
+| 完整方法 pipeline | `analysis/methodology.md` + 原文 | ≥ 1000 字 |
+| Training Pipeline | `analysis/experiment.md` + `analysis/methodology.md` | 系统型必须有；含训练配置披露表（10 项） |
+| Inference Pipeline | `analysis/methodology.md` + `analysis/experiment.md` | 系统型必须有；实时还须含 Streaming |
+| 至少 2 个完整公式 | `analysis/methodology.md` | — |
+| 至少 1 个 baseline 对比表 | `analysis/experiment.md` | 含数值 |
+| 实验配置表 | `analysis/experiment.md` | 6 项必含基础项，逐项标注披露状态 |
+| 至少 3 个超参数 | `analysis/experiment.md` | — |
+| 计算成本 | `analysis/experiment.md` | 训练/推理分开 |
+| 至少 1 个消融发现 | `analysis/experiment.md` | — |
+| 失败案例或局限 | `analysis/experiment.md` + 原文 | — |
+| 引用链 top 3 | `analysis/citation.md` + 原文 | — |
+| 关键图片 | Phase 1 素材 | ≥ 3 张 |
 | 架构/流程图 | 代码绘制 | ≥ 1 张 mermaid/jsxgraph |
 | HTML 正文总量 | — | 常规 ≥ 3000；复杂 ≥ 4000 |
 
@@ -199,8 +213,8 @@
 
 | 调整 | 说明 |
 |------|------|
-| Phase 2b 引用链 | 简化为"相关文章"搜索 |
-| Phase 2c 宝藏挖掘 | 只提取适用部分 |
-| Phase 2d 方法论 | 只分析核心论点 |
+| `citation` lane | 简化为"相关文章"搜索，可完全跳过 |
+| `experiment` lane | 只提取适用部分（无实验的论文可跳过） |
+| `methodology` lane | 只分析核心论点 |
 | 质量底线 | 降低公式/实验要求 |
 | 字数下限 | 降至 ≥ 1800 字 |

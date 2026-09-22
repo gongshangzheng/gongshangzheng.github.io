@@ -14,26 +14,27 @@
 
 ## 执行步骤
 
-完整执行 read-article 的 Phase 1-9：
+按 read-article 新流程执行（详见 `read-article/SKILL.md`）：
 
-1. **Phase 1 · 提取**：
+1. **Phase 1 · 素材获取**：
    ```bash
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
+   ~/.venv/bin/python3 ~/gongshangzheng.github.io/.agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
    ```
    一键完成 tarball 下载→解压→图片提取→WebP 转换→extraction-log 生成
-2. **Phase 2 · 并行分析**：背景调研 + 引用链 + 宝藏挖掘 + 方法论
-3. **Phase 3 · 综合整理**：生成 synthesis.md
-4. **Phase 4 · 文章架构规划**：读取 `references/article-structure-template.md`，设计 7-Part 结构
-5. **Phase 5 · HTML 撰写**：5a-5g 子阶段，生成完整 HTML
-6. **Phase 6 · 三路 Review**：fidelity + completeness + html-format，回原文核查
-7. **Phase 7 · 发布**：build.js + git push
-8. **Phase 8 · 更新 Hub**：检查并更新对应 Hub 页
+2. **Phase 2 · 按需分析**：按论文复杂度选 direct / assisted / deep；需要时启用 background / citation / experiment / methodology / terminology / code-analysis / image-collection lane
+3. **Phase 3 · synthesis 导航索引**：生成 `raw/<slug>/synthesis.md`（仅索引，不复制内容）
+4. **Phase 4 · planning draft**：生成 `raw/<slug>/planning-draft.md`，设计 7-Part 结构。
+   被 academic-research 批量调用时，若上游主题 change 已获用户批准，此处不再单独要求用户确认，
+   按上游已批准结构拆出单篇小节草案即可
+5. **Phase 5 · 固化 change + 确认**：用户确认 draft 后建/更新 change，固化「文章内容大纲」（上游已有已批准 change 时以上游审批为准）
+6. **Phase 6 · HTML 写作**：由主 agent 统一撰写完整 HTML
+7. **Phase 7 · 统一审校**：保真度 / 完整性 / HTML 规范三维度，按需委派 Review lane
+8. **Phase 8 · 发布与维护**：build.js + 发布；更新 Hub 页
    - sub_id 分配前运行 `~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/check-sub-id.py --category <分类关键词>`
-9. **Phase 9 · 交叉引用回链**：
-   ```bash
-   ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py
-   ```
-   自动补全 .sources 和正文中的精读链接
+   - 交叉引用回链：
+     ```bash
+     ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py
+     ```
 
 ## 输出
 
@@ -44,7 +45,7 @@
 
 ## 约束
 
-- **full 模式**：执行完整管线，包括 HTML 生成、三路 Review、博客发布、邮件通知
+- **full 模式**：执行完整管线，包括 planning draft、change 固化、HTML 生成、统一审校、博客发布、邮件通知
 - 使用上游提供的 categories / subcategory / sub_id 填写 frontmatter
 - sub_id 分配前必须运行 `scripts/check-sub-id.py` 确认编号不冲突
 - 标题格式遵循系列规则：

@@ -97,6 +97,7 @@ def create_directory_structure(raw_dir, slug):
         raw_dir / "sources",
         raw_dir / "figures" / slug,
         raw_dir / "images" / slug,
+        raw_dir / "analysis",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)

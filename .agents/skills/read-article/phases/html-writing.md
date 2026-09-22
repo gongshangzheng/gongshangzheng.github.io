@@ -1,20 +1,29 @@
 ---
 name: read-article-html-writing
-description: Phase 5 HTML 撰写指引。配合 read-article/SKILL.md 使用。
+description: Phase 6 HTML 撰写按需参考。配合 read-article/SKILL.md 使用。
 ---
 
-# Phase 5 · HTML 撰写
+# Phase 6 · HTML 撰写
 
-基于 Phase 4 确认的文章架构 + Phase 3 的 synthesis.md + 4 份分析结果，撰写教学式 HTML 深度解读。
+> **定位**：read-article 新流程 Phase 6 的按需参考。本文件提供教学式写作规范、组件使用指南、
+> 章节写作指引和自检清单。**写作由主 agent 直接完成**，不再默认拆分成多个写作 subagent。
 
 > ⚠️ **前置条件**：
 > 1. 已读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`
-> 2. 已完成 Phase 4 文章架构规划
+> 2. 已完成 Phase 5，OpenSpec change 的「文章内容大纲」已获用户正式确认
 > 3. 已用 capture.js 创建 HTML 骨架
+
+**写作数据源**（按优先级）：
+
+1. change 的「文章内容大纲」——决定写哪几节
+2. `raw/<slug>/sources/`——最终校验层
+3. `raw/<slug>/analysis/`——事实存储层
+4. `raw/<slug>/synthesis.md`——仅导航，不用作内容输入
+5. `raw/<slug>/planning-draft.md`——已确认的决策与口径
 
 ---
 
-## 5.1 创建 HTML 骨架
+## 1. 创建 HTML 骨架
 
 ```bash
 node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --notify
@@ -24,22 +33,23 @@ node ~/gongshangzheng.github.io/.agents/skills/html-blog/capture.js <slug> --not
 
 ---
 
-## 5.2 Frontmatter 填写
+## 2. Frontmatter 填写
 
-按 html-blog SKILL.md §1.5 的检查项填写：
+规范以 SKILL.md「Frontmatter 规范」为准（标题系列规则、`paper_*` 字段、`sub_id` 编号、`hub`、`tags` ≤5）。填写检查项：
 
 | # | 检查项 |
 |---|--------|
-| 1 | `title` 写入最终标题 |
+| 1 | `title` 写入最终标题，符合系列命名规则 |
 | 2 | `description` 一句话概括 |
 | 3 | `created_at` / `updated_at` 格式为 `YYYY-MM-DDTHH:mm:ss` |
-| 4 | `categories` 从 blog-categories skill 选取 |
+| 4 | `aliases` 从 blog-categories skill 选取；`sub_id` 已用 `scripts/check-sub-id.py --suggest` 校验（步长 10，同系列无重复） |
 | 5 | `tags` 3-5 个 |
 | 6 | 含公式则 `mathjax: true` |
 | 7 | `hero_title` / `hero_sub` / `hero_tagline` 填写 |
-| 8 | `papers` 填写论文的 arXiv/DOI 链接（必填）；若有开源代码则填写 `repos`（GitHub 链接） |
-| 8.5 | `hub` 填写系列 Hub 页 slug（系列文章必填，如 `digital-human-hub`） |
-| 9 | 用到可选 CSS 模块时填写 `css_modules` |
+| 8 | `papers` 填写论文的 arXiv/DOI 链接（必填）；有开源代码则填 `repos` |
+| 9 | `paper_*` 可选字段填写（由构建系统渲染为正文顶部「论文信息」info-box，勿在正文重复手写） |
+| 10 | `hub` 填写系列 Hub 页 slug（系列文章必填） |
+| 11 | 用到可选 CSS 模块时填写 `css_modules` |
 
 **论文解读文章的 frontmatter 模板**：
 
@@ -54,6 +64,12 @@ aliases: ["categories/AI/<从 blog-categories 选取>"]
 papers: ["https://arxiv.org/abs/xxxx.xxxxx"]
 repos: []
 hub: <hub-page-slug>  # 系列文章必填，独立文章省略
+paper_title: "<论文原标题>"
+paper_authors: "<作者，逗号分隔>"
+paper_affiliation: "<单位，分号分隔>"
+paper_venue: "<期刊/会议 + 年份>"
+paper_url: "https://arxiv.org/abs/xxxx.xxxxx"
+paper_code: "<开源状态或仓库 URL>"
 mathjax: true
 hero_title: "<论文短标题>"
 hero_sub: "<会议/年份 · 团队>"
@@ -63,7 +79,7 @@ hero_tagline: "<核心贡献一句话>"
 
 ---
 
-## 5.3 写作风格：教学式深度解读
+## 3. 写作风格：教学式深度解读
 
 ### 读者假设
 
@@ -95,7 +111,7 @@ hero_tagline: "<核心贡献一句话>"
 - 使用"我们可以看到..."、"这意味着..."、"一个自然的疑问是..."
 - 主动指出易混淆点和常见误解
 - 引入新概念时，先给直觉再给定义
-- 使用对比帮助理解（"与 X 的浅层方法不同，本文在 Y 层面引入了深度融合"）
+- 使用对比帮助理解
 
 ### 禁止的写法
 
@@ -113,9 +129,9 @@ hero_tagline: "<核心贡献一句话>"
 
 ---
 
-## 5.3.1 论文文章组件使用指南
+## 3.1 论文文章组件使用指南
 
-论文解读文章是教学式深度阅读，需要交替使用叙事段落和结构化内容块。核心原则：**组件服务于教学节奏，公式和结论用块包裹，直觉和过渡用裸段落。**
+核心原则：**组件服务于教学节奏，公式和结论用块包裹，直觉和过渡用裸段落。**
 
 ### 组件角色表
 
@@ -123,37 +139,37 @@ hero_tagline: "<核心贡献一句话>"
 |------|-------------------|----------|
 | `.ch` + `.ch-title` | 每个逻辑章节（引言/方法/实验/讨论） | 每节一个 |
 | `.ch-subtitle` / `h3` | 章节内部的模块分块 | 按需 |
-| `.def-box` | 论文提出的核心定义、损失函数、优化目标 | 方法章节高频使用 |
+| `.def-box` | 论文提出的核心定义、损失函数、优化目标 | 方法章节高频 |
 | `.theorem-box` | 论文的核心定理、收敛性保证、理论分析 | 有理论贡献的论文 |
 | `.callout` | Insight 提炼、反直觉发现、关键数字 | 一句话级别，控制数量 |
 | `admonition tip` | 复现经验、训练技巧、高效实现路径 | 多段时使用 |
-| `admonition warning` | 论文未讨论的局限性、复现坑点、与直觉相反的发现 | 需要强调时使用 |
-| `.example-box` | 代码片段、具体计算示例、算法伪代码 | 有代码分析时使用 |
-| `.table-wrap` | **实验结果对比表、超参数表、方法对比表** | 高频使用 |
+| `admonition warning` | 论文未讨论的局限性、复现坑点 | 需要强调时 |
+| `.example-box` | 代码片段、具体计算示例、算法伪代码 | 有代码分析时 |
+| `.table-wrap` | 实验结果对比表、超参数表、方法对比表 | 高频 |
 | `.photo` | 论文原图、架构图、结果可视化 | 紧跟相关段落 |
 | `.quote` | 论文原文关键句（精确引用时） | 需要逐字引用时 |
 | `{{< mermaid >}}` | 方法 pipeline 流程图、模块架构 | 代码绘制首选 |
-| `{{< details >}}` | 证明细节、补充推导、完整伪代码 | 不打断主线但值得保留 |
-| `{{< jsxgraph >}}` | 数学函数可视化、信号/分布图 | 论文涉及可视觉化的数学时 |
+| `{{< details >}}` | 证明细节、补充推导、完整伪代码 | 不打断主线 |
+| `{{< jsxgraph >}}` | 数学函数可视化、信号/分布图 | 涉及可视觉化的数学时 |
 
 ### 教学节奏原则
 
-1. **每个方法模块遵循 Motivation → Intuition → Mechanism 三层递进。** 先说为什么需要（叙事段落），再给直觉类比（callout 或裸段落），最后给技术细节（def-box + 公式）。
-2. **公式前先说意图，公式后解释符号。** 不要让读者先看到一堆数学再猜你想说什么。
-3. **实验表格不只是列数据。** 每个关键数字要指出"这说明什么"——可以用 callout 提炼最有说服力的对比。
-4. **补充推导和证明用 `{{< details >}}`。** 不打断主线阅读，但保留完整推导供感兴趣的读者展开。
-5. **论文原文的关键句用 `.quote` 精确引用。** 不要在正文中用引号假装引用——用 quote 组件明确标注。
+1. **每个方法模块遵循 Motivation → Intuition → Mechanism 三层递进。**
+2. **公式前先说意图，公式后解释符号。**
+3. **实验表格不只是列数据。** 每个关键数字要指出"这说明什么"。
+4. **补充推导和证明用 `{{< details >}}`。**
+5. **论文原文的关键句用 `.quote` 精确引用。**
 
 ### 组件与论文章节的映射
 
 | 论文章节 | 推荐组件组合 |
 |---------|------------|
-| 引言 + 背景 | 裸段落（叙事）+ `.quote`（原文）+ `.callout`（核心 Insight 预告） |
+| 引言 + 背景 | 裸段落（叙事）+ `.quote` + `.callout`（核心 Insight 预告） |
 | 问题分析 | `.table-wrap`（已有方法对比）+ `.callout`（局限性总结） |
-| 方法核心 | `.def-box`（定义/公式）+ `.callout`（关键设计直觉）+ `{{< mermaid >}}`（pipeline 图）+ `{{< details >}}`（推导细节） |
-| 训练细节 | `.table-wrap`（超参数表）+ `admonition tip`（训练技巧） |
-| 实验分析 | `.table-wrap`（结果表）+ `.photo`（论文原图）+ `.callout`（关键发现提炼） |
-| 讨论与总结 | 裸段落（总结叙事）+ `admonition warning`（局限性）+ `.callout`（启发） |
+| 方法核心 | `.def-box` + `.callout` + `{{< mermaid >}}` + `{{< details >}}` |
+| 训练细节 | `.table-wrap`（超参数表）+ `admonition tip` |
+| 实验分析 | `.table-wrap`（结果表）+ `.photo` + `.callout`（关键发现） |
+| 讨论与总结 | 裸段落 + `admonition warning`（局限）+ `.callout`（启发） |
 
 ### 反面示例
 
@@ -182,7 +198,7 @@ hero_tagline: "<核心贡献一句话>"
 
 ---
 
-## 5.4 章节写作指引
+## 4. 章节写作指引
 
 ### 引言章节
 
@@ -211,6 +227,7 @@ hero_tagline: "<核心贡献一句话>"
 
 - 数据集、超参数、计算成本（必须包含具体数值）
 - 缺少的信息标注"原文未明确给出"
+- 必须含训练配置披露表（10 项基础项，逐项标注）
 - 字数：≥ 500 字
 
 ### Inference Pipeline 章节
@@ -225,7 +242,7 @@ hero_tagline: "<核心贡献一句话>"
 - 主实验结果（对比表含具体数值）
 - 消融实验（每个组件贡献和去掉后掉点幅度）
 - 定性分析 + 失败案例
-- 数字人 / talking head / avatar 论文的实验不能只看 FID。必须按任务同时检查：画质与分布距离（FID/FVD/LPIPS/PSNR 等）、音画同步（LSE-C/LSE-D/SyncNet/Sync-C 等）、身份保持（CSIM/ArcFace/ID similarity 等）、动作/姿态/表情自然度（landmark distance、pose/expression metrics、人评等）、长时稳定性、实时性/延迟/显存/吞吐。若论文只报告 FID 或 FVD，必须明确说明该指标不能覆盖口型同步、身份一致性、动作合理性和交互体验。
+- 数字人 / talking head / avatar 论文的实验不能只看 FID。必须按任务同时检查：画质与分布距离（FID/FVD/LPIPS/PSNR 等）、音画同步（LSE-C/LSE-D/SyncNet 等）、身份保持（CSIM/ArcFace 等）、动作/姿态/表情自然度、长时稳定性、实时性/延迟/显存/吞吐。若论文只报告 FID 或 FVD，必须明确说明该指标不能覆盖口型同步、身份一致性、动作合理性和交互体验
 - 字数：≥ 600 字
 
 ### 讨论与总结章节
@@ -237,12 +254,12 @@ hero_tagline: "<核心贡献一句话>"
 
 ---
 
-## 5.5 配图实施
+## 5. 配图实施
 
 ### 配图三步流程
 
 1. **Phase 1 已收集的图片**：从 `raw/<slug>/images/<slug>/` 选取
-2. **按 Phase 4 配图计划放置**：每张图紧跟相关段落
+2. **按 change 大纲的配图计划放置**：每张图紧跟相关段落
 3. **补充代码绘制**：用 mermaid / jsxgraph 绘制架构图/流程图
 
 ### 图片处理
@@ -264,18 +281,16 @@ cp ~/gongshangzheng.github.io/raw/<slug>/images/<slug>/* ~/gongshangzheng.github
 
 ### 图片理解协议
 
-写正文前必须区分“已经拿到图片”和“已经理解图片”。当图片用于解释方法或实验趋势时，执行以下步骤：
+写正文前必须区分"已经拿到图片"和"已经理解图片"。当图片用于解释方法或实验趋势时：
 
 1. 先读 figure caption 与正文引用该图的段落。
-2. 对本地图片调用视觉理解工具，**首选 `read` 工具直接读取图片**（内置视觉模型，最稳定），备选 GLM MCP `image_analysis`。
+2. 对本地图片调用视觉理解工具，**首选 `read` 工具直接读取图片**，备选 GLM MCP `image_analysis`。
 3. 可用 GLM MCP 的专项工具作为第二通道交叉验证，尤其用于架构图和曲线图。
 4. 图片中文字过小或区域复杂时，先 crop / 放大局部，再做视觉理解或 OCR。
 5. 视觉理解结果只能作为辅助解释，必须与论文正文、caption、表格、appendix 互相校验。
 6. 不确定处必须标注，不得把视觉模型推测写成论文事实。
 
 ### 图片理解 prompt 模板（read 工具）
-
-当用 `read` 读取图片时，在对话上下文中描述分析要求：
 
 ```
 请分析这张论文图：
@@ -307,25 +322,25 @@ graph TD
 
 ---
 
-## 5.6 参考来源
+## 6. 参考来源
 
-文末必须使用 `.sources` 组件：
+文末必须使用 `.sources` 组件，每条带 `data-cite-key`：
 
 ```html
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
-    <li><a href="https://arxiv.org/abs/XXXX.XXXXX" target="_blank">作者 et al. "论文标题." 会议 年份.</a></li>
-    <li><a href="https://..." target="_blank">相关资源链接</a></li>
+    <li data-cite-key="<Key>"><a href="https://arxiv.org/abs/XXXX.XXXXX" target="_blank">作者 et al. "论文标题." 会议 年份.</a></li>
+    <li data-cite-key="<Key2>"><a href="https://..." target="_blank">相关资源链接</a></li>
   </ul>
 </div>
 ```
 
 ---
 
-## 5.6.5 章节导航（chapter-nav）
+## 7. 章节导航（chapter-nav）
 
-文章末尾（参考来源之后）必须添加章节导航组件，使用  /  /  方向 class：
+文章末尾（参考来源之后）必须添加章节导航组件：
 
 ```html
 <div class="chapter-nav">
@@ -336,6 +351,7 @@ graph TD
 ```
 
 **规则**：
+
 - 属于系列文章时：prev 指同系列上一篇，hub 指系列枢纽页，next 指下一篇
 - 独立论文解读时：hub 指向 subcategory 枢纽页或分类页，prev/next 可省略
 - 占位符（无链接）使用 `<div class="nav-card current">`，渲染为半透明虚线边框
@@ -343,9 +359,9 @@ graph TD
 
 ---
 
-## 5.6.6 Markdown → HTML 组件映射表
+## 8. Markdown → HTML 组件映射表（仅当使用 Markdown 中间稿时）
 
-若使用 subagent 输出 Markdown 片段，主 agent 合并时按以下映射转换为 html-blog 组件：
+**默认由主 agent 直接写 HTML，不需要本表。** 仅当确实先生成了 Markdown 片段（例如按需委派了某个写作 lane）时，才按以下映射合并：
 
 | Markdown 语法 | HTML 组件 |
 |---------------|-----------|
@@ -360,20 +376,28 @@ graph TD
 | `1. 步骤一` | `<ol><li>步骤一</li></ol>` |
 | `![描述](图片路径)` | `<div class="photo"><img src="路径" alt="描述" loading="lazy"><div class="cap">描述</div></div>` |
 
-## 5.7 质量自检
+合并时还必须：统一术语、填写 frontmatter、验证组件语法、扫一遍最终 HTML 修正裸数学符号。
 
-写完 HTML 后，自行检查：
+---
+
+## 9. 写作自检
+
+写完 HTML 后，先自行检查下表；随后进入 Phase 7，按 `references/review-checklist.md` 做完整的三维审校。
 
 | 检查项 | 要求 |
 |--------|------|
 | 总字数 | 常规论文 ≥ 3000 字；复杂系统/综述论文 ≥ 4000 字 |
+| 结构对齐 | 与 change 已确认大纲逐节一致；偏离须先走 `openspec-update-change` |
 | 配图数 | ≥ 3 张 |
 | 代码绘制 | ≥ 1 张 |
 | 公式数 | ≥ 2 个（非综述类） |
 | 对比表 | ≥ 1 个（含具体数值） |
+| 训练配置披露表 | 10 项基础项逐项标注 |
+| 实验配置表 | 6 项基础项逐项标注 |
 | 超参数 | ≥ 3 个具体值 |
 | 消融实验 | ≥ 1 个发现 |
-| 参考来源 | 使用 .sources 组件 |
-| 章节导航 | 使用 .chapter-nav + nav-prev/nav-hub/nav-next |
+| 参考来源 | 使用 `.sources` 组件且每条带 `data-cite-key` |
+| 章节导航 | 使用 `.chapter-nav` + nav-prev/nav-hub/nav-next |
+| 未披露项 | 标注"未披露"，不臆测 |
 
-通过自检后，进入 Phase 6（三路 Review）。
+通过自检后，进入 Phase 7（统一审校）。

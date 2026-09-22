@@ -1,10 +1,15 @@
 ---
 name: read-article-experiment-writing
-description: Phase 5d 实验写作 subagent 模板
-trigger: read-article Phase 5d 实验写作
+description: 写作检查清单（Phase 6）：实验分析章节。
+trigger: read-article Phase 6 实验写作检查清单（默认不派 lane）
 ---
 
-# Phase 5d · 实验写作 subagent
+# 写作检查清单 · 实验分析章节
+
+> **定位（read-article Phase 6 按需参考）**
+> - read-article 的 HTML **默认由主 agent 直接撰写**，不启动写作 subagent。本文件作为主 agent 的写作检查清单使用。
+> - 实验事实优先从 `raw/<slug>/analysis/experiment.md` 取；没有该 lane 时直接读原文。
+> - 仅当确实需要先生成一段 Markdown 中间稿时才派 lane；合并方式见 `phases/html-writing.md` §8。
 
 ## 任务
 
@@ -15,7 +20,7 @@ trigger: read-article Phase 5d 实验写作
 - 论文标题：<title>
 - 原始全文：见 ~/gongshangzheng.github.io/raw/<slug>/sources/
 - 综合材料：见 ~/gongshangzheng.github.io/raw/<slug>/synthesis.md
-- 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/subagents/terminology.md
+- 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/analysis/terminology.md（旧路径 subagents/terminology.md 兼容）
 
 ## 写作要求
 

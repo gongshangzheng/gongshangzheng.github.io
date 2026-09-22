@@ -16,9 +16,9 @@
 - [ ] 2.2 `<slug>`：配图（≥3 张，来源优先级见 `blog-rules/references/image-priority.md`）
 <!-- 多篇时复制 2.x -->
 
-## 3. 三路 Review
+## 3. 统一 Review
 
-- [ ] 3.1 并行派出 `review-fidelity` / `review-completeness` / `review-html-format`，汇总并修复 P0/P1
+- [ ] 3.1 按三维度审校并修复 P0/P1：保真度（回原文核查数值/公式/实验设置）、完整性（章节/字数/图片/表格）、HTML 与站点规范（frontmatter/组件/MathJax/chapter-nav/`node build.js`）；仅在某一维度工作量大时按需委派对应 Review lane
 
 ## 4. 发布与构建
 

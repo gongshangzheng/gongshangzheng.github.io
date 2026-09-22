@@ -1,9 +1,13 @@
 ---
 name: read-article-extraction
-description: Phase 1 论文提取完整指引。配合 read-article/SKILL.md 使用。
+description: Phase 1 素材获取按需参考。配合 read-article/SKILL.md 使用。
 ---
 
-# Phase 1 · 提取
+# Phase 1 · 素材获取
+
+> **定位**：read-article 新流程 Phase 1 的按需参考。本文件提供 source → HTML → PDF 三级降级、
+> 图片优先级、extraction-log 与 meta.md 规范。默认由主 agent 直接执行；只有素材规模很大
+> （如长 survey 需要同时抓多篇、PDF 需 OCR 且页数多）时才考虑委派一个执行型 subagent。
 
 ## 1.1 生成 slug
 
@@ -16,10 +20,13 @@ description: Phase 1 论文提取完整指引。配合 read-article/SKILL.md 使
 
 ```bash
 SLUG="<slug>"
-mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,images/${SLUG},figures/${SLUG}}
+mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,images/${SLUG},figures/${SLUG},analysis}
 ```
 
-## 1.3 分配提取 subagent
+## 1.3 素材获取流程
+
+默认由主 agent 执行。仅当素材规模确实超出单次上下文处理能力时，才把下面的块作为任务描述
+委派给一个执行型 subagent；委派时其输出只能写入 `raw/<slug>/`，不得改其他目录。
 
 ```
 任务：下载并解析论文，提取全文 Markdown + 结构化 JSON + 元信息。
@@ -71,9 +78,12 @@ Slug：<slug>
 
    **优先级 A：arXiv source tarball 原始图（默认首选）**
    - 对 arXiv 论文，必须先尝试 `https://arxiv.org/e-print/<arxiv-id>`。
-   - **一键脚本**：`fetch-arxiv-paper.py` 自动完成下载→解压→提取图片→转 WebP→生成 extraction-log.md。
+   - **一键脚本**：`.agents/skills/read-article/scripts/fetch-arxiv-paper.py` 自动完成下载→解压→提取图片→转 WebP→生成 extraction-log.md。
+     **目录以脚本为准**：脚本创建 `sources` / `figures/<slug>` / `images/<slug>` / `analysis` 四个目录；
+     手工初始化时也必须包含 `analysis/`，否则 Phase 2 lane 无输出位置。
 
-   > 脚本位置：`.agents/skills/read-article/scripts/fetch-arxiv-paper.py`（read-article 私有，已挪入 skill）。
+   > 脚本位置：`.agents/skills/read-article/scripts/fetch-arxiv-paper.py`（read-article 私有，唯一权威副本；
+   > repo 根 `scripts/` 下不再保留同名副本）。
    > 它从自身路径反推 repo root（无需 `--root`），调用 repo 级共享工具 `scripts/convert-figures.py`。
    > 专属 venv：`.cache/read-article/.venv`（**不放 `.agents/skills/read-article/.venv`**——sandbox 会还原 `.agents/` 配置目录、清掉被 gitignore 的 `.venv/`；`.cache/` 持久且已忽略）。需装 `pymupdf pillow numpy`（numpy 供 `crop_whitespace`，缺则转换静默全失败）。
 
@@ -196,7 +206,7 @@ PY
    - 架构图、曲线图、重建对比图低于 1200 px 必须重提；
    - 最终图片统一从 `figures/<slug>/` 复制到 `images/<slug>/`；
    - Docling 产物不得复制到 `images/<slug>/`。
-   - AI 生图不在默认提图链中；只有原始来源检索和 blog-images 都失败，且必须补概念示意图时，才允许作为 fallback。
+   - **AI 生图完全禁止**（学术场景硬规则）：所有 source / HTML / GitHub / 用户截图 / PDF crop / blog-images 途径都失败时，改用表格重排、文字描述 + 原文锚点链接，或代码绘制示意图；不得生成假图
 
    ```bash
    mkdir -p ~/gongshangzheng.github.io/raw/<slug>/images/<slug>/
@@ -216,7 +226,7 @@ PY
    - 不存在 `sources/*_artifacts` 或 `temp-docling-images/` 遗留
    - arXiv 论文：必须记录 source tarball 是否可用、source 路径、tex/figure 数量、HTML 是否可用、HTML URL、提取到的 figure URL 数量、PDF fallback 是否使用；提取标题/作者/机构/摘要/发表时间/分类
 
-5. 写 meta.md（Markdown 格式，便于后续 Phase 3/5 消费）：
+5. 写 meta.md（Markdown 格式，便于后续 Phase 3/4 消费）：
    ---
    title: 原始素材: <slug>
    date: <YYYY-MM-DD>
@@ -259,7 +269,7 @@ fi
 强制要求：只做调研，不修改 raw/ 目录以外的任何文件。
 ```
 
-## 1.4 提取完成后的目录结构
+## 1.4 素材获取完成后的目录结构
 
 ```
 raw/<slug>/
@@ -269,6 +279,13 @@ raw/<slug>/
 │   └── <slug>.json          ← 结构化数据/layout/bbox
 ├── figures/
 │   └── <slug>/               ← 高质量原图/source/PDF crop
-└── images/
-    └── <slug>/               ← 最终可用于 HTML/blog 的图片（禁止 Docling artifacts）
+├── images/
+│   └── <slug>/               ← 最终可用于 HTML/blog 的图片（禁止 Docling artifacts）
+├── analysis/                 ← Phase 2 按需生成的 analysis lane（可为空）
+└── (synthesis.md)            ← Phase 3 生成；planning-draft.md 由 Phase 4 生成
 ```
+
+**兼容旧目录**：历史 `raw/<slug>/subagents/` 与 `synthesis.md` 继续可用，作为对应 lane 的历史产物
+读取；新流程不再要求补齐四份固定分析文件。
+
+**draft 模式在此分叉**：提取完成后由主 agent 直读论文、填充草稿小节，不进入 Phase 2–8。

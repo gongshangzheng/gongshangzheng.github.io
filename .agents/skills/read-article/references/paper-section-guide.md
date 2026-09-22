@@ -4,13 +4,31 @@
 
 > **核心原则**：不要平铺直叙地"读完整篇论文"。根据当前阶段的目标，有策略地精读对应章节。
 
+> **⚠️ 阶段编号映射（read-article 新流程）**
+>
+> 本文件使用历史上按 subagent 拆分的标签（Phase 2a/2b/2c/2d）。在新流程中它们是 **Phase 2 的按需
+> analysis lane**，且默认不一定启用。阅读时按下表换算即可：
+>
+> | 本文旧标签 | 新流程对应 |
+> |---|---|
+> | Phase 0-1（筛选） | **academic-research 自己的阶段**（论文角色判定：core-survey / must-read-paper / route-representative / context-only）；read-article 无此阶段，对应 read-article Phase 1 的“素材获取”只是同区间的读取动作 |
+> | Phase 2a（背景） | `analysis/background.md` lane |
+> | Phase 2b（引用链） | `analysis/citation.md` lane |
+> | Phase 2c（宝藏） | `analysis/experiment.md` lane（旧 `treasure.md` 兼容） |
+> | Phase 2d（方法论） | `analysis/methodology.md` lane |
+> | Phase 2.4（发现闭环） | 不再作为独立阶段；等价于 Phase 2 的缺口标注 + Phase 3 synthesis 的矛盾标记（论文池回流由调用方 academic-research 负责，不是 read-article 的阶段） |
+> | Phase 3（survey-spine） | academic-research 内部阶段；本 skill 中对应 Phase 3 synthesis |
+> | Phase 4（写作） | Phase 4 planning draft + Phase 6 HTML 写作 |
+>
+> 表头里的 ★ 密度仍有效：★ 轻读、★★ 中读、★★★ 深读。
+
 ---
 
 ## 1. 论文结构与阶段映射总览
 
 ```
-论文结构              Phase 0-1    Phase 2a    Phase 2b    Phase 2c    Phase 2d    Phase 2.4
-                     (筛选)      (背景)      (引用链)    (宝藏)     (方法论)    (发现闭环)
+论文结构              P1素材      background  citation    experiment  methodology 缺口标记
+                     (筛选)      (背景 lane) (引用 lane) (实验 lane) (方法 lane) (Phase 2/3)
 ─────────────────────────────────────────────────────────────────────────────────────────
 Title + Abstract     ★★★精读     ★重读       ★对照       ★验证       ★重读
 Introduction         ★★前3段    ★★★精读     ★★贡献声明               ★重读       ★贡献验证

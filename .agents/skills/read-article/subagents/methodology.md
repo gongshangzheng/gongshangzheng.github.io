@@ -1,10 +1,17 @@
 ---
 name: read-article-methodology
-description: Phase 2d 方法论精析 subagent 模板。配合 read-article/SKILL.md 使用。
-trigger: read-article Phase 2d 方法论精析
+description: Phase 2 可选 analysis lane：方法论精析。配合 read-article/SKILL.md 使用。
+trigger: read-article Phase 2 方法论 lane（按需）
 ---
 
-# Phase 2d · 方法论精析 subagent
+# Phase 2 lane · 方法论精析
+
+> **lane 定位（read-article Phase 2 按需分析）**
+> - **默认不启动**：方法复杂、公式较多或需要独立复核时启用。
+> - 输入：`raw/<slug>/sources/`（Method / Approach + Introduction + Related Works）
+> - 输出：`raw/<slug>/analysis/methodology.md`（旧路径 `raw/<slug>/subagents/methodology.md` 兼容读取）
+> - 输出格式：**事实 + 来源指针 + 不确定性**；来源指针必须能回源（`file:line` / 章节标题 / 公式·table·figure 编号）
+> - 禁止：创建或修改 OpenSpec change、修改 `src/pages/`、写最终 HTML、绕过用户确认
 
 ## 任务
 

@@ -1,10 +1,14 @@
 ---
 name: read-article-method-writing
-description: Phase 5c 方法写作 subagent 模板
-trigger: read-article Phase 5c 方法写作
+description: 写作检查清单（Phase 6）：方法核心章节。
+trigger: read-article Phase 6 方法写作检查清单（默认不派 lane）
 ---
 
-# Phase 5c · 方法写作 subagent
+# 写作检查清单 · 方法核心章节
+
+> **定位（read-article Phase 6 按需参考）**
+> - read-article 的 HTML **默认由主 agent 直接撰写**，不启动写作 subagent。本文件作为主 agent 的写作检查清单使用。
+> - 仅当确实需要先生成一段 Markdown 中间稿时才派 lane；合并方式见 `phases/html-writing.md` §8。
 
 ## 任务
 
@@ -15,8 +19,8 @@ trigger: read-article Phase 5c 方法写作
 - 论文标题：<title>
 - 原始全文：见 ~/gongshangzheng.github.io/raw/<slug>/sources/
 - 综合材料：见 ~/gongshangzheng.github.io/raw/<slug>/synthesis.md
-- 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/subagents/terminology.md
-- 问题定义：见 ~/gongshangzheng.github.io/raw/<slug>/subagents/problem-definition.md
+- 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/analysis/terminology.md（旧路径 subagents/terminology.md 兼容）
+- 问题定义：见已确认的 change `openspec/changes/<change>/design.md`「文章内容大纲」+ `raw/<slug>/planning-draft.md`
 
 ## 写作要求
 

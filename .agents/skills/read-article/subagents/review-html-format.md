@@ -1,10 +1,16 @@
 ---
 name: review-html-format
-description: 专门检查 HTML 论文解读是否严格遵守 html-blog 规范和 build.js 兼容性要求。
-trigger: 论文精读 HTML Review · HTML 格式规范审查
+description: 按需 Review lane：论文解读 HTML 格式规范审查（html-blog 规范 + build.js 兼容性）。
+trigger: read-article Phase 7 HTML 规范维度按需委派
 ---
 
-# Review Agent: HTML 格式规范审查
+# Review lane · HTML 格式规范审查
+
+> **按需 Review lane 定位（read-article Phase 7）**
+> - **默认由主 agent 按 `references/review-checklist.md` 的维度 C 执行**，不派 Review subagent。
+> - 仅当站点规范刚变更、需要独立复核时才委派本 lane。
+> - 本 lane 只输出问题清单（P0/P1/P2 + 行号），**不得直接修改 HTML**。
+> - 被 academic-research / book-to-blog / course-notes / deep-research / historical-narrative 引用时，按那些 skill 自己的流程执行。
 
 ## 职责
 

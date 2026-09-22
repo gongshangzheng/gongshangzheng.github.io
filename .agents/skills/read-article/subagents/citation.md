@@ -1,10 +1,17 @@
 ---
 name: read-article-citation
-description: Phase 2b 引用链挖掘 subagent 模板。配合 read-article/SKILL.md 使用。
-trigger: read-article Phase 2b 引用链挖掘
+description: Phase 2 可选 analysis lane：引用链挖掘。配合 read-article/SKILL.md 使用。
+trigger: read-article Phase 2 引用链 lane（按需）
 ---
 
-# Phase 2b · 引用链挖掘 subagent
+# Phase 2 lane · 引用链挖掘
+
+> **lane 定位（read-article Phase 2 按需分析）**
+> - **默认不启动**：需要补研究脉络、补充前置工作时才启用。
+> - 输入：`raw/<slug>/sources/`（Related Works / Introduction / References）
+> - 输出：`raw/<slug>/analysis/citation.md`（旧路径 `raw/<slug>/subagents/citation.md` 兼容读取）
+> - 输出格式：**事实 + 来源指针 + 不确定性**；来源指针必须能回源（`file:line` / 章节标题 / URL）
+> - 禁止：创建或修改 OpenSpec change、修改 `src/pages/`、写最终 HTML、绕过用户确认
 
 ## 任务
 

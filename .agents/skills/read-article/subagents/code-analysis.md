@@ -1,21 +1,30 @@
 ---
 name: read-article-code-analysis
-description: Phase 5e 代码分析 subagent 模板
-trigger: read-article Phase 5e 代码分析
+description: Phase 2 可选 analysis lane：代码仓库分析。
+trigger: read-article Phase 2 代码分析 lane（有代码仓库且用户关心复现时）
 ---
 
-# Phase 5e · 代码分析 subagent
+# Phase 2 lane · 代码仓库分析
+
+> **lane 定位（read-article Phase 2 按需分析）**
+> - **仅在代码仓库存在时启用**；用户关心复现、或需要核对论文与实现一致性时。
+> - 输入：论文原文 + GitHub 仓库（cloned 到 `/tmp`，除非用户明确要求保存到 `~/code`）
+> - 输出：`raw/<slug>/analysis/code-analysis.md`
+> - 输出格式：**事实 + 来源指针 + 不确定性**；代码结论必须能回源到具体文件与行号
+> - 禁止：创建或修改 OpenSpec change、修改 `src/pages/`、写最终 HTML、把未验证的推断写成"已验证实现"
+> - 依赖前置：先装最小依赖集并做 smoke test（包导入 + `--help`）；smoke test 失败时不得声称已验证
+> - 说明：旧编号中的「Phase 5e」表示它曾经是写作 subagent；现在它是 Phase 2 的按需 analysis lane
 
 ## 任务
 
-对论文的 GitHub 代码仓库进行结构化分析，输出代码分析章节 Markdown。参照 org-roam ar 模板的代码分析结构。
+对论文的 GitHub 代码仓库进行结构化分析，输出代码仓库分析章节 Markdown。参照 org-roam ar 模板的代码分析结构。
 
 ## 输入
 
 - 论文标题：<title>
 - 代码仓库：<repo-url> 或本地路径
 - 综合材料：见 ~/gongshangzheng.github.io/raw/<slug>/synthesis.md
-- 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/subagents/terminology.md
+- 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/analysis/terminology.md（旧路径 subagents/terminology.md 兼容）
 
 ## 前置阶段：依赖安装与 smoke test
 
