@@ -35,4 +35,4 @@
 - [x] 5.1 `~/.venv/bin/python3 scripts/check-skill-paths.py` 死路径为 0、退出码 0
 - [x] 5.2 抽查 `read-article` Phase 5 要求的 html-blog 路径可读（`SKILL.md` 与 `phases/html-writing.md`）
 - [x] 5.3 `node build.js` 无错误；`npm test` 通过
-- [ ] 5.4 `openspec validate fix-stale-skill-paths --strict` 通过；任务全部打勾后提请 archive
+- [x] 5.4 `openspec validate fix-stale-skill-paths --strict` 通过；任务全部打勾后提请 archive

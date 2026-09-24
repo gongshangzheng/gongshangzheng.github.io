@@ -41,4 +41,4 @@
 - [x] 6.2 负例检查：确认 `draft` 模式（如"把这篇存到草稿"）确实不触发门禁，且回复中带有豁免理由
 - [x] 6.3 清空冒烟产生的临时 change（或转为正式使用），`openspec list` 状态正常
 - [x] 6.4 与 `fix-stale-skill-paths` 交叉确认：本次新增引用的路径写法与该 change 的口径一致（库内 skill 用库内锚定路径）
-- [ ] 6.5 在本 change 的 tasks 完成项打勾后提请 archive
+- [x] 6.5 在本 change 的 tasks 完成项打勾后提请 archive
