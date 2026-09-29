@@ -44,3 +44,344 @@
 
 1. 口扫、面扫相关的知识。能得到什么知识？
 2. 几何特征学习
+   
+* 3DGrowthNet
+
+- 多任务训练 multi-task training strategy
+- CVAE-GAN architecture
+- 在5000条数据上进行训练，在60个孩子的数据集上进行微调
+- 年龄与身份解耦
+  
+** 现存问题
+
+我们要预测人脸发育。
+
+模型的核心目标在数学上应定义为：
+\[\boxed{P(x' | z, y)}\]
+其中：
+
+\(z\) 是从潜空间采样得到的潜变量（它有可能通过编码器编码已知人脸得到，也有可能直接从潜空间中采样）；
+\(y = (a, s)\) 是给定的年龄+性别标签；
+\(x'\) 是解码器生成的3D面部网格。
+
+*** 核心问题一：如何实现连续年龄条件下的面部生长预测（Synthetic Aging）
+待解决的问题：如何从单个3D面部网格预测其在不同年龄下的形态？
+数学表示：学习条件生成分布 \(P(x'|z,y)\)，其中：
+
+\(z\) 由编码器从输入 \(x\) 和真实标签 \(y_{\text{true}}\) 得到：\(z_{x,y} = \mu_{x,y} + \varepsilon \cdot \exp(\sigma_{x,y})\)
+预测时，用目标年龄标签 \(y_{\text{target}}\) 替换真实标签，生成预测网格：
+
+\[x_{\text{pred}} = G(z_{x,y_{\text{true}}},\ y_{\text{target}})\]
+训练时通过以下损失约束：
+
+重建损失 \(\mathcal{L}_{\text{rec}} = \frac{1}{V}\sum_{i=1}^V \|x_i - x_{\text{rec},i}\|^2\)
+循环一致性损失 \(\mathcal{L}_{\text{cyc}} = \frac{1}{V}\sum_{i=1}^V \|x_i - x_{\text{cyc},i}\|^2\)
+*** 核心问题二： 如何将年龄/性别等人口统计学属性与个人身份分离开来（Identity Disentanglement）
+待解决的问题：合成老化时，如何确保改变年龄标签后，生成的面孔仍是同一个人（身份不变）？
+数学表示：通过最小化身份损失，强制同一输入在不同标签下的潜表示保持一致：
+\[\mathcal{L}_{\text{id}} = \| z_{x,y} - z_{\text{tra},y'} \|^2\]
+其中：
+
+\(z_{x,y}\) 为原始图像 \(x\) 用真实标签 \(y\) 编码得到的潜变量；
+\(z_{\text{tra},y'}\) 为变换后图像 \(x_{\text{tra}}\) 用随机标签 \(y'\) 编码得到的潜变量。
+
+目标：\(z_{x,y} \approx z_{\text{tra},y'}\)，即标签改变但身份特征不变。
+
+*** 问题三：如何生成任意年龄和性别条件下的全新合成面孔（Conditional Shape Generation）
+待解决的问题：如何采样无限数量的、符合指定年龄和性别的全新3D面孔？
+数学表示：从潜空间先验 \(z \sim \mathcal{N}(0,I)\) 随机采样潜变量，结合标签 \(y\)，通过解码器生成条件样本：
+\[x_G = G(z,\ y)\]
+训练时通过以下损失约束：
+
+对抗损失 \(\mathcal{L}_G = E_{x_G,y}[-D(x_G,y)]\)（WGAN-GP）
+
+性别分类损失 \(\mathcal{L}_{\text{sex}} = -[s \cdot \log(C_{\text{sex}}(x_{a,s})) + (1-s) \cdot \log(1-C_{\text{sex}}(x_{a,s}))]\)
+
+*** 如何在缺乏真实标注信息时，从面部网格推断年龄和性别（Age & Sex Estimation）
+待解决的问题：模型未显式训练为分类器，如何利用条件重建能力反向推断标签？
+数学表示：通过最小化重建误差来搜索最优标签：
+年龄估计：
+\[\hat{a} = \arg\min_{a \in [0,88]} \ \frac{1}{V} \sum_{i=1}^{V} \|x_i - G(E(x, a_{\text{fixed}}), a)\|^2\]
+（固定性别，遍历0–88岁，步长0.1岁，取重建误差最小的年龄）
+性别估计：
+\[\hat{s} = \arg\min_{s \in \{0,1\}} \ \frac{1}{V} \sum_{i=1}^{V} \|x_i - G(E(x, a_{\text{true}}), s)\|^2\]
+（固定真实年龄，分别用男/女性别标签重建，取误差较小的性别）
+
+** 指标
+
+1. Minimum Matching Distance
+2. Biomedical Relevance
+3. age estimation error: 2.0 years
+4. sex classification accuracy: 87.7%
+
+** 相关技术细节
+1. data augmentation
+
+** 相关论文
+1. MeshWGAN: 第一个从 3D 扫描里面预测脸部成长的模型
+     - CAE: 有别于本文使用的 CVAE
+     - GAN
+3. SpiralNet ++
+  
+** 数据
+
+1. 5443 个 3D 人脸，年龄从 0 到 88 岁。
+
+** 模型架构
+:PROPERTIES:
+:ID:       2DC05DA6-71F6-478D-9662-E5FEF09C050A
+:END:
+
+1. CVAE( Encoder \(E\), Decoder \(D\))
+2. Age/Sex Classifier \(C\)
+3. Discriminator \(D\)
+4. Label Embedder \(E_y\)
+
+*** 输入
+
+- 3D面部网格：每个面由 7160个稠密准地标（dense quasi-landmarks） 表示。
+- 条件标签（y）：
+    + 年龄：连续标量（0–88岁），经过标签嵌入器（label embedder）映射为高维向量。
+    + 性别：二分类标签（男/女）。
+- 潜变量（z）：在训练时从标准正态分布采样，或通过编码器从输入网格推断。
+
+*** 输出
+
+- 重建/生成的3D面部网格：与输入相同维度的7160个顶点坐标。
+- 年龄/性别估计结果：通过最小化重建误差推断年龄（连续值）和性别（二分类）。
+- 潜空间表示：编码器输出潜变量的均值（μ）和方差（σ）。
+
+*** 结构
+
+ #+ATTR_HTML: :width 100% :max-height 200px :align left
+   [[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_10-51-36_screenshot.png]]
+
+   采集：MeshMonk(这是)
+   对齐：Generalised Procrustes Analysis
+
+ 7160 个稠密准坐标  
+
+ #+ATTR_HTML: :width 100% :max-height 200px :align left
+ [[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_14-50-41_screenshot.png]]
+
+**** Encoder
+
+- 给定输入地标 x，给定年龄、性别 y, 给出潜在表示 z
+
+- 四层SpiralNet+++, 两层全连接层。
+**** Label Classifier
+
+结构与编码器相同
+
+**** Discriminator
+
+- 与分类器（Classifier） 使用相同的卷积层结构（4层 SpiralNet++），但额外增加了一个线性层用于输出单个标量。
+- 输入：3D 面部网格（x）和条件标签（y），标签在其第一个线性层之前拼接
+  
+  损失函数（WGAN-GP）
+采用 WGAN-GP 方法（Wasserstein GAN 带梯度惩罚），具体公式如下：
+生成器损失 \(\mathcal{L}_G\)：
+\[\mathcal{L}_G = E_{x_G, y}[-D(x_G, y)]\]
+其中 \(x_G = G(z, y)\) 是由生成器（解码器）从潜变量 z 和标签 y 生成的合成网格。
+判别器损失 \(\mathcal{L}_D\)：
+\[\mathcal{L}_D = E_{x_G, y}[D(x_G, y)] - E_{x, y}[D(x, y)] + \lambda \cdot E_{\hat{x}}[(\|\nabla_{\hat{x}}D(\hat{x}, y)\|_2 - 1)^2]\]
+
+\(\hat{x} = \alpha \cdot x + (1 - \alpha) \cdot x_G\)，\(\alpha \sim U(0,1)\)（在真实与生成样本间线性插值）。
+*** 损失
+
+ \[\mathcal L_\text{rec}=\frac 1 V \cdot \sum^V_{i=1}\left|x_i-x_{\text{rec}, i}\right|^2\]
+
+ \[\mathcal L_{KL}=\frac 1 2 \cdot[\mu^T\mu+\sum(\exp(\sigma)-\sigma -1)]\]
+
+cycle consistency loss 是指，先把每一张图片用真实 y 编码，再用随机 y 解码。解码结果再用同一个随机 y 编码，用真实 y 解码。我们希望能恢复原始图像。
+ \[\mathcal L_\text{cyc}=\frac 1 V \cdot \sum^V_{i=1}\left|x_i-x_{\text{cyc},i}\right|^2\]
+ identity loss: 在潜空间内，推动年龄/性等人口统计学特征从各自的身份中分离出来。
+
+ 公式为：
+\[\mathcal{L}_{id} = \| z_{x,y} - z_{tra,y'} \|^2\]
+通俗理解：
+
+- 将同一张脸先用真实标签编码（得到真实身份特征）；
+- 再将其变换（例如变成80岁）后，用随机标签（非真实标签）再次编码；
+- 目标是使这两个潜变量尽可能接近 --> 即无论标签如何改变，个体身份特征保持一致。
+**** 连续标签嵌入 Continuous label embeddings
+
+\(\mathcal L_{E_y}=\left|C_2(E_y(a+\varepsilon))-(a+\varepsilon)\right|^2\)
+
+** 训练
+
+*** 预训练
+
+**** 年龄与性别分类器
+1. 结构与编码器相同
+2. 年龄用 L2 损失，性别用二分类交叉熵
+3. 100 epochs, 5e-5 学习率
+
+   \(\mathcal{L}_\text{age} = \left| C_\text{age}(x_{a,s}) - a \right|^2\)
+
+   \(\mathcal{L}_\text{sex} = -\left[ s \cdot \log(C_\text{sex}(x_{a,s})) + (1-s) \cdot \log(1 - C_\text{sex}(x_{a,s})) \right]\)
+**** 年龄标签嵌入器
+
+1. 三个全连接层，每层后接 ReLU
+2. 将连续年龄变量映射为高维特征向量，并添加噪声以保证光滑
+3. 损失： \(\mathcal L_{E_y}=\left|C_2(E_y(a+\varepsilon))-(a+\varepsilon)\right|^2\)
+4. 训练 50 epochs, 学习率 1e-4
+
+*** CVAE-GAN 联合训练
+
+主模型 500 epochs, batch size=32, 学习率 1e-3 
+
+\[\mathcal{L}_{\text{VAE}} = \mathcal{L}_{\text{rec}} + \beta \cdot \mathcal{L}_{\text{KL}} + c_1 \cdot \mathcal{L}_{\text{cyc}} + c_2 \cdot \mathcal{L}_{\text{id}} + c_3 \cdot \mathcal{L}_{\text{age}} + c_4 \cdot \mathcal{L}_{\text{sex}} + c_5 \cdot \mathcal{L}_{\text{G}}\]
+
+- 对抗训练：判别器每 batch 更新一次，使用 WGAN-GP 损失（Wasserstein 距离 + 梯度惩罚），学习率 1e-6。
+- 生成器输入：从标准正态分布采样潜在向量 \(z\)，并与标签嵌入（年龄嵌入 + 性别）拼接后输入解码器。
+- 分类器评估：训练时使用完全合成样本（从潜空间随机采样并赋予随机标签）进行计算，而非重建或变换后的网格，从而强化条件生成能力。
+- 标签嵌入拼接位置
+    + 编码器：在第一层全连接层之前拼接。
+    + 解码器/生成器：在最后一层全连接层之后拼接。
+    + 判别器：在第一层全连接层之前拼接。
+- 分步添加损失项
+    + 前50 epoch：仅使用标准VAE损失（重建 + KL散度）。
+    + 50–100 epoch：加入年龄和性别分类损失。
+    + 100 epoch之后：加入周期一致性损失和身份对齐损失。
+
+** 实验
+
+*** 重建实验
+:PROPERTIES:
+:ID:       B5B12228-38B9-4828-A0EC-289F75EFF867
+:END:
+
+
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_15-44-20_screenshot.png]]
+
+对输入的3D面部网格进行编码（通过编码器得到潜变量 \(z\) ）。
+再通过解码器（生成器）重建出完整的3D网格。
+计算重建网格与原始输入网格之间每个顶点的欧氏距离，并取平均得到RMSE。
+
+评估模型保留个体面部细节的能力。
+
+平均 RMSE = 0.74 mm
+误差集中在几何特征尖锐区域（鼻尖、眼睛、嘴唇）。会对输入进行平滑处理。
+
+*** 合成老化实验 Synthetic aging
+:PROPERTIES:
+:ID:       530A357B-6704-40F8-96F5-410CB012AA98
+:END:
+
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_15-46-42_screenshot.png]]
+操作：将一张真实面部扫描用其真实年龄标签编码（encode），然后用目标年龄标签解码（decode），生成老化后的网格。
+验证模型能否在保持个体身份特征的前提下，准确预测面部随年龄增长产生的形态变化。
+
+0–15岁：面部尺寸（centroid size）显著增长，之后趋于稳定（非线性生长模式）。
+年轻面孔更圆润、平滑；老年面孔出现皮肤折叠、下巴下垂等老化特征。
+身份与表情保持不变，证明年龄与身份在潜空间中被成功解耦（disentangled）。
+
+
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_15-52-10_screenshot.png]]
+
+
+**** 定量评估
+数据：60名儿童，每人有两次扫描，间隔约6年。
+操作：
+
+将每个儿童的第一次扫描用其真实年龄编码，再用第二次扫描的年龄解码，得到预测的老化面孔（Fig. 6a）。
+计算预测面孔与真实第二次扫描之间的平均误差（RMSE，单位mm）。
+
+结果：
+
+归一化后误差：平均值 = 2.00 mm（尺寸归一化消除了整体大小差异）。
+未归一化误差：平均值 = 2.40 mm（包含尺寸差异）。
+误差随首次扫描年龄增大而减小（p = 0.005，Pearson r = -0.35），原因：儿童早期面部发育更快、变异更大。
+
+局限性：模型无法预测环境因素（如体重波动、疤痕），只能预测人群平均生长模式。
+
+*** 身份识别应用实验
+
+验证合成老化在真实场景（如跨年龄身份识别）中的实用价值。
+
+- 基线：用第一时点未改变的表面匹配第二时点的真实面孔
+- 改进：先将第一时点表面合成老化至第二时点年龄再匹配
+- 使用 CMC（Cumulative Matching Curve）评估
+- 结果（归一化条件下）：
+  - Rank-1 识别率从 39% → 57%（提升近20%）
+
+*** Age and Sex estimation
+:PROPERTIES:
+:ID:       638A7953-818E-4BD4-9C01-E9679FE98C3C
+:END:
+
+通过尝试不同的标签并观察重建误差的大小，就可以推断出最可能的年龄和性别。
+
+固定真实年龄标签。
+分别用男性标签和女性标签各执行一次重建。
+比较两次重建的误差大小：
+
+若用男性标签重建的误差 < 用女性标签重建的误差，则预测为男性；
+反之预测为女性。
+
+| 评估任务               | 结果                                                                             |
+|-----------------------+---------------------------------------------------------------------------------|
+| 年龄估计（中位绝对误差） | 2.0 年（总体）；<10岁: 0.8y；10–18岁: 1.5y；18–40岁: 2.6y；40–65岁: 4.2y；65+: 5.4y |
+| 性别分类（总体准确率）   | 87.7%；<10岁: 62.5%；10–18岁: 76.6%；18–40岁: 96.0%；40–65岁: 96.7%；65+: 93.3%    |
+
+
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_16-21-21_screenshot.png]]
+
+*** 条件形状生成
+:PROPERTIES:
+:ID:       175A450A-133A-4BDE-99F0-6742FF885FAF
+:END:
+在给定特定条件（年龄和性别）的情况下，从潜空间随机采样并生成全新的、从未存在过的3D面部网格。
+
+- 无条件生成：模型随便生成一张脸，但无法控制这张脸是“5岁女孩”还是“60岁男性”。
+- 条件生成：你告诉模型“我要一个10岁的女孩”，模型就能生成一个看起来像10岁女孩的全新面孔——这张脸不属于训练集中的任何真实个体，而是由模型“凭空创造”出来的。
+
+步骤
+- 从潜空间随机采样：从一个标准正态分布 \(z \sim N(0,1)\) 中随机抽取一个潜变量 \(z\)。
+- 拼接条件标签 \(y\)：条件标签由 连续年龄嵌入向量（通过标签嵌入器 \(E_y\) 将年龄映射为高维向量）+ 性别标签 拼接而成。
+- 解码器（生成器 \(G\)）解码：将潜变量 \(z\) 和标签 \(y\) 一起输入解码器，生成一个全新的3D网格 \(x_G = G(z, y)\)。
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_16-21-54_screenshot.png]]
+
+1. 数据增强：
+可生成大量不同年龄/性别的合成面孔，补充稀缺年龄组（如<1岁婴儿、75+老人）的样本。实验表明，加入合成数据后，PCA模型在稀缺年龄组的重建误差显著降低（如75+从1.95mm降至1.35mm）。
+2. 生物学研究：
+采样500男性和500女性不同年龄的面孔，计算男性平均脸与女性平均脸的差异，模拟性别二态性（sexual dimorphism）随年龄的变化。
+3. 生成质量评估：
+   生成多达50000个合成面孔，通过 Coverage 和 MMD 衡量生成样本的多样性和真实感。
+   
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_16-22-22_screenshot.png]]
+
+
+
+#+ATTR_HTML: :width 100% :max-height 200px :align left
+[[file:~/gongshangzheng.github.io/drafts/_assets/images/2026-09-29_16-30-54_screenshot.png]]
+
+** 结论与未来工作
+
+- 提出3DGrowthNet：首个在3D面部网格上实现连续、条件老化与形状生成的统一框架。
+- 连续年龄嵌入（Ding et al. 机制）：支持在0-88岁全生命周期预测任意连续年龄的生长。
+- 成功解耦年龄与身份：生成的老化轨迹在改变年龄相关形态（如皮肤折叠、下巴下垂）的同时，有效保留个体身份特征。
+- 纵向验证：使用60名儿童纵向数据，平均预测误差约 2 mm，提升年龄不变身份识别性能约 20%。
+- 多任务训练方案：将LATS合成老化协议与VAE和GAN目标结合，支持无限采样年龄/性别条件下的合成面孔或完整老化轨迹。
+- 生成质量：高覆盖率（98.7%）和与Ground Truth接近的MMD，证明模型能生成多样且逼真的3D网格。
+- 数据增强：加入合成数据后可捕捉更有意义的形状变异，尤其对代表不足的年龄组（如<1岁婴儿、75+老人）效果显著。
+- 生物医学相关性：模拟年龄相关的性别二态性，发现青春期（10-15岁）差异显著增强，即使85岁（男性无训练数据）也能产生合理的生物学外推结果。
+- 年龄/性别估计能力：通过最小化重建误差实现估计，年龄中位误差2.0年，性别准确率87.7%，且均与假分类器性能相近，证明模型有效编码了标签信息。
+
+未来需要：
+- 克服VAE平滑效应：VAE倾向于产生过度平滑的网格输出（尽管判别器部分缓解）。未来可探索扩散模型或其他先进生成模型以增强锐度和真实性。
+- 个性化生长预测：当前仅基于横断面数据，只能预测人群平均生长而非个体轨迹。未来需纳入纵向扫描及更多协变量（如祖先、体重、身高、激素水平），实现个性化生长预测。
+- 跨种群泛化：模型仅训练于欧洲血统人群，在其他人群中的适用性需进一步研究。跨祖先生长模式差异大，当前模型可能引入偏差或降低精度。未来需添加多祖先数据以提升公平性、鲁棒性和生物有效性。
+
+** 问题
+
+1. MeshMonk 是什么？
+2. Generalised Procrusted Analysis 是什么？
+3. 更重要的是，以上这两个我们能做吗？或者有什么可用于替代的吗？
