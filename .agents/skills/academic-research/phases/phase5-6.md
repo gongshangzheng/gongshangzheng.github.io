@@ -18,7 +18,7 @@
 - 图片源文件放 `media/images/<slug>/`，HTML 引用 `media/images/<slug>/<filename>`
 - 生成后执行 `node build.js` 验证
 
-调研笔记完成后，按三个维度**统一审校**报告质量：保真度、完整性、HTML 与站点规范。默认由主 agent 连续执行（read-article Phase 7 同样口径）；仅当某一维度仍有独立且耗时的核查需求时，才按需委派对应的 Review lane。
+调研笔记完成后，按三个维度**统一审校**报告质量：保真度、完整性、HTML 与站点规范。默认由主 agent 连续执行（read-article Phase 6 同样口径）；仅当某一维度仍有独立且耗时的核查需求时，才按需委派对应的 Review lane。
 
 | Review Agent | 职责 | 检查文件 |
 |---|---|---|
@@ -87,7 +87,7 @@ git push
 
 ### 6.1b 交叉引用回链
 
-发布后运行交叉引用回链（与 read-article Phase 8.2 对齐，但 academic-research 可能在一次调研中发布多篇文章，需在所有文章发布完成后统一执行一次）：
+发布后运行交叉引用回链（与 read-article Phase 7.2 对齐，但 academic-research 可能在一次调研中发布多篇文章，需在所有文章发布完成后统一执行一次）：
 
 ```bash
 ~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/cross-link.py

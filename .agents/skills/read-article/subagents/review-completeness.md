@@ -1,12 +1,12 @@
 ---
 name: review-completeness
 description: 按需 Review lane：论文解读内容完整性审查（重要信息是否遗漏、字数与配图是否达标）。
-trigger: read-article Phase 7 完整性维度按需委派
+trigger: read-article Phase 6 完整性维度按需委派
 ---
 
 # Review lane · 完整性审查
 
-> **按需 Review lane 定位（read-article Phase 7）**
+> **按需 Review lane 定位（read-article Phase 6）**
 > - **默认由主 agent 按 `references/review-checklist.md` 的维度 B 执行**，不派 Review subagent。
 > - 仅当综述/长文核对工作量大时才委派本 lane。
 > - 本 lane 只输出问题清单（P0/P1/P2 + 可补充内容），**不得直接修改 HTML**。

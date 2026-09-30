@@ -1,0 +1,178 @@
+---
+title: "数字人论文精读（三）：StyleTalk++，把说话风格变成可迁移的控制信号"
+description: "拆解 StyleTalk++ 如何从参考视频提取表情与头动风格，并通过双支路 3DMM 生成器控制 one-shot talking head。"
+created_at: 2026-09-30T16:28:58
+updated_at: 2026-09-30T16:28:58
+tags: [数字人, Talking Head, 说话风格, 3DMM]
+aliases: ["categories/AI/数字人/数字人论文精读"]
+sub_id: 700
+papers: ["https://arxiv.org/abs/2409.09292"]
+repos: []
+paper_title: "StyleTalk++: A Unified Framework for Controlling the Speaking Styles of Talking Heads"
+paper_authors: "Suzhen Wang, Yifeng Ma, Yu Ding, Zhipeng Hu, Changjie Fan, Tangjie Lv, Zhidong Deng, Xin Yu"
+paper_affiliation: "网易伏羲 AI Lab；清华大学；The University of Queensland"
+paper_venue: "IEEE TPAMI, 2024"
+paper_url: "https://arxiv.org/abs/2409.09292"
+paper_code: "未在论文中找到公开代码链接"
+mathjax: true
+hero_title: "StyleTalk++"
+hero_sub: "数字人论文精读（三） · TPAMI 2024"
+hero_tagline: "从参考视频提取表情与头动风格，让单张人像按指定风格说话"
+---
+
+<div class="stats">
+  <div class="stat"><span class="num">256</span><span class="label">风格码维度</span></div>
+  <div class="stat"><span class="num b">2</span><span class="label">生成支路</span></div>
+  <div class="stat"><span class="num">1,104</span><span class="label">表情风格类</span></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 1 · 问题</div>
+  <div class="ch-title">让数字人不只会对口型，还能“像某个人那样说话”</div>
+  <p>给一张人像和一段音频，生成一段嘴型同步的视频，是 one-shot talking head 的基本目标。但“说对内容”不等于“说得像某种风格”：同一句话，有人眉眼丰富、点头频繁，有人表情克制、头部几乎不动。若生成器只学习跨人物的平均运动模式，结果可以清楚地说话，却未必保留参考者的个性化表达。</p>
+  <p>StyleTalk++ 将说话风格拆成两个相关但不相同的部分：面部表情风格，以及头部姿态/运动风格。作者关注的不是单帧表情标签，而是一个视频片段中表情和头动随时间展开的模式。论文引言指出，既有 one-shot 方法更多聚焦口型同步、头部运动或视觉质量，对多样化说话风格建模不足；把风格简化为离散情绪类别，也难表达更灵活的个体差异。#Wang et al., 2024#</p>
+  <p>另一条路线从参考视频迁移表情，但论文认为已有方法多在静态帧级迁移上脸区域，难以覆盖全脸表情的时间动态。这里的关键缺口因此不是“能不能生成表情”，而是：能否从一段参考视频中提炼出可复用的时空模式，并把它与新音频的内容分开控制？这是本文对相关工作的归纳，适用范围限于论文讨论的 talking-head 方法。</p>
+  <div class="callout"><strong>问题一句话：</strong>给定目标身份图像、驱动音频和表情/头动参考视频，怎样将参考中的动态风格提取出来，并注入 one-shot 生成过程？</div>
+  <p>从研究路线看，StyleTalk++ 承接作者此前的 Audio2Head、AVCT/One-Shot 与 StyleTalk：前序工作分别探索头动、单图说话人与表情风格，本文把表情和头动风格控制纳入统一框架。谱系说明的是作者工作脉络，不意味着这些方法构成唯一或线性的领域发展史。#Wang et al., 2024#</p>
+  {{< mermaid >}}
+  timeline
+    title 作者工作脉络（论文自述）
+    2021 : Audio2Head
+    2022 : AVCT / One-Shot
+    2023 : StyleTalk
+    2024 : StyleTalk++
+  {{< /mermaid >}}
+  <div class="photo"><img src="media/images/styletalkpp-2024/pipeline.webp" alt="StyleTalk++ 总体框架，展示表情与头动双支路" loading="lazy"><div class="cap">图 1：两条风格生成支路共享 3D 人脸重建与最终渲染，分别输出表情系数和头部姿态。（来源：Wang et al., 2024, Fig. 1）</div></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 2 · 定位</div>
+  <div class="ch-title">输入、输出与“风格”在本文中的含义</div>
+  <p>模型接收四类输入：目标说话人的单张参考图、提供语音内容的驱动音频、表情风格参考视频、头动风格参考视频。两段风格参考可以是同一段视频。输出是目标人物说出驱动音频内容的视频：身份由参考图提供，语言内容由音频提供，表情和头动模式由两个风格参考提供。中间表示是 3D Morphable Model（3DMM）系数，最终再由图像渲染器合成像素视频。#Wang et al., 2024#</p>
+  <div class="table-wrap"><table><thead><tr><th>路线</th><th>风格/控制信号</th><th>论文指出的不足</th></tr></thead><tbody>
+    <tr><td>离散情绪控制</td><td>情绪类别标签</td><td>类别化表示难覆盖灵活、个性化的说话方式</td></tr>
+    <tr><td>参考视频迁移</td><td>额外情绪视频中的表情</td><td>相关方法侧重静态帧级上脸迁移，时间动态和全脸协同不足</td></tr>
+    <tr><td>StyleTalk++</td><td>视频序列编码得到的表情码与头动码</td><td>尝试统一控制两类时空模式；效果仍受训练数据、重建和渲染设定约束</td></tr>
+  </tbody></table></div>
+  <p><em>表 1：问题路线对照。第三行概括本文设计，并非对所有既有工作的完整分类。</em></p>
+  <p>必须谨慎理解“风格码”。它不是由独立的客观风格标注训练出来的测量仪器。论文在表情支路按数据集构造相似/不相似片段，在头动支路也使用关于同一说话者片段的采样假设；生成、判别和同步目标还会共同影响表示。因此，更准确的说法是：风格码是符合数据集代理规则、且对该生成任务有用的表示。它能否对应人类定义的稳定“真实风格”，需要超出本文实验的证据。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 3 · 模型</div>
+  <div class="ch-title">先编码风格，再让两种运动各用合适的解码器</div>
+  <h3 class="section-title">3.1 3DMM：把像素运动变成可分支处理的系数</h3>
+  <p>直接在像素空间预测整段视频，会把身份外观、头部姿态、表情形变和渲染细节混在一起。StyleTalk++ 先用现成 3D 人脸重建方法从参考视频估计逐帧系数：表情支路使用 64 维表情参数，头动支路使用旋转与平移组成的 6 维姿态参数。两种序列分别进入风格编码器与解码器，最后组合后送给 PIRenderer。#Wang et al., 2024#</p>
+  <div class="def-box"><h3>中间表示的作用</h3><p>3DMM 不是最终画面，而是结构化的运动接口：表情分支预测面部形变系数，头动分支预测姿态；渲染器再把这些系数与目标身份图像结合。</p></div>
+  <h3 class="section-title">3.2 Universal Style Encoder：从序列压缩出一个码</h3>
+  <p>单帧只能告诉我们“此刻是什么姿态”，却难表达一个人如何在时间中组织表情或头动。作者用 Transformer encoder 处理一串 3DMM 参数，让每一帧的特征包含时序上下文；随后用 self-attention pooling 学习帧的重要性权重，把整段序列汇总为固定长度向量。论文报告的风格码维度为 256，编码器包含 3 层、8 个注意力头，hidden size 为 256。#Wang et al., 2024#</p>
+  <p>直觉上，它像一个可学习的摘要器：并非对所有帧等权平均，而是让模型选择更能代表片段风格的时刻。表情系数序列产生表情风格码，姿态序列产生头动风格码；二者分别控制对应的生成支路。</p>
+  <p>为了让相似片段的表示靠近，作者在码空间加入 triplet loss。一个三元组由 anchor（锚样本）、positive（按数据规则视作相似的片段）和 negative（视作不相似的片段）组成。损失只要求相对距离满足间隔，不是在给每段视频赋予绝对风格分数：</p>
+  <div class="def-box"><h3>Triplet loss：相对距离约束</h3><p>令三个片段的风格码分别为 $s_a,s_p,s_n$，目标是让锚点到正样本比到负样本至少近一个 margin：</p><p>\[L_{trip}=\max\bigl(\lVert s_a-s_p\rVert_2-\lVert s_a-s_n\rVert_2+m,\ 0\bigr).\]</p><p>当正负距离已经满足间隔 $m$ 时损失为零；否则惩罚不够分离的三元组。论文设置 $m=5$。#Wang et al., 2024#</p></div>
+  <p>正负样本怎么来，决定了模型学到什么。表情侧以 MEAD 的同说话者/情绪/强度组合以及 HDTF 的同说话者分组构造风格类；论文训练细节报告共 1,104 个表情风格类。头动侧则把同一人相邻片段作为相似样本、非相邻片段作为不相似样本，依赖“个体头动风格随时间相对稳定”的假设。这个假设是训练采样规则，不是论文证明的普遍心理学事实。#Wang et al., 2024#</p>
+  <div class="photo"><img src="media/images/styletalkpp-2024/attn.webp" alt="风格编码器注意力池化示意" loading="lazy"><div class="cap">图 2：注意力池化将逐帧表示汇总为片段级风格码。（来源：Wang et al., 2024, Fig. 3）</div></div>
+  <h3 class="section-title">3.3 头动支路：递归预测下一步姿态</h3>
+  <p>头动需要连续、自然地展开。头动支路用声学特征作为输入，并采用 Transformer-XL 式递归解码：每一步依据当前音频特征、前一步空间状态和头动风格码预测姿态。空间状态转移让模型不只响应音频瞬时变化，也能延续运动轨迹；论文报告 memory 长度为 128。与一次性并行输出相比，逐步预测更直接地表达时间依赖，但也意味着误差可能沿时间累积。#Wang et al., 2024#</p>
+  <div class="photo"><img src="media/images/styletalkpp-2024/head_motion_predictor.webp" alt="头动预测器结构" loading="lazy"><div class="cap">图 3：头动预测器利用音频、风格条件和递归空间状态产生姿态序列。（来源：Wang et al., 2024, Fig. 4）</div></div>
+  <h3 class="section-title">3.4 表情支路：音素内容与风格条件分开注入</h3>
+  <p>表情分支使用音素标签而非头动支路的声学特征，重点是让口部内容跟随发音，同时让参考风格调制表情。风格码作为 decoder query，通过 cross-attention 与音素表示交互。论文还提出 style-aware adaptive FFN：根据风格码为多组前馈网络权重生成组合系数，$K=8$，使解码器的变换随风格条件变化。可以把它理解为一组可切换的“加工配方”，风格码决定当前更依赖哪种配方，而不是把同一个静态 FFN 用于所有风格。#Wang et al., 2024#</p>
+  <p>此外，作者将嘴部相关的 13 个表情系数与其他上脸运动分开建模。设计动机是上下脸运动特性不同，避免嘴部运动与眉眼表情被同一预测器粗略折中。最后，两支路生成的系数与目标身份参考一起交给 PIRenderer，得到图像序列。</p>
+  {{< mermaid >}}
+flowchart LR
+  A["目标身份图"] --> R["PIRenderer"]
+  B["表情参考视频"] --> E["3DMM重建与风格编码"]
+  E --> EC["表情风格码"]
+  F["驱动音频转音素"] --> ED["风格条件表情解码"]
+  EC --> ED
+  ED --> R
+  C["头动参考视频"] --> H["3DMM重建与风格编码"]
+  H --> HC["头动风格码"]
+  G["驱动音频声学特征"] --> HD["递归头动解码"]
+  HC --> HD
+  HD --> R
+  R --> O["目标人物说话视频"]
+  {{< /mermaid >}}
+  <div class="callout"><strong>统一的不是一个解码器：</strong>统一框架共享风格控制思路和最终渲染，但表情与头动仍采用不同输入表征和生成机制。</div>
+  <p>两条支路的数据流可以概括为：先将参考片段编码成条件，再与音频侧内容表示融合，最后预测 3DMM 系数。设输入的音素/声学表示为 $x_{1:T}$、片段风格码为 $s$，解码器输出动画系数序列 $y_{1:T}$。这里的关键不是公式本身，而是条件注入的位置：风格码参与解码，而不是在成片后对像素做滤镜式修改。表情参考长度为 64–256 帧（约 2–10 秒），头动参考为 128–512 帧（约 5–20 秒）；这反映实现细节，不是任何条件下的质量保证。#Wang et al., 2024#</p>
+  <div class="def-box"><h3>条件生成的抽象记法</h3><p>\[y_{1:T}=D(x_{1:T},s),\qquad I_{1:T}=R(y_{1:T},I^r).\]</p><p>$D$ 表示表情或头动解码器，$R$ 表示渲染器，$I^r$ 是目标身份图。该式是本文为解释数据流写的抽象记法，不是论文逐字给出的统一目标函数。</p></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 4 · 训练</div>
+  <div class="ch-title">监督信号不是单一标签，而是多个目标共同塑形</div>
+  <p>论文使用 VoxCeleb、HDTF、MEAD 与 HeadMotion。视频裁剪缩放为 $256\times256$，帧率 25 FPS，音频采样率 16 kHz。MEAD 有 42 位演员用于训练、6 位用于测试；HeadMotion 包含 751 段单人说话视频。表情风格分组与头动三元组采样方式不同，不能把 1,104 类误解成所有分支共享的统一身份标签。#Wang et al., 2024#</p>
+  <p>训练的关键在于多种目标并行约束：重建损失让预测系数贴近目标运动；triplet 与风格判别器塑造风格表示；时序判别器鼓励运动序列合理；表情支路的同步判别器约束嘴部运动与音频/音素的一致性。各项损失承担不同职责，不能仅凭总损失名称推断某个风格码“只编码风格”。</p>
+  <h3 class="section-title">4.1 训练配置披露</h3>
+  <div class="table-wrap"><table><thead><tr><th>项目</th><th>论文披露</th></tr></thead><tbody>
+    <tr><td>训练数据</td><td>VoxCeleb、HDTF、MEAD、HeadMotion（已披露）</td></tr>
+    <tr><td>训练硬件</td><td>原文未明确给出</td></tr><tr><td>优化器</td><td>Adam（已披露）</td></tr>
+    <tr><td>学习率</td><td>头动支路 $1\times10^{-4}$ 衰减至 $2\times10^{-6}$（已披露）</td></tr>
+    <tr><td>Batch size</td><td>原文未明确给出</td></tr><tr><td>训练步数</td><td>原文未明确给出；按 epoch 报告 100 epochs</td></tr>
+    <tr><td>训练时长</td><td>原文未明确给出</td></tr><tr><td>参数量</td><td>原文未明确给出</td></tr>
+    <tr><td>精度格式</td><td>原文未明确给出</td></tr><tr><td>Checkpoint 策略</td><td>原文未明确给出</td></tr>
+  </tbody></table></div><p><em>表 2：训练配置披露。没有报告的项目明确标为未披露，不据常见实践补猜。</em></p>
+  <p>头动支路训练 100 个 epoch，学习率从 $10^{-4}$ 衰减到 $2\times10^{-6}$；前 50 个 epoch 不启用头动风格判别器，后 50 个 epoch 再联合训练。作者将 HDTF 与 HeadMotion 用于头动支路，并按相邻/非相邻片段采样 triplet。表情支路采用 64 帧 clip 的批序贯训练；论文也描述了风格分类器预训练与冻结策略。#Wang et al., 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 5 · 推理</div>
+  <div class="ch-title">参考片段先变成条件，音频再驱动两条运动序列</div>
+  <p>推理时先准备目标身份图、驱动音频以及一段或两段风格参考视频。参考视频经 3D 人脸重建得到系数序列，再由训练好的 style encoder 汇聚为风格码。驱动音频一方面被转换为表情支路需要的音素表示，另一方面提取头动支路需要的声学特征。两个解码器各自产生逐帧 3DMM 系数，按时间组合后输入渲染器。#Wang et al., 2024#</p>
+  <div class="table-wrap"><table><thead><tr><th>条件</th><th>用于控制</th><th>论文报告的参考长度</th></tr></thead><tbody>
+    <tr><td>表情风格视频</td><td>表情码与表情支路</td><td>64–256 帧，约 2–10 秒</td></tr>
+    <tr><td>头动风格视频</td><td>头动码与头动支路</td><td>128–512 帧，约 5–20 秒</td></tr>
+  </tbody></table></div><p><em>表 3：参考时长按论文实现细节；秒数由 25 FPS 换算。</em></p>
+  <p>参考越长并不自动意味着风格就更准确；该设置说明实验采用的输入范围，不能被解释为对所有输入质量、姿态或时长的保证。论文在自驱动实验中使用真实视频作为相应参考。对实践者而言，重建质量是前置瓶颈：侧脸、极端头姿或遮挡会影响 3DMM 参数，随后误差会继续传入风格码和生成结果。</p>
+  <p>另一个重要边界是表情支路主要以音素为内容条件，而不是完整声学韵律。因此，论文承认表情节奏可能无法充分匹配音频节奏；这也解释了为什么同步和风格不能简单看成一个目标。架构提供的是可拆分的控制接口，不等于已经完全解决内容、韵律、情绪与个体表达之间的纠缠。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 6 · 实验</div>
+  <div class="ch-title">多指标验证风格、同步与画质，但不等于全面证明</div>
+  <h3 class="section-title">6.1 实验配置</h3>
+  <div class="table-wrap"><table><thead><tr><th>配置项</th><th>披露情况</th></tr></thead><tbody>
+    <tr><td>评测数据集</td><td>MEAD、HDTF；头动另测 HDTF、HeadMotion（已披露）</td></tr>
+    <tr><td>指标</td><td>SSIM、CPBD、F-LMD、M-LMD、Sync_conf、PSNR 等（已披露）</td></tr>
+    <tr><td>Baseline</td><td>表情/视频生成对比含 Wav2Lip、PC-AVS、EAMM、GC-AVT、MakeItTalk 等；头动对比含 MakeItTalk、Audio2Head、PHM（已披露）</td></tr>
+    <tr><td>推理硬件</td><td>原文未明确给出</td></tr><tr><td>分辨率</td><td>视频预处理为 $256\times256$（已披露）</td></tr>
+    <tr><td>推理环境</td><td>原文未明确给出</td></tr>
+  </tbody></table></div><p><em>表 4：实验配置披露。评测硬件和软件环境不从训练配置推断。</em></p>
+  <p>指标各自回答不同问题：SSIM、PSNR 描述像素/结构相似程度；CPBD 反映清晰度；M-LMD 关注口部关键点差异，F-LMD 用于衡量面部表情与参考风格的匹配；Sync_conf 来自同步评估。任何单一指标都不能替代身份保持、长时稳定性或真实交互体验的完整评测。</p>
+  <h3 class="section-title">6.2 头动定量结果</h3>
+  <div class="table-wrap"><table><thead><tr><th>数据集</th><th>StyleTalk++ SSIM</th><th>StyleTalk++ PSNR</th><th>比较范围</th></tr></thead><tbody>
+    <tr><td>HDTF</td><td>0.847</td><td>27.58</td><td>优于表中 MakeItTalk、Audio2Head、PHM</td></tr>
+    <tr><td>HeadMotion</td><td>0.786</td><td>26.75</td><td>优于表中 MakeItTalk、Audio2Head、PHM</td></tr>
+  </tbody></table></div><p><em>表 5：头动自驱动设置中的代表指标。比较结论限于论文所列方法、数据集和协议。</em></p>
+  <p>作者报告 StyleTalk++ 在两套头动测试集上列出的指标均取得最佳结果。表中数字支持“在该评测设定下，生成姿态与目标更接近”，但不应延伸成跨数据域或主观自然度的普遍排名。#Wang et al., 2024#</p>
+  <p>表情实验中，论文报告在 MEAD/HDTF 上的 SSIM 分别为 0.837/0.812，F-LMD 为 2.122/1.941，M-LMD 为 3.249/2.412；在论文报告的该组方法与设置中，StyleTalk++ 的 SSIM、F-LMD、M-LMD 综合表现突出。CPBD 上 Wav2Lip 在 MEAD 得分最高，作者指出其大部分参考区域保持不变，但嘴部区域较模糊。Sync_conf 也不能脱离训练方式解释：Wav2Lip 使用 SyncNet 判别器训练，因此其同步分数可能很高，甚至高于真实视频。#Wang et al., 2024#</p>
+  <div class="photo"><img src="media/images/styletalkpp-2024/tsne_head.webp" alt="头动风格码 t-SNE 可视化" loading="lazy"><div class="cap">图 4：头动风格码的 t-SNE 可视化；论文展示同一说话者样本在该可视化空间中相邻。（来源：Wang et al., 2024, Fig. 9）</div></div>
+  <h3 class="section-title">6.3 消融告诉我们什么</h3>
+  <p>头动分支消融比较了标准 Transformer decoder 与 Transformer-XL、teacher forcing 与递归策略、空间状态转移、风格判别器、triplet loss、时序判别器以及音素/声学输入。论文报告 HeadMotion 上完整模型 SSIM 为 0.786；改用标准 Transformer 并采用 teacher forcing 的变体为 0.566。该对照同时改变了解码器与训练策略，因此提示该组合设计在该设定下很重要，但不能把差距单独归因于某一个因素。#Wang et al., 2024#</p>
+  <p>表情消融逐项移除风格码 query、adaptive FFN、同步判别器、时序判别器等组件。论文报告移除同步判别器后 Sync_conf 从 3.474 降至 2.305，说明该监督与同步指标密切相关；这也提醒我们，使用某指标训练的模型在该指标上的优势可能部分来自目标对齐，而非所有维度都同步改善。完整理解每个变体仍应结合原文消融表，不能只凭某个单点数字概括模块价值。#Wang et al., 2024#</p>
+  <h3 class="section-title">6.4 t-SNE、插值与用户研究的证据边界</h3>
+  <p>作者对风格码做 t-SNE 可视化，并展示插值结果，报告同一说话者头动码在二维可视化中聚集、表情码呈现一定情绪/强度结构；部分情绪类别相邻。t-SNE 是降维可视化，不是“风格真实存在且被准确识别”的独立检验；聚类可能同时受到说话人身份、数据采样和训练目标影响。线性插值展示输出变化连续，也不必然意味着潜空间的每个方向都具备清晰语义。#Wang et al., 2024#</p>
+  <p>用户研究招募 36 人。论文报告表情风格一致性评分为 3.46，头动风格一致性为 3.64；自然度和同步等维度也进行了比较。评分是特定受试者、素材和问卷协议下的主观结果，不能被当作普遍用户偏好的精确测量。#Wang et al., 2024#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Part 7 · 讨论</div>
+  <div class="ch-title">它提供了可迁移的风格接口，不是稳定身份的最终答案</div>
+  <p>StyleTalk++ 的价值在于把“按风格生成”落实为一套可操作接口：参考片段编码成向量，向量条件化生成器；表情与头动分支共享控制范式，但保留各自的时序建模策略。Triplet 约束给风格空间增加相对几何结构，adaptive FFN 与风格 query 则把条件信息送进解码过程。相比仅输入离散情绪标签，这种设计能利用参考片段中的连续运动信息。#Wang et al., 2024#</p>
+  <p>但如果研究目标是“个人动态身份”，本文只能提供有限线索。头动同人聚类来自特定数据与采样规则，表情风格类又把说话人、情绪和强度按数据集构造组合起来；这与“先识别稳定个人，再将情绪视作状态变化”的建模目标并不相同。风格码可能混合身份、情绪、录制条件及生成任务所需的信息，论文没有通过独立的因果或身份解耦实验把这些因素完全拆开。</p>
+  <p>作者讨论的失败现象包括极端头姿/侧脸输入不稳、极端表情下 p/b/m 等闭唇音难以闭合，以及大动作时渲染器出现伪影；表情分支不直接建模完整音频韵律也带来节奏匹配限制。实际使用时，风格参考质量、3D 重建可靠性、驱动内容覆盖和渲染器能力都会影响输出。#Wang et al., 2024#</p>
+  <div class="info-box"><h3>对后续研究的可检验启发</h3><ul><li>将身份稳定性与情绪/强度变化分开采样，检验风格码是否能跨状态保留个体差异。</li><li>除 t-SNE 外，报告跨片段检索、同人/异人距离、跨数据集迁移及置信区间。</li><li>测试风格参考长度、姿态质量与重建噪声的敏感性，不把论文给定长度直接当作普适最低要求。</li><li>比较音素条件、韵律特征与完整声学条件，量化风格表达性和音画同步之间的权衡。</li></ul></div>
+  <p>因此，最稳妥的结论不是“StyleTalk++ 识别了真实说话风格”，而是：它展示了一种从视频学习任务相关风格条件，并将其用于 one-shot 表情与头动控制的框架；论文实验为这一设计在指定数据和协议下的有效性提供了证据，也暴露了风格监督定义、韵律利用和极端输入鲁棒性方面的边界。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Wang-et-al.-2024">Wang, S. et al. (2024). StyleTalk++: A Unified Framework for Controlling the Speaking Styles of Talking Heads. <em>IEEE TPAMI</em>. <a href="https://arxiv.org/abs/2409.09292" target="_blank">arXiv:2409.09292</a></li>
+  </ul>
+</div>
+
+<div class="chapter-nav">
+  <div class="nav-card current nav-prev"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">本分类暂无前篇</span></div>
+  <a class="nav-card nav-hub" href="digital-human-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">数字人系列总览</span></a>
+  <div class="nav-card current nav-next"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">后续待定</span></div>
+</div>

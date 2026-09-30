@@ -5,7 +5,7 @@
 
 ## 何时做
 
-每个生成 skill 的**分析/素材就绪后、动笔写作前**（read-article 中即 Phase 4 生成 planning draft 之前；其他 skill 对应各自的写作前置阶段）。
+每个生成 skill 的**分析/素材就绪后、动笔写作前**（read-article 中即 Phase 4 创建 OpenSpec change 并规划文章之前；其他 skill 对应各自的写作前置阶段）。
 
 ## 检索步骤
 
@@ -33,7 +33,7 @@
 ## 产出
 
 - **去重决策**（新建 / 扩充 / 接力草稿）——明确告知用户，不让用户重复要求。
-- **关联文章列表**（slug + 标题）——正文里用 `[[@标题]]` 站内引用、`.sources` 加 `data-cite-key`、或正文首次提及时链接到精读文章（见 read-article Phase 8.2 交叉引用回链）。
+- **关联文章列表**（slug + 标题）——正文里用 `[[@标题]]` 站内引用、`.sources` 加 `data-cite-key`、或正文首次提及时链接到精读文章（见 read-article Phase 7.2 交叉引用回链）。
 
 ## 违反典型（禁止）
 

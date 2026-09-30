@@ -1,6 +1,6 @@
 # 统一审校清单（Phase 7）
 
-> read-article Phase 7 的唯一检查清单。三个维度**由主 agent 连续执行**；只有某一维度仍有独立且
+> read-article Phase 6 的唯一检查清单。三个维度**由主 agent 连续执行**；只有某一维度仍有独立且
 > 耗时的核查需求时，才按需委派对应的 Review lane（模板在 `../subagents/review-*.md`）。
 
 **输入**：
@@ -10,7 +10,7 @@
 - 索引：`~/gongshangzheng.github.io/raw/<slug>/synthesis.md`
 - 已确认大纲：`openspec/changes/<change-name>/design.md`
 
-**输出**：问题清单（P0 阻断 / P1 强烈建议 / P2 可选）+ 修复记录。**P0 修复后才能进入 Phase 8。**
+**输出**：问题清单（P0 阻断 / P1 强烈建议 / P2 可选）+ 修复记录。**P0 修复后才能进入 Phase 7。**
 
 ---
 
@@ -174,7 +174,7 @@ cd ~/gongshangzheng.github.io && node build.js
 
 | 级别 | 判据 | 处理 |
 |------|------|------|
-| P0 | 事实错误、零图片、标签不配对、build 失败、裸 LaTeX 非标准命令 | **必须修复后才能进 Phase 8** |
+| P0 | 事实错误、零图片、标签不配对、build 失败、裸 LaTeX 非标准命令 | **必须修复后才能进 Phase 7** |
 | P1 | 字数不达标、tags > 5、来源标注缺失、缺少消融/局限 | 强烈建议修复；不修复须说明理由 |
 | P2 | 表述可优化、图片可替换、补充材料 | 可选 |
 

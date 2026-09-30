@@ -1,12 +1,12 @@
 ---
 name: read-article-conclusion-writing
 description: 写作检查清单（Phase 6）：总结 + 收获。
-trigger: read-article Phase 6 结语写作检查清单（默认不派 lane）；也被 historical-narrative 等 skill 复用
+trigger: read-article Phase 5 结语写作检查清单（默认不派 lane）；也被 historical-narrative 等 skill 复用
 ---
 
 # 写作检查清单 · 总结 + 收获
 
-> **定位（read-article Phase 6 按需参考）**
+> **定位（read-article Phase 5 按需参考）**
 > - read-article 的 HTML **默认由主 agent 直接撰写**，不启动写作 subagent。本文件作为主 agent 的写作检查清单使用。
 > - 仅当确实需要先生成一段 Markdown 中间稿时才派 lane；合并方式见 `phases/html-writing.md` §8。
 > - 被其他 skill（如 historical-narrative）引用时，按该 skill 自己的流程执行。
@@ -20,7 +20,7 @@ trigger: read-article Phase 6 结语写作检查清单（默认不派 lane）；
 - 论文标题：<title>
 - 综合材料：见 ~/gongshangzheng.github.io/raw/<slug>/synthesis.md
 - 已确认大纲：见 change `openspec/changes/<change>/design.md`「文章内容大纲」
-- 规划决策：见 ~/gongshangzheng.github.io/raw/<slug>/planning-draft.md
+- 规划决策：见 ~/gongshangzheng.github.io/OpenSpec change 的 `design.md`「文章内容大纲」
 - 方法素材：见 ~/gongshangzheng.github.io/raw/<slug>/analysis/methodology.md
 - 实验素材：见 ~/gongshangzheng.github.io/raw/<slug>/analysis/experiment.md
 

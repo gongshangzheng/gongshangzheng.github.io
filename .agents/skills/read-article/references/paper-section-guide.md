@@ -18,7 +18,7 @@
 > | Phase 2d（方法论） | `analysis/methodology.md` lane |
 > | Phase 2.4（发现闭环） | 不再作为独立阶段；等价于 Phase 2 的缺口标注 + Phase 3 synthesis 的矛盾标记（论文池回流由调用方 academic-research 负责，不是 read-article 的阶段） |
 > | Phase 3（survey-spine） | academic-research 内部阶段；本 skill 中对应 Phase 3 synthesis |
-> | Phase 4（写作） | Phase 4 planning draft + Phase 6 HTML 写作 |
+> | Phase 5（写作） | Phase 4 change 规划 + Phase 5 HTML 写作 |
 >
 > 表头里的 ★ 密度仍有效：★ 轻读、★★ 中读、★★★ 深读。
 
@@ -116,7 +116,7 @@ Appendix/Suppl.                              ★补充材料   ★★★精读  
 - Introduction 中的"Unlike X..." / "In contrast to Y..." 声明 → 需要在 Phase 2d 验证
 - Introduction 中提到的关键前置工作 → 加入引用链候选
 
-**Phase 4（写作）** — Part 1-2 素材来源
+**Phase 5（写作）** — Part 1-2 素材来源
 
 - Introduction 的动机叙事 → 博客 Part 1（引言）的直接素材
 - Introduction 的问题描述 → 博客 Part 2（问题剖析）的骨架
@@ -190,7 +190,7 @@ Related Works 是发现闭环的主要信息源：
 - 如果多篇 survey 的分类方式不同，选择最细粒度的那个作为基础，合并其他
 - 如果某篇 survey 的 Related Works 覆盖了我们不知道的子方向 → 标记为需要补充搜索
 
-**Phase 4（写作）** — 前置工作叙事
+**Phase 5（写作）** — 前置工作叙事
 
 - Related Works 的分类框架 → 博客"前置工作"章节的骨架
 - 每类方法的共性不足 → 博客"为什么需要新方法"的论述素材
@@ -215,7 +215,7 @@ Related Works 是发现闭环的主要信息源：
 - 初始化策略、梯度裁剪、数值稳定性处理
 - 与 baseline 的架构对比（参数量、FLOPs）
 
-**Phase 4（写作）** — Part 3 素材
+**Phase 5（写作）** — Part 3 素材
 
 - 架构图 → 博客的 mermaid/jsxgraph 替代或原图引用
 - 核心公式 → 博客的 MathJax 展示
@@ -264,7 +264,7 @@ Related Works 是发现闭环的主要信息源：
 - 实验中的 baseline 是否与 Phase 2b 引用链中的前置工作一致？
 - 如果实验跳过了某个重要 baseline → 可能是有意回避
 
-**Phase 4（写作）** — Part 6 素材
+**Phase 5（写作）** — Part 6 素材
 
 - 主实验结果表 → 博客的对比表格
 - 消融发现 → 博客的"关键发现"叙事
@@ -318,7 +318,7 @@ Related Works 是发现闭环的主要信息源：
 - 多篇论文 Limitations 的去重并集 → survey 的"挑战与局限"章节
 - 多篇论文 Future Work 的聚类 → survey 的"未来方向"章节
 
-**Phase 4（写作）** — Part 7 素材
+**Phase 5（写作）** — Part 7 素材
 
 - 局限性分析 → 博客 Part 7（讨论与启发）的核心素材
 - 未来方向 → 博客的"展望"叙事
@@ -365,7 +365,7 @@ Related Works 是发现闭环的主要信息源：
 - 算法伪代码的完整版
 - 复杂度分析的详细推导
 
-**Phase 4（写作）** — 补充素材
+**Phase 5（写作）** — 补充素材
 
 - 额外的架构图或流程图
 - 详细的实验结果表格

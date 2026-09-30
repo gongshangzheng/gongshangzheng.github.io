@@ -1,12 +1,12 @@
 ---
 name: read-article-method-writing
 description: 写作检查清单（Phase 6）：方法核心章节。
-trigger: read-article Phase 6 方法写作检查清单（默认不派 lane）
+trigger: read-article Phase 5 方法写作检查清单（默认不派 lane）
 ---
 
 # 写作检查清单 · 方法核心章节
 
-> **定位（read-article Phase 6 按需参考）**
+> **定位（read-article Phase 5 按需参考）**
 > - read-article 的 HTML **默认由主 agent 直接撰写**，不启动写作 subagent。本文件作为主 agent 的写作检查清单使用。
 > - 仅当确实需要先生成一段 Markdown 中间稿时才派 lane；合并方式见 `phases/html-writing.md` §8。
 
@@ -20,7 +20,7 @@ trigger: read-article Phase 6 方法写作检查清单（默认不派 lane）
 - 原始全文：见 ~/gongshangzheng.github.io/raw/<slug>/sources/
 - 综合材料：见 ~/gongshangzheng.github.io/raw/<slug>/synthesis.md
 - 术语表：见 ~/gongshangzheng.github.io/raw/<slug>/analysis/terminology.md（旧路径 subagents/terminology.md 兼容）
-- 问题定义：见已确认的 change `openspec/changes/<change>/design.md`「文章内容大纲」+ `raw/<slug>/planning-draft.md`
+- 问题定义：见已确认的 change `openspec/changes/<change>/design.md`「文章内容大纲」+ `OpenSpec change 的 `design.md`「文章内容大纲」`
 
 ## 写作要求
 

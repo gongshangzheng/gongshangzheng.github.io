@@ -20,7 +20,7 @@
    一键完成 tarball 下载→解压→图片提取→WebP 转换→TeX→Markdown→extraction-log 生成。若 tarball 不可用，回退到 arXiv HTML → PDF Docling + `pdftotext -layout`。不得只用 abstract、搜索片段或项目页简介替代全文
 3. 执行 Phase 2（按需分析）：按论文复杂度选 direct / assisted / deep；survey/长文建议启用 background + methodology + experiment + citation lane
 4. 执行 Phase 3（synthesis 导航索引）：生成 `raw/<slug>/synthesis.md`（仅索引，不复制内容）
-5. 自查：检查质量，补充缺口（collect 不进入 Phase 4 的 planning draft）
+5. 自查：检查质量，补充缺口（collect 不创建发布文章 change、不写 HTML）
 
 ## 输出
 
@@ -34,4 +34,4 @@
 - 不限制任何 subagent 的输出长度，但应避免复制整篇原文；长内容用指针回源
 - 充分榨取每篇论文的信息
 - 只修改 raw/ 目录下的文件；collect 模式不得生成 `src/pages/` 下的 HTML（需要 HTML 时改用 full 模式）
-- collect 模式不执行 check-sub-id.py 和 cross-link.py（这些是 full 模式 Phase 8 的步骤）
+- collect 模式不执行 check-sub-id.py 和 cross-link.py（这些是 full 模式 Phase 7 的步骤）

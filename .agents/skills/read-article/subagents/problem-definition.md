@@ -1,12 +1,12 @@
 ---
 name: read-article-problem-definition
 description: 写作检查清单（Phase 6）：问题定义 + 动机。
-trigger: read-article Phase 6 问题定义写作检查清单（默认不派 lane）
+trigger: read-article Phase 5 问题定义写作检查清单（默认不派 lane）
 ---
 
 # 写作检查清单 · 问题定义 + 动机
 
-> **定位（read-article Phase 6 按需参考）**
+> **定位（read-article Phase 5 按需参考）**
 > - read-article 的 HTML **默认由主 agent 直接撰写**，不启动写作 subagent。本文件作为主 agent 的写作检查清单使用。
 > - 仅当确实需要先生成一段 Markdown 中间稿时才派 lane；合并方式见 `phases/html-writing.md` §8。
 > - 被其他 skill 引用时，按该 skill 自己的流程执行。

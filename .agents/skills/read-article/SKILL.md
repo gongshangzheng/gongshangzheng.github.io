@@ -1,8 +1,8 @@
 ---
 name: read-article
 description: |
-  单篇论文/文章深度阅读与博客发布。主 agent 优先：素材获取 → 按需分析 → synthesis 导航索引 →
-  planning draft 交互 → 固化 OpenSpec change → 教学式 HTML 撰写 → 统一审校 → 发布与交叉回链。
+  单篇论文/文章深度阅读与博客发布。主 agent 优先：先弄清研究问题、研究动机与现有方法缺口 → 素材获取 → 按需分析 →
+  synthesis 导航索引 → 在 OpenSpec change 中规划文章 → 用户确认 → 教学式 HTML 撰写 → 统一审校 → 发布与交叉回链。
   直接通过 html-blog 发表。subagent 从默认流程改为按需分析 lane，确定性工作交给脚本。
   被 academic-research 调用时：core-survey / must-read-paper 用 full 模式，
   route-representative / context-only 用 collect 模式（只产素材）。
@@ -24,14 +24,24 @@ metadata:
 
 # Read Article — 单篇论文深度阅读
 
-将**单篇论文/文章**彻底榨干：提取全文 → 按需深读 → synthesis 索引 → planning draft 交互 → 固化 change → 教学式 HTML 撰写 → 统一审校 → 发布维护。
+将**单篇论文/文章**彻底读透：先弄明白作者要解决什么问题、为什么重要、现有方法差在哪里；再提取全文 → 按需深读 → synthesis 索引 → 在 OpenSpec change 的 `design.md` 中规划文章 → 用户确认 → 教学式 HTML 撰写 → 统一审校 → 发布维护。
 
-> **核心理念**：每一次运行都充分榨取信息。不设文字量上限，宁可详尽不可遗漏。
+> **核心理念**：每一次运行都充分榨取信息。不设文字量上限，宁可详尽不可遗漏。阅读顺序从问题出发：先建立“问题—动机—缺口”理解，再拆方法与实验。
 > **最终交付**：HTML 深度解读长文 + 博客发布链接 + 可选邮件通知。
-> **保留的中间产出**：raw 素材 + analysis 分析 lane + synthesis 导航索引 + planning draft。
+> **保留的中间产出**：raw 素材 + analysis 分析 lane + synthesis 导航索引 + OpenSpec change（含已确认的写作规划）。
 > **主 agent 优先**：默认不派 subagent；复杂度决定是否升级到 assisted / deep。
 
-> **前置 · 库内检索（必做）**：Phase 4 生成 planning draft 前，先按 [`pre-generation-search.md`](../blog-rules/references/pre-generation-search.md)（库内检索规范）做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+> **前置 · 库内检索（必做）**：Phase 4 建 change 并规划文章前，先按 [`pre-generation-search.md`](../blog-rules/references/pre-generation-search.md)（库内检索规范）做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
+## 阅读起点：先回答“为什么需要这篇论文”
+
+在深入模型结构、公式或实验之前，先基于摘要、引言、相关工作和问题定义，形成并核实以下三点：
+
+1. **问题是什么**：论文具体要解决的任务/瓶颈是什么，输入、输出或适用场景是什么？
+2. **为什么重要/难**：这个问题影响什么；难点来自哪里？
+3. **现有方法缺口是什么**：已有路线做到了什么、具体哪里不够，因而需要本文提出新方法？
+
+把三点写成一段可回源的简明问题陈述，记录论文段落/页码；再进入方法拆解。不能只复述标题或摘要中的宣传语，也不能把作者声称的贡献直接当作问题定义。若现有素材不足以验证其中一点，明确标为“待核实”，先回原文补读；不要凭方法名称倒推动机。
 
 ---
 
@@ -39,13 +49,13 @@ metadata:
 
 | 模式 | 触发 | 执行范围 | 产出 |
 |------|------|---------|------|
-| `full`（默认） | 用户直接调用 | Phase 1–8 | raw 素材 + analysis + synthesis + planning draft + OpenSpec change + HTML + 博客 + 邮件 |
-| `collect` | 被 `academic-research` 调用（route-representative / context-only） | Phase 1–3 | raw 素材 + analysis（跳过 planning draft / change / HTML / 发布） |
-| `draft` | 用户说"存到草稿/为草稿调研这篇/填充草稿的 XX 小节"，或草稿渐进填充流程按模型调用 | Phase 1 + 主 agent 直读 | 草稿小节填充 + 核心图片（不产 planning draft、不产 HTML、不发布） |
+| `full`（默认） | 用户直接调用 | Phase 1–7 | raw 素材 + analysis + synthesis + 含写作规划的 OpenSpec change + HTML + 博客 + 邮件 |
+| `collect` | 被 `academic-research` 调用（route-representative / context-only） | Phase 1–3 | raw 素材 + analysis（跳过 OpenSpec change / HTML / 发布） |
+| `draft` | 用户说"存到草稿/为草稿调研这篇/填充草稿的 XX 小节"，或草稿渐进填充流程按模型调用 | Phase 1 + 主 agent 直读 | 草稿小节填充 + 核心图片（不建发布文章 change、不产 HTML、不发布） |
 
 **`collect` 不出 HTML**：若上游需要可构建的 HTML 参考页（如 academic-research 的 `core-survey-reference`），应改用 `full` 模式，走上游已批准 change 的审批路径；不得在 collect 模式下写入 `src/pages/`。
 
-`full` 的 Phase 4–5 之间有一个**中间门禁状态 `planning-draft`**：规划草稿已生成、用户尚未确认。详见下方「planning draft」一节。
+`full` 模式在完成 Phase 1–3 的素材与分析后，于 Phase 4 直接创建文章 change；文章写作规划在该 change 的 `design.md` 中完成并由用户审阅。不得另建规划文件。
 
 ---
 
@@ -55,14 +65,14 @@ metadata:
 
 | 模式 | 默认行为 | 适用场景 | subagent 策略 |
 |------|---------|---------|--------------|
-| `direct`（默认） | 主 agent 独立完成 Phase 1–8 | 短文、材料完整、问题边界清晰 | 不启动 subagent |
+| `direct`（默认） | 主 agent 独立完成 Phase 1–7 | 短文、材料完整、问题边界清晰 | 不启动 subagent |
 | `assisted` | 主 agent 保持主线，委派局部工作 | 方法、实验、术语或配图有一两个明显难点 | 委派 1–3 个相对独立的 analysis lane |
 | `deep` | 主 agent 统一编排多个独立任务 | 长论文、survey、代码复现、跨论文比较 | 并行委派多个互不依赖 lane |
 
 规则：
 
 1. 先判断复杂度，再决定模式；**不得为了"凑并行"启动 lane**。
-2. 无论哪种模式，主 agent 都负责：综合结果、回原文核查冲突、生成 planning draft、取得用户确认、撰写 HTML、最终验收。
+2. 无论哪种模式，主 agent 都负责：综合结果、回原文核查冲突、创建含写作规划的 change 并取得用户确认、撰写 HTML、最终验收。
 3. subagent 只做素材分析，输出统一为「事实 + 来源指针 + 不确定性」；**不得**创建 OpenSpec change、修改 `src/pages/`、写最终 HTML 或替用户确认结构。
 4. 同一份 raw 素材可被多个 lane 独立读取（methodology / experiment / terminology / image-collection 天然可并行）；`code-analysis` 仅在代码仓库存在时启用。
 
@@ -87,37 +97,17 @@ Phase 3 · synthesis 导航索引 ── raw/<slug>/synthesis.md（轻量索引�
   ├─ [collect] ── 到此结束
   │
   ▼
-Phase 4 · planning draft [full] ── 可审阅、可交互修改的规划草稿
+Phase 4 · 创建 change 并规划文章 [full] ── design.md「文章内容大纲」即审批对象
   │
   ▼
-Phase 5 · 固化 change + 用户确认 [full]
+Phase 5 · 主 agent 写 HTML [full]
   │
   ▼
-Phase 6 · 主 agent 写 HTML [full]
+Phase 6 · 统一审校（保真度 ∥ 完整性 ∥ HTML 规范）[full]
   │
   ▼
-Phase 7 · 统一审校（保真度 ∥ 完整性 ∥ HTML 规范）[full]
-  │
-  ▼
-Phase 8 · 发布 + Hub + 交叉回链 [full]
+Phase 7 · 发布 + Hub + 交叉回链 [full]
 ```
-
----
-
-## planning draft（full 的中间门禁）
-
-planning draft 是**规划层草稿**，不是最终文章，也不是已批准的 change：
-
-- 允许写：论文速览、价值主张、候选章节结构、每节素材来源、关键数据、图表/公式计划、缺口、待确认问题、已确认决策、变更记录。
-- **不得写** `src/pages/`；不得视为"用户已批准文章大纲"。
-- 用户可以多轮交互：补充论文信息、修正事实与口径、删改章节、指定写作重点、决定复现 vs 理论的比重、确认图片/公式/实验取舍。
-- 每轮交互后主 agent 更新 draft，并把已确认决策沉淀进去；正式 change 固化时这些决策必须落到 `design.md`，不能只留在对话上下文里。
-- 草稿字段模板见 `references/planning-draft-template.md`。
-
-**落盘位置**（按优先级）：
-
-1. `raw/<slug>/planning-draft.md` —— 默认。此时 change 尚未创建，避免 OpenSpec 树里出现半成品 change。
-2. `openspec/changes/<slug>/draft.md` —— 仅当 change 目录已存在（用户要求提前建 change、或接力已有 change）。该文件不属于 OpenSpec schema，`openspec status` 不统计它。
 
 ---
 
@@ -128,11 +118,10 @@ planning draft 是**规划层草稿**，不是最终文章，也不是已批准�
 | 进入 Phase 1 前 | `phases/extraction.md`（source → HTML → PDF 三级降级、图片优先级、extraction-log） |
 | 进入 Phase 2 前 | `references/paper-section-guide.md`（论文章节利用策略）+ 需要的 lane 模板 |
 | 进入 Phase 3 前 | 本文「Phase 3」一节即可 |
-| 进入 Phase 4 前 | `references/planning-draft-template.md` + `phases/article-structure.md`（架构选型 A/B/C/D）+ `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/pre-generation-search.md` |
-| 进入 Phase 5 前 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` + `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` |
-| 进入 Phase 6 前 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md` |
+| 进入 Phase 4 前 | `phases/article-structure.md`（架构选型 A/B/C/D）+ `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/pre-generation-search.md` + `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` + `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` |
+| 进入 Phase 5 前 | `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md` |
 | 代码分析 lane 时 | `~/gongshangzheng.github.io/.agents/skills/github-repo-read/SKILL.md` |
-| 进入 Phase 7 前 | `references/review-checklist.md` |
+| 进入 Phase 6 前 | `references/review-checklist.md` |
 | 配图时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md` |
 | 发布时 | `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md` |
 | 交叉回链时 | `references/cross-linking.md` |
@@ -218,57 +207,27 @@ Slug：<slug>
 
 ---
 
-## Phase 4 · planning draft [full only]
+## Phase 4 · 创建 OpenSpec change 并规划文章 [full only]
 
-主 agent 执行。
+主 agent 执行。在素材与分析完成后，文章规划**直接写入 change**，不创建独立规划草稿文件。
 
-**前置**：先按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/pre-generation-search.md` 做库内检索，判断新建 / 扩充 / 接力草稿，并收集关联文章。
+**前置阅读**：按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/pre-generation-search.md` 做库内检索；读取 `phases/article-structure.md`、`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` 与 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/`。
 
-按 `references/planning-draft-template.md` 生成 `raw/<slug>/planning-draft.md`（或 change 已存在时的 `openspec/changes/<slug>/draft.md`），至少覆盖：
+**执行**：
 
-1. 论文速览：标题 / 作者与单位 / venue 与年份 / arXiv id / 代码仓库 / 原文链接
-2. 一句话价值主张（≤100 字）
-3. 候选文章结构：逐节给出「这一节写什么 + 素材来源文件与原文定位 + 必备表/公式/图 + 字数参考 + 缺料时的替代方式」
-4. 关键数据点：含数值与口径（分辨率 / GPU / 步数 / 数据集）
-5. 图表公式清单：预计的表格（列定义）、公式（编号 + 符号含义）、Mermaid 图、论文原图 —— 逐项列出
-6. 目标位置：分类 alias、sub_id、Hub、目标文件
-7. 引用关系：与既有文章的交叉引用计划
-8. 风险与待确认项：素材缺口、存疑结论、需要用户裁决的口径
-9. 已确认决策 / 未决问题 / 变更记录
+1. `openspec new change "<slug>"`（一批多篇用主题名）。
+2. 按内容类模板填写 `proposal.md` / `design.md` / `tasks.md`。
+3. `design.md` 的「核心问题与解法速览」和「文章内容大纲」是唯一规划与审批载体。先用速览说明问题、作者解法、核心思想、具体机制，再列逐节规划、关键数据、配图、位置与风险；详细字段按共享模板填写。
+4. 论文精读的速览和大纲必须解释**问题—动机—现有方法缺口**，并为事实性表述提供原文定位。定位用于追溯依据，不代表未核验；已对照原文的内容直接陈述，只有尚未核实或证据不足的具体主张才标待核验。机制概述需按数据流说明主要模块及作用，区分论文事实和编辑归纳，避免把训练代理标签或实验结果夸大成对真实风格的精确识别。
+5. 将 change 呈现给用户审阅，进入 Q&A 迭代阶段：主动邀请用户询问论文问题、解法、核心思想、具体机制、训练方式、损失函数、实验结论等；结合原文逐项回答，并将对文章主线、解释深度、取舍或章节结构有影响的新理解/用户偏好回写到 design 的速览、大纲、Decisions 或 Risks。纯答疑且不改变文章规划的内容不必全部写入 design。每轮实质更新后重新呈现相关段落；待用户确认整体规划后才进入 Phase 5 写作。
 
-**然后向用户汇报**，并把 draft 交给用户查看和交互修改。用户可能补充：写作重点、章节取舍、复现 vs 理论比重、前置工作展开程度、实验硬件是否单独说明等。每轮交互后更新 draft，把已确认决策沉淀进去。
+**门禁**：用户明确确认 change 前，不得写 `src/pages/`，不得改 `drafts/` 正文。用户确认后，按 change 中已批准的大纲写作；结构变更走 `openspec-update-change` 回写，不直接偏离大纲。
 
-**门禁**：planning draft 阶段不得写 `src/pages/`；不得视为用户已批准文章大纲。用户未确认时，停留在 Phase 4。
+上游 skill 已获得用户批准的主题 change 时，单篇结构与素材来源写入上游 change，按上游批准范围执行，不要求重复确认。`draft` / `collect` 模式豁免发布文章 change；豁免时说明理由。用户明确要求跳过确认时，仍须建立/更新 change，且不得省略审校。
 
 ---
 
-## Phase 5 · 固化 OpenSpec change + 结构确认 [full only]
-
-> 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
-
-只有用户确认 planning draft 达到可执行状态后，才进入固化：
-
-1. `openspec new change "<slug>"`（一批多篇用主题名）
-2. 按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 `proposal.md` / `design.md` / `tasks.md`。其中 `design.md` 的**「文章内容大纲」**是审批核心，逐节写清"这一节写什么 + 素材来源 + 必备表/公式/图"
-3. **把 draft 中已确认的决策全部落到 design**，不得只留在对话上下文或 draft 文件里；draft 里未决的问题必须解决或显式标注为待确认
-4. 将固化后的「文章内容大纲」贴给用户，请求**正式结构确认**；未确认不得进入 Phase 6，不得写 `src/pages/`
-5. 固化后 planning draft 可标记为已固化（保留文件作为决策记录，或按需清理）
-
-`draft` / `collect` 模式豁免（只产草稿/素材，不发表），豁免时在回复中说明理由。
-
-**被上游 skill 调用时的例外**：若 `academic-research` 等上游已有用户批准的主题 change（一批多篇），则
-本 skill 的 Phase 4 planning draft 简化为“按上游已批准结构拆出的单篇小节草案”，Phase 5 不再单独要求
-用户再次确认，以上游 change 的审批为准；但仍需把单篇的结构与素材来源写入上游 change（或本 skill
-的 planning draft）以供追溯。
-
-**用户显式跳过时**：用户明确说“不用确认，直接写”时，可跳过 draft 交互直接进 Phase 5，但
-**仍必须建立/更新 change**（或在回复中说明豁免理由），且不得省略 Phase 7 的三维审校。
-
-Phase 6 按 change 中已批准的「文章内容大纲」落笔；大纲需变更时走 `openspec-update-change` 回写，不直接改稿。
-
----
-
-## Phase 6 · 主 agent 写 HTML [full only]
+## Phase 5 · 主 agent 写 HTML [full only]
 
 > ⚠️ 进入本阶段前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md` + `phases/html-writing.md`。
 
@@ -280,7 +239,7 @@ Phase 6 按 change 中已批准的「文章内容大纲」落笔；大纲需变�
 2. 原文 `raw/<slug>/sources/`
 3. `raw/<slug>/analysis/` 已启用的 lane（事实存储层）
 4. `raw/<slug>/synthesis.md`（仅导航，不用作内容输入）
-5. `raw/<slug>/planning-draft.md`（已确认的决策与口径）
+
 
 标准 **7-Part 结构**继续作为推荐骨架，字数下限和质量底线见 `references/article-structure-template.md`；允许根据论文实际内容合并或调整章节，调整必须在 change 中记录并获确认。
 
@@ -319,7 +278,7 @@ Phase 6 按 change 中已批准的「文章内容大纲」落笔；大纲需变�
 
 ---
 
-## Phase 7 · 统一审校 [full only]
+## Phase 6 · 统一审校 [full only]
 
 > 进入本阶段前，读取 `references/review-checklist.md`。
 
@@ -333,11 +292,11 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 
 **默认由主 agent 完成一次统一审校**（三个维度都要过）。只有某一维度仍有独立且耗时的核查需求时，才**按需**委派对应 Review lane。
 
-问题分级 P0/P1/P2；**P0 必须修复后才能进入 Phase 8**。修复完成后重跑 `node build.js`。
+问题分级 P0/P1/P2；**P0 必须修复后才能进入 Phase 7**。修复完成后重跑 `node build.js`。
 
 ---
 
-## Phase 8 · 发布与维护 [full only]
+## Phase 7 · 发布与维护 [full only]
 
 发布前验证和发布流程见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/publishing.md`。
 
@@ -352,7 +311,7 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 7. `node build.js` 成功
 8. 正文无写作过程元叙述
 
-### 8.1 更新 Hub 页
+### 7.1 更新 Hub 页
 
 检查新文章的 `subcategory` 是否与某个 Hub 页匹配：
 
@@ -363,7 +322,7 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 
 **必读**：系列命名规则 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md`；sub_id 编号规则 `~/gongshangzheng.github.io/.agents/skills/blog-aliases/SKILL.md` §5；分类分布 `~/gongshangzheng.github.io/.agents/skills/blog-categories/references/subcategory-organization.md`（按需）。
 
-### 8.2 交叉引用回链
+### 7.2 交叉引用回链
 
 > 完整规则和自动化脚本见 `references/cross-linking.md`。
 
@@ -394,7 +353,7 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 ```
 论文 URL/标题
   → Phase 1 提取（arXiv source/HTML，含图片）
-  → 主 agent 直读 摘要 + 方法 + 实验节（必要时读引言/消融/附录）
+  → 主 agent 先读摘要 + 引言/相关工作，建立问题—动机—缺口；再读方法 + 实验（必要时读消融/附录）
   → 填充草稿对应小节（五类信息）
   → 核心图片 1-3 张拷到 drafts/assets/<草稿slug>/
   → 汇报，等用户审核（渐进填充流程：一次一篇）
@@ -415,7 +374,7 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 - 草稿正文（org）引用：`[[file:assets/<草稿slug>/<文件名>]]`
 - webp 转换与移 `media/images/` 推迟到发布交接阶段
 
-**禁止**：不写 HTML、不生成 planning draft、不进入 Phase 4–8、不派 Review、不在草稿里做跨论文对比（小节边界由调用方约束）。
+**禁止**：不写 HTML、不创建发布文章 change、不进入 Phase 4–7、不派 Review、不在草稿里做跨论文对比（小节边界由调用方约束）。
 **保留**：`raw/<slug>/` 提取产物照常保留，后续升级 full 模式写 HTML 时直接复用，无需重新提取。
 
 ---
@@ -425,20 +384,20 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 1. **必须创建 todo**：读本文后，立即创建阶段 todo 清单。todo note 必须记录论文标题、slug、原始 URL/PDF/arXiv ID、目标 HTML、raw 目录和当前执行模式（direct/assisted/deep）。
 2. 必须按 Phase 顺序推进；不得把中间结果当作完成态停下。
 3. Phase 1–3 的产物只用于后续分析和写作，默认不作为最终交付。
-4. **门禁顺序**：full 模式必须先在 Phase 4 生成 planning draft、在 Phase 5 固化 change 并取得用户确认，之后才能进入 Phase 6。`draft` / `collect` 在 Phase 1/3 结束。
-5. 进入 Phase 6 前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
+4. **门禁顺序**：full 模式必须在 Phase 4 创建 change、在 `design.md` 中规划文章并取得用户确认，之后才能进入 Phase 5。`draft` / `collect` 在 Phase 1/3 结束。
+5. 进入 Phase 5 前，必须读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`，所有 HTML 生成必须遵守其规范。
 6. **默认生成博客**：用户若未明确要求"只做分析/只 collect/不生成博客"，默认执行到 HTML 文章生成 + 构建校验 + 发布准备完成。
 7. **配图优先级**：用户截图 > arXiv source tarball 原始图片 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图 > 代码绘制 > 网络搜图。AI 生图完全禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 8. **中间文件保留完整事实**：analysis lane 保留所有具体数值、公式、表格、超参数、实验配置。synthesis.md 是导航索引，记录"哪个事实在哪个文件"，用指针连接而非复制。
 9. **重要事实性句子必须显式带引用**：至少覆盖论文贡献表述、实验数值、数据集/基线/指标、作者声明、时间线、引用链前置工作结论。引用必须使用 `#key#` 语法。
-10. Phase 7 保真度审查回原文核查，以论文全文为准。
-11. 三个审校维度全部完成后汇总修复 P0/P1 问题，再进入 Phase 8。
+10. Phase 6 保真度审查回原文核查，以论文全文为准。
+11. 三个审校维度全部完成后汇总修复 P0/P1 问题，再进入 Phase 7。
 12. `#key#` 引用标记同步配置底部 `.sources li` 的 `data-cite-key` 属性。
 13. 数学符号使用 MathJax：`\(...\)` 行内 / `\[...\]` 块级。
 14. **collect 模式下 survey 深读充分展开**：如果输入是 survey/review，collect 产物至少包括研究范围、taxonomy、任务输入/输出、metrics、datasets、代表方法表、关键结论、局限性、5-10 条可引用 claim。
-15. **扁平数据流**：analysis lane 是事实存储层，synthesis 是导航索引，Phase 6 直接从 analysis + 原文 + 已确认大纲写 HTML，三类产物各司其职。
-16. **planning draft 不是交付物**：draft 只服务规划交互；已确认决策必须固化进 change，不得只存在于 draft。
-17. **draft 模式轻量路线**：只走 Phase 1 提取 + 主 agent 直读论文，填充草稿小节五类信息 + 1-3 张核心图到 `drafts/assets/<草稿slug>/`；不派 lane、不生成 planning draft、不写 HTML、不 Review。
+15. **扁平数据流**：analysis lane 是事实存储层，synthesis 是导航索引，Phase 5 直接从 analysis + 原文 + 已确认大纲写 HTML，三类产物各司其职。
+16. **规划只存在于 change**：写作规划及确认决策必须记录在 change 的 `design.md`，不得另建规划草稿文件。
+17. **draft 模式轻量路线**：只走 Phase 1 提取 + 主 agent 直读论文，填充草稿小节五类信息 + 1-3 张核心图到 `drafts/assets/<草稿slug>/`；不派 lane、不创建发布文章 change、不写 HTML、不 Review。
 
 ---
 
@@ -522,7 +481,7 @@ paper_code: "未开源（截至 2026.06 未找到官方仓库）"
 
 ## 质量底线
 
-以下标准是最终 HTML 的硬性门槛，Phase 7 逐项检查：
+以下标准是最终 HTML 的硬性门槛，Phase 6 逐项检查：
 
 | 指标 | 最低要求 |
 |------|---------|
@@ -569,6 +528,6 @@ curl -L "<url>" -o /tmp/${SLUG}.pdf
 
 回到 `raw/<slug>/sources/` 与相应 analysis lane 补齐缺口；缺口集中在某一维度且工作量较大时，才按需委派一个补充 lane。
 
-### planning draft 长时间未确认
+### change 规划长时间未确认
 
-不要绕过门禁直接写 HTML。把 draft 中仍未决的问题列成清单单独问用户，缩小确认范围。
+不要绕过门禁直接写 HTML。把 change 中仍未决的问题列成清单单独问用户，缩小确认范围。

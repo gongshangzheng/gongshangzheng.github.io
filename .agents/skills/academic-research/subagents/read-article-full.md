@@ -23,13 +23,10 @@
    一键完成 tarball 下载→解压→图片提取→WebP 转换→extraction-log 生成
 2. **Phase 2 · 按需分析**：按论文复杂度选 direct / assisted / deep；需要时启用 background / citation / experiment / methodology / terminology / code-analysis / image-collection lane
 3. **Phase 3 · synthesis 导航索引**：生成 `raw/<slug>/synthesis.md`（仅索引，不复制内容）
-4. **Phase 4 · planning draft**：生成 `raw/<slug>/planning-draft.md`，设计 7-Part 结构。
-   被 academic-research 批量调用时，若上游主题 change 已获用户批准，此处不再单独要求用户确认，
-   按上游已批准结构拆出单篇小节草案即可
-5. **Phase 5 · 固化 change + 确认**：用户确认 draft 后建/更新 change，固化「文章内容大纲」（上游已有已批准 change 时以上游审批为准）
-6. **Phase 6 · HTML 写作**：由主 agent 统一撰写完整 HTML
-7. **Phase 7 · 统一审校**：保真度 / 完整性 / HTML 规范三维度，按需委派 Review lane
-8. **Phase 8 · 发布与维护**：build.js + 发布；更新 Hub 页
+4. **Phase 4 · 在 OpenSpec change 中规划文章**：将单篇 7-Part 结构写入 change 的 `design.md`「文章内容大纲」。被 academic-research 批量调用时，若上游主题 change 已获用户批准，单篇结构与素材来源写回上游 change，不重复要求确认。
+5. **Phase 5 · HTML 写作**：用户确认 change 后，由主 agent 统一撰写完整 HTML
+6. **Phase 6 · 统一审校**：保真度 / 完整性 / HTML 规范三维度，按需委派 Review lane
+7. **Phase 7 · 发布与维护**：build.js + 发布；更新 Hub 页
    - sub_id 分配前运行 `~/.venv/bin/python3 ~/gongshangzheng.github.io/scripts/check-sub-id.py --category <分类关键词>`
    - 交叉引用回链：
      ```bash
@@ -45,7 +42,7 @@
 
 ## 约束
 
-- **full 模式**：执行完整管线，包括 planning draft、change 固化、HTML 生成、统一审校、博客发布、邮件通知
+- **full 模式**：执行完整管线，包括在 OpenSpec change 中规划文章、HTML 生成、统一审校、博客发布、邮件通知
 - 使用上游提供的 categories / subcategory / sub_id 填写 frontmatter
 - sub_id 分配前必须运行 `scripts/check-sub-id.py` 确认编号不冲突
 - 标题格式遵循系列规则：

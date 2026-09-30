@@ -18,11 +18,9 @@
 
 ## 三步操作
 
-> **read-article full 模式的前置**：该 skill 先完成素材获取与分析（Phase 1–3），再生成可交互的
-> planning draft（Phase 4），与用户确认后才建 change（Phase 5）。planning draft 落
-> `raw/<slug>/planning-draft.md`（或 change 已存在时的 `openspec/changes/<slug>/draft.md`），
-> 不是已批准的 change，不得据它写 `src/pages/`。详见
-> `read-article/references/planning-draft-template.md`。
+写作规划**直接写在 OpenSpec change 内**：素材与分析完成后创建 change，在 `design.md` 的「文章内容大纲」中规划文章结构、逐节内容、素材来源与图表；该 change 是唯一审批载体。**不得另建 planning draft / 规划草稿文件**。用户确认 change，即批准写作规划。
+
+`read-article` 的库内检索、论文阅读与分析先于建 change；其他 skill 按各自管线，在具备足够素材后、正文写作前建 change。
 
 ### 1. 建 change
 
@@ -44,7 +42,7 @@ T=~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change
 | artifact | 模板 | 要点 |
 |----------|------|------|
 | `proposal.md` | `$T/proposal.md` | **文章清单表**（slug / 标题 / 类型 / 目标 alias / 产出物）不可删 |
-| `design.md` | `$T/design.md` | **「文章内容大纲」是审批核心**，逐篇填：类型与目标位置 / 服务对象 / 章节骨架（每节写什么 + 素材来源 + 必备表·公式·图）/ 关键数据点 / 配图计划 |
+| `design.md` | `$T/design.md` | **「文章内容大纲」是审批核心，也是写作规划的唯一载体**，逐篇填：类型与目标位置 / 服务对象 / 章节骨架（每节写什么 + 素材来源 + 必备表·公式·图）/ 关键数据点 / 配图计划；遵守下方「文章规划原则」 |
 | `tasks.md` | `$T/tasks.md` | 第 2 组（写作）之前必须有"用户已确认大纲"的前置任务 |
 | `specs/<capability>/spec.md` | `openspec instructions specs --change "<name>" --json` | 内容类一般新增一个 capability，requirements 写成可验收的交付契约 |
 
@@ -58,6 +56,16 @@ openspec instructions <artifact> --change "<name>" --json
 ### 3. 呈现待审批
 
 把「文章内容大纲」贴给用户：打算写哪几节、每节素材来自哪、会放哪些表/公式/图。**未确认不得动笔。**
+
+## 文章规划原则
+
+写入 `design.md` 的「文章内容大纲」时：
+
+1. 每节都指向具体素材文件与原文定位，不写笼统的「参考论文」。
+2. 缺料要写明替代方案或披露方式，不留空、不臆测。
+3. 区分原文事实与作者/agent 的阅读判断。
+4. 将需要用户裁决的问题集中列出，不藏在章节描述中。
+5. 规划可在 change 中迭代；每次用户补充后更新 artifact 并重新呈现差异。
 
 ## 审批门禁
 

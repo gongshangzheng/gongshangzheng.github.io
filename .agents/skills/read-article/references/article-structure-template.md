@@ -1,6 +1,6 @@
 # 文章架构模板
 
-> read-article Phase 4/6 的参考文件。定义论文解读博客的**推荐**章节结构、字数要求和质量底线。
+> read-article Phase 4/5 的参考文件。定义论文解读博客的**推荐**章节结构、字数要求和质量底线。
 > 骨架可按论文实际内容合并或调整（如纯理论论文无 Training Pipeline），但调整必须记录在
 > OpenSpec change 中并获用户确认。
 
@@ -138,14 +138,14 @@
 
 ---
 
-## 架构规划输出格式（planning draft 用）
+## 架构规划输出格式（OpenSpec change 的 design.md 用）
 
-Phase 4 的 planning draft 按 `references/planning-draft-template.md` 输出；其中「候选文章结构」可参考以下紧凑格式：
+Phase 4 将写作规划直接记录在 OpenSpec change 的 `design.md`「文章内容大纲」中；章节骨架可参考以下紧凑格式：
 
 ```
 选定结构: [方案名称]
 章节目录:
-  Part 1 · [引言标题] — [引出什么问题]
+  Part 1 · [引言标题] — [问题、研究动机、现有方法缺口；附原文指针]
   Part 2 · [问题剖析标题] — [核心矛盾 + Insight]
   Part 3 · [模型结构标题] — [架构 + 创新 + 公式]
   Part 4 · [Training Pipeline 标题] — [数据 + 损失 + 成本]

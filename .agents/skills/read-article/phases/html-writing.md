@@ -1,16 +1,16 @@
 ---
 name: read-article-html-writing
-description: Phase 6 HTML 撰写按需参考。配合 read-article/SKILL.md 使用。
+description: Phase 5 HTML 撰写按需参考。配合 read-article/SKILL.md 使用。
 ---
 
-# Phase 6 · HTML 撰写
+# Phase 5 · HTML 撰写
 
-> **定位**：read-article 新流程 Phase 6 的按需参考。本文件提供教学式写作规范、组件使用指南、
+> **定位**：read-article 新流程 Phase 5 的按需参考。本文件提供教学式写作规范、组件使用指南、
 > 章节写作指引和自检清单。**写作由主 agent 直接完成**，不再默认拆分成多个写作 subagent。
 
 > ⚠️ **前置条件**：
 > 1. 已读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`
-> 2. 已完成 Phase 5，OpenSpec change 的「文章内容大纲」已获用户正式确认
+> 2. 已完成 Phase 4，OpenSpec change 的「文章内容大纲」已获用户正式确认
 > 3. 已用 capture.js 创建 HTML 骨架
 
 **写作数据源**（按优先级）：
@@ -19,7 +19,7 @@ description: Phase 6 HTML 撰写按需参考。配合 read-article/SKILL.md 使�
 2. `raw/<slug>/sources/`——最终校验层
 3. `raw/<slug>/analysis/`——事实存储层
 4. `raw/<slug>/synthesis.md`——仅导航，不用作内容输入
-5. `raw/<slug>/planning-draft.md`——已确认的决策与口径
+5. OpenSpec change 的 `design.md`「文章内容大纲」——已确认的决策与口径
 
 ---
 
@@ -382,7 +382,7 @@ graph TD
 
 ## 9. 写作自检
 
-写完 HTML 后，先自行检查下表；随后进入 Phase 7，按 `references/review-checklist.md` 做完整的三维审校。
+写完 HTML 后，先自行检查下表；随后进入 Phase 6，按 `references/review-checklist.md` 做完整的三维审校。
 
 | 检查项 | 要求 |
 |--------|------|
@@ -400,4 +400,4 @@ graph TD
 | 章节导航 | 使用 `.chapter-nav` + nav-prev/nav-hub/nav-next |
 | 未披露项 | 标注"未披露"，不臆测 |
 
-通过自检后，进入 Phase 7（统一审校）。
+通过自检后，进入 Phase 6（统一审校）。

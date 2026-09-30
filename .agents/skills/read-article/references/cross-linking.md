@@ -195,7 +195,7 @@ for name, target_file in name_to_paper.items():
 
 ## 自动化脚本
 
-read-article Phase 8.2 的扫描与补全可用 `scripts/cross-link.py` 一键完成：
+read-article Phase 7.2 的扫描与补全可用 `scripts/cross-link.py` 一键完成：
 
 ```bash
 # 完整回链（清理已有链接 + 重建 .sources 链接 + 重建正文链接）

@@ -1,13 +1,13 @@
 ---
 name: read-article-article-structure
-description: Phase 4 planning draft 与文章架构按需参考。配合 read-article/SKILL.md 使用。
+description: Phase 4 change 规划与文章架构按需参考。配合 read-article/SKILL.md 使用。
 ---
 
-# Phase 4 · planning draft 与文章架构
+# Phase 4 · 创建 change 并规划文章架构
 
 > **定位**：read-article 新流程 Phase 4 的按需参考。本文件提供文章架构的选型方法（A/B/C/D）、
-> 字数分配模板和配图规划模板。planning draft 的字段与交互流程见
-> `references/planning-draft-template.md`。
+> 字数分配模板和配图规划模板。写作规划直接写入 change 的 `design.md`「文章内容大纲」；共享门禁与模板规则见
+> `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`。
 >
 > Phase 4 由主 agent 执行；只有需要独立核对某套架构素材是否齐备时，才考虑派一个 lane 做交叉检查。
 
@@ -15,7 +15,7 @@ description: Phase 4 planning draft 与文章架构按需参考。配合 read-ar
 
 Phase 2 的 analysis lane 按维度拆开素材（背景 / 方法 / 实验 / 术语 / 引用 / 代码 / 配图），Phase 3 建了导航索引。但索引 ≠ 知道文章怎么组织。同一批素材，用不同结构写出来读感完全不同。
 
-Phase 4 的任务是：在动笔之前，先规划好文章的"骨架"，并通过 planning draft 与用户交互确认：
+Phase 4 的任务是：素材与分析完成后创建 OpenSpec change，在 `design.md` 中规划文章骨架并请用户确认：
 
 - 核心方法有足够的展开篇幅
 - 公式和直觉交替出现，不是堆砌
@@ -76,41 +76,9 @@ Phase 4 的任务是：在动笔之前，先规划好文章的"骨架"，并通�
 ```
 适合：框架型、系统型论文（需要代码仓库）
 
-### 第三步：写 planning draft
+### 第三步：在 change 的 design.md 中规划
 
-按 `references/planning-draft-template.md` 生成 `raw/<slug>/planning-draft.md`，逐节写清：
-
-```
-结构方案：[A/B/C/D]
-章节目录：
-  Part 1 · [标题] — [本章核心内容，2-3 句话]
-    素材来源：[analysis/xxx.md §y + sources/<slug>.md Lm-n]
-    配图计划：[哪张图，来源]
-    必备元素：[表/公式/图]
-    预估字数：[≥N 字]
-  ...
-  缺料与替代：...
-```
-
-### 第四步：汇报 + 交互确认
-
-把 draft 的「候选文章结构」「图表公式清单」「风险与待确认项」三块贴给用户，明确问一句"结构是否确认？"。
-
-用户可以多轮补充：写作重点、章节取舍、复现 vs 理论比重、前置工作展开程度等。每轮交互后更新 draft，把已确认决策沉淀进「已确认决策」一节。
-
-**用户没有明确偏好时**，可直接按推荐方案执行，不必反复确认；**但 full 模式在 Phase 5 固化 change 前必须取得正式结构确认**。
-
-### 第五步：固化到 OpenSpec change
-
-用户确认 draft 后，才在 Phase 5 执行：
-
-```bash
-openspec new change "<slug>"
-```
-
-并把 draft 中已确认的内容按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 固化到 `proposal.md` / `design.md` / `tasks.md`；对照 `references/planning-draft-template.md` 的「固化检查清单」逐项核对。
-
-**未确认前不得进入 Phase 6，不得写 `src/pages/`。**
+按 `blog-rules/templates/content-change/design.md` 填写「文章内容大纲」，逐节写明内容、素材定位、必备元素、字数及缺料替代；把待裁决项放入 Risks。用户确认 change 后才进入写作。
 
 ## 字数分配模板
 
@@ -137,7 +105,7 @@ openspec new change "<slug>"
 
 ## 检查清单
 
-进入 Phase 5 固化前，确认以下问题都有明确答案：
+创建并提交 Phase 4 change 前，确认以下问题都有明确答案：
 
 - [ ] 每个章节有明确的叙事功能（不是"这一段翻译了论文的 X 节"）
 - [ ] 核心公式分布在方法章节，不是堆在一个 block
@@ -146,12 +114,12 @@ openspec new change "<slug>"
 - [ ] 至少 3 张图片，至少 1 张代码绘制
 - [ ] 论文未披露的项已标注"未披露"并写明替代方案
 - [ ] 关键数据点已核对口径（分辨率 / GPU / 步数 / 数据集）
-- [ ] draft 的「已确认决策」已全部落到 change 的 design
+- [ ] 已确认决策与待解决事项都记录在 change 的 design
 
 ## 输出
 
-1. `raw/<slug>/planning-draft.md`（或 change 已存在时的 `openspec/changes/<slug>/draft.md`）
+1. OpenSpec change 的 `design.md`「文章内容大纲」
 2. 用户确认信号
 3. 固化后的 `openspec/changes/<slug>/{proposal,design,tasks}.md`
 
-拿到正式确认后，才进入 Phase 6（HTML 写作）。
+用户确认 change 后，才进入 Phase 5（HTML 写作）。

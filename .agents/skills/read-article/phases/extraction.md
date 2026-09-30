@@ -282,10 +282,10 @@ raw/<slug>/
 ├── images/
 │   └── <slug>/               ← 最终可用于 HTML/blog 的图片（禁止 Docling artifacts）
 ├── analysis/                 ← Phase 2 按需生成的 analysis lane（可为空）
-└── (synthesis.md)            ← Phase 3 生成；planning-draft.md 由 Phase 4 生成
+└── (synthesis.md)            ← Phase 3 生成；OpenSpec change 由 Phase 4 创建
 ```
 
 **兼容旧目录**：历史 `raw/<slug>/subagents/` 与 `synthesis.md` 继续可用，作为对应 lane 的历史产物
 读取；新流程不再要求补齐四份固定分析文件。
 
-**draft 模式在此分叉**：提取完成后由主 agent 直读论文、填充草稿小节，不进入 Phase 2–8。
+**draft 模式在此分叉**：提取完成后由主 agent 直读论文、填充草稿小节，不进入 full 模式后续阶段。
