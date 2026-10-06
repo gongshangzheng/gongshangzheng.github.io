@@ -104,6 +104,21 @@ def create_directory_structure(raw_dir, slug):
     return dirs
 
 
+def _curl_fallback(url, output_path, timeout=120):
+    """urllib 失败时的 curl 兜底（部分网络环境下 urllib TLS 握手会被重置）"""
+    try:
+        result = subprocess.run(
+            ['curl', '-sL', '-A', 'Mozilla/5.0', '-o', str(output_path),
+             '--max-time', str(timeout), '-w', '%{http_code}', url],
+            capture_output=True, text=True, timeout=timeout + 10)
+        if result.returncode == 0 and result.stdout.strip() == '200' \
+                and output_path.exists() and output_path.stat().st_size > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def download_tarball(arxiv_id, output_path):
     """下载 arXiv e-print tarball"""
     url = f"https://arxiv.org/e-print/{arxiv_id}"
@@ -116,7 +131,11 @@ def download_tarball(arxiv_id, output_path):
             print(f"  ✅ 下载完成: {len(data) / 1024:.0f}KB")
             return True
     except Exception as e:
-        print(f"  ❌ 下载失败: {e}")
+        print(f"  ⚠️ urllib 失败 ({e})，尝试 curl 兜底...")
+        if _curl_fallback(url, output_path):
+            print(f"  ✅ 下载完成(curl): {output_path.stat().st_size / 1024:.0f}KB")
+            return True
+        print(f"  ❌ 下载失败")
         return False
 
 
@@ -402,7 +421,7 @@ def main():
 
     # Step 1: 创建目录结构
     print("📋 Step 1: 创建目录结构...")
-    sources_dir, fig_dir, img_dir = create_directory_structure(raw_dir, slug)
+    sources_dir, fig_dir, img_dir, analysis_dir = create_directory_structure(raw_dir, slug)
     print(f"  ✅ {raw_dir}/")
     print(f"     ├── sources/")
     print(f"     ├── figures/{slug}/")
