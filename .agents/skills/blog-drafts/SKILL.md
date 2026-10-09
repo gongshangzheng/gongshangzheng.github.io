@@ -71,7 +71,8 @@ drafts/
 |---|---|---|
 | `brainstorm.org` / `brainstorm.md` | **默认**，几乎空白（frontmatter + 标题 + 空白正文） | 自由 brainstorming，不限制思考 |
 | `plan.org` / `plan.md` | 详细分节（核心问题/大纲/关键素材/TODO） | 规划文章结构 |
-| `paper-note.org` / `paper-note.md` | 论文快读结构（问题/贡献/模型/训练/实验/总结） | 快速读完一篇论文，记下核心要点，不写 HTML |
+| `paper-reading-deep.org` | 深度论文笔记结构（全局/任务形式化/关键机制/训练/实验/结论） | **论文笔记默认模板**；系统梳理论文问题、方法与证据，不写 HTML |
+| `paper-note.org` / `paper-note.md` | 论文快读结构（问题/贡献/模型/训练/实验/总结） | 仅在用户明确要求快速阅读、快读或简记时使用，不作为默认模板 |
 
 **两种格式**：
 - `.org`（**默认，`draft.py new` 不加 `--format` 时生成 org**）：用 `#+TITLE:` / `#+SLUG:` 等 `#+` 属性行做 frontmatter，正文是 org（`*` 标题、`**` 子节）。
@@ -234,11 +235,16 @@ git log -1 --format=%ci src/pages/<slug>.html  # 文章最近改动时间
 - "更新这篇草稿的状态/进度" / "标记为已发布" → `draft.py set`
 - "归档/删除这个草稿" → `draft.py archive` / `delete`
 - "brainstorm" / "draft" / "待写" → 本 skill
-- "快速读这篇论文/记论文笔记" + arXiv URL → **paper-note 流程**（见下文）
+- "读这篇论文/写论文笔记" + arXiv URL → 默认使用 **paper-reading-deep.org** 模板，填入已有草稿或按需新建深度论文笔记。
+- 用户明确说“快速读/快读/简记” → **paper-note 流程**（见下文）
 
-## paper-note：论文快读草稿
+## 论文笔记默认流程：paper-reading-deep
 
-用 `paper-note` 模板快速记录一篇论文的核心要点，不写 HTML，不做多 subagent 分析。
+新写论文笔记默认使用 `.agents/skills/blog-drafts/templates/paper-reading-deep.org`。若已有对应草稿，保留其 slug/frontmatter 与用户已有内容，按深度模板的六部分结构补充和整理正文；不要为了套模板覆盖已有信息。若需新建草稿，按 `paper-reading-deep.org` 的字段与结构创建。该流程只写草稿，不生成 HTML；详细阅读与填充可参考 `paper-reading-deep.org` 模板本身。
+
+## paper-note：明确要求快读时使用
+
+仅当用户明确要求“快速读”“快读”“简记”等轻量笔记时，使用 `paper-note` 模板记录论文核心要点；不写 HTML，不做多 subagent 分析。
 
 详细流程见 `subagents/paper-note.md`。一句话总结：
 
@@ -273,6 +279,7 @@ cp media/images/<slug>/*.webp drafts/assets/<slug>/
 ## 强制要求
 
 - **新建草稿默认生成 org 格式**（`draft.py new` 的 `--format` 默认 `org`）；需要 markdown 时必须显式 `--format md`，不要凭"已有草稿恰好是 md"就跟着建 md。
+- **论文笔记默认使用 `paper-reading-deep.org`**；只有用户明确要求快读/简记时才使用 `paper-note`。
 - 草稿操作只用 `draft.py` / `draft-convert.py`，不手动编辑 frontmatter（避免时间戳/格式漂移）。
 - brainstorm 模板保持几乎空白——不预设章节限制用户思考。
 - 草稿正文由用户写，skill 不代写。**例外：paper-note 模板**——Qoder 读论文后填写各节，不需要用户手写。

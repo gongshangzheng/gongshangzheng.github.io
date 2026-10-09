@@ -1,20 +1,22 @@
 ---
 name: blog-drafts-paper-note
-description: 从 arXiv 论文一键提取核心信息，写入结构化草稿（paper-note 模板）。轻量版读纸流程：不分多个 subagents，只产出草稿笔记，不写 HTML。
-trigger: blog-drafts paper-note 流程 / 快速读纸 / 论文草稿
+description: 用户明确要求快读或简记时，从论文提取核心信息并写入结构化草稿（paper-note 模板）。轻量读纸支路：不分多个 subagents，只产出草稿笔记，不写 HTML。
+trigger: 用户明确要求快速读/快读/简记 / blog-drafts paper-note 流程
 ---
 
 # 论文快读草稿 (paper-note)
 
 ## 定位
 
-`paper-note` 是 `read-article` 的轻量版支路，目标是把一篇论文的核心信息快速写进 `drafts/` 草稿，
-供后续 brainstorming 和写博客用。**不**分多个 subagents，不写 HTML，不跑 Review pipeline。
+`paper-note` 是论文笔记默认深度流程之外的轻量支路，仅在用户明确要求快速阅读、快读或简记时触发。目标是把一篇论文的核心信息快速写进 `drafts/` 草稿。**不**分多个 subagents，不写 HTML，不跑 Review pipeline。默认论文笔记应使用 `paper-reading-deep.org`，详见 `blog-drafts/SKILL.md` 与模板文件。
 
 适合场景：
-- 快速阅读，先记下来，以后再详细写
-- 在 brainstorming 草稿里积累论文笔记
-- 作为 `read-article` 全量精读的前置草稿
+- 用户明确要求快速阅读或简记，先记下核心内容
+- 用户明确要求轻量笔记，之后再决定是否深入整理
+
+不适用：
+- 未指定快读方式的一般“读论文/写论文笔记”请求；这类请求默认走 `paper-reading-deep.org`
+- 不能仅因为已有草稿是 brainstorming 格式，就自动选择快读模板
 
 ## 流程
 
@@ -58,8 +60,10 @@ cp media/images/<slug>/*.webp drafts/assets/<slug>/
 
 ### Step 3：新建草稿
 
+仅在用户明确要求快读且尚无对应草稿时新建：
+
 ```bash
-~/.venv/bin/python3 scripts/draft.py new <slug> \
+~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft.py new <slug> \
   --title "<论文标题简称>" \
   --type paper-reading \
   --template paper-note \
@@ -67,7 +71,7 @@ cp media/images/<slug>/*.webp drafts/assets/<slug>/
   --tags <tag1,tag2,tag3>
 ```
 
-`--template paper-note` 会使用 `.agents/skills/blog-drafts/templates/paper-note.md` 模板。
+新建前先检查是否已有草稿；已有草稿时应保留并填充，不重复创建。`--template paper-note` 使用快读模板；一般论文笔记应选择 `paper-reading-deep.org`，而非本流程。
 
 ### Step 4：填写草稿正文
 
