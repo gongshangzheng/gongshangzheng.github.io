@@ -42,7 +42,7 @@ T=~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change
 | artifact | 模板 | 要点 |
 |----------|------|------|
 | `proposal.md` | `$T/proposal.md` | **文章清单表**（slug / 标题 / 类型 / 目标 alias / 产出物）不可删 |
-| `design.md` | `$T/design.md` | **「文章内容大纲」是审批核心，也是写作规划的唯一载体**，逐篇填：类型与目标位置 / 服务对象 / 章节骨架（每节写什么 + 素材来源 + 必备表·公式·图）/ 关键数据点 / 配图计划；遵守下方「文章规划原则」 |
+| `design.md` | `$T/design.md` | **「文章内容大纲」是审批核心，也是写作规划的唯一载体**，逐篇填：类型与目标位置 / 服务对象 / 章节骨架（必须用层级 headings；每节下列写什么 + 素材来源 + 必备表·公式·图）/ 关键数据点 / 配图计划；遵守下方「文章规划原则」 |
 | `tasks.md` | `$T/tasks.md` | 第 2 组（写作）之前必须有"用户已确认大纲"的前置任务 |
 | `specs/<capability>/spec.md` | `openspec instructions specs --change "<name>" --json` | 内容类一般新增一个 capability，requirements 写成可验收的交付契约 |
 
@@ -60,6 +60,8 @@ openspec instructions <artifact> --change "<name>" --json
 ## 文章规划原则
 
 写入 `design.md` 的「文章内容大纲」时：
+
+0. 章节骨架 MUST 使用层级 headings；每节标题下列出写作内容、具体素材来源与必备元素，不得用表格承载整份章节大纲。文章元数据、局部比较、数值数据等仍可使用表格。
 
 1. 每节都指向具体素材文件与原文定位，不写笼统的「参考论文」。
 2. 缺料要写明替代方案或披露方式，不留空、不臆测。
