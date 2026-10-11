@@ -1,21 +1,23 @@
 ## 1. 计划与素材
 
-- [ ] 1.1 复核 Codex 官方下载、平台、登录、项目操作、AGENTS.md、Skills、Plan mode 与审批/权限文档；在 design.md 记录权威 URL、版本和核查日期
+- [ ] 1.1 复核 Codex 官方下载、平台、登录、AGENTS.md 与 Skills 文档；在 design.md 记录权威 URL、版本和核查日期
 - [ ] 1.2 复核 CC Switch 当前发行版的首次供应商配置与连接验证、直连/路由/聚合、Codex 上游协议转换、重启生效与回退行为；区分文档支持和实测结果
 - [ ] 1.3 检索博客相关文章并确认交叉链接；已初步发现 `harness-engineering-notes.html`、Agent 行业调研系列及 `drafts/pi-intro.org`
-- [ ] 1.4 选择并核实国产模型接入示例；不暴露 API Key、真实域名或私有项目路径，不对中转服务作未经证实的背书
-- [ ] 1.5 确认分类 `categories/AI/Agent` 与文章 slug、标题，无需分配 sub_id 或 Hub
-- [ ] 1.6 审批门禁：取得用户对 design.md「文章内容大纲」的明确确认；未确认不得进入写作
+- [ ] 1.4 核实 DeepSeek、智谱 GLM、Kimi 的官方模型/API 文档、协议、可用性及价格口径；以用户可提供 API 的 GLM 作为主要实操示例，不读取或留存密钥，不暴露私有配置，也不对中转服务作未经证实的背书
+- [ ] 1.5 为各章搜集并核验参考链接或配图；优先使用官方文档和高质量完整图文教程。视频素材仅使用用户指定的两个链接（BV1Kk9kBAEJv、BV1XwaH6AE9a），不得添加其他视频；不依据标题转述其具体内容
+- [ ] 1.6 确认分类 `categories/AI/Agent` 与文章 slug、标题，无需分配 sub_id 或 Hub
+- [ ] 1.7 审批门禁：取得用户对 design.md「文章内容大纲」的明确确认；未确认不得进入写作
 
 ## 2. 逐篇写作
 
-- [ ] 2.1 `agent-tutorial`：按已批准的大纲撰写《Agent 使用教程》，依次比较并推荐 Codex、配置并验证模型供应商、完成一个任务、介绍 Skill、解释 Agent Tool、介绍 OpenSpec 等规划工具，最后说明细节与安全事项
-- [ ] 2.2 制作脱敏的 Codex/CC Switch 截图和协议流向示意图，保存至 `media/images/agent-tutorial/`
+- [ ] 2.1 `agent-tutorial`：按已批准的大纲撰写《Agent 使用教程》，依次比较并推荐 Codex、介绍模型供应商与 CC Switch 配置、AGENTS.md、Skill、Agent Tool、OpenSpec 等规划工具，最后说明细节与安全事项
+- [ ] 2.2 逐章撰写并审核：每完成一章即暂停，将该章交用户审核；收到用户意见或明确确认后才能开始下一章。不得一次写完多章后再统一审核。
+- [ ] 2.3 制作脱敏的 Codex/CC Switch 截图和协议流向示意图，保存至 `media/images/agent-tutorial/`
 
 ## 3. 统一 Review
 
 - [ ] 3.1 核查产品能力、版本、协议和配置步骤的来源准确性；将官方依据与个人实测明确区分
-- [ ] 3.2 核查文章完整性、适用范围、Plan mode 与自动执行模式的描述、回退步骤、Key/隐私安全提示及与既有文章的边界
+- [ ] 3.2 核查文章完整性、适用范围、供应商配置与回退步骤、Key/隐私安全提示及与既有文章的边界
 - [ ] 3.3 核查 HTML、frontmatter、链接、图片和站点规范；修复所有阻断发布的问题
 
 ## 4. 发布与构建

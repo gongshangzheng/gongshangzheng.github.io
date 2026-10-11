@@ -19,6 +19,7 @@
 ## 2. 数学与模型核验
 
 - [ ] 2.1 核验 Score Matching 与 Denoising Score Matching 代表性原论文的准确出处、研究问题、目标函数与贡献边界；解释它们与 DDPM 噪声预测的联系，避免把方法脉络仅作为术语旁注。
+- [ ] 2.1e 核验 Score Matching/DSM 到连续时间扩散的衔接：score 在反向 SDE/PF-ODE 中的角色，以及 score、扩散 probability-flow vector field、Flow Matching target velocity 与 ε/x/v prediction 的概念边界；避免把连续时间扩散等同于 Flow Matching 或把 v-prediction 等同于 FM 速度。
 - [ ] 2.1d 核验福克–普朗克方程的密度演化形式、漂移/扩散项含义及其与正向/反向 SDE 的关系，准备面向初学者的逐项解释和一维示例。
 - [ ] 2.1a 核验 DDPM 中 `x_t`、完整噪声 ε、预测噪声 ε̂、隐式干净样本估计 x̂₀、反向均值及随机后验噪声的关系；区分训练时任意时刻的直接加噪与推理时反向链。
 - [ ] 2.1b 核验 time-varying/marginal vector field 的定义、概率流 ODE、条件向量场到边缘向量场的关系；区分 score、扩散 probability-flow vector field 与 Flow Matching target velocity。
@@ -31,8 +32,8 @@
 
 ## 3. 草稿撰写
 
-- [ ] 3.1 按 `design.md` 递进式章节规划更新 `drafts/video-generation.org`，从视频生成任务地图、生成模型与扩散直觉逐步进入数学基础和采样机制。
-- [ ] 3.2 按主线讲清 DDPM → Score Matching/DSM 与 Tweedie → SDE/福克–普朗克/反向 SDE/PF-ODE → DDIM 的概念关系；逐步解释福克–普朗克方程各项含义，并回查 Score Matching/DSM 与 DDIM 的具体论文动机、方法和贡献；不要套用“核心问题与解法”论文模板。
+- [ ] 3.1 按 `design.md` 递进式章节规划更新 `drafts/video-generation.org`，从生成模型与扩散直觉逐步进入数学基础、DDPM 及合并后的 Score Matching/DSM 与连续时间扩散章节，再进入条件生成和视频生成；保留原有身份与时序问题提纲。
+- [ ] 3.2 按主线讲清 DDPM → Score Matching/DSM、Tweedie 与连续时间扩散（SDE/福克–普朗克/反向 SDE/PF-ODE）→ DDIM 的概念关系；在同一章内分清训练信号与生成过程，逐步解释福克–普朗克方程各项，并厘清 Flow Matching/v-prediction 边界；不要套用“核心问题与解法”论文模板。
 - [ ] 3.3 DDPM/DDIM 之后补充条件生成、classifier guidance 与 CFG、CLIP、DALL·E 2、Latent Diffusion/Stable Diffusion、ControlNet、DreamBooth 与 LoRA；核验并解释 CFG 空条件训练和预测组合，以 DALL·E 2 连接 CLIP 图像表示与条件扩散生成；不将 CLIP 等同于生成器、混淆 guidance 方法或将 DreamBooth 与 LoRA 混为同类方法。
 - [ ] 3.4 按知识递进介绍早期视频生成与时空建模（3D convolution、R(2+1)D）、Imagen/Imagen Video、Video Diffusion Models 的 3D U-Net、Make-A-Video 的级联生成、视频训练数据集（含 WebVid-10M）及开源基模（ModelScopeT2V、Show-1、LaVie）。明确区分动作识别架构先例与生成模型，且不把代表性论文架构泛化为统一设计。
 - [ ] 3.5 接着讲视频任务、后续表示/架构、时间一致性与长程依赖、自回归/流式生成；将 Custom Forcing 作为建立通用机制之后的案例。
@@ -42,5 +43,5 @@
 ## 4. 复核
 
 - [ ] 4.1 从初学者视角检查章节先修关系、概念引入顺序和解释是否连贯；确认没有突兀跳入论文细节或未定义术语。
-- [ ] 4.2 逐式复核数学推导、下标、参数化与边界条件，特别检查 DDPM 后验/ELBO、Score Matching/DSM、Tweedie、福克–普朗克、反向 SDE/PF-ODE、ε/x/v prediction 和 DDIM 更新。
+- [ ] 4.2 逐式复核数学推导、下标、参数化与边界条件，特别检查 DDPM 后验/ELBO、Score Matching/DSM、Tweedie、福克–普朗克、反向 SDE/PF-ODE、Flow Matching/v-prediction 概念边界和 DDIM 更新。
 - [ ] 4.3 运行 `git diff --check` 并审阅差异；确认未改动 `src/pages/`、未发布、未修改 `~/org/roam` 原笔记，且保留草稿原有内容。
