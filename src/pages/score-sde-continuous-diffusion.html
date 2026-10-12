@@ -1,0 +1,229 @@
+---
+title: "视频生成系列（二）：Score、DSM 与连续时间扩散"
+description: "从 score matching 与去噪 score matching 出发，解释带噪样本的 score 如何汇总潜在去噪方向，以及连续时间 SDE、反向扩散和 probability flow ODE 的关系。"
+created_at: 2026-10-12T16:42:21
+updated_at: 2026-10-12T16:48:39
+tags: [生成模型, 扩散模型, 视频生成]
+aliases: ["categories/AI/视频生成"]
+sub_id: 20
+papers: ["https://arxiv.org/abs/1907.05600", "https://arxiv.org/abs/2011.13456", "https://arxiv.org/abs/2210.02747", "https://arxiv.org/abs/2202.00512"]
+mathjax: true
+hero_title: "Score、DSM 与连续时间扩散"
+hero_sub: "视频生成系列 · 02"
+hero_tagline: "从已知去噪目标，到反向随机过程"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">视频生成系列 · 02</div>
+  <div class="ch-title">为什么去噪方向可以描述一个分布</div>
+
+  <p>第一篇已经看到，DDPM 可以把前向过程中亲手加入的噪声当作训练标签。现在换一个问题：如果一个带噪点可能来自许多不同的干净图像，模型应该朝哪一张图去噪？答案不是挑中某一张，而是学习整个带噪分布在当前位置的局部变化方向。这个方向场叫作 <strong>score</strong>。#Ho-et-al.-2020# #Vincent-2011#</p>
+
+  <p>本篇先从 score matching 讲到 denoising score matching（DSM），再沿着 Song 与 Ermon 的多噪声尺度模型，进入 Song 等人提出的连续时间 SDE 框架。先区分三个历史位置：DSM 是训练 score 的方法；多噪声尺度 score model 是有限噪声层级的生成方法；连续时间 SDE 则把噪声层级推广成连续时间过程。反向时间扩散的数学结果更早来自 Anderson（1982）。#Hyvarinen-2005# #Vincent-2011# #Song-and-Ermon-2019# #Anderson-1982# #Song-et-al.-2021#</p>
+
+  <div class="callout"><strong>一句话预览</strong>：DSM 用“已知噪声核下的条件去噪方向”监督网络；网络的最优解是扰动后边缘分布的 score。连续时间扩散再用这个随时间变化的 score 构造反向 SDE。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">定义</div>
+  <div class="ch-title">Score 是局部概率梯度向量场</div>
+
+  <p>给定连续密度 $p(x)$，它在位置 $x$ 的 score 定义为对数密度关于输入的梯度：</p>
+
+  $$
+  s_p(x)=\nabla_x\log p(x)
+  $$
+
+  <p>它是一个与 $x$ 同维的向量。沿着这个向量作足够小的移动，$\log p(x)$ 会在一阶近似下增加得最快。因此可以把 score 想成“局部往哪里移动，密度会变大”的几何信息。它是一个<strong>向量场</strong>，不是物理力；在多峰分布中，局部上升方向不一定直接通向某个全局最高点。#Hyvarinen-2005#</p>
+
+  <p>为什么不直接拟合 $p(x)$？对于未归一化模型，密度可能写成 $p_\theta(x)=\exp[-E_\theta(x)]/Z_\theta$，而归一化常数 $Z_\theta$ 往往难算。score 对输入求导会消去与 $x$ 无关的归一化常数，所以 score matching 可以直接比较模型和数据的对数密度梯度。#Hyvarinen-2005#</p>
+
+  <p>理想的 score matching 风险可写作：</p>
+
+  $$
+  J_{\mathrm{SM}}(\theta)=\frac{1}{2}\mathbb{E}_{x\sim p_{\mathrm{data}}}\left[\left\|s_\theta(x)-\nabla_x\log p_{\mathrm{data}}(x)\right\|^2\right]
+  $$
+
+  <p>但真实数据密度未知，右侧的 $\nabla_x\log p_{\mathrm{data}}(x)$ 不能直接当监督标签。Hyvärinen 的关键结果是，在适当边界与可微条件下，可用分部积分把目标改写为只依赖模型 score 及其导数的期望；代价是出现 Jacobian 的迹，也就是高维下计算困难的散度项。#Hyvarinen-2005# #Song-and-Ermon-2019#</p>
+
+  <div class="info-box">
+    <h3>先区分这两个词</h3>
+    <p><strong>Score</strong> 是要学习的函数：输入位置及噪声尺度，输出一个向量。<strong>Score matching</strong> 是一类让模型向量逼近数据分布 score 的训练目标。DSM 是一种特别实用的 score matching 形式，它用人工加噪构造可计算的条件监督目标。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">去噪监督</div>
+  <div class="ch-title">DSM：多个可能来源的方向如何汇成一个 score</div>
+
+  <p>令干净样本为 $x$，用已知扰动核 $q_\sigma(y\mid x)$ 生成带噪点 $y$。对任意一个给定来源 $x$，条件分布的 score 是可计算的监督信号。以加性高斯噪声 $y=x+\sigma\epsilon$ 为例：</p>
+
+  $$
+  q_\sigma(y\mid x)=\mathcal{N}(y;x,\sigma^2I),\qquad
+  \nabla_y\log q_\sigma(y\mid x)=\frac{x-y}{\sigma^2}=-\frac{\epsilon}{\sigma}
+  $$
+
+  <p>方向 $(x-y)/\sigma^2$ 从带噪点 $y$ 指向这个候选干净样本 $x$。训练时 $x$ 是已知的，所以我们可以拿它监督模型；但推理时只有 $y$，不知道是哪一个干净样本产生了它。如果许多不同的 $x$ 都可能加噪得到同一个 $y$，模型要学的就应当是对所有候选方向的概率加权汇总。</p>
+
+  <p>把干净样本边缘化，得到带噪边缘密度 $q_\sigma(y)=\int q_\sigma(y\mid x)p_{\mathrm{data}}(x)\,dx$。对它求导可得：</p>
+
+  $$
+  \nabla_y\log q_\sigma(y)
+  =\mathbb{E}_{x\sim q_\sigma(x\mid y)}\left[\nabla_y\log q_\sigma(y\mid x)\right]
+  =\mathbb{E}_{x\sim q_\sigma(x\mid y)}\left[\frac{x-y}{\sigma^2}\right]
+  $$
+
+  <p>所以 score 是给定带噪点后，对潜在干净来源的后验分布取期望得到的<strong>平均条件去噪方向</strong>。这正好解释了“一个带噪点可能由多张原图产生”的直觉：各个候选方向不需要一致，score 汇总的是它们在当前边缘分布下的平均趋势。它不表示粒子之间存在真实拉力，也不保证平均结果等于某一张真实原图。#Vincent-2011# #Song-and-Ermon-2019#</p>
+
+  <p>DSM 的训练目标因此可以直接使用条件 score：</p>
+
+  $$
+  J_{\mathrm{DSM}}(\theta;\sigma)=\frac{1}{2}\mathbb{E}_{x\sim p_{\mathrm{data}},\,y\sim q_\sigma(y\mid x)}\left[\left\|s_\theta(y,\sigma)-\nabla_y\log q_\sigma(y\mid x)\right\|^2\right]
+  $$
+
+  <p>在高斯例子里，目标就是 $(x-y)/\sigma^2$。由于平方误差的最优预测是给定输入后的条件期望，模型容量足够时，$s_\theta(y,\sigma)$ 学到的是边缘 score $\nabla_y\log q_\sigma(y)$，而不是某个训练样本的专属方向。Vincent 将这一目标与扰动后分布上的显式 score matching 联系起来；Song 与 Ermon 将它用于多噪声尺度的生成模型。#Vincent-2011# #Song-and-Ermon-2019#</p>
+
+  <h3 class="section-title">从平均去噪方向到 Tweedie 估计</h3>
+
+  <p>同一个恒等式还给出干净样本的后验均值。把 $y$ 移到等式另一边，可得：</p>
+
+  $$
+  \mathbb{E}[x\mid y]=y+\sigma^2\nabla_y\log q_\sigma(y)
+  $$
+
+  <p>这就是高斯加性噪声下的 Tweedie 公式：带噪观测加上“噪声方差乘以边缘 score”，得到给定观测后的后验均值。它是一种统计去噪估计，不是逐样本精确还原。若 $y$ 的后验可能对应多种不同图像，均值甚至可能比任何单个候选都更模糊。#Vincent-2011# #Song-et-al.-2021#</p>
+
+  <p>在第一篇的 DDPM 参数化中，模型预测实际采样得到的 $\epsilon$。对 $y=\sqrt{\bar\alpha_t}x+\sqrt{1-\bar\alpha_t}\epsilon$，最优噪声预测与该时刻边缘 score 只差由噪声尺度决定的换算系数。噪声预测、score 预测和干净样本预测可以在一定参数化下互相换算，但训练权重与数值条件不同，不应因此把它们说成完全相同的训练目标。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+
+  <div class="callout"><strong>这也回答“为什么噪声可以当标签”</strong>：前向扰动由训练者采样，因此加入的噪声已知；DSM 用的是已知扰动核给出的条件 score。模型学到的边缘 score 则是对所有潜在干净来源做后验加权后的结果。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">有限尺度</div>
+  <div class="ch-title">Song 与 Ermon：从多个噪声尺度生成样本</div>
+
+  <p>在真实数据附近直接估计 score 会遇到困难：样本稀少的低密度区域缺少训练信号；如果数据集中在低维结构附近，未加噪的密度在环境空间中也可能非常尖锐。Song 与 Ermon（2019）采用多个高斯噪声尺度 $\sigma_1<\cdots<\sigma_N$，用一个带噪声尺度条件的 Noise Conditional Score Network（NCSN）估计每个扰动后分布的 score。大噪声让分布覆盖更宽区域，小噪声则保留更多数据细节。#Song-and-Ermon-2019#</p>
+
+  <p>训练时把各个尺度的 DSM 目标加权求和；采样时从大噪声开始，运行 Langevin 更新，再逐步切换到较小噪声尺度。这个“退火 Langevin 动力学”让采样先跨越粗尺度的低密度区域，再逐渐贴近数据细节。它使用有限组离散噪声尺度，因此仍是分层的离散过程。#Song-and-Ermon-2019#</p>
+
+  <p>这一步建立了 score-based 生成模型的核心机制：训练得到一族尺度条件向量场，采样算法使用这些场从噪声分布产生数据样本。它与 DDPM 有共同的去噪 score 视角，但训练目标、噪声日程和采样过程并不完全相同。Song 等人 2021 年的工作随后把有限噪声层级推广到连续时间，并把 SMLD 与 DDPM 看作不同 SDE 的离散化。#Song-and-Ermon-2019# #Song-et-al.-2021#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">连续时间</div>
+  <div class="ch-title">从离散噪声层级到随机微分方程</div>
+
+  <p>Song 等人 2021 年提出的连续时间 score-based 框架，不是“DSM 的另一个名字”。它用一条 SDE 描述样本分布如何随连续时间从数据逐渐扩散到简单先验：</p>
+
+  $$
+  d x=f(x,t)\,dt+g(t)\,d w_t
+  $$
+
+  <p>$f$ 是漂移系数，$g$ 是扩散系数，$w_t$ 是 Wiener 过程，也就是连续时间布朗运动。该论文关注的前向过程是预先指定的，不需要从数据学习其参数；时间边缘密度记为 $p_t(x)$。在这里，“连续时间扩散”指噪声水平由连续变量 $t$ 索引的一族概率分布，而不是某一种固定噪声日程。#Song-et-al.-2021#</p>
+
+  <p>当扩散系数只依赖时间且为标量时，Fokker–Planck 方程描述上述 SDE 如何推动概率密度演化：</p>
+
+  $$
+  \frac{\partial p_t(x)}{\partial t}
+  =-\nabla_x\cdot\bigl(f(x,t)p_t(x)\bigr)+\frac{1}{2}g(t)^2\Delta_x p_t(x)
+  $$
+
+  <p>第一项由漂移推动密度整体移动，第二项由随机扩散把密度摊开。注意 SDE 描述随机样本路径，Fokker–Planck 方程描述这些路径共同诱导的密度变化；它们是同一过程的两种视角。#Song-et-al.-2021#</p>
+
+  <p>连续时间框架包含不同的噪声过程。以 VP SDE 为例，漂移使信号逐渐衰减，同时注入高斯噪声；在适当离散化下，它对应 DDPM 的前向过程。VE SDE 则主要不断增大噪声方差，与多噪声尺度 SMLD 的路径相联系。Song 等人用这些例子说明，离散 DDPM 与 score matching 模型可被放进同一个连续时间框架中理解。#Song-et-al.-2021#</p>
+
+  <div class="info-box">
+    <h3>“连续时间扩散”从哪里来？</h3>
+    <p>反向时间扩散的概率论结果由 Anderson 在 1982 年研究；Song 等人 2021 年将其用于 score-based 生成建模，建立连续时间 SDE、score 估计与生成采样的统一框架。DSM 和连续时间 SDE 是相连的两个层次，但不是同一个概念。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">反向过程</div>
+  <div class="ch-title">反向 SDE：Score 修正漂移，但过程仍有随机性</div>
+
+  <p>Anderson（1982）证明，在满足相应正则性条件时，正向扩散过程存在反向时间的扩散表示。Song 等人把一般结论应用到前向 SDE，得到由边缘 score 决定的反向时间 SDE。按从 $T$ 向 $0$ 递减的时间记法，可写作：</p>
+
+  $$
+  d x=\left[f(x,t)-g(t)^2\nabla_x\log p_t(x)\right]dt+g(t)\,d\bar w_t,\qquad dt<0
+  $$
+
+  <p>$\bar w_t$ 是时间向后流动时的 Wiener 过程。score 项修正漂移，使分布沿反向时间演化；但右侧仍有 $g(t)d\bar w_t$ 随机项，所以这条反向过程并不是纯确定性的“沿 score 向量走”。如果改用从 $0$ 增加的反向时间变量，漂移和时间符号会一起变换，比较公式时必须先统一时间约定。#Anderson-1982# #Song-et-al.-2021#</p>
+
+  <p>因此可以把 score 想成反向扩散中的一个局部向量场修正：它使随机过程更倾向于朝高概率区域演化，但不代表有真实物理力作用于图像像素。实际采样需要估计整个时间区间上的 $\nabla_x\log p_t(x)$，再用数值 SDE 求解器逐步生成样本。#Song-et-al.-2021#</p>
+
+  <h3 class="section-title">Probability flow ODE：同一组边缘分布的确定性路径</h3>
+
+  <p>Song 等人还为同一个前向 SDE 构造了对应的 probability flow ODE：</p>
+
+  $$
+  \frac{dx}{dt}=f(x,t)-\frac{1}{2}g(t)^2\nabla_x\log p_t(x)
+  $$
+
+  <p>它是确定性常微分方程；在精确 score 与相应条件成立时，ODE 在每个时间点诱导的边缘密度与 SDE 相同，但二者的单条样本轨迹不同。换句话说，随机反向 SDE 与确定性 probability flow ODE 可以从同一个先验分布到达同一组时间边缘分布，却通过不同的路径生成样本。二者不能混称“反向扩散”。#Song-et-al.-2021#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>对象</th><th>学到或给定什么</th><th>是否随机</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>DSM</td><td>扰动后分布的 score</td><td>训练目标本身不是采样过程</td><td>用可计算的条件 score 训练边缘 score</td></tr>
+        <tr><td>反向 SDE</td><td>使用随时间变化的 score</td><td>是</td><td>沿反向时间从先验生成数据</td></tr>
+        <tr><td>Probability flow ODE</td><td>使用同一 score 的确定性向量场</td><td>否</td><td>产生相同时间边缘密度的确定性轨迹</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">边界</div>
+  <div class="ch-title">Score、Flow Matching 速度与 v-prediction 不要混为一谈</div>
+
+  <p>“向量场”是一个数学对象类别，不代表不同方法学习的是同一个量。Score 是 $\nabla_x\log p_t(x)$，描述密度的局部变化；probability flow ODE 的速度是 $f-\tfrac12g^2s$，由前向漂移、扩散系数和 score 共同决定；Flow Matching 则为一条选定的概率路径指定目标速度场，并用回归损失训练模型去拟合它。#Song-et-al.-2021# #Lipman-et-al.-2023#</p>
+
+  <p>Lipman 等人的 Flow Matching 通过条件概率路径构造易采样的训练目标。对某个条件路径而言，训练时可知道条件速度；把条件变量边缘化后，理想的边缘速度是多个条件速度按后验权重汇总的结果。这一点和 DSM 中“条件去噪方向汇成边缘 score”在结构上相似，但目标向量不同：一个是概率密度的对数梯度，一个是推动概率路径演化的速度。#Lipman-et-al.-2023#</p>
+
+  <p>$\epsilon$-prediction、$x_0$-prediction 和 $v$-prediction 则是扩散模型对网络输出量的不同参数化。以常见 VP 记法 $x_t=\alpha_t x_0+\sigma_t\epsilon$ 且 $\alpha_t^2+\sigma_t^2=1$ 为例，一种常见的 $v$ 定义是 $v_t=\alpha_t\epsilon-\sigma_t x_0$；固定 $t$ 后，这些变量之间可通过线性变换互相换算。它们是网络输出的选择，不等同于 score 或 Flow Matching 的概率路径速度场。具体符号和训练权重依论文约定而变，不能跨文章直接套公式。#Ho-et-al.-2020# #Song-et-al.-2021# #Salimans-and-Ho-2022# #Lipman-et-al.-2023#</p>
+
+  <p>系列里已有一篇 Flow Matching 笔记，适合进一步阅读：[[@An introduction to Flow Matching and Diffusion Models]]。本篇只建立边界，不展开 Flow Matching 的完整推导；后续条件扩散篇会转向 guidance、文本条件与潜空间建模。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">回顾</div>
+  <div class="ch-title">从去噪训练到连续时间生成</div>
+
+  <p>DSM 解决的是 score 监督难以直接获得的问题：扰动核已知，因此条件 score 可计算；给定带噪点后，对候选干净来源取后验平均，就得到扰动后边缘分布的 score。多噪声尺度模型把这一想法用于有限层级的生成过程；Song 等人的 SDE 框架再把噪声尺度扩展到连续时间。#Vincent-2011# #Song-and-Ermon-2019# #Song-et-al.-2021#</p>
+
+  <p>反向时间 SDE 的理论依据早于现代扩散模型，来自 Anderson 对反向扩散方程的研究。反向 SDE 中的 score 修正漂移，但随机项仍在；同一前向过程还对应一个产生相同边缘密度的 probability flow ODE。理解这些区别后，下一篇就可以专门看 DDIM 如何在既定扩散训练背景下选择另一类采样路径。#Anderson-1982# #Song-et-al.-2021#</p>
+
+  <div class="review-box">
+    <h3>本篇复习速查</h3>
+    <ul>
+      <li><strong>Score</strong>：$\nabla_x\log p(x)$，当前位置的对数密度梯度向量场。</li>
+      <li><strong>DSM</strong>：用已知扰动核的条件 score 监督模型；最优预测对应扰动后边缘分布的 score。</li>
+      <li><strong>多源直觉</strong>：同一带噪点的 score 汇总可能干净来源的条件去噪方向，不指向唯一原图。</li>
+      <li><strong>连续时间框架</strong>：Song et al.（2021）用 SDE 统一描述连续噪声路径、score 学习与生成采样。</li>
+      <li><strong>反向 SDE / ODE</strong>：反向 SDE 有随机项；probability flow ODE 确定性地匹配同一组时间边缘密度。</li>
+      <li><strong>向量场边界</strong>：score、Flow Matching target velocity、probability-flow velocity 与 v-prediction 含义不同。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="diffusion-model-basics.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">扩散模型入门：从加噪直觉到 DDPM</span></a>
+    <a class="nav-card nav-hub" href="video-generation-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">视频生成系列总览</span></a>
+    <a class="nav-card nav-next" href="ddim-fast-sampling.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">DDIM：理解另一种扩散采样路径</span></a>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Hyvarinen-2005">Hyvärinen, A. (2005). <em>Estimation of Non-Normalized Statistical Models by Score Matching</em>. Journal of Machine Learning Research, 6, 695–709. <a href="https://jmlr.org/papers/v6/hyvarinen05a.html" target="_blank">JMLR paper</a></li>
+    <li data-cite-key="Vincent-2011">Vincent, P. (2011). <em>A Connection Between Score Matching and Denoising Autoencoders</em>. Neural Computation, 23(7), 1661–1674. <a href="https://doi.org/10.1162/NECO_a_00142" target="_blank">doi:10.1162/NECO_a_00142</a></li>
+    <li data-cite-key="Song-and-Ermon-2019">Song, Y. and Ermon, S. (2019). <em>Generative Modeling by Estimating Gradients of the Data Distribution</em>. NeurIPS 2019. <a href="https://arxiv.org/abs/1907.05600" target="_blank">arXiv:1907.05600</a></li>
+    <li data-cite-key="Anderson-1982">Anderson, B. D. O. (1982). <em>Reverse-Time Diffusion Equation Models</em>. Stochastic Processes and their Applications, 12(3), 313–326. <a href="https://doi.org/10.1016/0304-4149(82)90051-5" target="_blank">doi:10.1016/0304-4149(82)90051-5</a></li>
+    <li data-cite-key="Song-et-al.-2021">Song, Y. et al. (2021). <em>Score-Based Generative Modeling through Stochastic Differential Equations</em>. ICLR 2021. <a href="https://arxiv.org/abs/2011.13456" target="_blank">arXiv:2011.13456</a></li>
+    <li data-cite-key="Lipman-et-al.-2023">Lipman, Y. et al. (2023). <em>Flow Matching for Generative Modeling</em>. NeurIPS 2023. <a href="https://arxiv.org/abs/2210.02747" target="_blank">arXiv:2210.02747</a></li>
+    <li data-cite-key="Salimans-and-Ho-2022">Salimans, T. and Ho, J. (2022). <em>Progressive Distillation for Fast Sampling of Diffusion Models</em>. arXiv:2202.00512. See Appendix D, Eqs. 26–31 for the angular velocity parameterization. <a href="https://arxiv.org/abs/2202.00512" target="_blank">arXiv:2202.00512</a></li>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A. and Abbeel, P. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a></li>
+  </ul>
+</div>

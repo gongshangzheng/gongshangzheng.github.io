@@ -1,47 +1,47 @@
-## 1. 学习素材与路径核查
+## 1. 计划与素材
 
-- [ ] 1.1 盘点现有 `drafts/video-generation.org` 的 frontmatter、身份字段与 identity shift、attention sink、persistent memory、longer contexts 提纲，确认更新时全部保留。
-- [ ] 1.2 按 `design.md` 的章节顺序整理 Roam 素材：DDPM、DDIM、EDM、DAPS、DAPS++、Flow Matching 与扩散模型总笔记；记录可用章节和需纠错的推导。
-- [ ] 1.2a 查看用户提供的扩散基础视频 `https://www.youtube.com/watch?v=iv-5mZ_9CPY`，记录可确认的标题/作者/时间及适合引用的基础概念；对公式和技术结论回查原始资料。
-- [ ] 1.3 继续查找用户提到的 MIT 扩散课程笔记；若找不到，明确不把已有 Roam 笔记说成 MIT 课程材料。
-- [ ] 1.4 阅读本地教程 PDF `~/MyDoc/数字人/CVPR2024 Video Diffusion Tutorial - Part 1 - Video Generation & Editing.pdf`，整理目录、相关章节与页码，标注其适用于任务地图、视频生成/编辑及架构知识的部分。
-- [ ] 1.5 整理已有条件生成/图像扩散笔记：`CLIP.org`、`Stable Diffusion.org`、`ControlNet.org`、`DreamBooth.org`、`LoRA.org`、`Stable Diffusion 3.org`，标记各自覆盖的概念与需回查的公式/模型版本细节；核对 CLIP 图像差向量作为属性方向的示例边界，避免把直觉示意写成普遍保证。
-- [ ] 1.5a 核查 DALL·E 2 原论文与 OpenAI 官方材料，确认 CLIP image embedding prior、扩散 decoder、prior 变体及 CLIP guidance 的流程；明确 CLIP 早于 DALL·E 2，且几种 guidance 术语不可混淆。
-- [ ] 1.5b 核查 classifier guidance 与 classifier-free guidance 原论文：确认噪声条件分类器梯度、空类别/条件 dropout 训练、条件与无条件预测组合公式及 guidance scale 的权衡；避免把无条件方向描述成固定的流形中心向量。
-- [ ] 1.6 从 `src/pages/slowfast-paper.html` 提取 3D convolution 与 R(2+1)D 的现有讲解；回查 R(2+1)D 原论文，明确其视频动作识别语境及对生成模型学习的帮助边界。
-- [ ] 1.7 阅读本地 CVPR 2024 教程 PDF，定位早期视频模型、Video Diffusion Models/3D U-Net、Make-A-Video、视频任务与数据集等对应页码。
-- [ ] 1.8 核查 Imagen、Imagen Video、*Video Diffusion Models* 与 Make-A-Video 原论文/官方材料，记录文本到图像先验、3D U-Net 组成、各自级联阶段及训练数据的差异。
-- [ ] 1.8a 核查 ModelScopeT2V、Show-1、LaVie 原论文、官方代码仓库和模型卡，比较架构、数据、可用权重、推理配置和许可边界。
-- [ ] 1.9 核验 WebVid-10M 数据集论文、数据集卡和许可说明，记录规模、样本字段、采集/筛选方式及已知局限；与评测集区分。
-- [ ] 1.10 从 Show Lab 的 `https://github.com/showlab/Awesome-Video-Diffusion` paper list 发现并分类候选论文/开源基模；索引仅作发现入口，记录入选理由，并逐篇回查原论文、官方仓库/模型卡。
-- [ ] 1.11 为视频生成其他架构、时间一致性与流式生成选取代表性原论文/官方资料，记录来源及其支撑章节，避免无依据的性能比较。
+- [x] 1.1 盘点 Roam 笔记、CVPR 2024 教程 PDF 与现有博客材料；只使用仍存在的来源文件，不依赖已删除的旧草稿。
+- [ ] 1.2 完成剩余 6 篇正文的原论文、官方项目页、模型卡或数据集卡收集；记录版本、页码/章节、公式和数据口径，无法取得时登记官方替代来源。正文 1–2 的首批来源已由 1.7 完成。
+- [ ] 1.3 阅读 CVPR 2024 教程 PDF 目录及相关章节，记录任务地图、架构、视频编辑和评测素材的页码；检查用户提及的 MIT 扩散课程笔记，找不到则不作该课程引用。
+- [x] 1.4 在 `categories/AI` 下登记 `categories/AI/视频生成` subcategory；检查 `data/category-names.json`，补充 `视频生成: video-generation` 映射（若缺失），并在分类组织文档登记本系列。
+- [x] 1.5 分配 Hub `sub_id: 0`、正文 `10–80`；首篇 `sub_id: 10` 已由 `scripts/check-sub-id.py` 核验；合并后发布前重新检查后续编号。
+- [x] 1.6 **审批门禁**：用户已确认按当前 `design.md`「文章内容大纲」逐篇开始生成。
+- [x] 1.7 为正文 1–2 收集并核读 DDPM、Sohl-Dickstein 非平衡热力学、GAN/WGAN、Hyvärinen score matching、Vincent DSM、Song & Ermon NCSN、Anderson 反向时间扩散、Song et al. 连续时间 SDE、Lipman et al. Flow Matching 与 Salimans–Ho v-parameterization 原始来源；记录章节/页码、版本与适用范围，排除误命中的同名及错误 arXiv 下载。
 
-## 2. 数学与模型核验
+## 2. 逐篇页面撰写
 
-- [ ] 2.1 核验 Score Matching 与 Denoising Score Matching 代表性原论文的准确出处、研究问题、目标函数与贡献边界；解释它们与 DDPM 噪声预测的联系，避免把方法脉络仅作为术语旁注。
-- [ ] 2.1e 核验 Score Matching/DSM 到连续时间扩散的衔接：score 在反向 SDE/PF-ODE 中的角色，以及 score、扩散 probability-flow vector field、Flow Matching target velocity 与 ε/x/v prediction 的概念边界；避免把连续时间扩散等同于 Flow Matching 或把 v-prediction 等同于 FM 速度。
-- [ ] 2.1d 核验福克–普朗克方程的密度演化形式、漂移/扩散项含义及其与正向/反向 SDE 的关系，准备面向初学者的逐项解释和一维示例。
-- [ ] 2.1a 核验 DDPM 中 `x_t`、完整噪声 ε、预测噪声 ε̂、隐式干净样本估计 x̂₀、反向均值及随机后验噪声的关系；区分训练时任意时刻的直接加噪与推理时反向链。
-- [ ] 2.1b 核验 time-varying/marginal vector field 的定义、概率流 ODE、条件向量场到边缘向量场的关系；区分 score、扩散 probability-flow vector field 与 Flow Matching target velocity。
-- [ ] 2.1c 在统一噪声参数化下对比 ε/x/v prediction 的代数换算、损失权重与尺度效应；避免声称某目标普遍优于其他目标。
-- [ ] 2.2 核验 Tweedie 公式在所选高斯噪声参数化下的推导、适用条件与条件均值解释。
-- [ ] 2.3 核验正向/反向 SDE、Fokker–Planck 与 Probability Flow ODE 的公式、时间方向、系数和假设；明确边缘分布相同不意味着随机轨迹相同，并确保第三节的 ODE/SDE 入门直觉与后文公式一致。
-- [ ] 2.4 回查 DDPM 与 DDIM 原论文或可靠讲义，核准前向闭式、真实后验、ELBO 加权项、简化噪声预测目标及 DDIM 跨步更新。
-- [ ] 2.4a 从 JiT 原论文定位二维/低维玩具数据图，确认图号、实验含义及可引用/重绘方式；结合用户给定视频设计螺旋点云的前向扰动与反向分布生成示意，避免把反向过程描述成逐点轨迹复原。
-- [ ] 2.5 核验视频扩散架构与 Custom Forcing 等论文的技术描述、实验数值和结论，分清通用知识与单篇论文设定。
+- [x] 2.1 `diffusion-model-basics`：按修订大纲补足流形假设与支撑集错位、布朗运动/墨滴扩散直觉及其与图像高斯马尔可夫链的边界；基于 Ho et al. Algorithms 1–2 写训练与采样伪代码，插入 Figures 2、6、8；解释学习到的反向转移、两种固定反向方差选择、随机性、已知噪声标签和 score 向量场/候选去噪方向加权平均，并逐式核对。
+- [x] 2.2 `score-sde-continuous-diffusion`：基于 Vincent 2011、Song & Ermon 2019、Anderson 1982、Song et al. 2021 原文撰写 score/DSM、Tweedie、Fokker–Planck、反向 SDE、PF-ODE 及 Flow Matching/v-prediction 边界；明确 DSM 与连续时间建模的历史位置。
+- [ ] 2.3 `ddim-fast-sampling`：推导 DDIM 采样更新与跨步机制，比较 DDPM/DDIM 但不把 DDIM 误写为任意 SDE 的 ODE 化。
+- [ ] 2.4 `conditional-image-diffusion`：撰写 classifier guidance/CFG、CLIP/DALL·E 2 与潜空间扩散；将 ControlNet、DreamBooth、LoRA 控制在桥接案例范围。
+- [ ] 2.5 `video-generation-tasks-spacetime`：撰写视频任务地图、时空表示、3D convolution 和 R(2+1)D，并明确动作识别与生成的任务差别。
+- [ ] 2.6 `video-diffusion-architectures`：基于原论文撰写 Imagen Video、Video Diffusion Models、Make-A-Video 与有限开源模型案例。
+- [ ] 2.7 `video-generation-data-evaluation`：核验并撰写训练数据、评测基准、指标及比较口径，区分数据集与评测集。
+- [ ] 2.8 `long-video-temporal-consistency`：撰写时间一致性、identity shift、attention sink、memory、长程依赖、自回归/流式生成及 Custom Forcing 案例。
+- [ ] 2.9 `video-generation-hub`：按 `html-blog` skill 调用 `capture.js --hub`，使用 `templates/hub-template.html` 创建 Hub，提供阅读路径、系列目录、资源索引和分类图谱。
 
-## 3. 草稿撰写
+## 3. 系列统一与 Review
 
-- [ ] 3.1 按 `design.md` 递进式章节规划更新 `drafts/video-generation.org`，从生成模型与扩散直觉逐步进入数学基础、DDPM 及合并后的 Score Matching/DSM 与连续时间扩散章节，再进入条件生成和视频生成；保留原有身份与时序问题提纲。
-- [ ] 3.2 按主线讲清 DDPM → Score Matching/DSM、Tweedie 与连续时间扩散（SDE/福克–普朗克/反向 SDE/PF-ODE）→ DDIM 的概念关系；在同一章内分清训练信号与生成过程，逐步解释福克–普朗克方程各项，并厘清 Flow Matching/v-prediction 边界；不要套用“核心问题与解法”论文模板。
-- [ ] 3.3 DDPM/DDIM 之后补充条件生成、classifier guidance 与 CFG、CLIP、DALL·E 2、Latent Diffusion/Stable Diffusion、ControlNet、DreamBooth 与 LoRA；核验并解释 CFG 空条件训练和预测组合，以 DALL·E 2 连接 CLIP 图像表示与条件扩散生成；不将 CLIP 等同于生成器、混淆 guidance 方法或将 DreamBooth 与 LoRA 混为同类方法。
-- [ ] 3.4 按知识递进介绍早期视频生成与时空建模（3D convolution、R(2+1)D）、Imagen/Imagen Video、Video Diffusion Models 的 3D U-Net、Make-A-Video 的级联生成、视频训练数据集（含 WebVid-10M）及开源基模（ModelScopeT2V、Show-1、LaVie）。明确区分动作识别架构先例与生成模型，且不把代表性论文架构泛化为统一设计。
-- [ ] 3.5 接着讲视频任务、后续表示/架构、时间一致性与长程依赖、自回归/流式生成；将 Custom Forcing 作为建立通用机制之后的案例。
-- [ ] 3.6 保留现有 frontmatter 和身份信息，以及 identity shift、attention sink、persistent memory、longer contexts 提纲；在内容上将它们放入时间一致性/流式生成的知识脉络。
-- [ ] 3.7 添加必要的术语表、章节衔接、二维螺旋点云扩散示意及其他必要插图和来源引用；草稿阶段不生成 HTML、不发布。
+- [ ] 3.1 统一 8 篇正文的标题编号、分类 aliases、核心 tags、术语和前后篇导航；正文不使用 `hub` frontmatter 字段，核对 Hub 与 `chapter-nav` 双向链接。
+- [ ] 3.2 完成事实与公式 Review：回查原文核对推导、时间方向、参数化、数据、实验设置、许可及所有数值。
+- [ ] 3.3 完成结构与内容 Review：检查先修顺序、章节边界、跨篇重复、来源完整性、图表说明和关键概念解释。
+- [ ] 3.4 完成 HTML 与站点规范 Review：按 `blog-syntax`、`blog-categories`、`blog-aliases` 规范检查 frontmatter、引用 key、`.sources` 的 `data-cite-key`、MathJax、图片包裹、Hub 组件、移动端布局及导航。
+- [ ] 3.5 按三路 Review 结果修复所有 P0/P1 问题；引用每项可核实事实，正文和 `.sources` 引用一一对应。
 
-## 4. 复核
+## 4. 发布与构建
 
-- [ ] 4.1 从初学者视角检查章节先修关系、概念引入顺序和解释是否连贯；确认没有突兀跳入论文细节或未定义术语。
-- [ ] 4.2 逐式复核数学推导、下标、参数化与边界条件，特别检查 DDPM 后验/ELBO、Score Matching/DSM、Tweedie、福克–普朗克、反向 SDE/PF-ODE、Flow Matching/v-prediction 概念边界和 DDIM 更新。
-- [ ] 4.3 运行 `git diff --check` 并审阅差异；确认未改动 `src/pages/`、未发布、未修改 `~/org/roam` 原笔记，且保留草稿原有内容。
+- [ ] 4.1 将 8 篇正文和 Hub 直接生成至 `src/pages/`；配图放入 `media/images/<slug>/`，引用放入各页面 `.sources`。
+- [ ] 4.2 每个新建或修改页面后运行 `node lib/lint-html.js src/pages/<slug>.html`；确认引用、MathJax、标题组件和图片规则无错误。
+- [ ] 4.3 更新 `data/category-names.json`（仅在前序检查确认映射缺失时）和相关 Hub alias；运行 `node build.js`（内含自动测试门禁）并检查生成的分类索引与 Hub 接管效果。
+- [ ] 4.4 构建成功后运行 `npm run serve` 启动本地自动预览，确认页面可访问并提供预览 URL；另运行 `git diff --check` 审阅差异。后续源文件改动应由 watcher 自动重建并触发 LiveReload。
+- [ ] 4.5 确认各篇关键数值有原始口径、图片来源/许可已核查；不在不同设置间作无依据的性能排名。
+
+## 5. Hub 与交叉回链
+
+- [ ] 5.1 在 Hub 中维护完整系列目录、推荐阅读路径、资源入口和主题卡片；确认 `sortable-list`、`post-graph` 仅过滤本系列分类。
+- [ ] 5.2 为每篇正文添加上一章、Hub、下一章导航，并检查首尾章节链接。
+- [ ] 5.3 运行 `~/.venv/bin/python3 scripts/cross-link.py` 或按其报告补全正文与 `.sources` 交叉回链，再重新构建验证。
+
+## 6. 草稿状态回填
+
+- [x] 6.1 草稿处置：按用户要求删除 `drafts/video-generation.org`；本 change 不创建草稿，无草稿状态回填项。

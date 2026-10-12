@@ -1,0 +1,284 @@
+---
+title: "视频生成系列（一）：扩散模型入门——从加噪直觉到 DDPM"
+description: "从流形假设和墨滴扩散的物理直觉出发，讲清 DDPM 如何加噪、训练噪声预测器，并从随机噪声逐步生成图像。"
+created_at: 2026-10-12T15:23:52
+updated_at: 2026-10-12T18:03:14
+tags: [生成模型, 扩散模型, 视频生成]
+aliases: ["categories/AI/视频生成"]
+sub_id: 10
+mathjax: true
+hero_title: "扩散模型入门：从直觉到 DDPM"
+hero_sub: "视频生成系列 · 01"
+hero_tagline: "从逐步加噪，推导模型如何学会反向生成"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">视频生成系列 · 01</div>
+  <div class="ch-title">扩散模型入门：从加噪直觉到 DDPM</div>
+
+  <p>视频生成模型看起来像是在“画出一段会动的画面”，但要理解它，先得弄清图像生成模型学会了什么。扩散模型不是记住训练图片后逐张播放，而是先定义一个逐渐破坏数据的随机过程，再训练模型学习它的反向转移。训练时，我们知道每一步加了什么噪声；生成时，模型从随机噪声开始，反复执行学到的反向更新，逐步形成一张符合数据规律的新图像。#Ho-et-al.-2020#</p>
+
+  <p>本文先建立扩散模型的生成分布与加噪直觉，再以 DDPM 为具体实例，推导前向链、噪声预测目标和反向采样。这样，直觉与模型定义在同一条线上闭合；score-based 连续时间模型和 DDIM 则留给后续文章分别讨论。</p>
+
+  <div class="callout"><strong>先记住这条主线</strong>：自然图像集中在高维空间的狭窄结构附近；前向加噪把它逐渐摊开，反向模型再从随机噪声中逐步生成符合数据分布的样本。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">问题</div>
+  <div class="ch-title">生成模型在学习什么</div>
+
+  <p>设训练数据是从某个未知分布中采样得到的样本，记为 $x_0\sim p_{\text{data}}(x)$。如果数据是图像，$x_0$ 可以是一张图像的像素张量；如果数据是视频，它可以进一步包含时间维度。我们能拿到许多 $x_0$，却通常不知道真实分布 $p_{\text{data}}$ 的完整数学表达式。生成模型要做的，是利用有限样本构造一个可采样的模型分布 $p_\theta(x)$，使从模型中抽出的样本在整体统计特征上与训练数据相似。#Sohl-Dickstein-et-al.-2015#</p>
+
+  <p>“像训练数据”不等于“复原某一张训练图”。训练集中有一只狗，生成模型不是因此只会把那张狗图逐像素复制出来；它需要学习的是哪些形状、纹理、颜色和组合方式在数据中经常出现，并据此产生新的组合。单个生成样本可能与训练集中的任何一项都不同，但仍然落在模型认为合理的样本区域里。这里说的是建模目标，不保证每个模型都不会记忆训练样本；是否发生记忆还要依赖数据、模型和训练过程的具体分析。</p>
+
+  <h3 class="section-title">流形假设：高维像素空间中的低维结构</h3>
+
+  <p>一张 $512\times512$ 的 RGB 图像可以看成 $786432$ 维向量，但自然图像并不是在这个巨大的像素空间里任意取值。物体形状、视角、光照和纹理彼此相关，因此真实图像只占据其中极小的一部分。<strong>流形假设</strong>用一张“高维空间里的低维曲面”来近似描述这类结构：图像的内在变化自由度可能远小于像素坐标数。这个说法是建模直觉，不代表所有图像都严格落在同一个光滑流形上；“几十到上百维”也只能是示意，不能当成普遍测量结论。</p>
+
+  <p>如果在所有像素坐标上随便随机取一个点，它几乎不可能刚好落在自然图像集所在的狭窄区域里。学习生成模型的朴素想法，便是让模型分布覆盖这些有效图像结构。衡量分布差异时常会遇到两种散度：<strong>KL 散度</strong>（Kullback–Leibler divergence，也称相对熵）有方向性；<strong>JS 散度</strong>（Jensen–Shannon divergence）则是由 KL 散度构成的对称、有界量。对有密度的分布 $P,Q$，它们可写成：</p>
+
+  $$
+  D_{\mathrm{KL}}(P\|Q)=\int p(x)\log\frac{p(x)}{q(x)}\,dx,\qquad
+  M=\frac{P+Q}{2},\qquad
+  D_{\mathrm{JS}}(P,Q)=\frac12D_{\mathrm{KL}}(P\|M)+\frac12D_{\mathrm{KL}}(Q\|M)
+  $$
+
+  <p>再把问题缩小到二维：真实数据集中在平面上的一条细线，模型却集中在旁边一条平行线，两个支撑集完全不相交。若 $q(x)=0$ 而 $p(x)>0$，$D_{\mathrm{KL}}(P\|Q)$ 会发散；在自然对数约定下，不相交时 $D_{\mathrm{JS}}$ 达到上界 $\log 2$。在判别器达到最优的标准 minimax GAN 分析中，这种 JS 饱和可能令生成器得不到指示分布该往哪里移动的有效梯度。它说明了早期 GAN 目标面对支撑集错位时的一类困难，但 GAN 的训练问题还有许多其他原因，不能都归到流形错位上。#Goodfellow-et-al.-2014# #Arjovsky-et-al.-2017#</p>
+
+  <div class="photo">
+    <img src="media/images/diffusion-model-basics/ddpm-manifold-interpolation.webp" alt="DDPM 论文中的图像流形示意与经过扩散潜变量得到的人脸插值结果" loading="lazy">
+    <div class="cap">图 1：Ho 等人展示的 CelebA-HQ 潜变量插值。左侧示意把源图像扰动到 $x_t$，在扩散潜变量中插值后再通过反向过程去噪；右侧展示 $t=500$ 时的平滑人脸过渡。图中的 image manifold 是帮助理解的示意，并不证明所有自然图像严格位于同一个低维流形上。取自 Ho、Jain 与 Abbeel（2020）Figure 8。#Ho-et-al.-2020#</div>
+  </div>
+
+  <h3 class="section-title">物理扩散的直觉：墨滴如何在水中摊开</h3>
+
+  <p>想象一滴墨水落进清水。水分子和墨水分子都在作随机的热运动；单个分子并没有一个“从密处跑向疏处”的意图。但从群体尺度看，墨滴附近浓度高、远处浓度低，随机运动的净效果是墨水从高浓度区域向低浓度区域扩散，浓度分布逐渐变均匀。这就是布朗运动和扩散可以提供的物理直觉：微观运动随机，宏观分布随时间变得更平滑。</p>
+
+  <p>DDPM 借用了“逐渐抹去结构”的思路：把一张图像当作高维随机变量，每一步都施加一个小的高斯扰动，让原本集中在自然图像附近的分布逐渐扩散开。这里的“扩散”是数学建模上的类比，不是把像素当成水滴里的真实分子，也不是在模拟液体的流体力学。Sohl-Dickstein 等人将这类生成模型明确联系到非平衡统计物理；Ho 等人随后给出实用的离散高斯扩散模型。#Sohl-Dickstein-et-al.-2015# #Ho-et-al.-2020#</p>
+
+  <p>从概率分布看，给数据加上标准差为 $\sigma$ 的高斯噪声，相当于把原数据分布与高斯核卷积：</p>
+
+  $$
+  p_\sigma(y)=\int \mathcal{N}(y;x,\sigma^2 I)\,p_{\mathrm{data}}(x)\,dx
+  $$
+
+  <p>只要 $\sigma>0$，高斯核会把概率质量平滑地铺到整个像素空间；原本分离的薄支撑因此获得重叠的邻域，模型可以在这些带噪分布上学习局部去噪规律。噪声不是凭空“制造出正确流形”，而是让监督问题从直接重合两片薄支撑，转成在一系列平滑分布上学习如何去噪。#Vincent-2011# #Ho-et-al.-2020#</p>
+
+  <p>训练与生成是方向相反、职责不同的两段过程。训练时我们持有真实样本并主动加噪，因而确切知道这次抽到的噪声；生成时没有任何原图可供恢复，只从一个简单的随机先验出发，调用学好的反向转移。Ho 等人的有向图把这两条链画在一起：前向链 $q$ 是我们指定的加噪过程，反向链 $p_\theta$ 才是神经网络要学习的生成过程。#Ho-et-al.-2020#</p>
+
+  <div class="photo">
+    <img src="media/images/diffusion-model-basics/ddpm-graphical-model.webp" alt="DDPM 的有向图模型：前向扩散从数据样本逐步加噪，反向生成从高斯噪声逐步采样回数据" loading="lazy">
+    <div class="cap">图 2：DDPM 的核心概率结构。前向链 $q(x_t\mid x_{t-1})$ 按预设噪声日程逐步给数据加噪；反向链 $p_\theta(x_{t-1}\mid x_t)$ 学习逐步去噪，从噪声生成样本。节点表示各时刻的样本状态，箭头表示相邻时刻之间的条件依赖。这张图概括了扩散模型如何把加噪过程与学习到的生成过程联系起来。取自 Ho、Jain 与 Abbeel（2020）Figure 2。#Ho-et-al.-2020#</div>
+  </div>
+
+  <p>图中的反向箭头不是说自然界里的墨水会自发聚回一滴。前向扰动丢掉了具体样本的信息，生成模型要学习的是“给定当前状态，前一个时间步可能是什么分布”，而不是把训练时某条噪声轨迹倒放。接下来把这个物理类比收束为 DDPM 的离散高斯马尔可夫链。#Ho-et-al.-2020#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">扰动</div>
+  <div class="ch-title">加噪如何构造监督信号</div>
+
+  <p>直接要求神经网络从纯随机噪声一次性猜出一张复杂图像，学习目标会很困难。扩散方法换了一个角度：先人为定义一个容易执行的前向扰动过程，让数据逐渐失去结构；然后在训练时随机挑选某个扰动强度，把对应的噪声状态交给网络，同时保留生成这个状态时使用的扰动作为监督信号。前向过程是我们设计的，扰动可以被直接采样，因此训练样本和目标之间有明确对应关系。#Ho-et-al.-2020#</p>
+
+  <p>为了先看清直觉，可以用一个简化的高斯扰动写法：</p>
+
+  $$
+  x_\sigma = x_0 + \sigma\epsilon,\qquad \epsilon\sim\mathcal{N}(0,I)
+  $$
+
+  <p>这里 $x_0$ 是干净数据，$\epsilon$ 是从标准高斯分布抽出的随机扰动，$\sigma$ 控制扰动尺度。$\sigma$ 很小时，原样本的大体结构仍然清晰；随着 $\sigma$ 增大，局部细节先变得模糊，随后整体结构也会逐渐被噪声淹没。这个写法先帮助建立“同一个数据样本可以被放到不同噪声尺度下观察”的直觉；DDPM 则进一步把扰动组织成具有信号衰减项的离散马尔可夫链。#Ho-et-al.-2020#</p>
+
+  <p>用二维螺旋点云来想象这个过程会更直观。干净数据不是铺满整个平面，而是集中在一条弯曲的轨迹附近；加入小噪声后，点会散到轨迹周围；噪声继续增加，原来清楚的形状逐渐变成宽阔、模糊的云团。图里的几个面板是对同一类玩具分布在不同噪声尺度下的示意。它不是某篇论文报告的实验结果，也不代表图像或视频上的真实噪声外观。</p>
+
+  <div class="photo">
+    <img src="media/images/diffusion-model-basics/spiral-noising.webp" alt="二维螺旋点云在逐渐增大的高斯扰动下由清晰轨迹变成弥散点云" loading="lazy">
+    <div class="cap">图 3：对二维螺旋玩具分布逐渐增加独立高斯扰动，观察结构如何被噪声覆盖。每个面板的 $\sigma$ 仅用于示意，不能与特定模型的训练日程对应（作者根据合成数据绘制）。</div>
+  </div>
+
+  <p>关键在于：训练不必为每一张图像真的运行一条很长的加噪链，才能得到一个带噪输入。DDPM 的前向链有闭式边缘分布，因此可以直接构造指定时间步的扰动样本；训练过程只需随机抽取一个时间步，形成带噪样本和对应噪声的训练对。#Ho-et-al.-2020#</p>
+
+  <h3 class="section-title">DDPM 的前向链：从逐步加噪到闭式采样</h3>
+
+  <p>DDPM 令 $x_0$ 为数据样本，并为每个离散时间步 $t=1,\ldots,T$ 设定一个小的方差 $\beta_t$。在前向过程中，每一步都对上一步的状态做轻微缩放并加入高斯噪声：</p>
+
+  $$
+  q(x_t\mid x_{t-1})=\mathcal{N}\!\left(x_t;\sqrt{1-\beta_t}\,x_{t-1},\,\beta_t I\right)
+  $$
+
+  <p>定义 $\alpha_t=1-\beta_t$，以及 $\bar\alpha_t=\prod_{s=1}^{t}\alpha_s$。反复代入前向转移后，各步的高斯噪声可以合并，得到任意时刻 $t$ 相对原始样本 $x_0$ 的边缘分布：</p>
+
+  $$
+  q(x_t\mid x_0)=\mathcal{N}\!\left(x_t;\sqrt{\bar\alpha_t}\,x_0,\,(1-\bar\alpha_t)I\right)
+  $$
+
+  <p>因此无需真的逐步走过 $1,2,\ldots,t$，就能用一次采样得到 $x_t$：</p>
+
+  $$
+  x_t=\sqrt{\bar\alpha_t}\,x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\qquad \epsilon\sim\mathcal{N}(0,I)
+  $$
+
+  <p>当 $t$ 较小时，$\bar\alpha_t$ 通常较大，信号项仍占主导；随着时间推进，$\bar\alpha_t$ 变小，噪声项占比提高。噪声日程决定每一步的信号与噪声比例，也决定前向链最终是否接近容易采样的先验。#Ho-et-al.-2020#</p>
+
+  <div class="info-box">
+    <h3>Ho 等人论文中的一组设置</h3>
+    <p>该论文的实验使用 $T=1000$，并让 $\beta_t$ 从 $10^{-4}$ 线性增加到 $0.02$；训练图像缩放到 $[-1,1]$。这些是 2020 年论文的实验选择，不是所有扩散模型都必须采用的固定参数。#Ho-et-al.-2020#</p>
+  </div>
+
+  <div class="info-box">
+    <h3>一个重要边界</h3>
+    <p>加噪是训练设计的一部分，不是生成时先把用户提供的真实图像破坏掉。普通无条件采样从随机噪声开始；图像修复、编辑等任务会额外提供条件或已知内容，属于后续的条件生成问题。</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">学习目标</div>
+  <div class="ch-title">从真实后验到噪声预测</div>
+
+  <p>生成时我们希望从 $x_t$ 推回较干净的 $x_{t-1}$，但直接求反向条件分布 $q(x_{t-1}\mid x_t)$ 通常不可行，因为它依赖未知的数据分布。DDPM 转而考虑给定原始样本的后验 $q(x_{t-1}\mid x_t,x_0)$。由于前向链是高斯马尔可夫链，这个后验仍是高斯，而且均值、方差都有解析式：</p>
+
+  $$
+  q(x_{t-1}\mid x_t,x_0)=\mathcal{N}\!\left(x_{t-1};\tilde\mu_t(x_t,x_0),\tilde\beta_t I\right)
+  $$
+
+  $$
+  \tilde\mu_t=\frac{\sqrt{\bar\alpha_{t-1}}\,\beta_t}{1-\bar\alpha_t}x_0+\frac{\sqrt{\alpha_t}(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}x_t,\qquad
+  \tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\beta_t
+  $$
+
+  <p>这个后验提供了训练时可计算的参照，但采样时没有真实的 $x_0$ 可用。利用前面的重参数化式，可以把 $x_0$ 写成 $x_t$ 和当初加入的噪声 $\epsilon$ 的函数，再让神经网络 $\epsilon_\theta(x_t,t)$ 预测噪声，并据此参数化反向均值：</p>
+
+  $$
+  \mu_\theta(x_t,t)=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon_\theta(x_t,t)\right)
+  $$
+
+  <p>于是训练时已知干净样本 $x_0$、随机时间步 $t$ 和实际抽取的噪声 $\epsilon$，可以构造 $x_t$ 并监督网络预测这份噪声。注意网络不是“猜原图里某个被删掉的像素”，而是在学习不同噪声尺度下与反向转移相匹配的统计规则。#Ho-et-al.-2020#</p>
+
+  <h3 class="section-title">变分目标为什么变成噪声均方误差</h3>
+
+  <p>DDPM 把 $x_1,\ldots,x_T$ 视为潜变量，通过变分推断优化负对数似然的上界。它分成终点先验匹配、每一步反向转移和最后一步解码三部分：</p>
+
+  $$
+  L=\mathbb{E}_q\left[D_{\mathrm{KL}}\!\left(q(x_T\mid x_0)\|p(x_T)\right)+\sum_{t=2}^{T}D_{\mathrm{KL}}\!\left(q(x_{t-1}\mid x_t,x_0)\|p_\theta(x_{t-1}\mid x_t)\right)-\log p_\theta(x_0\mid x_1)\right]
+  $$
+
+  <p>由于前向链是固定的，终点先验项不依赖网络参数；中间项比较已知的高斯后验与模型反向高斯转移。按噪声预测参数化重写中间项后，它会变成真实噪声与预测噪声之间的加权平方误差。#Ho-et-al.-2020#</p>
+
+  <p>论文进一步使用一个更简单的训练目标，省略变分目标中依赖时间步的权重，直接最小化：</p>
+
+  $$
+  L_{\mathrm{simple}}=\mathbb{E}_{x_0,\epsilon,t}\left[\left\|\epsilon-\epsilon_\theta\!\left(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon,\,t\right)\right\|^2\right]
+  $$
+
+  <p>其中 $x_0\sim q(x_0)$、$\epsilon\sim\mathcal{N}(0,I)$，$t$ 从 $\{1,\ldots,T\}$ 均匀抽取。理解时要区分两件事：噪声预测 MSE 与变分下界的若干项有推导联系，但常用简化目标并非把完整 ELBO 不加区别地逐项照抄。#Ho-et-al.-2020#</p>
+
+  <p>原论文 Algorithm 1 把这个训练目标写成一个循环：每轮抽取真实样本 $x_0$、时间步 $t$ 和噪声 $\epsilon$，构造 $x_t$，再沿噪声预测误差的梯度更新参数。原文伪代码见下一节图 4 左侧。#Ho-et-al.-2020#</p>
+
+  <p>噪声标签之所以“已知”，是因为它由训练代码自己抽出并写进 $x_t$；网络不需要猜测是哪张训练图像，也不需要沿前向链运行 $t$ 次才能获得一个训练样本。#Ho-et-al.-2020#</p>
+
+  <p>原论文用一个在各时间步共享参数的 U-Net 作为噪声预测器，并把时间步 $t$ 的正弦位置嵌入送入残差块。也就是说，网络接收的是“当前带噪图像 $x_t$ 加上噪声等级 $t$”，而不是为每个噪声等级单独训练一套模型。#Ho-et-al.-2020#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">生成</div>
+  <div class="ch-title">反向采样：从高斯噪声逐步生成样本</div>
+
+  <p>训练完成后，生成过程不再需要真实 $x_0$。先从标准高斯先验 $p(x_T)=\mathcal{N}(0,I)$ 抽取 $x_T$，再从 $t=T$ 递减到 $1$，依次用网络估计反向转移的均值并抽取下一状态。它是在运行学到的概率模型，不是把某条训练噪声轨迹原样倒放：</p>
+
+  $$
+  x_{t-1}=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon_\theta(x_t,t)\right)+\sigma_t z,\qquad z\sim\mathcal{N}(0,I)
+  $$
+
+  <p>实际采样在最后一步不再加入随机噪声（令 $z=0$）；中间步骤的 $\sigma_t$ 则由反向方差设定决定。Ho 等人报告了两种固定选择：$\sigma_t^2=\beta_t$ 与 $\sigma_t^2=\tilde\beta_t$，实验结果相近；算法保留一般的 $\sigma_t$ 写法。每次更新包含网络给出的去噪均值和采样噪声两部分，因此这条离散反向链仍可具有随机性。结果是从模型分布生成的新样本，不必是某张训练图像的复原。#Ho-et-al.-2020#</p>
+
+  <h3 class="section-title">原论文中的训练与采样算法</h3>
+
+  <p>Ho 等人把训练和生成分别列成 Algorithm 1 与 Algorithm 2。左侧是噪声预测器的训练循环；右侧从标准高斯噪声开始，反复执行反向转移，直到得到 $x_0$。图中保留了原论文的符号和步骤。#Ho-et-al.-2020#</p>
+
+  <div class="photo">
+    <img src="media/images/diffusion-model-basics/ddpm-training-sampling-algorithms.webp" alt="DDPM 原论文中的 Algorithm 1 Training 与 Algorithm 2 Sampling，展示噪声预测器训练和从高斯噪声逐步采样的伪代码" loading="lazy">
+    <div class="cap">图 4：DDPM 的训练与采样伪代码。左侧 Algorithm 1 通过已知噪声训练预测器；右侧 Algorithm 2 从标准高斯噪声出发，迭代执行反向转移得到 $x_0$。取自 Ho、Jain 与 Abbeel（2020）原论文 Algorithm 1–2。#Ho-et-al.-2020#</div>
+  </div>
+
+  <p>Ho 等人还把反向过程中的当前状态换算成对干净样本的估计 $\hat{x}_0=(x_t-\sqrt{1-\bar\alpha_t}\,\epsilon_\theta(x_t,t))/\sqrt{\bar\alpha_t}$。原论文 Figure 6 按时间展示这些 $\hat{x}_0$：大尺度形状通常先显现，细节随后补上。注意图中展示的是每一步对最终样本的估计，不是把同一张训练图像的像素逐步擦掉再恢复。#Ho-et-al.-2020#</p>
+
+  <div class="photo">
+    <img src="media/images/diffusion-model-basics/ddpm-progressive-generation.webp" alt="DDPM 论文中 CIFAR-10 样本的逐步生成过程，从左侧噪声逐渐形成右侧清晰图像" loading="lazy">
+    <div class="cap">图 5：CIFAR-10 无条件样本的渐进生成。每一行是一条采样轨迹，列从左到右展示反向过程中的 $\hat{x}_0$；整体形状先出现，图像细节再逐渐补全。取自 Ho、Jain 与 Abbeel（2020）Figure 6。#Ho-et-al.-2020#</div>
+  </div>
+
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">延伸</div>
+  <div class="ch-title">Score：连接离散 DDPM 与连续扩散的直觉</div>
+
+  <p>另一种描述去噪方向的语言是 <strong>score</strong>。对一个连续概率密度 $p_\sigma(x)$，它在位置 $x$ 的 score 定义为：</p>
+
+  $$
+  s_\sigma(x)=\nabla_x\log p_\sigma(x)
+  $$
+
+  <p>梯度描述函数在当前位置变化最快的方向，因此 $s_\sigma(x)$ 指向对数密度局部增加最快的方向。对于一个简单的各向同性高斯分布，这些向量会指向密度中心，图 6 用同心等高线画出这个特殊情况。真实数据分布通常复杂得多：它可能有多个高密度区域，score 会随所在位置而变化，不一定指向唯一的“正确样本”，也不保证沿着一条直线就能抵达某张训练图。#Song-et-al.-2021#</p>
+
+  <div class="photo">
+    <img src="media/images/diffusion-model-basics/score-field.webp" alt="单峰各向同性高斯密度的等高线和指向局部高密度中心的 score 向量" loading="lazy">
+    <div class="cap">图 6：单个各向同性高斯分布的等高线与 score 向量示意。向量表示局部对数密度梯度，而不是“指向某个训练样本”的标签（作者绘制；score 定义见 Song et al., 2021）。</div>
+  </div>
+
+  <p>为什么 score 对去噪有帮助？可以把扰动后的样本看成从一团被平滑过的数据分布中抽到的点。若当前位置落在低密度区域，局部密度梯度能提供一个让对数密度增大的方向。沿着适当的反向生成过程不断更新，就有机会从噪声占主导的状态回到数据结构明显的区域。这里的 score 是随位置变化的<strong>向量场</strong>，不是物理力；它表示局部概率几何，不保证沿着它走就能找到某张唯一原图或全局最高密度点。#Song-et-al.-2021#</p>
+
+  <p>同一个带噪点也可能来自许多不同的干净图像。设干净数据服从 $p_{\mathrm{data}}(x)$，加噪核为 $q_\sigma(y\mid x)=\mathcal{N}(y;x,\sigma^2I)$。给定带噪点 $y$ 后，干净样本的后验分布记作 $p_\sigma(x\mid y)\propto q_\sigma(y\mid x)p_{\mathrm{data}}(x)$。对固定干净样本 $x$，高斯扰动核给出的局部去噪方向是 $(x-y)/\sigma^2$；但只观察到带噪点 $y$ 时，我们不知道它来自哪一个 $x$。边缘分布上的 score 会把所有可能来源的条件方向，按这个后验概率加权平均：</p>
+
+  $$
+  \nabla_y \log p_\sigma(y)=\mathbb{E}_{x\sim p_\sigma(x\mid y)}\left[\frac{x-y}{\sigma^2}\right]
+  $$
+
+  <p>因此，score 不是指向某个被隐藏的训练样本的标签，而是扰动后整体分布在当前位置的平均局部去噪方向。这个关系正是去噪 score matching 后续要形式化的内容；下一篇会从 DSM 目标推导它。#Vincent-2011# #Song-et-al.-2021#</p>
+
+  <p>把前向扰动后的边缘密度记作 $q_t(x_t)=\int q(x_t\mid x_0)p_{\mathrm{data}}(x_0)\,dx_0$。在 DDPM 的高斯参数化下，若训练达到理想的均方误差最优预测，$\epsilon_\theta(x_t,t)$ 对应给定 $x_t$ 后噪声的条件均值；它与这份边缘密度的 score 只差一个由时间步决定的尺度和负号：</p>
+
+  $$
+  \nabla_{x_t}\log q_t(x_t)=-\frac{\mathbb{E}[\epsilon\mid x_t]}{\sqrt{1-\bar\alpha_t}}\approx-\frac{\epsilon_\theta(x_t,t)}{\sqrt{1-\bar\alpha_t}}
+  $$
+
+  <p>这说明网络输出可用于确定反向更新的局部去噪方向，但 score 本身仍是概率密度的梯度向量场，不是水流里的机械推力；离散 DDPM 的每一步还可能加入随机噪声。连续时间里反向 SDE 如何由 score 修正漂移、又为何仍然随机，下一篇再从 Anderson 的反向扩散结果推导。#Anderson-1982# #Ho-et-al.-2020# #Song-et-al.-2021#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">小结</div>
+  <div class="ch-title">从离散 DDPM 走向连续时间扩散</div>
+
+  <p>至此，直觉与 DDPM 的具体机制已经连起来：数据分布说明模型希望生成什么；前向链定义如何逐步破坏数据并构造训练对；噪声预测网络参数化反向转移；采样则从高斯先验出发逐步生成样本。Sohl-Dickstein 等人提出逐渐扰乱数据并学习反向过程的生成建模框架，Ho 等人则展示了有效的离散高斯过程与噪声预测训练方式。#Sohl-Dickstein-et-al.-2015# #Ho-et-al.-2020#</p>
+
+  <p>扩散模型不是“每一步都能找回同一张原图”的确定性修复器。高噪声状态可能对应许多不同的干净样本；采样时模型根据学到的分布规律逐步形成一个合理样本，而不是知道自己当初“破坏”的那张图究竟是什么。它也不是“只要减掉预测噪声就结束”：结果取决于噪声日程、网络参数化和反向更新中的随机项。</p>
+
+  <p>本文先把离散 DDPM 的核心链条接起来：前向过程规定噪声如何逐步增加，网络学习预测噪声并参数化反向转移，采样再从高斯先验出发逐步生成。下一篇继续留在扩散基础内部，转向连续时间视角，讨论 score、denoising score matching、反向 SDE 与 probability flow ODE；视频任务要等这些基础和后续条件生成章节完成后再正式展开。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+
+  <div class="review-box">
+    <h3>本篇复习速查</h3>
+    <ul>
+      <li><strong>模型目标</strong>：学习一个能从中产生符合数据分布样本的生成过程。</li>
+      <li><strong>流形直觉</strong>：自然图像集中在高维像素空间的狭窄结构附近；这是近似假设，不是固定维数结论。</li>
+      <li><strong>物理类比</strong>：像墨水扩散一样，前向高斯扰动逐渐抹去数据结构；DDPM 不是像素层面的液体模拟。</li>
+      <li><strong>前向扰动</strong>：DDPM 用离散高斯马尔可夫链逐步破坏数据，并有任意时间步的闭式边缘分布。</li>
+      <li><strong>训练算法</strong>：网络预测构造带噪样本时使用的已知噪声，以此参数化反向转移。</li>
+      <li><strong>反向采样</strong>：模型从高斯先验开始，沿学习到的条件分布逐步生成；这不是倒放同一条噪声轨迹。</li>
+      <li><strong>Score</strong>：$\nabla_x\log p(x)$，是当前位置的对数密度梯度向量场，不是物理力或指向某个唯一样本的标签。</li>
+    </ul>
+  </div>
+
+  <p>下一篇将从 DDPM 转向连续时间视角：解释 denoising score matching 如何训练 score，扩散过程如何写成 SDE，以及反向 SDE 与 probability flow ODE 的关系。</p>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Sohl-Dickstein-et-al.-2015">Sohl-Dickstein, J. et al. (2015). <em>Deep Unsupervised Learning using Nonequilibrium Thermodynamics</em>. ICML 2015. <a href="https://arxiv.org/abs/1503.03585" target="_blank">arXiv:1503.03585</a></li>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A. and Abbeel, P. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a></li>
+    <li data-cite-key="Anderson-1982">Anderson, B. D. O. (1982). <em>Reverse-Time Diffusion Equation Models</em>. <em>Stochastic Processes and their Applications</em>, 12(3), 313–326. <a href="https://doi.org/10.1016/0304-4149(82)90051-5" target="_blank">doi:10.1016/0304-4149(82)90051-5</a></li>
+    <li data-cite-key="Song-et-al.-2021">Song, Y. et al. (2021). <em>Score-Based Generative Modeling through Stochastic Differential Equations</em>. ICLR 2021. <a href="https://arxiv.org/abs/2011.13456" target="_blank">arXiv:2011.13456</a></li>
+    <li data-cite-key="Vincent-2011">Vincent, P. (2011). <em>A Connection Between Score Matching and Denoising Autoencoders</em>. Neural Computation, 23(7), 1661–1674. <a href="https://doi.org/10.1162/NECO_a_00142" target="_blank">doi:10.1162/NECO_a_00142</a></li>
+    <li data-cite-key="Goodfellow-et-al.-2014">Goodfellow, I. et al. (2014). <em>Generative Adversarial Nets</em>. NeurIPS 2014. <a href="https://arxiv.org/abs/1406.2661" target="_blank">arXiv:1406.2661</a></li>
+    <li data-cite-key="Arjovsky-et-al.-2017">Arjovsky, M., Chintala, S. and Bottou, L. (2017). <em>Wasserstein GAN</em>. ICML 2017. <a href="https://arxiv.org/abs/1701.07875" target="_blank">arXiv:1701.07875</a></li>
+  </ul>
+</div>

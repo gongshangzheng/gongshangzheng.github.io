@@ -83,9 +83,9 @@ sub_id: 0
 
 `data/category-names.json` 存储中文分类名→英文 slug 的映射。构建时先查此文件，无翻译时回退拼音转换。
 
-### 完整翻译表（68 条，按分类分组）
+### 完整翻译表（69 条，按分类分组）
 
-**AI 分类（25 条）**
+**AI 分类（26 条）**
 
 | 中文名 | slug |
 |--------|------|
@@ -102,6 +102,7 @@ sub_id: 0
 | 图像压缩调研 | image-compression-research |
 | 红外图像压缩 | infrared-image-compression |
 | 扩散模型 | diffusion-model |
+| 视频生成 | video-generation |
 | 视觉分词器 | visual-tokenizer |
 | 视觉模型 | visual-model |
 | 自回归 | autoregressive |
@@ -215,6 +216,7 @@ sub_id: 0
 |---------|--------|----------|
 | **AI** | `视觉分词器` | 视觉 Tokenizer、离散分词器、1D Tokenizer、TiTok/DiTok 等 |
 | | `扩散模型` | 扩散模型、Flow Matching、Controllable Generation |
+| | `视频生成` | 视频合成与编辑、视频扩散、文本/图像到视频及流式生成 |
 | | `视觉模型` | 目标检测、视频理解、姿态估计、YOLO/DETR 等 |
 | | `动作识别` | 动作识别、行为识别、视频分类、Skeleton-Based、时空动作检测 |
 | | `动作识别/动作识别论文精读` | 动作识别单篇论文深度解读 |
