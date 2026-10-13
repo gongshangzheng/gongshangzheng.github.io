@@ -1,0 +1,357 @@
+---
+title: "视频生成系列（四）：DDIM——理解另一种扩散采样路径"
+description: "从 DDPM 的串行采样瓶颈出发，推导 DDIM 如何保持单时刻噪声分布、改变跨时刻路径，并用少量去噪步生成图像。"
+created_at: 2026-10-13T10:04:43
+updated_at: 2026-10-13T20:01:47
+tags: [生成模型, 扩散模型, DDIM, 采样加速, 视频生成]
+aliases: ["categories/AI/视频生成"]
+sub_id: 40
+papers: ["https://arxiv.org/abs/2010.02502v4", "https://arxiv.org/abs/2006.11239"]
+mathjax: true
+hero_title: "DDIM：理解另一种扩散采样路径"
+hero_sub: "视频生成系列 · 04"
+hero_tagline: "从路径构造到跳步采样，逐步理解 DDIM 如何加速"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">视频生成系列 · 04</div>
+  <div class="ch-title">DDPM 为什么慢</div>
+  <p>DDPM 已经教会我们怎样生成图像：先抽取一张高斯噪声，再反复调用去噪网络，逐步恢复数据的结构。如果训练时定义了 $T=1000$ 个噪声等级，常规生成就沿 $x_{1000}\to x_{999}\to\cdots\to x_0$ 前进。后一轮必须等前一轮算出新的状态，因此一张图像需要约 1000 次串行网络调用。这里的 1000 是 Ho 等人的论文配置，速度瓶颈在于这些去噪调用，而不是图像有多少个像素。#Ho-et-al.-2020#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/diffusion-orig.webp" alt="DDPM 的前向马尔可夫链和相邻时刻反向生成链" loading="lazy">
+    <div class="cap">图 1：DDPM 的逐步采样。前向分布 $q$ 逐步加噪，生成模型 $p_\theta$ 沿相邻状态反向采样；生成一个状态后，才能计算下一个状态。取自 Song、Meng 与 Ermon（2021）Figure 1 左图。#Song-et-al.-2021#</div>
+  </div>
+  <p>训练时的情况不同。我们知道干净图像，可以直接构造任意噪声等级的 $x_t$，不必先模拟前面的 $t$ 步。慢的是生成时的反向链。去噪扩散隐式模型（Denoising Diffusion Implicit Models，DDIM）提出的问题是：能否保留 DDPM 训练好的噪声预测器，却只经过少量状态完成生成？#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+  <p>但不能简单把 DDPM 循环中的几行删掉。例如，网络在 $t=1000$ 预测了噪声，原来的更新系数负责生成 $x_{999}$；把这个输出直接叫作 $x_{750}$，再给网络传入时间 750，状态的实际噪声等级与时间标签就没有按构造对齐。要真正跳步，需要重新定义从 $t$ 到目标时刻 $s$ 的转移。#Song-et-al.-2021#</p>
+  <div class="callout"><strong>本篇的问题</strong>：网络在不同噪声等级学到了什么？能否用这些预测构造一条更短的路径？我们先从训练接口出发，亲自构造转移，再将它变成实际采样算法。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">训练</div>
+  <div class="ch-title">去噪器学到了什么</div>
+  <p>先统一记号：$a_t:=\bar\alpha_t$ 表示 DDPM 的累计信号系数；DDIM 原论文把这个累计量记作 $\alpha_t$。在本文中，较大的 $t$ 表示更高的噪声等级，$a_t$ 随之减小。给定原图 $x_0$，训练时直接抽取 $\epsilon\sim\mathcal N(0,I)$，构造：#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+
+$$x_t=\sqrt{a_t}x_0+\sqrt{1-a_t}\,\epsilon$$
+
+  <p>因此，给定原图时，某个时刻的带噪状态服从：</p>
+
+$$q(x_t\mid x_0)=\mathcal N\bigl(\sqrt{a_t}x_0,(1-a_t)I\bigr)$$
+
+  <p>网络接收 $x_t$ 和时间 $t$，预测加入的噪声。常用的简化训练目标是噪声预测的均方误差，期望对原图、时间和高斯噪声取平均：#Ho-et-al.-2020#</p>
+
+$$L_{\mathrm{simple}}=\mathbb E_{x_0,t,\epsilon}\left[\|\epsilon_\theta(x_t,t)-\epsilon\|^2\right]$$
+
+  {{< mermaid >}}
+flowchart TB
+    X["干净图像"] --> N["构造带噪样本"]
+    T["抽取时间 t"] --> N
+    E["抽取已知噪声 ε"] --> N
+    N --> P["网络预测噪声"]
+    T --> P
+    P --> L["计算噪声预测误差"]
+    E --> L
+  {{< /mermaid >}}
+  <p class="cap">图 2：去噪器怎样训练。网络每次看到的是一个噪声等级下的状态及时间条件，监督标签来自我们加入的噪声。依据 DDPM 与 DDIM 的训练目标整理。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+
+  <p>这里要区分两个概念。<strong>边缘分布</strong>描述“只看某一个时刻，状态怎样分布”；<strong>联合分布</strong>描述“同时看多个时刻，它们怎样一起出现”。给定 $x_0$ 后，各时刻的边缘 $q(x_t\mid x_0)$ 相同，并不要求跨时刻的关联相同。比如，在不同噪声等级分别抽取独立噪声，或者一直使用同一份噪声，两种构造都可以得到上面的单时刻高斯，但整条轨迹明显不同。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/marginals-and-joints.webp" alt="固定原图时相同单时刻直方图对应两种不同的跨时刻关联" loading="lazy">
+    <div class="cap">图 3：相同边缘，不同关联。固定一维玩具样本 $x_0=0$；上排打乱残差的对应关系，下排共享残差。两端直方图保持相同，中间的关联却不同。此图用于解释边缘与联合，上排并非 DDPM 的前向链。</div>
+  </div>
+  <p>DDIM 的关键观察是：上述噪声回归的监督样本由单时刻边缘产生，网络没有被要求输入整条前向轨迹。这给我们留下了重新设计跨时刻关联的空间。但“可以重新设计”只是起点，接下来仍要构造一条满足边缘约束的路径，并验证它。#Song-et-al.-2021#</p>
+  <div class="info-box">
+    <h3>为什么可以复用网络</h3>
+    <p>DDIM 的 Theorem 1 证明：当各条件方差为正时，新路径的变分目标可写为加权噪声回归目标加常数。若不同时间步的参数不共享，各项可独立优化，正权重不改变逐项最优解；共享 U-Net 下直接复用 DDPM 网络，则是论文实际采用并验证的做法。确定性零方差情形作为极限处理，不直接包含在该正方差定理中。这些条件说明了理论联系的范围。#Song-et-al.-2021#</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">构造</div>
+  <div class="ch-title">构造新的采样路径</div>
+  <p>现在暂时假设我们知道真实的 $x_0$。目标是：手中已有较高噪声状态 $x_t$，想构造较低噪声状态 $x_s$，其中 $s<t$。目标状态必须满足：</p>
+
+$$x_s\mid x_0\sim\mathcal N\bigl(\sqrt{a_s}x_0,(1-a_s)I\bigr)$$
+
+  <h3 class="section-title">先保留同一份残差</h3>
+  <p>从当前状态提取标准化噪声残差：</p>
+
+$$\epsilon_t=\frac{x_t-\sqrt{a_t}x_0}{\sqrt{1-a_t}}$$
+
+  <p>这里的 $\epsilon_t$ 是由真实 $x_0$ 算出的量。在给定 $x_0$ 的边缘分布下，$x_t$ 随机变化，$\epsilon_t$ 就是标准高斯；若连 $x_t$ 也固定了，它则是一个确定的向量。最简单的做法是保留这份残差，改变信号与噪声比例：#Song-et-al.-2021#</p>
+
+$$x_s=\sqrt{a_s}x_0+\sqrt{1-a_s}\,\epsilon_t$$
+
+  <p>由于 $a_s>a_t$，目标状态中原图的系数变大，残差的系数变小。原图已知时，这样构造的 $x_s$ 具有我们要求的均值和方差；而且给定 $x_t,x_0$，它完全确定。共享同一份残差，已经提供了一种连接不同噪声等级的方式。</p>
+
+  <h3 class="section-title">再允许一部分新噪声</h3>
+  <p>我们也可以把目标噪声拆成两部分：保留当前残差的一部分，再加入独立高斯噪声 $z\sim\mathcal N(0,I)$。先把残差系数写成未知量 $c$，额外噪声标准差记为 $\sigma_{t\to s}$：</p>
+
+$$x_s=\sqrt{a_s}x_0+c\epsilon_t+\sigma_{t\to s}z$$
+
+  <p>条件于 $x_0$，两份标准高斯彼此独立，因此方差相加。目标总方差是 $1-a_s$，于是：</p>
+
+$$c^2+\sigma_{t\to s}^2=1-a_s$$
+
+$$c=\sqrt{1-a_s-\sigma_{t\to s}^2},\qquad 0\leq\sigma_{t\to s}^2\leq1-a_s$$
+
+  <p>这就是原论文中那个根号系数的来源：新噪声用了多少方差，保留的残差就少用多少方差。相加的是方差，标准差不能直接相加。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/shared-noise-variance.webp" alt="共享噪声残差在多个等级下的玩具图像，以及保留残差和独立噪声的方差预算" loading="lazy">
+    <div class="cap">图 4：目标噪声怎样组成。上方使用同一二维玩具原图和残差改变噪声等级；下方将目标方差拆成保留残差与独立新噪声。示意对应已知 $x_0$ 的理论构造。依据原文 Eq. (7) 与 Appendix B 的边缘一致性证明绘制。#Song-et-al.-2021#</div>
+  </div>
+
+  <h3 class="section-title">验证目标分布</h3>
+  <p>把 $c$ 代回去，得到我们构造的转移：</p>
+
+$$x_s=\sqrt{a_s}x_0+\sqrt{1-a_s-\sigma_{t\to s}^2}\,\epsilon_t+\sigma_{t\to s}z$$
+
+  <p>给定 $x_0$，对当前残差与新噪声一起取平均，均值为：</p>
+
+$$\mathbb E[x_s\mid x_0]=\sqrt{a_s}x_0$$
+
+  <p>交叉项为零，协方差为：</p>
+
+$$\operatorname{Cov}(x_s\mid x_0)=\bigl(1-a_s-\sigma_{t\to s}^2\bigr)I+\sigma_{t\to s}^2I=(1-a_s)I$$
+
+  <p>因为独立高斯的线性组合仍为高斯，这就验证了目标边缘分布。接着固定 $x_t$ 和 $x_0$：此时残差已确定，剩下的随机性只来自新抽取的 $z$。因此条件转移可以写成下面两行：#Song-et-al.-2021#</p>
+
+$$m_{t\to s}(x_t,x_0)=\sqrt{a_s}x_0+\sqrt{1-a_s-\sigma_{t\to s}^2}\frac{x_t-\sqrt{a_t}x_0}{\sqrt{1-a_t}}$$
+
+$$q_\sigma(x_s\mid x_t,x_0)=\mathcal N\bigl(m_{t\to s}(x_t,x_0),\sigma_{t\to s}^2I\bigr)$$
+
+  <p>注意两个条件分布的区别：$x_s\mid x_0$ 的方差为 $(1-a_s)I$；$x_s\mid x_t,x_0$ 的方差为 $\sigma_{t\to s}^2I$。前者还平均了当前状态带来的残差，后者把当前状态也固定了。零额外方差时，后一分布退化为一个确定点。</p>
+  <p>将终端边缘和这些条件转移连接起来，就定义了一条联合路径。在相邻时刻记法下，论文写为 $q_\sigma(x_T\mid x_0)\prod_{t=2}^{T}q_\sigma(x_{t-1}\mid x_t,x_0)$；从终端往前递推，上一段的验证保证各时刻边缘仍然匹配。这里按低噪声方向书写条件分布，是为了定义联合分布，并非声称已知道真正生成时的原图。#Song-et-al.-2021#</p>
+  <p>用 Bayes 规则把这个联合改写成前向转移时，一般会得到同时依赖前一状态和 $x_0$ 的条件分布。原 DDPM 的前向链只依赖前一状态，这个新路径通常还依赖原图，所以论文称其为<strong>非马尔可夫前向过程</strong>。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/diffusion-generalized.webp" alt="DDIM 非马尔可夫推断路径中额外依赖原图的条件边" loading="lazy">
+    <div class="cap">图 5：DDIM 的路径依赖。与图 1 对照，观察来自 $x_0$ 的条件边；这描述的是推断路径的构造。实际生成时，我们会用网络估计的原图替代未知 $x_0$。取自原论文 Figure 1 右图。#Song-et-al.-2021#</div>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">跳步</div>
+  <div class="ch-title">为什么可以跳步</div>
+  <p>回头看刚才的构造：公式使用的是两端系数 $a_t,a_s$，以及满足方差约束的 $\sigma_{t\to s}$。整个验证没有要求 $s=t-1$。只要选定目标噪声等级，就可以直接构造连接两端的转移，无须先算出所有中间状态。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/diffusion-figure-acc.webp" alt="原论文时间子序列选择状态 x1 和 x3 的加速路径" loading="lazy">
+    <div class="cap">图 6：直接连接选定时间点。原文使用 $\tau=[1,3]$ 示意保留的采样状态；生成路径直接连接 $x_3$ 和 $x_1$，未选中的 $x_2$ 不参与生成循环。取自原论文 Figure 2。#Song-et-al.-2021#</div>
+  </div>
+  <p>具体做法是先选一条递增时间表 $0=\tau_0<\tau_1<\cdots<\tau_S=T$，再从高噪声往低噪声依次走。比如选择 $\tau=[250,500,750,1000]$，实际生成路线是：</p>
+
+$$x_{1000}\longrightarrow x_{750}\longrightarrow x_{500}\longrightarrow x_{250}\longrightarrow x_0$$
+
+  <p>原论文 Appendix C.1 在选中状态上重新定义联合分布，保留它们与原训练过程相同的条件边缘。因此，训练好的网络仍然接收熟悉的噪声等级与时间标签；生成时则只在选中点调用它。上面的四步例子用于解释机制，步数是否足以生成高质量图像，需要实际评估。#Song-et-al.-2021#</p>
+  <div class="callout"><strong>跳步的因果链</strong>：保留训练时的噪声等级 → 用两端系数构造新转移 → 只在选中时间点调用去噪器 → 调用次数由 $T$ 降为 $S$。</div>
+  <p>这也说明，跨步更新是在定义另一条缩短路径，并没有精确合并原 DDPM 的多个已学习转移。理论边缘验证使用真实 $x_0$ 和高斯残差；实际生成时只能用网络预测代替，而且大跨度会增加离散近似误差。因而“公式允许跨步”与“任何步数都保持原质量”是两个不同结论。#Song-et-al.-2021#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">执行</div>
+  <div class="ch-title">DDIM 怎样采样</div>
+  <p>前面的构造始终知道真实 $x_0$，真正生成时只有当前带噪状态 $x_t$。现在让网络预测补上缺失的信号与残差，再按构造得到下一个状态。#Song-et-al.-2021#</p>
+  <h3 class="section-title">先估计干净图像</h3>
+  <p>调用网络一次，记预测噪声为 $\hat\epsilon=\epsilon_\theta(x_t,t)$。由前向公式逐步移项：</p>
+
+$$\begin{aligned} x_t&\approx\sqrt{a_t}\hat x_0+\sqrt{1-a_t}\hat\epsilon\\ \sqrt{a_t}\hat x_0&=x_t-\sqrt{1-a_t}\hat\epsilon\\ \hat x_0&=\frac{x_t-\sqrt{1-a_t}\hat\epsilon}{\sqrt{a_t}} \end{aligned}$$
+
+  <p>最后一行定义了干净图像估计 $\hat x_0$。它由当前状态和当前网络输出得到；噪声回归的理想最优预测对应条件均值，因此不能把它理解成找回某张唯一原图。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+  <h3 class="section-title">再构造目标状态</h3>
+  <p>将 $\hat x_0$ 代入上一节的条件转移。标准化残差也随之成为：</p>
+
+$$\frac{x_t-\sqrt{a_t}\hat x_0}{\sqrt{1-a_t}}=\hat\epsilon$$
+
+  <p>于是实际更新为：</p>
+
+$$x_s=\sqrt{a_s}\hat x_0+\sqrt{1-a_s-\sigma_{t\to s}^2}\,\hat\epsilon+\sigma_{t\to s}z$$
+
+  <p>三项各有职责：第一项放入目标等级下的预测信号；第二项保留相应比例的预测残差；第三项加入独立的新随机噪声。第二项和第三项不是同一份噪声，所以不能把整个步骤理解为“每轮预测原图，再完全重新抽噪声”。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/sampling-equation-original.webp" alt="DDIM 原论文公式12及三项下括号说明的局部截图" loading="lazy">
+    <div class="cap">图 7：原论文的采样更新。Eq. (12) 用下括号标出预测原图、方向项与随机噪声项；截图使用原文相邻步记法，本文将其推广为 $t\to s$。原文的 $\alpha_t$ 对应本文的 $a_t$。取自 Song、Meng 与 Ermon（2021）Eq. (12)。#Song-et-al.-2021#</div>
+  </div>
+  <h3 class="section-title">确定性与额外随机性</h3>
+  <p>先看最简单的确定性 DDIM：令 $\sigma_{t\to s}=0$，得到：</p>
+
+$$x_s=\sqrt{a_s}\hat x_0+\sqrt{1-a_s}\hat\epsilon$$
+
+  <p>给定同一个初始噪声、固定网络和时间表，后续状态就都确定了。这仍然能产生不同图像，因为初始 $x_T$ 本身是随机抽样的。论文称这种从随机潜变量经固定程序生成样本的模型为“隐式概率模型”，DDIM 的名称由此而来。#Song-et-al.-2021#</p>
+  <p>论文还研究了一族可加额外随机性的采样器，用 $\eta$ 调节噪声标准差。本文使用常见的 $0\leq\eta\leq1$：</p>
+
+$$\sigma_{t\to s}(\eta)=\eta\sqrt{\frac{1-a_s}{1-a_t}}\sqrt{1-\frac{a_t}{a_s}}$$
+
+  <p>$\eta=0$ 就回到上面的确定性 DDIM；非零 $\eta$ 会加入新的随机扰动。严格说，整族公式是广义采样更新，确定性成员才是论文命名的 DDIM。它们共享噪声预测器，也都可以在选中的时间表上运行。#Song-et-al.-2021#</p>
+
+  <h3 class="section-title">从初始噪声到输出</h3>
+  <p>先选好时间表和 $\eta$，抽取 $x_T\sim\mathcal N(0,I)$。高噪声终端 $a_T$ 足够小时，真实终端分布接近这个高斯先验，因此这一步是一种近似。然后依次取相邻采样点 $t=\tau_i,s=\tau_{i-1}$：预测噪声、估计原图、按目标系数构造 $x_s$，将它交给下一轮。#Song-et-al.-2021#</p>
+  {{< mermaid >}}
+flowchart TB
+    A["选择时间表与 η"] --> B["抽取初始高斯噪声"]
+    B --> C["取当前时间 t 与目标时间 s"]
+    C --> D["网络预测噪声：一次调用"]
+    D --> E["估计干净图像"]
+    E --> F["按目标系数构造新状态"]
+    Z["η 非零且系数非零时抽取新噪声"] -.-> F
+    F --> G{"目标时间是否为零？"}
+    G -->|"否"| H["更新当前状态与时间"]
+    H --> C
+    G -->|"是"| I["输出干净图像估计"]
+  {{< /mermaid >}}
+  <p class="cap">图 8：DDIM 的采样循环。每轮读取当前状态，重新调用一次网络，再生成目标噪声等级的状态。依据原文 §4.1–4.2 整理；图 7 展示原文公式，此图展示它的执行流程。#Song-et-al.-2021#</p>
+  <p>跟踪前两轮就能看清状态传递：第一轮输入 $x_{1000}$ 和时间 1000，得到 $\hat\epsilon^{(1000)}$、$\hat x_0^{(1000)}$，更新为 $x_{750}$；第二轮输入已经更新的 $x_{750}$ 和时间 750，重新得到 $\hat\epsilon^{(750)}$、$\hat x_0^{(750)}$，再更新为 $x_{500}$。后面每轮都重新预测，因此整条生成轨迹并非始终围绕第一次估计的原图移动。#Song-et-al.-2021#</p>
+  <p>最后目标为 $s=0$，约定 $a_0=1$。此时 $1-a_0=0$，上面的 $\sigma_{t\to0}$ 和残差系数都为零，所以终点输出就是最后一轮的 $\hat x_0$。若时间表包含 $S$ 个非零时刻，就执行 $S$ 次网络预测。</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">对照</div>
+  <div class="ch-title">DDIM 与 DDPM</div>
+  <p>我们现在可以精确比较两者。DDPM 用前向马尔可夫链来建立反向生成转移；DDIM 保留训练边缘，构造另一族联合路径，并用噪声预测器形成相应的采样更新。最直接的验证，是看广义更新在什么条件下恢复 DDPM。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+  <h3 class="section-title">前向：相同边际，不同路径</h3>
+  <p>DDPM 的加噪是一条马尔可夫链：给定上一状态后，下一步不再依赖更早的状态。定义 $\alpha_t=1-\beta_t$、$a_t=\bar\alpha_t=\prod_{j=1}^{t}\alpha_j$，每一步为：#Ho-et-al.-2020#</p>
+
+$$q(x_t\mid x_{t-1})=\mathcal N\left(x_t;\sqrt{\alpha_t}\,x_{t-1},\beta_t I\right)$$
+
+  <p>累积这些转移，可以直接从原图抽取任意时刻的带噪样本。DDIM 保留的正是这个条件边际：#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+
+$$q(x_t\mid x_0)=\mathcal N\left(x_t;\sqrt{a_t}\,x_0,(1-a_t)I\right),\qquad x_t=\sqrt{a_t}\,x_0+\sqrt{1-a_t}\,\epsilon,\quad\epsilon\sim\mathcal N(0,I)$$
+
+  <p>因此训练时，两者都能用同一条公式生成 $x_t$，并监督网络预测加入的噪声。但“每个时刻的分布一样”并不意味着“整条加噪路径一样”：DDIM 改变不同时间点之间的关联，构造通常依赖 $x_0$ 的非马尔可夫前向过程。第 3 节的条件转移与边际验证说明了这种构造。#Song-et-al.-2021#</p>
+  <h3 class="section-title">反向：两种更新怎样去噪</h3>
+  <p>记 $\hat\epsilon=\epsilon_\theta(x_t,t)$。DDPM 用网络确定高斯反向转移的均值；以固定方差为例，其分布和采样式为：#Ho-et-al.-2020#</p>
+
+$$p_\theta(x_{t-1}\mid x_t)=\mathcal N\left(x_{t-1};\mu_\theta(x_t,t),\sigma_t^2I\right)$$
+
+$$\mu_\theta(x_t,t)=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-a_t}}\hat\epsilon\right),\qquad x_{t-1}=\mu_\theta(x_t,t)+\sigma_t z,\quad z\sim\mathcal N(0,I)$$
+
+  <p>原始采样器沿相邻时刻逐步更新，通常在中间步骤加入新噪声，最后输出步骤不再加噪。完整时间表需要 $T$ 次网络调用；这描述原始采样规则，并不意味着随机采样在数学上只能走完整链。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+  <p>DDIM 则先由同一次噪声预测估计原图，再按目标时刻 $s&lt;t$ 的噪声等级组合新状态。确定性更新为：#Song-et-al.-2021#</p>
+
+$$\hat x_0=\frac{x_t-\sqrt{1-a_t}\,\hat\epsilon}{\sqrt{a_t}},\qquad x_s=\sqrt{a_s}\,\hat x_0+\sqrt{1-a_s}\,\hat\epsilon$$
+
+  <p>这不是把样本先恢复到真实原图再重新抽取噪声：$\hat x_0$ 是估计，第二项沿用本轮预测的残差方向。固定起始噪声和时间表后，每轮没有额外随机抽样；起始噪声不同，仍能生成不同样本，不能仅凭确定性断言生成多样性更低。#Song-et-al.-2021#</p>
+  <p>若需要新随机扰动，可以使用广义更新：</p>
+
+$$x_s=\sqrt{a_s}\,\hat x_0+\sqrt{1-a_s-\sigma_{t\to s}^2}\,\hat\epsilon+\sigma_{t\to s}z,\qquad \sigma_{t\to s}=\eta\sqrt{\frac{1-a_s}{1-a_t}}\sqrt{1-\frac{a_t}{a_s}}$$
+
+  <p><strong>能跳步的原因</strong>是转移系数直接由两端 $t,s$ 构造，不要求 $s=t-1$；$\eta=0$ 决定是否去掉额外噪声，并不决定能否跳步。随机成员也可以使用稀疏时间表。DDIM 与 ODE 的联系将在下一节说明，有限步更新是数值离散，不是精确的 ODE 解。接下来验证：完整相邻步下，怎样从这条广义公式恢复采用后验方差的 DDPM。#Song-et-al.-2021#</p>
+
+  <h3 class="section-title">恢复 DDPM 的方差</h3>
+  <p>取完整相邻步 $s=t-1$，记 DDPM 每步系数 $\alpha_t=a_t/a_{t-1}$、$\beta_t=1-\alpha_t$。当 $\eta=1$ 时：</p>
+
+$$\begin{aligned} \sigma_{t\to t-1}^2(1) &=\frac{1-a_{t-1}}{1-a_t}\left(1-\frac{a_t}{a_{t-1}}\right)\\ &=\frac{\beta_t(1-a_{t-1})}{1-a_t}=\tilde\beta_t \end{aligned}$$
+
+  <p>这正是 DDPM 的前向后验方差。但要验证整条更新一致，还需要验证均值。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+  <h3 class="section-title">恢复 DDPM 的均值</h3>
+  <p>先简化保留残差的系数。利用 $a_t=\alpha_t a_{t-1}$：</p>
+
+$$\begin{aligned} 1-a_{t-1}-\tilde\beta_t &=(1-a_{t-1})\frac{1-a_t-\beta_t}{1-a_t}\\ &=\frac{\alpha_t(1-a_{t-1})^2}{1-a_t} \end{aligned}$$
+
+$$\sqrt{1-a_{t-1}-\tilde\beta_t}=\frac{\sqrt{\alpha_t}(1-a_{t-1})}{\sqrt{1-a_t}}$$
+
+  <p>把 $\hat x_0$ 的表达式代入广义更新的均值：</p>
+
+$$\begin{aligned} \mu_\theta &=\sqrt{a_{t-1}}\hat x_0+\sqrt{1-a_{t-1}-\tilde\beta_t}\,\hat\epsilon\\ &=\frac{x_t}{\sqrt{\alpha_t}}-\frac{\sqrt{1-a_t}}{\sqrt{\alpha_t}}\hat\epsilon +\frac{\sqrt{\alpha_t}(1-a_{t-1})}{\sqrt{1-a_t}}\hat\epsilon \end{aligned}$$
+
+  <p>合并两个噪声系数。它们的共同分母为 $\sqrt{\alpha_t}\sqrt{1-a_t}$，分子简化为：</p>
+
+$$-(1-a_t)+\alpha_t(1-a_{t-1})=\alpha_t-1=-\beta_t$$
+
+  <p>于是：</p>
+
+$$\mu_\theta(x_t,t)=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-a_t}}\hat\epsilon\right)$$
+
+$$x_{t-1}=\mu_\theta(x_t,t)+\sqrt{\tilde\beta_t}\,z$$
+
+  <p>这就是采用后验方差的 DDPM 反向更新。等价结论同时要求完整相邻时间步、$\eta=1$、相同噪声预测器和相同后验方差选择；DDPM 原论文还讨论了 $\beta_t$ 这一固定方差设置，不能把所有 DDPM 方差配置都等同于这里的更新。#Ho-et-al.-2020# #Song-et-al.-2021#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>对比项</th><th>DDPM</th><th>确定性 DDIM</th></tr></thead>
+      <tbody>
+        <tr><td>训练样本</td><td>使用带噪边缘 $q(x_t\mid x_0)$</td><td>保留相同带噪边缘</td></tr>
+        <tr><td>网络接口</td><td>由 $x_t,t$ 预测噪声</td><td>复用相同噪声预测接口</td></tr>
+        <tr><td>理论路径</td><td>前向马尔可夫扩散链</td><td>非马尔可夫推断路径</td></tr>
+        <tr><td>更新式</td><td>$\mu_\theta+\sigma_t z$</td><td>$\sqrt{a_s}\hat x_0+\sqrt{1-a_s}\hat\epsilon$</td></tr>
+        <tr><td>额外随机性</td><td>通常逐轮抽取新噪声</td><td>给定初始噪声后无额外随机项</td></tr>
+        <tr><td>网络调用</td><td>完整时间表通常为 $T$ 次</td><td>所选时间表为 $S$ 次</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 1：DDPM 与 DDIM 的训练和采样。DDPM 的 $\mu_\theta$ 见上面的推导；广义更新的 $\eta=1$ 成员在所述条件下恢复采用后验方差的 DDPM。#Ho-et-al.-2020# #Song-et-al.-2021#</em></p>
+
+  <p>还有两个独立选择容易混淆：$\eta$ 决定每轮加入多少新噪声，$S$ 决定调用多少次网络。一个确定性采样器如果仍走 1000 步，就仍要调用网络 1000 次；随机采样器重新定义跨步系数后，也可以走更短的时间表。原论文的加速构造适用于它讨论的整族生成过程。#Song-et-al.-2021#</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>控制量</th><th>改变什么</th><th>实际含义</th></tr></thead>
+      <tbody>
+        <tr><td>$\eta=0$</td><td>额外噪声系数为零</td><td>固定起点和时间表后路径确定</td></tr>
+        <tr><td>$0<\eta\leq1$</td><td>增加新随机扰动</td><td>广义随机采样，可使用稀疏时间表</td></tr>
+        <tr><td>$S<T$</td><td>减少采样时间点</td><td>减少网络调用，需重算跨步系数</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 2：随机性与采样步数。确定性是路径性质，减少步数才直接减少去噪网络调用。#Song-et-al.-2021#</em></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">结果</div>
+  <div class="ch-title">加速的代价</div>
+  <p>原论文在同一数据集上固定已训练的 $T=1000$ 去噪器，只改变采样时间表和随机性参数。下面列出确定性 DDIM 的部分结果；FID（Fréchet Inception Distance）用特征空间统计比较真实与生成图像分布，在相同评测设置下通常越低越好，但不能涵盖所有感知质量。#Song-et-al.-2021#</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>步数 $S$</th><th>$\eta$</th><th>FID</th></tr></thead>
+      <tbody>
+        <tr><td>CIFAR-10，$32\times32$</td><td>20</td><td>0</td><td>6.84</td></tr>
+        <tr><td>CIFAR-10，$32\times32$</td><td>100</td><td>0</td><td>4.16</td></tr>
+        <tr><td>CIFAR-10，$32\times32$</td><td>1000</td><td>0</td><td>4.04</td></tr>
+        <tr><td>CelebA，$64\times64$</td><td>20</td><td>0</td><td>13.73</td></tr>
+        <tr><td>CelebA，$64\times64$</td><td>100</td><td>0</td><td>6.53</td></tr>
+        <tr><td>CelebA，$64\times64$</td><td>1000</td><td>0</td><td>3.51</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><em>表 3：不同采样步数下的生成质量。取自原论文 Table 1 的 $\eta=0$ 行；数值属于论文指定模型、数据集和评测设置。#Song-et-al.-2021#</em></p>
+  <p>从 1000 步降到 100 步，网络调用减少十倍；CIFAR-10 的 FID 从 4.04 变为 4.16，CelebA 则从 3.51 变为 6.53。降到 20 步，两者的 FID 都继续升高。因此少步确实能节省调用，但保真程度取决于模型、数据集和采样配置。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/sampling-time-original.webp" alt="原论文 CIFAR10 和 Bedroom 生成耗时随采样步数变化的两个完整面板" loading="lazy">
+    <div class="cap">图 9：采样步数与生成耗时。横轴为采样步数，纵轴为生成 50,000 张图像所需的小时数；原论文使用单张 NVIDIA 2080 Ti 测量。取自原论文 Figure 4。#Song-et-al.-2021#</div>
+  </div>
+  <p>论文报告，在其若干图像数据集实验中，20–100 步采样能以约 10–50 倍的实际耗时加速达到接近长链的质量。这个结论带有原论文的模型与硬件条件；网络调用数的比值，也不必然等于另一套系统的耗时比值。#Song-et-al.-2021#</p>
+  <p>固定同一个初始 $x_T$，改变 DDIM 轨迹长度，作者还观察到高层语义往往保持相似，更多步数主要改善细节。下图每一列对应同一起点，每一行对应一种步数；它展示的是语义一致性的实验现象，不能推断所有像素都相同。#Song-et-al.-2021#</p>
+  <div class="photo">
+    <img src="media/images/ddim-fast-sampling/consistency-original.webp" alt="原论文 CelebA 相同初始噪声在20、50、100、1000步下的完整对照" loading="lazy">
+    <div class="cap">图 10：同一起点，不同步数。每列固定一个初始噪声，行标签为 20、50、100、1000 步；主体特征大致相似，细节有所变化。取自原论文 Figure 9。#Song-et-al.-2021#</div>
+  </div>
+  <div class="info-box">
+    <h3>与 ODE 的联系</h3>
+    <p>确定性更新还可以写成 Euler 积分的形式。令 $u_t=x_t/\sqrt{a_t}$，$r_t=\sqrt{(1-a_t)/a_t}$；将 $\hat x_0=u_t-r_t\hat\epsilon$ 代回确定性更新，得到：</p>
+
+$$u_s=u_t+(r_s-r_t)\,\epsilon_\theta(x_t,t)$$
+
+    <p>这与以 $r$ 为自变量的 Euler 步相同。原论文在连续极限、最优噪声预测等条件下，将相应 ODE 联系到特定 VE SDE 的概率流 ODE；有限步时，按噪声尺度还是时间变量离散会影响结果。这个联系有助于理解数值采样，但跳步构造本身已由两端转移说明。#Song-et-al.-2021#</p>
+  </div>
+  <div class="review-box">
+    <h3>本篇复习</h3>
+    <ul>
+      <li><strong>为什么能跳步？</strong> 保留训练边缘，直接用两端噪声系数构造较短路径；网络只在选中点运行。</li>
+      <li><strong>根号系数怎么来？</strong> 保留残差与新噪声独立，总方差必须等于目标噪声方差。</li>
+      <li><strong>怎样实际采样？</strong> 从高斯起点开始，每轮重新预测噪声、估计原图，再构造下一个状态。</li>
+      <li><strong>与 DDPM 有何区别？</strong> 共享训练接口，改变路径与采样规则；广义更新在限定条件下恢复 DDPM。</li>
+      <li><strong>怎样加速？</strong> 减少采样点直接减少调用；确定性与采样步数是两个不同选择。</li>
+    </ul>
+  </div>
+  <p>下一篇转向条件扩散：怎样把文本、类别或其他条件注入去噪过程，让生成沿着指定语义前进。</p>
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="edm-design-space.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">EDM：重新梳理扩散模型的设计空间</span></a>
+    <a class="nav-card nav-hub" href="video-generation-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">视频生成系列总览</span></a>
+    <a class="nav-card nav-next" href="conditional-image-diffusion.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">条件扩散：从 CFG 到潜空间图像生成</span></a>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A. and Abbeel, P. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a></li>
+    <li data-cite-key="Song-et-al.-2021">Song, J., Meng, C. and Ermon, S. (2021). <em>Denoising Diffusion Implicit Models</em>. ICLR 2021. <a href="https://arxiv.org/abs/2010.02502v4" target="_blank">arXiv:2010.02502v4</a></li>
+    <li data-cite-key="Karras-et-al.-2022-EDM">Karras, T. et al. (2022). <em>Elucidating the Design Space of Diffusion-Based Generative Models</em>. NeurIPS 2022. <a href="https://arxiv.org/abs/2206.00364" target="_blank">arXiv:2206.00364</a></li>
+  </ul>
+</div>

@@ -1,0 +1,311 @@
+---
+title: "视频生成系列（五）：条件扩散——从 CFG 到潜空间图像生成"
+description: "从 classifier guidance 与 classifier-free guidance 出发，梳理 CLIP、DALL·E 2、潜空间扩散及可控生成如何把条件接入图像去噪过程。"
+created_at: 2026-10-13T10:25:42
+updated_at: 2026-10-13T15:32:00
+tags: [生成模型, 扩散模型, 条件生成, 潜空间扩散, 视频生成]
+aliases: ["categories/AI/视频生成"]
+sub_id: 50
+papers: ["https://arxiv.org/abs/2006.11239", "https://arxiv.org/abs/2010.02502v4", "https://arxiv.org/abs/2105.05233v4", "https://arxiv.org/abs/2207.12598v1", "https://arxiv.org/abs/2103.00020v1", "https://arxiv.org/abs/2204.06125v1", "https://arxiv.org/abs/2112.10752v2", "https://arxiv.org/abs/2302.05543v3", "https://arxiv.org/abs/2208.12242v2", "https://arxiv.org/abs/2106.09685v2"]
+repos: ["https://github.com/openai/guided-diffusion", "https://github.com/openai/CLIP", "https://github.com/CompVis/latent-diffusion", "https://github.com/lllyasviel/ControlNet"]
+mathjax: true
+hero_title: "条件扩散：从 CFG 到潜空间图像生成"
+hero_sub: "视频生成系列 · 05"
+hero_tagline: "条件告诉模型生成什么，指导机制决定去噪时怎样响应条件"
+---
+
+<div class="ch fade-in">
+  <div class="ch-label">视频生成系列 · 05</div>
+  <div class="ch-title">从“生成一张图”到“按要求生成”</div>
+
+  <p>前四篇建立了扩散模型的基本生成链：从 DDPM 的离散加噪、Score/SDE 的连续时间视角，到 EDM 的设计空间和 DDIM 的另一种采样路径。现在我们把问题往前推一步：如果希望生成的不是任意一张图，而是“戴红围巾的柯基”“一间窗边卧室”或“符合某张姿态骨架的人物”，条件应该在什么位置进入这条链？#Ho-et-al.-2020# #Song-et-al.-2021# #Karras-et-al.-2022-EDM#</p>
+
+  <p>记条件为 $c$，目标就从无条件分布 $p(x)$ 变成条件分布 $p(x\mid c)$。$c$ 可以是类别标签、文本、参考图、语义分割图、深度图或姿态骨架。条件生成的关键并不是把文字贴在模型旁边，而是让每一个噪声尺度上的预测都能利用条件信息，进而改变整条反向去噪路径。#Dhariwal-and-Nichol-2021# #Rombach-et-al.-2022#</p>
+
+  <p>读这一篇时，先区分两个常被混为一谈的词：<strong>conditioning（条件化）</strong>是把 $c$ 交给去噪模型，使它学习 $p(x\mid c)$；<strong>guidance（指导）</strong>是在采样时额外调整预测，让样本更强地服从条件。Classifier guidance 与 classifier-free guidance（CFG）都属于 guidance，但它们接入条件的方式不同。接下来沿着“条件从哪里来、怎样影响采样、模型在哪里运行”这条线展开。</p>
+
+  <div class="callout"><strong>本篇路线：</strong>先看分类器梯度如何修正反向过程，再看 CFG 怎样用同一个去噪器估计有条件与无条件预测；随后追踪 CLIP 表示如何成为 DALL·E 2 的中间接口，最后进入 latent diffusion 与图像到视频的条件扩展。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">Guidance</div>
+  <div class="ch-title">从分类器梯度到 Classifier-Free Guidance</div>
+
+  <h3 class="section-title">Classifier guidance：在每个噪声等级上问“它像不像目标类别”</h3>
+
+  <p>Dhariwal 与 Nichol 的出发点很直接：已有扩散模型负责把噪声逐步变成图像；如果旁边再有一个分类器，能判断当前带噪状态 $x_t$ 属于类别 $y$ 的概率，就可以利用这个分类器的梯度推动采样过程更偏向目标类别。贝叶斯公式把这个想法写成两项 score 的相加：一项来自图像本身的密度，另一项来自类别条件。#Dhariwal-and-Nichol-2021#</p>
+
+  $$
+  \nabla_{x_t}\log p_t(x_t\mid y)
+  =\nabla_{x_t}\log p_t(x_t)
+  +\nabla_{x_t}\log p_t(y\mid x_t)
+  $$
+
+  <p>这里的 $p_t(y\mid x_t)$ 不是只看干净图像的普通分类器。采样中间态仍然带有不同程度的噪声，因此辅助分类器要在加噪图像上训练，并接收噪声时间步；推理时，分类器对当前 $x_t$ 求梯度，扩散模型则给出自己的反向转移。对高斯反向转移作论文中的近似后，分类器梯度会让转移均值移动：#Dhariwal-and-Nichol-2021#</p>
+
+  $$
+  \mu_{\mathrm{guided}}(x_t,y)
+  =\mu_\theta(x_t)+s\,\Sigma_\theta(x_t)\nabla_{x_t}\log p_\phi(y\mid x_t,t)
+  $$
+
+  <p>$s$ 是分类器梯度的缩放系数，$Sigma_\theta$ 是反向转移的协方差。直觉上，扩散模型提出“按图像分布怎样往回走”，分类器再补充“往哪走会更像指定类别”。但分类器和去噪器是两个模型，分类器必须覆盖采样会遇到的各种噪声水平；这带来额外训练和推理组件。#Dhariwal-and-Nichol-2021#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ImageNet 256×256，条件扩散模型</th><th>指导强度 $s$</th><th>FID ↓</th><th>Precision ↑</th><th>Recall ↑</th></tr></thead>
+      <tbody>
+        <tr><td>未加 classifier guidance</td><td>—</td><td>10.94</td><td>0.69</td><td>0.63</td></tr>
+        <tr><td>Classifier guidance</td><td>1</td><td>4.59</td><td>0.82</td><td>0.52</td></tr>
+        <tr><td>Classifier guidance</td><td>10</td><td>9.11</td><td>0.88</td><td>0.32</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这组数来自 ADM 原论文同一张 ImageNet 256×256 表格：条件与无条件模型都训练 2M 次迭代、batch size 为 256。Precision 衡量生成样本是否落在真实数据特征区域中，Recall 衡量真实数据分布被覆盖的程度。增大 $s$ 后，Precision 从 0.82 升到 0.88，但 Recall 从 0.52 降到 0.32；FID 也不是随强度一直变好，$s=10$ 反而比 $s=1$ 高。Guidance 给了我们一个清晰的控制旋钮，却是在“更贴近目标”与“保留更多可能性”之间调节，不是越大越好。#Dhariwal-and-Nichol-2021#</p>
+
+  <h3 class="section-title">Classifier-Free Guidance：用一个去噪器同时学两种预测</h3>
+
+  <p>Ho 与 Salimans 想去掉单独训练的分类器。他们的办法是让同一个去噪器在训练时有时看到条件、有时看不到：采样一对图像与条件 $(x,c)$，以概率 $p_{\mathrm{uncond}}$ 把 $c$ 替换为空条件 $\varnothing$，然后像普通扩散训练一样给图像加噪、用已知噪声作监督。这样一个网络既能估计 $\epsilon_\theta(x_t,c)$，也能估计 $\epsilon_\theta(x_t,\varnothing)$。#Ho-and-Salimans-2022#</p>
+
+  $$
+  \mathcal{L}_{\mathrm{CFG}}
+  =\mathbb{E}_{x,c,\lambda,\epsilon}
+  \left[\left\|\epsilon_\theta(\alpha_\lambda x+\sigma_\lambda\epsilon,\tilde c)-\epsilon\right\|^2\right],
+  \qquad
+  \tilde c=\begin{cases}
+  \varnothing,&\text{概率 }p_{\mathrm{uncond}}\\
+  c,&\text{否则}
+  \end{cases}
+  $$
+
+  <p>训练目标里条件被随机置空，是为了让无条件预测成为同一模型能力的一部分。推理时，CFG 把条件预测从无条件预测的方向上再向前推一段：#Ho-and-Salimans-2022#</p>
+
+  $$
+  \epsilon_{\mathrm{CFG}}(x_t,c)
+  =(1+w)\epsilon_\theta(x_t,c)-w\epsilon_\theta(x_t,\varnothing)
+  $$
+
+  <p>按这篇原论文的记号，$w=0$ 时就是普通条件预测；$w$ 增大时，预测沿“无条件 → 有条件”的方向外推。很多后续实现写成 $\epsilon_u+s(\epsilon_c-\epsilon_u)$，这只是换了一套参数记号，其中 $s=1+w$。因此同一个数值的 guidance scale 在不同代码库或论文里可能代表不同强度，阅读配置时要先看公式约定。#Ho-and-Salimans-2022#</p>
+
+  <p>下面两张图是 CFG 原论文的训练与采样算法。训练算法的关键行是随机丢弃条件；采样算法则在每个噪声等级组合条件与空条件预测，再将结果交给反向更新。这样既不需要额外分类器，也不用分别训练两个独立去噪器。#Ho-and-Salimans-2022#</p>
+
+  <div class="photo">
+    <img src="media/images/conditional-image-diffusion/cfg-algorithm-1-training.webp" alt="Classifier-Free Guidance 原论文 Algorithm 1：通过随机丢弃条件联合训练条件与无条件预测" loading="lazy">
+    <div class="cap">图 1：Classifier-Free Guidance 的联合训练算法。取自 Ho 与 Salimans（2022），Algorithm 1。#Ho-and-Salimans-2022#</div>
+  </div>
+
+  <div class="photo">
+    <img src="media/images/conditional-image-diffusion/cfg-algorithm-2-sampling.webp" alt="Classifier-Free Guidance 原论文 Algorithm 2：组合条件和无条件预测进行采样" loading="lazy">
+    <div class="cap">图 2：Classifier-Free Guidance 的条件采样算法。取自 Ho 与 Salimans（2022），Algorithm 2。#Ho-and-Salimans-2022#</div>
+  </div>
+
+  <p>为什么这两个预测相减能起作用？在局部看，$\epsilon_c-\epsilon_u$ 表示加入条件后，去噪方向相对于无条件模型发生的变化。CFG 把这段变化乘以强度再加回去，于是更积极地朝符合条件的方向走。原论文用二维高斯混合做了一个直观例子：随着引导增强，概率质量更多集中到目标类别对应的区域。#Ho-and-Salimans-2022#</p>
+
+  <div class="photo">
+    <img src="media/images/conditional-image-diffusion/guided-gaussian-mixture.webp" alt="Classifier-Free Guidance 在二维高斯混合分布上的引导效果示意" loading="lazy">
+    <div class="cap">图 3：二维高斯混合示例展示 guidance 对分布形状的影响。取自 Ho 与 Salimans（2022），Figure 1。#Ho-and-Salimans-2022#</div>
+  </div>
+
+  <p>指导强度的效果也能在实验中读出来。下面只列 CFG 原论文 ImageNet 64×64 表格中 $p_{\mathrm{uncond}}=0.1$ 的几行：模型训练 400k 步，每个强度评估 50,000 张样本，使用论文指定的 log-SNR 端点 $[-20,20]$ 与采样插值系数 $v=0.3$。这些数是 CFG 论文自己的实验，不应与上面 ADM 的 256×256 数字直接横向排名。#Ho-and-Salimans-2022#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ImageNet 64×64，CFG 强度 $w$</th><th>FID ↓</th><th>Inception Score ↑</th></tr></thead>
+      <tbody>
+        <tr><td>0.0（普通条件采样）</td><td>1.80</td><td>53.71</td></tr>
+        <tr><td>0.1</td><td>1.55</td><td>66.11</td></tr>
+        <tr><td>1.0</td><td>12.60</td><td>170.10</td></tr>
+        <tr><td>4.0</td><td>26.22</td><td>260.20</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这不是“指标越高越好”的单向故事：FID 在轻微 guidance 时达到更好的值，但随 $w$ 继续增大而恶化；Inception Score 则持续升高。把两个结果放在一起看，强引导确实会让类别语义更突出，却也会收窄样本覆盖。论文还指出，CFG 每个采样步需要分别评估条件与无条件预测；实现可以把两次输入拼成一个 batch，但所需去噪计算仍然增加。#Ho-and-Salimans-2022#</p>
+
+  <div class="callout"><strong>记住 CFG 的两个阶段：</strong>训练时随机把条件置空，让一个模型学到两种预测；推理时把两种预测线性组合，以 guidance scale 调节条件服从程度。它不等于“给模型多写一点提示词”，也不是 CLIP。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">文本接口</div>
+  <div class="ch-title">CLIP 与 DALL·E 2：表示模型不等于生成模型</div>
+
+  <h3 class="section-title">CLIP 学会把图像和文字放进同一个语义空间</h3>
+
+  <p>条件扩散需要把文本变成模型能够使用的数值信号。CLIP（Contrastive Language–Image Pre-training）由图像编码器和文本编码器组成：对于一个 batch 中的图文配对，它提高正确图文表示之间的相似度，并压低错误配对的相似度。模型因此学会把“戴红围巾的柯基”与对应图片放到相近的表示位置。原论文在约 4 亿个互联网图文对上进行对比预训练，并研究了零样本迁移。#Radford-et-al.-2021#</p>
+
+  $$
+  s_{ij}=\frac{\langle f_I(I_i),f_T(T_j)\rangle}{\tau}
+  $$
+
+  <p>$f_I$ 和 $f_T$ 分别是图像、文本编码器，$s_{ij}$ 是第 $i$ 张图与第 $j$ 条文本的相似度 logit，$\tau$ 是温度参数。相似度矩阵的对角线对应 batch 中真实配对，训练目标会同时做图像找文本、文本找图像的对比分类。CLIP 提供的是可比较、可传递的图文表示；它自己并没有从随机噪声生成图像的去噪器。#Radford-et-al.-2021#</p>
+
+  <h3 class="section-title">DALL·E 2 把 CLIP 表示当作两阶段生成的中间接口</h3>
+
+  <p>Ramesh 等人提出的 DALL·E 2（论文中称 unCLIP）把文本到图像拆成两个问题：先根据文本预测“这句话对应怎样的 CLIP 图像表示”，再根据这个图像表示生成像素。前一个阶段叫 prior，后一个阶段叫 decoder。Prior 可以是自回归模型，也可以是扩散模型；decoder 使用扩散模型。CLIP 的文本与图像表示在这里担当接口，而实际产生像素的是 diffusion decoder。#Ramesh-et-al.-2022#</p>
+
+  <div class="photo">
+    <img src="media/images/conditional-image-diffusion/dalle2-unclip-pipeline.webp" alt="DALL·E 2 的 unCLIP 架构：CLIP 表示目标、prior 生成图像表示、扩散 decoder 生成像素" loading="lazy">
+    <div class="cap">图 4：DALL·E 2 的 CLIP 表示、prior 与 diffusion decoder 之间的数据流。取自 Ramesh 等人（2022），Figure 1。#Ramesh-et-al.-2022#</div>
+  </div>
+
+  <p>读图时可以把虚线分成上下两条路线。上方是 CLIP 的图文对齐目标：文本编码和图像编码被训练到同一表示空间。下方才是生成链：文本表示进入 prior，prior 产生 CLIP 图像表示，decoder 再从这一表示合成图片。论文还在 decoder 之后使用扩散上采样阶段，把低分辨率结果逐步变成更高分辨率图像。表示层先确定语义和部分风格，像素 decoder 再补出图像细节；这也解释了为何同一个提示能产生语义相近、局部细节不同的图像。#Ramesh-et-al.-2022#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>名称</th><th>它提供什么</th><th>生成链中做什么</th></tr></thead>
+      <tbody>
+        <tr><td>CLIP 表示</td><td>图像与文本的共同语义坐标</td><td>用于检索、匹配、零样本迁移；本身不生成像素</td></tr>
+        <tr><td>CLIP guidance</td><td>图文相似度对输入图像的梯度</td><td>采样时按相似度目标修改图像或去噪方向</td></tr>
+        <tr><td>CFG</td><td>同一去噪模型的条件/空条件预测</td><td>组合两种噪声或 score 预测</td></tr>
+        <tr><td>DALL·E 2 / unCLIP</td><td>CLIP 图像表示作为中间变量</td><td>prior 预测表示，diffusion decoder 合成图像</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>这四个名字容易同时出现在一张“文本生成图像”的流程图里，但所在的层级不同：CLIP 是表示学习，CLIP guidance 是利用相似度梯度的一种采样策略，CFG 是组合去噪模型本身的两种预测，unCLIP 则是先生成 CLIP 图像表示、再解码成像素的分阶段架构。把它们区分开，后面阅读 Stable Diffusion 的条件路径会容易很多。#Radford-et-al.-2021# #Ho-and-Salimans-2022# #Ramesh-et-al.-2022#</p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">潜空间</div>
+  <div class="ch-title">Latent Diffusion：把反复去噪搬到压缩表示里</div>
+
+  <h3 class="section-title">先压缩，再在潜变量上扩散</h3>
+
+  <p>图像分辨率越来越高时，直接在 RGB 像素空间反复运行 U-Net 的代价会很大。Latent Diffusion Models（LDM）的思路是把“图像表示”和“生成动态”拆开：先训练一个感知压缩 autoencoder，把图像编码为潜变量 $z=E(x)$；再只在 $z$ 上执行正向加噪与反向去噪；最后用解码器 $D$ 把生成潜变量还原为图像。#Rombach-et-al.-2022#</p>
+
+  $$
+  z_0=E(x),\qquad
+  z_t=\alpha_t z_0+\sigma_t\epsilon,\quad \epsilon\sim\mathcal{N}(0,I),\qquad
+  \hat{x}=D(\hat{z}_0)
+  $$
+
+  <p>这是把前几篇 DDPM 符号搬到潜空间：扩散模型的训练对象从像素 $x$ 换成编码后的 $z$，网络仍可预测加入的噪声。LDM 论文的第一阶段使用经过感知目标训练的压缩表示；第二阶段在表示空间里训练扩散模型。若压缩因子为 $f$，图像的宽高各缩为原来的 $1/f$，空间位置数约变成 $1/f^2$。例如 $f=8$ 时，潜变量网格每边为原图的八分之一，网格位置数为 $1/64$；这说明计算为何可以下降，但不意味着端到端运行时间必然快 64 倍，因为通道数、注意力、autoencoder 与硬件实现同样影响成本。#Rombach-et-al.-2022#</p>
+
+  <div class="photo">
+    <img src="media/images/conditional-image-diffusion/latent-diffusion-pipeline.webp" alt="Latent Diffusion Models 的架构：图像经过编码器进入潜空间，潜变量经 U-Net 去噪并由交叉注意力接收条件，最后经解码器还原" loading="lazy">
+    <div class="cap">图 5：LDM 的感知压缩、潜空间扩散与条件注入架构。取自 Rombach 等人（2022），Figure 1。#Rombach-et-al.-2022#</div>
+  </div>
+
+  <p>图 5 左侧的编码器和解码器是第一阶段：编码器把像素变成潜变量，解码器负责把潜变量还原成可见图像。中间的扩散过程只在 latent space 中运行，U-Net 每一步预测噪声；右侧则展示条件信号可以来自文本、语义图或其他表示。论文强调，压缩不能只追求维度低：若 autoencoder 把生成任务需要的细节也丢掉，后面的扩散模型就无法补回。因而 LDM 要在计算节省和感知信息保留之间选择合适的压缩率。#Rombach-et-al.-2022#</p>
+
+  <h3 class="section-title">交叉注意力把文本 token 接进 U-Net</h3>
+
+  <p>对于文本提示，LDM 使用交叉注意力把条件特征送入去噪 U-Net。当前潜变量特征生成 Query，文本编码器的 token 表示生成 Key 和 Value；每个空间位置据此从整段提示中读取相关信息：#Rombach-et-al.-2022#</p>
+
+  $$
+  Q=W_Q\phi(z_t),\qquad K=W_K\tau(c),\qquad V=W_V\tau(c),\qquad
+  \operatorname{Attention}(Q,K,V)=\operatorname{softmax}\left(\frac{QK^\top}{\sqrt{d}}\right)V
+  $$
+
+  <p>$\phi(z_t)$ 表示去噪网络中的图像特征，$\tau(c)$ 表示条件编码结果。与把一个固定向量简单拼到输入上相比，cross-attention 可以让不同空间位置选择性读取不同 token，也使同一扩散骨架能接收文本序列、布局或图像特征等不同形式的条件。Stable Diffusion 是潜空间扩散路线中最熟悉的文本到图像模型系列之一；“LDM”描述一类方法框架，“Stable Diffusion”则是建立在该路线上的具体模型家族，不宜把二者当成同一个模型名称。#Rombach-et-al.-2022#</p>
+
+  <div class="def-box">
+    <h3>把三条条件路径放在一起</h3>
+    {{< mermaid >}}
+    flowchart LR
+      T[文本提示] --> TE[文本编码器]
+      TE --> C[条件表示]
+      Z[带噪潜变量 z_t] --> U[去噪 U-Net]
+      C --> U
+      U --> E[条件噪声预测 ε_c]
+      Z --> U0[空条件去噪预测]
+      U0 --> G[CFG 线性组合]
+      E --> G
+      G --> S[反向采样器]
+      S --> Z0[干净潜变量 z_0]
+      Z0 --> D[图像解码器]
+      D --> X[生成图像]
+    {{< /mermaid >}}
+    <p>这张自绘流程图只画出 CFG 与潜空间生成的接口：文本先编码成条件表示；每一步去噪可计算条件与空条件预测并组合，再由采样器更新潜变量；最终解码器才把潜变量映回像素。CLIP 与 DALL·E 2 的 prior/decoder 关系则见图 4。#Ho-and-Salimans-2022# #Rombach-et-al.-2022#</p>
+  </div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">可控与个性化</div>
+  <div class="ch-title">ControlNet、DreamBooth 与 LoRA：解决的是不同问题</div>
+
+  <p>当基础文本到图像模型已经能生成清晰图像，下一步通常不是再换一个 guidance 公式，而是让输出更符合结构、主体身份或个人训练数据。ControlNet、DreamBooth、LoRA 经常一起出现在 Stable Diffusion 工具链中，但它们改变模型的层级不同：一个添加空间控制分支，一个把特定主体写进模型，一个用低秩参数更新降低微调成本。#Zhang-et-al.-2023# #Ruiz-et-al.-2022# #Hu-et-al.-2021#</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方法</th><th>要解决的问题</th><th>核心机制</th><th>它改变什么</th></tr></thead>
+      <tbody>
+        <tr><td>ControlNet</td><td>让图像服从边缘、姿态、深度、分割等空间条件</td><td>冻结预训练骨干，复制可训练分支，并用零初始化卷积逐步接入控制特征</td><td>条件控制架构</td></tr>
+        <tr><td>DreamBooth</td><td>让模型在新提示中保留某个特定主体身份</td><td>用少量主体图像和稀有标识词微调，并以 class-specific prior preservation 降低语言漂移与类别遗忘</td><td>模型权重与主体概念</td></tr>
+        <tr><td>LoRA</td><td>减少微调需要更新和保存的参数</td><td>冻结原权重 $W$，学习低秩增量 $\Delta W=BA$</td><td>参数更新形式</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>ControlNet 的“零卷积”是从零初始化的卷积连接层。训练开始时，新增控制分支对原模型输出的扰动从零开始，再随训练逐步学会注入姿态、边缘或深度等条件。它关注的是空间布局。#Zhang-et-al.-2023#</p>
+
+  <p>DreamBooth 关心的是“这个特定对象是谁”：模型用少量主体图像学习一个稀有 token 与主体外观的关联，再在类别提示上加入先验保持损失，以免微调后只会生成训练图像的近似副本，或把整个类别都误学成这个主体。它更接近主体个性化微调，不是新的通用采样器。#Ruiz-et-al.-2022#</p>
+
+  <p>LoRA 则把权重变化限制在低秩矩阵乘积中。原论文研究的是大语言模型适配，因此不能把它写成“LoRA 原论文提出了 Stable Diffusion 微调”；图像扩散中的 LoRA 是后续社区和训练工具链将低秩适配应用到 U-Net、文本编码器等模块的结果。#Hu-et-al.-2021# #Hugging-Face-Diffusers-LoRA-Documentation#</p>
+
+  $$
+  W'=W+\Delta W,\qquad \Delta W=BA,\qquad \operatorname{rank}(BA)=r\ll\min(m,n)
+  $$
+
+  <p>这个式子里，基础权重 $W$ 保持冻结，只训练较小的矩阵 $A$ 与 $B$；秩 $r$ 控制新增参数容量。实际使用时，LoRA 可以作为一个适配器加载到已有模型上。它减少参数更新和权重文件的负担，但不会自动提供 ControlNet 那样的像素级空间约束，也不会自动完成 DreamBooth 的主体数据构造与先验保持目标。#Hu-et-al.-2021# #Hugging-Face-Diffusers-LoRA-Documentation#</p>
+
+  <div class="callout"><strong>按需求选组件：</strong>要“照着骨架画”先想 ControlNet；要“把某个主体带入新场景”看 DreamBooth 一类个性化；要“低成本适配已有模型”看 LoRA。它们可以组合，但组合以后仍需分别检查条件控制、身份保持和参数效率。</div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">通往视频</div>
+  <div class="ch-title">图像条件能迁移，时间一致性要另行建模</div>
+
+  <p>到这里，我们已经看到几种可复用的接口：文字可以先编码成 token，再由交叉注意力送入 U-Net；CFG 能加强模型对条件的响应；ControlNet 可以接入边缘或姿态等空间信息；LDM 则把扩散搬进压缩后的潜变量空间。这些组件说明了图像扩散的“条件通道”如何搭建。#Rombach-et-al.-2022# #Zhang-et-al.-2023#</p>
+
+  <p>视频生成会沿用其中不少设计，但输出不再是一张图，而是一帧序列。文本提示可能对整段视频保持不变；姿态、相机轨迹或关键帧条件却可能逐帧变化。模型不仅要让每帧符合条件，还要让相邻帧之间的外观与运动接得上。也就是说，视频的条件接口需要表达“条件属于哪一帧、怎样随时间变化”，生成模型还要学习帧间依赖。</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>生成对象</th><th>常见条件接口</th><th>额外约束</th></tr></thead>
+      <tbody>
+        <tr><td>单张图像</td><td>类别、整句文本、语义布局、深度/姿态图</td><td>空间结构与提示一致</td></tr>
+        <tr><td>视频片段</td><td>整段文本、首帧/关键帧、逐帧姿态、相机/运动信号、音频</td><td>条件的时间对齐、跨帧身份与运动连续性</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>因此，图像扩散给视频生成提供的是生成骨架、文本表示和条件注入方法；视频模型还需要显式处理空间—时间表示。下一篇先把 text-to-video、image-to-video、视频续写和编辑等任务分开，再讨论帧序列与时空张量如何约束后续架构。</p>
+
+  <div class="review-box">
+    <h3>本篇速记</h3>
+    <ul>
+      <li><strong>Classifier guidance：</strong>扩散 score 加上带噪分类器对目标类别的梯度。</li>
+      <li><strong>CFG：</strong>通过条件 dropout 训练一个双用途去噪器，采样时外推条件/空条件预测。</li>
+      <li><strong>CLIP：</strong>学习图文共同表示，主要负责语义对齐，不是像素生成器。</li>
+      <li><strong>DALL·E 2：</strong>prior 把文本表示映到 CLIP 图像表示，扩散 decoder 再生成像素。</li>
+      <li><strong>LDM：</strong>先感知压缩图像，再在潜空间去噪；cross-attention 注入文本或其他条件。</li>
+      <li><strong>ControlNet / DreamBooth / LoRA：</strong>分别偏向空间控制、主体个性化、参数高效适配。</li>
+      <li><strong>迁移到视频：</strong>沿用条件接口，还要建模条件的时间对齐与跨帧一致性。</li>
+    </ul>
+  </div>
+
+  <div class="chapter-nav">
+    <a class="nav-card nav-prev" href="ddim-fast-sampling.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">DDIM：理解另一种扩散采样路径</span></a>
+    <a class="nav-card nav-hub" href="video-generation-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">视频生成系列总览</span></a>
+    <a class="nav-card nav-next" href="video-generation-tasks-spacetime.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">视频生成任务与时空建模基础</span></a>
+  </div>
+</div>
+
+<div class="sources">
+  <h3>参考来源</h3>
+  <ul>
+    <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A. and Abbeel, P. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a></li>
+    <li data-cite-key="Song-et-al.-2021">Song, J., Meng, C. and Ermon, S. (2021). <em>Denoising Diffusion Implicit Models</em>. ICLR 2021. <a href="https://arxiv.org/abs/2010.02502v4" target="_blank">arXiv:2010.02502v4</a></li>
+    <li data-cite-key="Karras-et-al.-2022-EDM">Karras, T. et al. (2022). <em>Elucidating the Design Space of Diffusion-Based Generative Models</em>. NeurIPS 2022. <a href="https://arxiv.org/abs/2206.00364" target="_blank">arXiv:2206.00364</a></li>
+    <li data-cite-key="Dhariwal-and-Nichol-2021">Dhariwal, P. and Nichol, A. (2021). <em>Diffusion Models Beat GANs on Image Synthesis</em>. NeurIPS 2021. <a href="https://arxiv.org/abs/2105.05233v4" target="_blank">arXiv:2105.05233v4</a></li>
+    <li data-cite-key="Ho-and-Salimans-2022">Ho, J. and Salimans, T. (2022). <em>Classifier-Free Diffusion Guidance</em>. <a href="https://arxiv.org/abs/2207.12598v1" target="_blank">arXiv:2207.12598v1</a></li>
+    <li data-cite-key="Radford-et-al.-2021">Radford, A. et al. (2021). <em>Learning Transferable Visual Models From Natural Language Supervision</em>. ICML 2021. <a href="https://arxiv.org/abs/2103.00020v1" target="_blank">arXiv:2103.00020v1</a></li>
+    <li data-cite-key="Ramesh-et-al.-2022">Ramesh, A. et al. (2022). <em>Hierarchical Text-Conditional Image Generation with CLIP Latents</em>. <a href="https://arxiv.org/abs/2204.06125v1" target="_blank">arXiv:2204.06125v1</a></li>
+    <li data-cite-key="Rombach-et-al.-2022">Rombach, R. et al. (2022). <em>High-Resolution Image Synthesis with Latent Diffusion Models</em>. CVPR 2022. <a href="https://arxiv.org/abs/2112.10752v2" target="_blank">arXiv:2112.10752v2</a></li>
+    <li data-cite-key="Zhang-et-al.-2023">Zhang, L. et al. (2023). <em>Adding Conditional Control to Text-to-Image Diffusion Models</em>. ICCV 2023. <a href="https://arxiv.org/abs/2302.05543v3" target="_blank">arXiv:2302.05543v3</a></li>
+    <li data-cite-key="Ruiz-et-al.-2022">Ruiz, N. et al. (2022). <em>DreamBooth: Fine Tuning Text-to-Image Diffusion Models for Subject-Driven Generation</em>. <a href="https://arxiv.org/abs/2208.12242v2" target="_blank">arXiv:2208.12242v2</a></li>
+    <li data-cite-key="Hu-et-al.-2021">Hu, E. J. et al. (2021). <em>LoRA: Low-Rank Adaptation of Large Language Models</em>. ICLR 2022. <a href="https://arxiv.org/abs/2106.09685v2" target="_blank">arXiv:2106.09685v2</a></li>
+    <li data-cite-key="Hugging-Face-Diffusers-LoRA-Documentation"><a href="https://huggingface.co/docs/diffusers/training/lora" target="_blank">Hugging Face Diffusers. LoRA training guide for text-to-image models.</a> Local copy: `raw/conditional-image-diffusion/sources/diffusers-lora-training.md`.</li>
+  </ul>
+</div>

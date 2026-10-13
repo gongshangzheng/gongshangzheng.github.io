@@ -32,6 +32,8 @@ documentation: |
 
 > **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
 
+> **入门与实操教程**：撰写或重构工具使用教程时，读取 [`references/tutorial-writing.md`](references/tutorial-writing.md)。它规定读者路径、标题层级、事实核验、配图和规划同步；新建页面仍使用普通文章模板，更新已有文章则直接修改原页面。
+
 ---
 
 ## 0. 写作流程
@@ -475,6 +477,7 @@ slugifyKey 规则（来自 `citation.js`）：
 | 课程笔记 | `course-notes/references/note-structure.md`（含层级规范 + 组件放置 + callout/admonition 分工） |
 | 历史叙事 | `historical-narrative/phases/html-writing.md`（叙述结构）+ 下文 §叙事文章组件使用 |
 | 论文解读 | `read-article/phases/html-writing.md`（教学式结构）+ 下文 §论文文章组件使用 |
+| 入门与实操教程 | `references/tutorial-writing.md`（读者路径、概念与操作、标题层级、素材核验与规划同步） |
 | 普通文章 | 本节通用原则 + 按需使用组件 |
 
 #### 叙事文章组件使用（历史叙事等）
