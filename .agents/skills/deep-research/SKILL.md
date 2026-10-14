@@ -42,6 +42,8 @@ metadata:
 
 > 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
 
+若要把研究规划写成 OpenSpec `design.md` 文章大纲，必须先有用户在 `drafts/` 撰写的实质草稿；否则坚定拒绝代列大纲，并请用户先写。可继续不依赖大纲的资料搜集与问答。公开 HTML 正文只能在 OpenSpec change 已存在且大纲获确认后撰写。
+
 最终产出含可发布 HTML（长报告 / 文章 / 系列）时，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**（逐篇分节骨架 + 素材来源 + 必备表·图）经用户确认后才进入写作。
 
 豁免：结论仅在对话内输出时（不产 HTML）不建 change；豁免时在回复中说明理由。

@@ -39,6 +39,14 @@ tags: [blog, drafts, brainstorming, planning]
 **草稿是"想法的版本"，已发布文章是"想法的落地产物"。** git 同时跟踪两者，可从草稿演进反推
 博客需要回补的内容。
 
+### 内容写作门禁：用户草稿先于 OpenSpec 文章大纲
+
+草稿进入 OpenSpec 后仍是正文的持续内容依据：Design 逐篇链接实际草稿并注明对应小节，正文写作及审校必须同时对照草稿与已确认 Design，不能获得大纲后丢弃草稿中的解释、例子和推导。详见 `../blog-rules/references/openspec-gate.md` 的「草稿贯穿规划、写作与审校」。
+
+凡是要在 OpenSpec `design.md` 中规划文章章节，必须先有用户本人撰写的实质草稿。草稿可粗糙、未完成，重点是保留用户自己的问题意识、论点或解释；空白 brainstorm 模板、只有章节标题、原文摘录和 agent 代写提纲都不算。此后再创建/更新 OpenSpec change 并据草稿整理大纲；最终正文必须等对应 change 已存在且大纲获用户确认后才能写。
+
+用户没有草稿却要求先列 OpenSpec 文章大纲时，严格拒绝代列大纲或代写草稿来绕过规则，明确请用户先写入 `drafts/`。可以先协助读资料、做摘录或答疑，但不能将这些材料整理成变相的文章大纲。详见共享门禁：`../blog-rules/references/openspec-gate.md`。
+
 ```
 drafts/<slug>.org  (brainstorming，#+frontmatter+org，git 跟踪，不部署；默认格式)
                    (或 <slug>.md，YAML+markdown，显式 --format md 时生成)
@@ -94,6 +102,10 @@ drafts/
 5. 只有用户明确要求一次性产出完整草稿时，才覆盖上述默认节奏；不得把普通的“继续”误解为允许一次写完整篇。
 
 本规则适用于带大纲的草稿共写，不改变 brainstorm 正文由用户自行记录的默认设计，也不替代论文深读、HTML 撰写等上游 skill 自己的审核流程。
+
+### 草稿涉及具体论文原文时
+
+当用户要求参考、阅读、核对、下载或依据某篇具体论文原文写草稿时，立即调用 `read-article` skill 的 `draft` 模式；对 arXiv 论文，先运行其 `fetch-arxiv-paper.py` 完成 source、正文和图片整理，再阅读原文并填入草稿。不能因为任务最终产物是 brainstorm 草稿，就跳过论文提取脚本。详见 `../read-article/SKILL.md` 的「强制触发：先整理原文，再执行主任务」。
 
 ## 管理脚本 `draft.py`
 

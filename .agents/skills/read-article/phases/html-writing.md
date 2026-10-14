@@ -13,13 +13,14 @@ description: Phase 5 HTML 撰写按需参考。配合 read-article/SKILL.md 使�
 > 2. 已完成 Phase 4，OpenSpec change 的「文章内容大纲」已获用户正式确认
 > 3. 已用 capture.js 创建 HTML 骨架
 
-**写作数据源**（按优先级）：
+**写作依据**（按职责同时使用）：
 
-1. change 的「文章内容大纲」——决定写哪几节
-2. `raw/<slug>/sources/`——最终校验层
-3. `raw/<slug>/analysis/`——事实存储层
-4. `raw/<slug>/synthesis.md`——仅导航，不用作内容输入
-5. OpenSpec change 的 `design.md`「文章内容大纲」——已确认的决策与口径
+1. change 的已确认 Design——章节结构、范围、图表与取舍。
+2. Design 链接的完整原始草稿——用户的思考、解释、例子与推导；每章对照其对应草稿小节展开。
+3. `raw/<slug>/sources/`——事实与公式的最终核验依据。
+4. `raw/<slug>/analysis/`——事实存储层；`raw/<slug>/synthesis.md` 仅作导航。
+
+写作前核对当前草稿与已确认 Design，完成后同时核对两者的覆盖。执行 `blog-rules/references/openspec-gate.md` 的「草稿贯穿规划、写作与审校」，不能仅凭大纲抛开草稿写作。
 
 ---
 
@@ -388,6 +389,7 @@ graph TD
 |--------|------|
 | 总字数 | 常规论文 ≥ 3000 字；复杂系统/综述论文 ≥ 4000 字 |
 | 结构对齐 | 与 change 已确认大纲逐节一致；偏离须先走 `openspec-update-change` |
+| 草稿覆盖 | 逐章对照 Design 链接的原始草稿，核对解释、例子、中间推导、图示与引用；重要内容的删减或移位须有明确理由并记录取舍 |
 | 配图数 | ≥ 3 张 |
 | 代码绘制 | ≥ 1 张 |
 | 公式数 | ≥ 2 个（非综述类） |

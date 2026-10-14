@@ -27,6 +27,8 @@ tags: [course, notes, ppt, homework, web-research, html-blog, template, docling,
 
 课程笔记必须发布为 HTML，因此 MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**逐节给出知识点骨架（每节：讲什么概念 + 课件/教材来源 + 必备图/公式/速查表），经用户确认后才进入写作。批量课件（多节/多章）用一个 change 覆盖，大纲按节分列。
 
+列此文章大纲前必须先有用户本人写在 `drafts/` 的实质草稿；没有时拒绝代列大纲，并请用户先写。课件、教材和 agent 的素材整理不替代用户草稿。OpenSpec change 必须存在且大纲获用户确认后才写 HTML。
+
 豁免：仅做前期分析不发布（用户明确说"只分析"）、小修；豁免时在回复中说明理由。
 
 ## 执行规则

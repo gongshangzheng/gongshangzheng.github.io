@@ -12,6 +12,10 @@ metadata:
 
 Implement tasks from an OpenSpec change.
 
+**Draft remains a writing source**: For content tasks, read the original draft linked from Design in full before writing, then consult its corresponding sections for every chapter. Implement the approved structure using the draft's explanations, examples, derivations, and figures; do not write from the outline alone. Check coverage against both draft and Design on completion. Follow `blog-rules/references/openspec-gate.md` →「草稿贯穿规划、写作与审校」.
+
+**Content writing gate**: Before applying any task that writes or substantially revises `src/pages/*.html`, verify that the relevant OpenSpec change already exists and its article outline has user approval. If the change includes an article outline, also verify that it was based on a substantive user-authored draft in `drafts/`. If the draft prerequisite is absent, stop that article task and firmly ask the user to write the draft first; do not generate a substitute. Non-content implementation tasks are unaffected. See `blog-rules/references/openspec-gate.md`.
+
 **Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `openspec status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 **Input**: Optionally specify a change name (e.g., `/openspec-apply-change add-auth`). If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.

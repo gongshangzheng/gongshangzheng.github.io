@@ -33,8 +33,8 @@
 | 动作识别、行为识别、视频分类、Skeleton-Based、时空动作检测 | `categories/AI/动作识别` | §动作识别 |
 | 图像压缩、学习式压缩、JSCC、神经编解码、语义通信 | `categories/AI/图像压缩` | §图像压缩 |
 | 视觉 Tokenizer、1D Tokenizer、TiTok/DiTok、离散分词器 | `categories/AI/视觉分词器` | §其他已建系列 |
-| 扩散模型、Flow Matching、Controllable Generation | `categories/AI/扩散模型` | §未建系列 |
-| 视频生成（包括视频扩散、文本/图像到视频） | `categories/AI/视频生成` | §视频生成 |
+| 扩散模型、Controllable Generation | `categories/AI/扩散模型` | §未建系列 |
+| 视频生成（包括视频扩散、Flow Matching、文本/图像到视频） | `categories/AI/视频生成` | §视频生成 |
 | 课程笔记（DSP、线性代数、机器学习等） | `categories/课程/*` 或 `categories/数学/*` | — |
 | 历史叙事 | `categories/历史/*` | — |
 
@@ -264,7 +264,7 @@ Hub 页（`image-compression-hub.html`）使用 `sub_id: 0`。
 
 ### 描述
 
-覆盖视频合成与编辑模型的任务、时空建模、视频扩散、自回归/流式生成、数据与评测。它与动作识别分类区分：本路径讨论生成视频，不将识别模型的结构或指标直接当作生成方法。
+覆盖视频合成与编辑模型的任务、时空建模、视频扩散、Flow Matching、自回归/流式生成、数据与评测。Flow Matching 是通用生成建模方法；归入此分类的文章属于视频生成系列。它与动作识别分类区分：本路径讨论生成视频，不将识别模型的结构或指标直接当作生成方法。
 
 ### 系列组织
 
@@ -276,7 +276,12 @@ Hub 页（`image-compression-hub.html`）使用 `sub_id: 0`。
 
 | sub_id | alias 路径 | 标题 | 文件 |
 |--------|------------|------|------|
-| 10 | `categories/AI/视频生成` | 视频生成系列（一）：扩散模型入门——从生成分布到逐步去噪 | `diffusion-model-basics.html` |
+| 10 | `categories/AI/视频生成` | 视频生成系列（一）：扩散模型入门——从加噪直觉到 DDPM | `diffusion-model-basics.html` |
+| 20 | `categories/AI/视频生成` | 视频生成系列（二）：Score、DSM 与连续时间扩散 | `score-sde-continuous-diffusion.html` |
+| 30 | `categories/AI/视频生成` | 视频生成系列（三）：DDIM——理解另一种扩散采样路径 | `ddim-fast-sampling.html` |
+| 50 | `categories/AI/视频生成` | 视频生成系列（五）：EDM——重新梳理扩散模型的设计空间 | `edm-design-space.html` |
+| 40 | `categories/AI/视频生成` | 视频生成系列（四）：Flow Matching——从概率路径到视频生成 | `flow-matching.html` |
+| 60 | `categories/AI/视频生成` | 视频生成系列（六）：条件扩散——从 CFG 到潜空间图像生成 | `conditional-image-diffusion.html` |
 
 本系列后续文章按 OpenSpec change `video-generation` 的文章清单逐篇加入；未发布页面不列入当前页面表。
 

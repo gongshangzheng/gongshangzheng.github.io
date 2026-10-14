@@ -11,8 +11,8 @@
 - [x] 1.9 用户确认后，运行 `~/.venv/bin/python3 scripts/check-sub-id.py --category AI --suggest`；确认现有视频生成系列占用 `10`、`20`、`30`、`40`，规划新增 EDM `30` 并将 DDIM/条件扩散顺延至 `40`/`50`，无冲突。
 
 - [x] 1.10 合并 `restructure-flow-matching-article` 的提案、大纲、14 项任务与验收要求；旧规划文件移入本 change 的 `merged-plans/` 作为历史记录，执行以当前 proposal/design/tasks 为准，未完成写作不标为完成。
-- [ ] 1.11 Flow Matching 一手素材：复用已有 Lipman PDF，获取原文源码/附录与 Rectified Flow、Wan 原论文；按 `raw/flow-matching/sources/` 归档版本、URL、页码和公式/图号；按 Read Article 方法完成路径/速度/损失/采样方法分析与图表定位，不把规划中的路径视为已有资料。
-- [ ] 1.12 **Flow Matching 审批门禁**：用户审阅并确认合并后的八节大纲、逐图计划、数学推导要求和第 5 篇位置后，才重写正文与修改新增的系列编号/导航；本轮合并指令不等于正文实施授权。
+- [x] 1.11 Flow Matching 一手素材：Lipman、Rectified Flow 与 Wan 原文已归档并核对路径/速度/损失/采样方法及图表定位；详见各自 `raw/` 提取日志与 `raw/flow-matching/analysis/representative-papers.md`。
+- [x] 1.12 **Flow Matching 审批门禁**：用户逐章审阅确认九章草稿，并于 2026-10-14 授权开始正文；已先将 Design 同步为九章写作计划，保留系列第四篇与 `sub_id: 40`。
 - [x] 1.13 核验 Flow Matching 使用视频生成分类 alias、保留旧标题检索 alias 与 `sub_id: 50`，并更新分类规则和页面清单。
 - [x] 1.14 修正构建器只采用首条分类 alias 的行为；所有非 `/index` 分类路径进入分类页、搜索索引、文章元信息、TOC 与分类短代码筛选，旧的 `categoryPath` 字段保留为首路径兼容。
 
@@ -22,7 +22,7 @@
 - [x] 2.2 `score-sde-continuous-diffusion`：依据已确认草稿重组正文：先补数学基础，再讲 Score、DSM/Tweedie、NCSN/退火 Langevin、连续 VP/VE SDE、Fokker–Planck、反向 SDE/PF-ODE 与 Flow Matching/v-prediction 边界；插入 Song 2021 Figures 1/2/3/5 与 Song & Ermon Algorithm 1 局部截图/Figure 3；单页 lint、引用/图片检查和全站构建通过，本地预览返回 200，交用户审阅。
 - [x] 2.3 `edm-design-space`：按用户确认的 10 章大纲重组 EDM 篇；集中推导 `x₀`、`x_t`、`ε`、`v`、score 与 EDM 去噪器的通用换算，再分别讲网络参数化、训练、推理配置、PF-ODE、Euler/Heun 求解器、churn 和实验。区分 PF-ODE 连续向量场、Euler/Heun 数值求解和 churn 随机注入。保留原论文 Algorithm 1/2 的局部截图，分开呈现 sampler-only 与 retraining 结果；已完成 lint、构建并更新本地预览，交用户逐篇审阅后再开始下一篇。
 - [x] 2.4 `ddim-fast-sampling`：按用户以“执行”确认的七节 Design 重写 DDIM；推导方差约束、边缘一致性、跨步转移、网络估计与实际采样循环，验证与后验方差 DDPM 的均值/方差等价条件；插入 10 个编号图示（其中 2 张 Mermaid）、原文 Eq. (12) 局部截图和 3 张对照/结果表，完成单页 lint、构建与浏览器检查。当前编号/sub_id 为 4/40；完成后交用户审阅。
-- [x] 2.5 `flow-matching`：按确认的八节大纲重整既有页面，完成一般高斯路径条件速度、边际场、CFM/FM 损失差常数与 score/速度换算推导，展开训练/ODE 采样，依据 Wan 原报告核实视频训练案例；清理重复/偏题内容，插入 7 个图示与 4 张表。页面待用户逐篇审阅后再完成审校任务。
+- [ ] 2.5 `flow-matching`：依用户逐章确认的九章草稿重写既有页面；完整呈现 CNF/Score 前史、流与连续性方程、条件速度/边际场/CFM 推导、预测量换算、Rectified Flow/reflow、Euler/Heun 与少步误差；以核实的 Wan 训练目标作简短视频示例，更新原图与图表。完成后单篇 lint、构建并交用户审阅。
 - [x] 2.6 `conditional-image-diffusion`：撰写 classifier guidance/CFG、CLIP/DALL·E 2 与潜空间扩散；将 ControlNet、DreamBooth、LoRA 控制在桥接案例范围；EDM 插入后需更新编号与 sub_id。
 - [ ] 2.7 `video-generation-tasks-spacetime`：撰写视频任务地图、时空表示、3D convolution 和 R(2+1)D，并明确动作识别与生成的任务差别。
 - [ ] 2.8 `video-diffusion-architectures`：基于原论文撰写 Imagen Video、Video Diffusion Models、Make-A-Video 与有限开源模型案例。
@@ -66,7 +66,7 @@
 
 - [x] 6.1 草稿处置：保留已删除旧文件 `drafts/video-generation.org` 的历史记录；本轮新增 `drafts/video-generation/` 系列草稿目录，DDPM 草稿作为首篇内容素材。
 
-- [ ] 6.2 Flow Matching 实施前核查是否有对应草稿；若无则记录无关联项，若有按 blog-drafts 回填，不创建重复中间笔记。
+- [x] 6.2 Flow Matching 实施前核查并读取 `drafts/video-generation/flow-matching.org`；该草稿经用户逐章审阅通过，Design 已逐章指向该草稿，正文持续对照其推导与图示。
 
 ## 7. 基础篇草稿与设计更新（2026-10-14）
 
@@ -83,3 +83,15 @@
 - [x] 8.1 用户确认共写草稿并授权更新 OpenSpec 与发布 DDIM；Design 链接草稿并记录训练/采样区别及跨步对照要求。
 - [x] 8.2 同步正文开头、边际解释与跨步后验推导，保留原论文图、公式截图与 Mermaid，核对草稿覆盖。
 - [x] 8.3 完成单页语法检查、构建与本地预览检查，回填草稿发布状态；不推进下一篇。
+
+## 9. DDIM 反演补充（用户已确认大纲）
+
+- [x] 9.1 记录已确认的六节反演大纲、原文定位、图示与草稿对应关系。
+- [x] 9.2 同步草稿和正文：定义、作用、ODE 联系、近似反演推导、原文 Table 2、编辑流程与局限。
+- [x] 9.3 单页语法检查通过、全站构建完成；本地页面与原表图片返回 HTTP 200，展示公式无段落标签污染，交用户审阅。全站另有 66 篇既有文章的 lint 错误。
+
+## 10. 系列顺序同步
+
+- [x] 10.1 统一正文与草稿编号、Design 和分类清单：DDPM → Score/DSM/SDE → DDIM → Flow Matching → EDM。
+- [x] 10.2 同步前后篇导航，EDM 为第五篇、sub_id 50。
+- [x] 10.3 全站构建完成，更新系列排序与页面导航。

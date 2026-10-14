@@ -1,215 +1,266 @@
 ---
-title: "视频生成系列（5）：Flow Matching——从概率路径到视频生成"
-description: "从条件概率路径推导速度标签，解释条件流匹配为何能训练边际向量场，并连接扩散模型与视频生成。"
+title: "视频生成系列（四）：Flow Matching——从概率路径到视频生成"
+description: "从概率路径、条件速度与边际向量场推导 Flow Matching，并解释它与扩散模型、Rectified Flow 及视频生成的关系。"
 created_at: 2026-10-13T20:00:00
-updated_at: 2026-10-13T20:00:00
+updated_at: 2026-10-14T21:40:00
 tags: [生成模型, Flow Matching, 扩散模型, 视频生成]
-aliases: ["categories/AI/扩散模型", "categories/AI/视频生成", "An introduction to Flow Matching and Diffusion Models"]
-sub_id: 50
+aliases: ["categories/AI/视频生成", "An introduction to Flow Matching and Diffusion Models"]
+sub_id: 40
 papers: ["https://arxiv.org/abs/2210.02747", "https://arxiv.org/abs/2209.03003", "https://arxiv.org/abs/2503.20314"]
 repos: []
 mathjax: true
 hero_title: "Flow Matching：从概率路径到视频生成"
-hero_sub: "视频生成系列 · 05"
+hero_sub: "视频生成系列 · 04"
 hero_tagline: "先构造一条从噪声到数据的概率路径，再教网络预测沿路径前进的速度"
 ---
 
 <div class="ch fade-in">
   <div class="ch-label">第 1 章｜问题</div>
-  <div class="ch-title">从噪声到数据，怎样学一条路</div>
-  <p>DDPM 和 DDIM 都可以写成“从噪声状态逐步走向数据”的过程。DDPM 用逐步加噪定义训练边缘，再学习反向去噪转移；DDIM 保留这些边缘，重新构造转移，使采样可以只经过选中的噪声等级。它们让我们知道了起点、终点以及如何训练噪声预测器。接下来会自然出现另一个问题：能不能直接描述样本沿生成路径应该怎样移动，并训练网络预测这个移动方向？#Ho-et-al.-2020# #Song-et-al.-2021#</p>
-  <p>Flow Matching（流匹配，FM）给出的答案不是简单把噪声预测改名为速度预测。它先指定一族随时间变化的概率分布 $p_t$，再寻找一个向量场 $v_t(z)$，使样本沿常微分方程（ordinary differential equation，ODE）运动时，整体分布恰好按照 $p_t$ 演化。训练时，边际向量场通常难以直接计算；条件流匹配（Conditional Flow Matching，CFM）通过引入可采样的条件路径和速度标签，构造一个具有相同最优解的回归目标。#Lipman-et-al.-2023#</p>
-  <p>我们沿着这条数学链来读：先规定概率路径；对一条条件路径求导得到速度标签；把多个可能来源的速度按后验概率平均成边际向量场；再证明可计算的 CFM 损失能训练这个边际场；最后用学到的 ODE 从噪声采样。这里的 $t$ 是生成过程的时间，不是视频的帧编号。</p>
-  <div class="def-box"><h3>先记住三个对象</h3><ul><li>$p_t(z)$：时间 $t$ 的整体样本分布。</li><li>$v_t(z)$：让整体分布按预定路径演化的边际向量场。</li><li>$w_t$：由条件路径直接算出的监督速度标签。</li></ul><p>训练会用第三个对象，推理则调用网络估计第二个对象。</p></div>
+  <div class="ch-title">为什么还需要 Flow Matching</div>
+  <p>前面已经见过几条从噪声生成图像的路线。DDPM 学习反向去噪；Score 模型学习扰动后分布的 score，并能据此构造反向 SDE 或概率流 ODE（PFODE）；DDIM 则复用噪声预测器，改变生成更新公式，在选定的时间点之间采样。既然已有这些方法，为什么还要 Flow Matching？#Ho-et-al.-2020# #Song-et-al.-2021# #Song-et-al.-2020-DDIM#</p>
+  <p>关键要区分三个问题：我们希望分布怎样变化，怎样得到训练标签，以及生成时怎样沿学到的场运动。传统连续归一化流（CNF）已经用 ODE 的向量场生成样本；Score 模型也已经能构造 PFODE。因此，使用 ODE 或把网络输出称为“速度”，本身都不是 Flow Matching 的新意。#Lipman-et-al.-2023#</p>
+  <p>传统 CNF 常用最大似然训练，需要在训练中数值求解 ODE，并计算密度变化涉及的散度积分。Flow Matching 要解决的问题是：能否直接为生成向量场构造容易计算的监督信号，同时允许我们选择更一般的概率路径？Lipman 等人给出的关键答案是条件流匹配（CFM）：用每个数据样本对应的条件速度标签训练网络，并证明其总体梯度与难以直接计算的整体速度目标相同。#Lipman-et-al.-2023#</p>
+  <p>噪声、score 与速度在固定高斯路径下可以换算，所以“换成预测速度自然更好”并不成立。训练损失还会施加不同的时间权重；路径选择也会改变要学习的向量场。本文将分别推导这些关系，再解释 Rectified Flow 怎样通过重新配对端点改善少步采样。</p>
   {{< mermaid >}}
   flowchart LR
-    A[选择概率路径 p_t] --> B[求条件速度标签 w_t]
-    B --> C[CFM 回归训练]
-    C --> D[学习边际速度场 v_theta]
-    D --> E[ODE 从噪声积分到数据]
+    A[设计概率路径] --> B[构造条件速度标签]
+    B --> C[CFM 回归学习整体向量场]
+    C --> D[从噪声初值求解 ODE]
+    D --> E[生成数据样本]
   {{< /mermaid >}}
-  <p class="cap">图 1：Flow Matching 的数学与计算路线。训练使用可直接计算的条件速度，生成时使用网络预测的边际速度并求解 ODE。依据 Lipman 等人的定义整理。#Lipman-et-al.-2023#</p>
+  <p class="cap">图 1：Flow Matching 的训练与生成主线。图示依据 Lipman 等人的方法整理，不是原论文图。#Lipman-et-al.-2023#</p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">第 2 章｜路径</div>
-  <div class="ch-title">先规定概率怎样变化</div>
-  <p>设目标数据样本为 $y\sim p_{\text{data}}$，噪声为 $\epsilon\sim\mathcal N(0,I)$，两者独立。构造中间状态：</p>
-$$z_t=\alpha(t)y+\sigma(t)\epsilon,\qquad t\in[0,1]$$
-  <p>固定目标 $y$ 后，$z_t$ 服从高斯条件分布；把所有目标样本混合起来，得到整体边际分布：</p>
-$$p_t(z\mid y)=\mathcal N\bigl(z;\alpha(t)y,\sigma(t)^2I\bigr),\qquad p_t(z)=\int p_t(z\mid y)p_{\text{data}}(y)\,dy$$
-  <p>在本文采用的方向约定中，$t=0$ 是噪声端，$t=1$ 是数据端。路径系数需满足相应端点条件：噪声端让数据项消失、保留噪声分布；数据端让噪声尺度趋近于零、恢复目标分布。这个构造定义的是整群样本的概率分布如何变化，而不只是单张图像上的一条线。#Lipman-et-al.-2023#</p>
-  <div class="table-wrap"><table><thead><tr><th>路径</th><th>$\alpha(t)$</th><th>$\sigma(t)$</th><th>端点情况</th></tr></thead><tbody>
-    <tr><td>理想线性路径</td><td>$t$</td><td>$1-t$</td><td>$t=0$ 为噪声，$t=1$ 退化到数据</td></tr>
-    <tr><td>Lipman 等人的线性高斯路径</td><td>$t$</td><td>$1-(1-\sigma_{\min})t$</td><td>终点保留 $\sigma_{\min}>0$ 的小噪声</td></tr>
+  <div class="ch-label">第 2 章｜流</div>
+  <div class="ch-title">从点的运动到分布的搬运</div>
+  <p>“流”在这里有具体的数学含义。先想象数据空间里的一颗粒子：在不同时间、不同位置，速度场为它指定下一步的移动方向和速率。给定初始位置 $z$，它遵循常微分方程：</p>
+$$\frac{dx_t}{dt}=v_t(x_t),\qquad x_0=z$$
+  <p>固定初始点 $z$，解出所有时刻的位置 $x_t$，得到这颗粒子的轨迹。若把所有起点映到时刻 $t$ 的位置，记作 $\phi_t(z)=x_t$，则 $\phi_t$ 是由 ODE 产生的连续变换。整族映射 $\{\phi_t\}$ 称为流（flow）。在向量场满足适当正则性、解存在且唯一时，映射才有相应的可逆性质；确定性本身不足以保证可逆。#Lipman-et-al.-2023#</p>
+  <p>于是三个概念分工明确：<strong>向量场</strong>是移动规则，<strong>轨迹</strong>是单个点的运动记录，<strong>流</strong>描述所有初始点如何被搬运。</p>
+  <p>生成模型不只搬运一个点。令初始噪声 $Z\sim p_0$，每个样本沿流移动，时刻 $t$ 的随机变量为 $X_t=\phi_t(Z)$，其分布记为 $p_t$。这族分布就是概率路径：</p>
+$$p_t=(\phi_t)_\#p_0$$
+  <p>推前符号表示先从 $p_0$ 抽样，再应用 $\phi_t$。Flow Matching 选择一条从易采样噪声分布走向数据分布的路径。单条轨迹回答“这个样本去了哪里”；概率路径回答“整群样本在每一时刻如何分布”。</p>
+  <p>速度场与概率密度之间由概率质量守恒联系。固定空间区域 $A$，区域内概率质量是 $\int_Ap_t(x)dx$。穿过边界的净流量为 $\int_{\partial A}p_tv_t\cdot n\,dS$，其中 $n$ 是外法向量。净流出会减少区域内质量，因此：</p>
+$$\frac{d}{dt}\int_Ap_t(x)dx=-\int_{\partial A}p_t(x)v_t(x)\cdot n\,dS$$
+  <p>对右侧使用散度定理，并令区域任意，可得连续性方程：</p>
+$$\boxed{\partial_tp_t(x)+\nabla\cdot\bigl(p_t(x)v_t(x)\bigr)=0}$$
+  <p>$\partial_tp_t$ 是局部密度变化，$\nabla\cdot(p_tv_t)$ 是概率通量的净流出。速度场能否产生指定的概率路径，可以通过这条方程检查。与 SDE 的 Fokker–Planck 方程相比，确定性 ODE 的密度演化只有输运项，没有布朗噪声产生的扩散项。</p>
+  <p>一个简单例子能核对符号。若 $Z\sim\mathcal N(0,I)$，速度场恒为向量 $b$，则 $X_t=Z+tb$，分布是 $p_t(x)=\mathcal N(x;tb,I)$。整团高斯保持形状，只向 $b$ 的方向平移，且满足 $\partial_tp_t=-b\cdot\nabla p_t$、$\nabla\cdot(p_tb)=b\cdot\nabla p_t$，两项相加为零。</p>
+  <div class="photo"><img src="media/images/flow-matching/lipman-figure-3-diffusion-ot.webp" alt="扩散路径与条件 OT 路径的粒子轨迹" loading="lazy"><div class="cap">图 2：扩散路径与 OT 条件路径的轨迹对照，取自 Lipman 等人原论文 Figure 3。它显示的是条件路径的几何形状，不代表学习后的边际流必然直线。#Lipman-et-al.-2023#</div></div>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第 3 章｜前史</div>
+  <div class="ch-title">以前怎样学习这个流</div>
+  <p>有了生成 ODE，还要解决训练问题：网络该怎样得到正确的速度？传统 CNF 从数据似然出发；扩散与 Score 方法先用已知扰动构造监督，再从 score 得到生成场；Flow Matching 则直接回归路径速度。</p>
+  <h3 class="section-title">CNF：由似然训练速度场</h3>
+  <p>设网络定义 $\dot x_t=v_\theta(x_t,t)$。最大似然训练希望真实数据在模型终点分布下概率较高。密度沿轨迹的变化可由连续性方程推导：沿着 $x_t$ 用链式法则，</p>
+$$\frac{d}{dt}\log p_t(x_t)=-\nabla\cdot v_\theta(x_t,t)$$
+  <p>因此终点对数密度需要沿轨迹积分散度：</p>
+$$\log p_1(x_1)=\log p_0(x_0)-\int_0^1\nabla\cdot v_\theta(x_t,t)dt$$
+  <p>最大似然目标是 $-\mathbb E_{x_1\sim p_{data}}[\log p_1(x_1)]$。实际训练需要解 ODE、累计散度并对结果求梯度；在高维图像上计算负担较重。Flow Matching 并非首个用神经网络表示 ODE 场的方法，它为这种场提供另一种训练目标。#Lipman-et-al.-2023#</p>
+  <h3 class="section-title">Score：先学密度梯度</h3>
+  <p>去噪 Score Matching（DSM）从已知扰动核 $q_\tau(x|y)$ 构造样本，再预测条件 score。平方误差的总体最优解是条件标签的后验平均，也就是整体带噪分布的 score：</p>
+$$s_\tau(x)=\nabla_x\log p_\tau(x)=\mathbb E[\nabla_x\log q_\tau(x|Y)\mid X_\tau=x]$$
+  <p>Song 等人把连续扰动写成前向 SDE $dX_\tau=f(X_\tau,\tau)d\tau+g(\tau)dW_\tau$，并由 score 构造概率流 ODE：</p>
+$$\frac{dX_\tau}{d\tau}=f(X_\tau,\tau)-\frac12g(\tau)^2\nabla_x\log p_\tau(X_\tau)$$
+  <p>该公式用加噪时间 $\tau$ 表示；生成时沿相反时间方向积分。它说明 Score 模型已经能构造确定性生成场，也能随机抽时刻训练，因此 FM 的动机不能说成“扩散训练必须逐步模拟整条加噪链”。#Song-et-al.-2021#</p>
+  <h3 class="section-title">FM：直接回归条件速度</h3>
+  <p>理想目标是回归产生指定概率路径的整体速度 $u_t(x)$，但它通常难算。FM 为每个数据端点构造条件路径和可计算的条件速度；CFM 直接回归条件速度，并证明总体梯度等价于理想目标。与 Score 路线相比，它直接把监督目标放在路径速度上，并允许选取扩散路径之外的路径。#Lipman-et-al.-2023#</p>
+  <div class="table-wrap"><table><thead><tr><th>路线</th><th>训练信号</th><th>训练是否求解生成 ODE</th><th>生成时的场</th></tr></thead><tbody>
+    <tr><td>最大似然 CNF</td><td>真实数据的模型似然</td><td>通常需要，并累计散度</td><td>网络直接表示速度</td></tr>
+    <tr><td>DSM / Score</td><td>扰动核的条件 score</td><td>不需要</td><td>score 代入反向 SDE 或 PFODE</td></tr>
+    <tr><td>FM / CFM</td><td>条件概率路径的速度</td><td>不需要</td><td>网络直接表示速度</td></tr>
   </tbody></table></div>
-  <p><em>表 1：两种常用系数选择。非零 $\sigma_{\min}$ 避开有限噪声尺度的严格退化端点；具体取值应按所讨论的论文实验设置引用，不能视为普适常数。#Lipman-et-al.-2023#</em></p>
-  <p>“线性路径”首先指在给定端点和噪声残差后，条件样本 $z_t$ 对 $t$ 线性变化。它不保证混合后的边际向量场处处为常数，也不保证不同端点之间的配对是最优传输。图 2 对照原文中的扩散路径和 OT 路径；图示帮助我们看出条件路径的几何差别，但不能单凭它推断学习后的所有轨迹都笔直。#Lipman-et-al.-2023#</p>
-  <div class="photo"><img src="media/images/flow-matching/lipman-figure-3-diffusion-ot.webp" alt="扩散路径与最优传输路径的轨迹对照" loading="lazy"><div class="cap">图 2：扩散路径与 OT 路径的粒子轨迹。原论文 Figure 3；展示不同路径构造下的轨迹形态，不能据此把所有 Flow Matching 学得的边际轨迹都说成直线。#Lipman-et-al.-2023#</div></div>
+  <p><em>表 1：三条学习生成场的路线。比较的是本文讨论的典型方法，不覆盖各路线的所有变体。#Lipman-et-al.-2023# #Song-et-al.-2021#</em></p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">第 3 章｜条件速度</div>
-  <div class="ch-title">对路径求导，得到已知标签</div>
-  <p>现在固定一对端点 $(y,\epsilon)$。由于 $y$ 和 $\epsilon$ 在这条条件路径上不变，对 $z_t$ 关于时间求导：</p>
-$$w_t=\frac{d z_t}{dt}=\dot\alpha(t)y+\dot\sigma(t)\epsilon$$
-  <p>训练时网络输入的是当前状态 $z_t$ 和时间 $t$，因此我们把标签写成状态的函数。由路径定义解出残差，在 $\sigma(t)>0$ 的内部时刻有：</p>
-$$\epsilon=\frac{z_t-\alpha(t)y}{\sigma(t)}$$
-  <p>代回刚才的导数，得到给定目标 $y$ 时的条件向量场：</p>
-$$u_t(z\mid y)=\dot\alpha(t)y+\frac{\dot\sigma(t)}{\sigma(t)}\bigl(z-\alpha(t)y\bigr)$$
-  <p>这几步说明了“速度标签从哪里来”：我们先选定一条可微的条件概率路径，再对这条路径求导。标签不是额外人工标注，也不是物理世界真实测得的运动速度。端点处如果 $\sigma(t)=0$，上式的分式形式不能直接使用；要用路径导数的极限或独立端点表达式处理。#Lipman-et-al.-2023#</p>
-  <h3 class="section-title">代入线性路径</h3>
-  <p>理想路径 $\alpha(t)=t,\sigma(t)=1-t$ 的导数分别为 $1$ 和 $-1$。直接从 $z_t=ty+(1-t)\epsilon$ 求导：</p>
-$$w_t=y-\epsilon$$
-  <p>它与时间无关，是一条条件直线路径的恒定速度。若使用原论文的非零终端噪声路径 $\sigma(t)=1-(1-\sigma_{\min})t$，则：</p>
-$$w_t=y-(1-\sigma_{\min})\epsilon$$
-  <p>两种标签只差噪声系数，来自不同的路径端点约定。对一个样本对，训练程序能从 $y,\epsilon,t$ 直接算出 $z_t$ 和 $w_t$，无需先跑一遍数值 ODE。</p>
-  <div class="example-box"><h3>手算一次标签</h3><p>取理想路径、标量例子 $y=2,\epsilon=-1,t=0.4$，则 $z_t=0.4(2)+0.6(-1)=0.2$，速度标签 $w_t=y-\epsilon=3$。将时间往前增加 $\Delta t$，状态按 $z_{t+\Delta t}=z_t+3\Delta t$ 移动；这只是该条件样本对的路径速度。</p></div>
+  <div class="ch-label">第 4 章｜构造</div>
+  <div class="ch-title">怎样得到速度标签</div>
+  <p>先抽一份噪声 $z\sim\mathcal N(0,I)$ 和一张训练图像 $y\sim p_{data}$，规定从噪声到数据的线性路径：</p>
+$$x_t=(1-t)z+ty,\qquad t\in[0,1]$$
+  <p>$t=0$ 时状态为噪声，$t=1$ 时到达图像。固定端点后对时间求导，直接得到已知速度标签：</p>
+$$\frac{dx_t}{dt}=y-z$$
+  <p>例如一维中取 $z=-1,y=3$，则 $x_t=-1+4t$，任何时刻速度都是 $4$。在 $t=1/4$ 时网络输入位置为 $0$、时间为 $1/4$，监督答案为 $4$。高维图像对应向量差 $y-z$。</p>
+  <p>因此，直线路径下的条件流匹配目标是：</p>
+$$\mathcal L_{linear}(\theta)=\mathbb E_{t,y,z}\left[\left\|v_\theta((1-t)z+ty,t)-(y-z)\right\|^2\right]$$
+  <p>训练时网络只接收状态 $x_t$ 和时间 $t$；端点用于构造状态与标签。每轮随机抽取新图像、噪声与时间，无需先执行一整条加噪或生成轨迹。对路径求导是计算标签，对模型参数反向传播才是训练更新。</p>
+  <h3 class="section-title">一般高斯路径</h3>
+  <p>把线性插值推广为：</p>
+$$x_t=\alpha(t)y+\sigma(t)z,\qquad p_t(x|y)=\mathcal N(x;\alpha(t)y,\sigma(t)^2I)$$
+  <p>固定端点求导：</p>
+$$\dot x_t=\dot\alpha(t)y+\dot\sigma(t)z$$
+  <p>当 $\sigma(t)>0$ 时，由 $z=[x-\alpha(t)y]/\sigma(t)$ 消去噪声端点，可把标签写成当前位置的条件速度：</p>
+$$\boxed{u_t(x|y)=\dot\alpha(t)y+\frac{\dot\sigma(t)}{\sigma(t)}[x-\alpha(t)y]}$$
+  <p>原论文的条件 OT 路径让均值与标准差线性变化：$\alpha(t)=t$，$\sigma(t)=1-(1-\sigma_{min})t$，其中 $\sigma_{min}>0$。于是终点为 $y+\sigma_{min}z$，即数据周围一个小高斯，而非未经平滑的数据点。对应标签是 $y-(1-\sigma_{min})z$。理想路径 $\sigma(t)=1-t$ 是 $\sigma_{min}\to0$ 的极限；终点分布与原文设定需要区分。#Lipman-et-al.-2023#</p>
+  <div class="photo"><img src="media/images/flow-matching/conditional-fields-figure2.webp" alt="原论文比较扩散路径条件 score 与 OT 条件速度场" loading="lazy"><div class="cap">图 3：原论文 Figure 2 对比扩散路径的条件 score 与 OT 路径的条件速度场。两者是不同监督量；图中固定位置的向量场方向随时间表现不同。#Lipman-et-al.-2023#</div></div>
+  <p>一次训练可以概括为：抽图像、噪声和时间；构造中间状态；对路径求导得到标签；网络预测速度；用平方误差更新参数。条件路径的直线性质不能直接推出训练后的整体生成轨迹也是直线。</p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">第 4 章｜边际场</div>
-  <div class="ch-title">多个端点的方向怎样汇合</div>
-  <p>生成时只有当前状态 $z$ 和时间 $t$，并不知道它来自哪一个真实目标 $y$。不同目标的条件路径可能经过同一个位置，因此推理不能要求模型读取未知的 $y$。正确的边际速度，是在已知当前位置和时间后，对可能来源的条件速度取后验加权平均。</p>
-$$p(y\mid z,t)=\frac{p_t(z\mid y)p_{\text{data}}(y)}{p_t(z)},\qquad v_t(z)=\mathbb E\bigl[u_t(z\mid y)\mid z,t\bigr]=\int u_t(z\mid y)p(y\mid z,t)\,dy$$
-  <p>这不是把所有方向简单等权平均。离当前位置更可能的端点获得更大的后验权重；权重会随 $z,t$ 改变，所以边际向量场也是位置和时间的函数。神经网络要学的是这个无需目标端点作为输入的场。#Lipman-et-al.-2023#</p>
-  <h3 class="section-title">为什么这个平均场能推动整个分布</h3>
-  <p>如果一群粒子按速度场 $v_t$ 运动，它们的密度变化满足连续性方程：</p>
-$$\partial_t p_t(z)+\nabla\cdot\bigl(p_t(z)v_t(z)\bigr)=0$$
-  <p>对固定端点 $y$，条件密度和条件速度满足同样形式的方程：</p>
-$$\partial_t p_t(z\mid y)+\nabla\cdot\bigl(p_t(z\mid y)u_t(z\mid y)\bigr)=0$$
-  <p>将条件方程乘以 $p_{\text{data}}(y)$ 后对 $y$ 积分。若路径足够光滑，且微分与积分可以交换，左侧第一项为 $\partial_t p_t(z)$；散度项则为：</p>
-$$\int \nabla\cdot\bigl(p_t(z\mid y)u_t(z\mid y)\bigr)p_{\text{data}}(y)dy=\nabla\cdot\left(p_t(z)\int u_t(z\mid y)p(y\mid z,t)dy\right)=\nabla\cdot\bigl(p_t(z)v_t(z)\bigr)$$
-  <p>于是边际密度 $p_t$ 也满足连续性方程。这个推导给出了关键保证：若我们学到这个边际场并沿它积分，粒子群的分布就会沿预先构造的 $p_t$ 演化。连续性方程是理论联系，不意味着训练时必须数值求解这个 PDE。#Lipman-et-al.-2023#</p>
-  <div class="callout"><strong>直觉图：</strong>同一位置上的可能来源各自提供一个条件速度；按“这个来源有多可能”的后验权重求平均，得到当前点唯一可用的边际速度。</div>
-  <div class="photo"><img src="media/images/flow-matching/posterior-weighted-velocity.webp" alt="两个候选端点的条件速度按后验权重合成为边际速度" loading="lazy"><div class="cap">图 3：候选方向按后验概率加权。示意权重 0.75 与 0.25 仅用于解释加权平均，并非论文实验数据；平均方向随当前位置和时间变化。依据 Lipman 等人的边际场定义绘制。#Lipman-et-al.-2023#</div></div>
+  <div class="ch-label">第 5 章｜原理</div>
+  <div class="ch-title">局部标签怎样搬运整体分布</div>
+  <p>生成时模型不知道图像端点 $Y$。同一位置 $x$ 可能来自多张图像和多份噪声，对应不同条件速度。平方误差会让网络学到这些候选速度的条件平均。后验权重由贝叶斯公式给出：</p>
+$$\pi_t(y|x)=\frac{p_t(x|y)p_{data}(y)}{p_t(x)},\qquad p_t(x)=\int p_t(x|y)p_{data}(y)dy$$
+  <p>于是整体边际速度是：</p>
+$$\boxed{u_t(x)=\mathbb E[u_t(x|Y)|X_t=x]=\int u_t(x|y)\pi_t(y|x)dy}$$
+  <p>这不是等权平均。给定位置与时间后，越可能产生该状态的端点，权重越大。若两个可能来源的后验权重为 $0.8,0.2$，速度标签为 $2,-1$，则总体方向为 $0.8\times2+0.2\times(-1)=1.4$。</p>
+  <h3 class="section-title">平均场满足连续性方程</h3>
+  <p>每条条件路径满足自己的守恒方程：</p>
+$$\partial_t p_t(x|y)+\nabla\cdot[p_t(x|y)u_t(x|y)]=0$$
+  <p>乘以数据分布 $p_{data}(y)$ 后对 $y$ 积分。假设相关函数足够光滑，可以交换微分与积分。第一项成为 $\partial_tp_t(x)$；通量项则由后验平均的定义变成 $p_t(x)u_t(x)$：</p>
+$$\int p_t(x|y)u_t(x|y)p_{data}(y)dy=p_t(x)u_t(x)$$
+  <p>因此整体也满足：</p>
+$$\boxed{\partial_tp_t(x)+\nabla\cdot[p_t(x)u_t(x)]=0}$$
+  <p>这就是条件标签为何能搬运整体分布：它们的概率通量加起来，恰好是整体密度乘以平均速度。适当条件下，沿该整体场求解 ODE 会产生目标概率路径。这是理论结论，不是说训练时要数值求解连续性 PDE。#Lipman-et-al.-2023#</p>
+  <h3 class="section-title">CFM 损失为何梯度等价</h3>
+  <p>理想 FM 目标回归难以直接算出的边际速度 $m=u_t(X_t)$；CFM 用可计算的条件标签 $U=u_t(X_t|Y)$：</p>
+$$\mathcal L_{FM}=\mathbb E\|V-m\|^2,\qquad \mathcal L_{CFM}=\mathbb E\|V-U\|^2,\qquad V=v_\theta(X_t,t)$$
+  <p>将 $V-U=(V-m)+(m-U)$ 展开平方。交叉项的期望为零，因为在给定 $(X_t,t)$ 后 $V-m$ 已确定，而 $\mathbb E[m-U|X_t,t]=0$：</p>
+$$\mathcal L_{CFM}=\mathcal L_{FM}+\mathbb E\|U-m\|^2=\mathcal L_{FM}+C$$
+  <p>$C$ 不依赖网络参数，所以在期望有限且可交换求导与期望等正则条件下，两个目标对参数的梯度相同。损失数值不相等；单个条件标签也不必等于边际速度；有限小批量的梯度仍有抽样波动。#Lipman-et-al.-2023#</p>
+  <div class="photo"><img src="media/images/flow-matching/rectified-flow-figure2.webp" alt="Rectified Flow 原论文展示随机线性插值、整体流和 reflow" loading="lazy"><div class="cap">图 4：Rectified Flow 原论文 Figure 2。随机配对的条件直线可能相交；学到的整体 ODE 流在同一状态给出唯一速度，因而会改变端点配对。后两面板预示 reflow，具体方法见第 7 章。#Liu-et-al.-2023-RF#</div></div>
+  <p>条件轨迹训练时保留噪声与目标配对；生成时只使用状态和时间。模型学习的是后验平均场，不是记住某条训练直线。因此，生成轨迹可以弯曲，也不必对应某一条训练配对。#Lipman-et-al.-2023# #Liu-et-al.-2023-RF#</p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">第 5 章｜训练目标</div>
-  <div class="ch-title">CFM 为什么能训练边际场</div>
-  <p>直接训练边际向量场，需要计算 $v_t(z)=\mathbb E[w_t\mid z,t]$，通常涉及对所有可能数据端点求积分。CFM 改为采样端点 $y$、噪声 $\epsilon$ 和时间 $t$，用已经推导出的条件速度 $w_t$ 做回归标签：</p>
-$$\mathcal L_{\mathrm{CFM}}(\theta)=\mathbb E\left[\left\|v_\theta(z_t,t)-w_t\right\|^2\right]$$
-  <p>为什么回归含噪的条件标签，不会把网络带偏？令 $m=v_t(z_t)=\mathbb E[w_t\mid z_t,t]$。把误差拆成模型到条件均值的部分，以及标签围绕条件均值的偏差：</p>
-$$v_\theta-w_t=(v_\theta-m)+(m-w_t)$$
-$$\mathbb E\|v_\theta-w_t\|^2=\mathbb E\|v_\theta-m\|^2+\mathbb E\|m-w_t\|^2+2\mathbb E\langle v_\theta-m,m-w_t\rangle$$
-  <p>对给定 $(z_t,t)$，$v_\theta-m$ 已确定，而 $\mathbb E[m-w_t\mid z_t,t]=0$，所以最后的交叉项期望为零：</p>
-$$\mathbb E\langle v_\theta-m,m-w_t\rangle=0$$
-  <p>因此：</p>
-$$\mathcal L_{\mathrm{CFM}}(\theta)=\mathcal L_{\mathrm{FM}}(\theta)+C,\qquad C=\mathbb E\|m-w_t\|^2$$
-  <p>$C$ 与参数 $\theta$ 无关，所以两种目标对模型参数的梯度相同，且总体最优解相同。这个结论依赖平方误差、相同的联合采样构造以及必要的可积和可微条件；有限批次的梯度仍有随机方差。CFM 中的“条件”指构造训练标签时条件在目标端点，不等于文本条件生成。#Lipman-et-al.-2023#</p>
-  <div class="table-wrap"><table><thead><tr><th>阶段</th><th>采样/输入</th><th>计算</th></tr></thead><tbody>
-    <tr><td>抽样</td><td>$y\sim p_{data},\epsilon\sim\mathcal N(0,I),t\sim U(0,1)$</td><td>独立抽取目标、噪声和时间</td></tr>
-    <tr><td>构造状态与标签</td><td>$z_t=\alpha y+\sigma\epsilon$</td><td>$w_t=\dot\alpha y+\dot\sigma\epsilon$</td></tr>
-    <tr><td>网络回归</td><td>输入 $(z_t,t)$</td><td>最小化 $\|v_\theta(z_t,t)-w_t\|^2$</td></tr>
+  <div class="ch-label">第 6 章｜换算</div>
+  <div class="ch-title">速度、噪声与 Score 的关系</div>
+  <p>现在固定同一条高斯路径，统一从噪声走向数据：</p>
+$$X_t=\alpha(t)Y+\sigma(t)Z,\qquad Z\sim\mathcal N(0,I)$$
+  <p>端点 $Y,Z$ 在给定中间状态后通常不再确定。平方误差的最优预测是条件均值 $m=\mathbb E[Y|X_t=x]$、$e=\mathbb E[Z|X_t=x]$，而整体速度 $u=\dot\alpha m+\dot\sigma e$。路径关系给出 $x=\alpha m+\sigma e$。</p>
+  <p>高斯条件密度的 score 标签为 $-(x-\alpha y)/\sigma^2$。对未知端点取后验平均后，得到整体 score 与噪声预测的关系：</p>
+$$s_t(x)=\nabla_x\log p_t(x)=-\frac{e_t(x)}{\sigma(t)}$$
+  <p>定义 $D=\alpha\dot\sigma-\dot\alpha\sigma$。若 $\alpha\ne0$，由 $m=(x-\sigma e)/\alpha$ 代入速度：</p>
+$$\boxed{u=\frac{\dot\alpha}{\alpha}x+\frac{D}{\alpha}e=\frac{\dot\alpha}{\alpha}x-\frac{\sigma D}{\alpha}s}$$
+  <p>因此，Score 不是速度本身；从 Score 得到速度还需要路径系数、系数导数和位置项。</p>
+  <h3 class="section-title">统一换算表</h3>
+  <div class="table-wrap"><table><thead><tr><th>已知预测</th><th>换算结果</th><th>条件</th></tr></thead><tbody>
+    <tr><td>噪声 $e$</td><td>$m=(x-\sigma e)/\alpha$；$s=-e/\sigma$</td><td>$\alpha\ne0$；$\sigma&gt;0$</td></tr>
+    <tr><td>图像 $m$</td><td>$e=(x-\alpha m)/\sigma$</td><td>$\sigma&gt;0$</td></tr>
+    <tr><td>速度 $u$</td><td>$m=(\dot\sigma x-\sigma u)/D$；$e=(\alpha u-\dot\alpha x)/D$</td><td>$D\ne0$</td></tr>
+    <tr><td>Score $s$</td><td>$m=(x+\sigma^2s)/\alpha$</td><td>$\alpha\ne0,\sigma&gt;0$</td></tr>
   </tbody></table></div>
-  <p><em>表 2：一次 CFM 训练迭代。可计算标签来自人为构造的概率路径，不需要在训练时解生成 ODE。#Lipman-et-al.-2023#</em></p>
-  {{< mermaid >}}
-  flowchart LR
-    A[抽取目标 y] --> C[构造 z_t]
-    B[抽取噪声 epsilon 与时间 t] --> C
-    A --> D[计算条件速度 w_t]
-    B --> D
-    C --> E[网络 v_theta(z_t,t)]
-    D --> F[平方误差回归]
-    E --> F
-  {{< /mermaid >}}
-  <p class="cap">图 4：CFM 训练数据流。目标端点用于生成监督样本与标签；文本等外部条件可另行输入网络，二者概念不同。#Lipman-et-al.-2023#</p>
+  <p><em>表 2：同一高斯条件路径上的整体条件均值换算。$D$ 是由系数矩阵得到的行列式；若条件不满足，不能直接使用相应分式。#Lipman-et-al.-2023#</em></p>
+  <p>行列式关系可从线性方程组看出：</p>
+$$\begin{pmatrix}x\\u\end{pmatrix}=\begin{pmatrix}\alpha&\sigma\\\dot\alpha&\dot\sigma\end{pmatrix}\begin{pmatrix}m\\e\end{pmatrix},\qquad \det=D$$
+  <p>在理想直线路径 $\alpha=t,\sigma=1-t$ 下，$D=-1$，所以：</p>
+$$m=x+(1-t)u,\qquad e=x-tu$$
+  <h3 class="section-title">可换算不等于损失相同</h3>
+  <p>若噪声预测器通过明确的代数式定义速度预测 $v_\theta=(\dot\alpha/\alpha)x+(D/\alpha)\epsilon_\theta$，则速度 MSE 与噪声 MSE 之间有精确的时间权重关系：</p>
+$$\|v_\theta-U\|^2=\left(\frac{D}{\alpha}\right)^2\|\epsilon_\theta-Z\|^2$$
+  <p>直线路径下权重为 $1/t^2$。因此，同一路径上的预测量可能互相换算，但各自未经加权的平方误差不会自动给出相同训练。网络参数化、时间抽样、权重和数值尺度都会影响有限训练的结果。</p>
+  <h3 class="section-title">与 PFODE 及扩散 v-prediction 的边界</h3>
+  <p>对线性前向 SDE $dX_\tau=a(\tau)X_\tau d\tau+g(\tau)dW_\tau$，其高斯路径满足 $\dot\alpha=a\alpha$ 与 $\sigma\dot\sigma=a\sigma^2+g^2/2$。代入上式就得到 PFODE 漂移 $a(\tau)x-\tfrac12g(\tau)^2s_\tau(x)$。这是同一扩散路径下的联系；若将时间改成噪声到数据方向，还需反转速度符号。任意 FM 路径不需要先来自扩散 SDE。#Song-et-al.-2021# #Lipman-et-al.-2023#</p>
+  <p>扩散文献中的 $v$-prediction 常是 $v_{param}=\alpha Z-\sigma Y$ 这样的输出坐标，不应仅凭字母 $v$ 就当作 ODE 速度。它与路径速度只有在系数和时间约定明确后才可比较；例如旋转参数化 $\alpha=\sin\vartheta,\sigma=\cos\vartheta$ 下，路径速度为 $-\dot\vartheta v_{param}$。这类参数化也将在 [[@视频生成系列（五）：EDM——重新梳理扩散模型的设计空间 | EDM 设计空间]] 中继续讨论。#Salimans-Ho-2022#</p>
+  <p>DDIM 主要改变已训练噪声预测器的采样更新公式；FM 则规定路径并训练速度场。确定性 DDIM 也有 ODE 解释，但它的离散更新不自动等于任意 FM 场上的 Euler 或 Heun。#Song-et-al.-2020-DDIM# #Lipman-et-al.-2023#</p>
+  <div class="table-wrap"><table><thead><tr><th>方法</th><th>训练路径与目标</th><th>生成过程</th><th>关键区别</th></tr></thead><tbody>
+    <tr><td>DDPM</td><td>离散马尔可夫加噪；常见目标预测噪声</td><td>反向随机转移</td><td>前向过程与训练边缘由扩散链定义</td></tr>
+    <tr><td>Score / DSM</td><td>扰动样本上回归 score</td><td>反向 SDE 或 PFODE</td><td>网络学密度梯度，再换算生成场</td></tr>
+    <tr><td>DDIM</td><td>可复用 DDPM 噪声预测器</td><td>使用离散跨时刻更新；确定性版本可跳步</td><td>重点改变采样转移</td></tr>
+    <tr><td>Flow Matching</td><td>指定概率路径，回归条件速度</td><td>数值积分学习到的 ODE 场</td><td>重点是可计算的向量场训练目标与路径选择</td></tr>
+  </tbody></table></div>
+  <p><em>表 3：四种方法的典型形式。Score 路线也可使用确定性 ODE；FM 与扩散模型的预测量在特定路径下可换算。表中总结关注点，不代表每种方法只有一种实现。#Ho-et-al.-2020# #Song-et-al.-2021# #Song-et-al.-2020-DDIM# #Lipman-et-al.-2023#</em></p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">第 6 章｜采样</div>
-  <div class="ch-title">沿学到的向量场积分</div>
-  <p>训练结束后，采样不再知道目标 $y$，只从噪声分布取初始状态 $z_0$，然后求解 ODE：</p>
-$$\frac{dz_t}{dt}=v_\theta(z_t,t),\qquad z_0\sim p_0$$
-  <p>最简单的 Euler 法来自导数定义：在小步长 $h$ 内，状态变化近似等于当前速度乘以时间间隔。</p>
-$$z_{t+h}=z_t+h\,v_\theta(z_t,t)$$
-  <p>每一步都把新的状态和时间交给网络，重新估计速度，再继续积分，直到终点。若离散成 $N$ 步，通常需要约 $N$ 次网络函数评估（NFE）；较大的步长减少调用，却可能增大离散误差。模型误差与数值积分误差是不同来源。CFM 训练不需要仿真路径，推理仍要解 ODE。Heun 法是更高阶的数值求解器，可参见 EDM 篇的采样器说明。#Lipman-et-al.-2023#</p>
+  <div class="ch-label">第 7 章｜路径</div>
+  <div class="ch-title">为什么路径会影响采样</div>
+  <p>训练目标可换算，不代表路径相同。噪声端点和数据端点之间可以采用不同配对方式。给定联合分布 $\gamma(z,y)$，其两端边缘分别为噪声分布和数据分布；改变 $\gamma$，不改变端点边缘，却可能改变中间状态、速度标签和最终生成轨迹。</p>
+  <h3 class="section-title">FM 与 Rectified Flow 的重合处</h3>
+  <p>基本 Rectified Flow 使用线性插值 $x_t=(1-t)z+ty$，回归 $y-z$。当端点耦合、时间采样和损失相同时，这与该路径下的流匹配目标完全相同。FM 论文强调一般路径及条件速度监督的理论框架；Rectified Flow 论文进一步研究端点配对如何影响整体流，以及怎样通过 reflow 让轨迹更适合少步积分。两者同期提出，不能简单说成一方是另一方改名。#Lipman-et-al.-2023# #Liu-et-al.-2023-RF#</p>
+  <p>“整流”将需要知道终点的条件插值，转成只依赖当前位置与时间的 ODE 场。这个场的轨迹可能弯曲，且端点配对关系会改变。图 4 中 (a) 的配对直线可以交叉，(b) 的学习流则在给定状态只提供一个速度。整流不是在采样时手动找交点并拼线。</p>
+  <h3 class="section-title">Reflow：用旧流的端点重新训练</h3>
+  <p>先用第一轮模型把噪声 $z$ 积分到生成终点 $\tilde y=\phi_1(z)$。保留这对实际端点 $(z,\tilde y)$，再构造新的训练插值与标签：</p>
+$$x_t^{new}=(1-t)z+t\tilde y,\qquad u_t^{new}=\tilde y-z$$
+  <p>新一轮网络回归这些标签。之后还可继续用新流生成端点并再次训练。这就是 reflow。它需要额外的样本生成和训练成本，目标是改善端点配对与轨迹直线性，以便用更少的积分步达到相近质量；它不是重新抽噪声破坏图像，也不自动提高旧模型终点分布的真实性。#Liu-et-al.-2023-RF#</p>
+  <div class="photo"><img src="media/images/flow-matching/rectified-flow-reflow-figure3.webp" alt="Rectified Flow 逐轮 reflow 的轨迹和直线性趋势" loading="lazy"><div class="cap">图 5：Rectified Flow 原论文 Figure 3。前三个面板是玩具分布逐轮 reflow 的轨迹，最后一幅给出归一化的直线性与运输代价趋势；实验使用非参数模型，不代表图像生成模型的一步效果。#Liu-et-al.-2023-RF#</div></div>
+  <h3 class="section-title">为什么更直可能减少积分误差</h3>
+  <p>Euler 在步长 $h$ 内用当前位置速度近似整段运动：</p>
+$$x_{t+h}=x_t+h\,v(x_t,t)$$
+  <p>若沿轨迹速度变化，Taylor 展开中的二阶项为：</p>
+$$\frac{h^2}{2}\left[\partial_tv+(\nabla_xv)v\right]$$
+  <p>方括号是沿轨迹的加速度。速度变化越大，大步长外推越不准；恒速直线的加速度为零，Euler 在理想场中可一步准确到达。几何方向不变但速度随时间变动时，有限步仍会有误差。Reflow 尝试让模型轨迹更容易求解，但不能保证真实网络一步生成。</p>
+  <p>RF 论文还证明，在精确场与相应假设下，整流耦合的凸运输代价不高于原始配对的代价。这不表示它已达到所有耦合中的全局最优传输。Lipman 论文的条件 OT 路径同样不自动使混合后的整体场成为两个数据分布间的最优传输。#Liu-et-al.-2023-RF# #Lipman-et-al.-2023#</p>
+  <div class="table-wrap"><table><thead><tr><th>变化</th><th>可能影响</th><th>不自动意味着</th></tr></thead><tbody>
+    <tr><td>预测量与损失权重</td><td>时间段误差分配、优化尺度</td><td>速度预测总比噪声预测好</td></tr>
+    <tr><td>概率路径</td><td>中间分布与向量场积分难度</td><td>条件直线就是整体直线</td></tr>
+    <tr><td>端点耦合与 reflow</td><td>生成轨迹、少步积分误差</td><td>真实性自动提高或一步生成</td></tr>
+  </tbody></table></div>
+  <p><em>表 3：理解效果变化时，应区分监督、路径和配对。#Lipman-et-al.-2023# #Liu-et-al.-2023-RF#</em></p>
+</div>
+
+<div class="ch fade-in">
+  <div class="ch-label">第 8 章｜采样</div>
+  <div class="ch-title">Euler 与 Heun 怎样生成样本</div>
+  <p>训练后，从 $x_0\sim\mathcal N(0,I)$ 出发，数值求解 $dx_t/dt=v_\theta(x_t,t)$，直到 $t=1$。基本 ODE 演化不在每一步额外抽取布朗噪声；固定初值、模型与条件会给出固定轨迹，但不同初始噪声仍可生成不同样本。#Lipman-et-al.-2023#</p>
+  <h3 class="section-title">Euler：用起点速度走一步</h3>
+  <p>将时间划分为 $t_0<\cdots<t_N$，步长 $h_i=t_{i+1}-t_i$。在起点查询网络速度 $k_1=v_\theta(x_i,t_i)$，假设这一小段内速度不变：</p>
+$$x_{i+1}=x_i+h_i k_1$$
+  <p>例如当前位置 $0.2$、步长 $0.1$、速度 $3$，Euler 更新得到 $0.5$。速度是单位时间变化量，乘以步长才是本步位移。每一步到新状态后都要重新查询网络，不能把条件训练直线上的固定标签直接一路用到终点。</p>
+  <h3 class="section-title">Heun：预测后再修正</h3>
+  <p>Heun 先用 Euler 预测终点，再在预测点查询速度，并取两个速度的平均：</p>
+$$\begin{aligned}k_1&=v_\theta(x_i,t_i),\\\tilde x_{i+1}&=x_i+h_i k_1,\\k_2&=v_\theta(\tilde x_{i+1},t_{i+1}),\\x_{i+1}&=x_i+\frac{h_i}{2}(k_1+k_2).\end{aligned}$$
+  <p>若例子中的预测终点速度为 $2$，则修正结果为 $0.2+0.1(3+2)/2=0.45$。满足光滑等常规条件时，Euler 全局误差是一阶，Heun 是二阶；Heun 每步需要两次网络场求值，因此也增加计算。</p>
+  <div class="table-wrap"><table><thead><tr><th>求解器</th><th>每区间场求值</th><th>N 个区间的基础 NFE</th></tr></thead><tbody><tr><td>Euler</td><td>1 次</td><td>N</td></tr><tr><td>Heun</td><td>2 次</td><td>2N</td></tr><tr><td>自适应求解器</td><td>随误差调整</td><td>依容差和实际轨迹而定</td></tr></tbody></table></div>
+  <p><em>表 4：采样步数与向量场函数求值次数（NFE）不同。原 FM 论文常规实验采用 dopri5，容差设置为 $10^{-5}$；该配置不是所有模型的要求。#Lipman-et-al.-2023#</em></p>
+  <p>直接预测速度时，不需要先估计干净图像再重新加噪。但在路径参数化允许时，可以从速度换算图像端点估计。例如直线路径下 $\hat y_t=x_t+(1-t)v_\theta(x_t,t)$。这个外推只对应当前速度；若沿途速度变化，它不等于充分积分后的终点。</p>
+  <p>少步效果还要区分模型误差与积分误差。网络偏离目标场是模型误差；有限步近似给定网络场是积分误差。增加求值次数主要降低后者，路径设计与 reflow 试图让场更容易积分。CFM 训练不需要解 ODE，但生成仍需要数值求解。</p>
   {{< mermaid >}}
   flowchart TD
-    A[噪声初值 z_0] --> B[输入当前 z_t 与 t]
-    B --> C[网络预测速度 v_theta]
-    C --> D[数值积分更新 z]
-    D --> E{到达 t=1?}
-    E -- 否 --> B
-    E -- 是 --> F[输出生成样本]
+    A[抽取噪声初值 x_0] --> B[网络查询 v_theta(x_t,t)]
+    B --> C[Euler 或 Heun 更新]
+    C --> D{到达终点?}
+    D -- 否 --> B
+    D -- 是 --> E[输出数据样本]
   {{< /mermaid >}}
-  <p class="cap">图 5：ODE 采样循环。每次更新后都在新位置重新查询速度场。#Lipman-et-al.-2023#</p>
-  <div class="photo"><img src="media/images/flow-matching/lipman-figure-4-checkerboard.webp" alt="不同训练目标下 CNF 在棋盘格数据上的生成轨迹" loading="lazy"><div class="cap">图 6：不同目标训练的连续归一化流在二维棋盘格上的生成轨迹。原论文 Figure 4 左图；它展示训练后模型的粒子轨迹和不同目标的效果，不是条件速度标签图。#Lipman-et-al.-2023#</div></div>
+  <p class="cap">图 6：沿速度场采样的循环。每个区间根据求解器规则更新状态。#Lipman-et-al.-2023#</p>
 </div>
 
 <div class="ch fade-in">
-  <div class="ch-label">第 7 章｜方法关系</div>
-  <div class="ch-title">Flow Matching、扩散与 Rectified Flow</div>
-  <p>FM、DDPM、DDIM 并非只差网络输出头。它们在随机过程、训练监督量、概率路径和采样器上都有区别。DDPM 从离散马尔可夫加噪链建立训练边缘与反向生成链，常见网络预测噪声；DDIM 保留 DDPM 的单时刻训练边缘，采用另一种联合路径和转移公式，可确定性采样并跨时间步更新；FM 直接选定概率路径，回归路径诱导的条件速度，再用 ODE 积分学习到的边际场。#Ho-et-al.-2020# #Song-et-al.-2021# #Lipman-et-al.-2023#</p>
-  <div class="table-wrap"><table><thead><tr><th>维度</th><th>DDPM</th><th>DDIM</th><th>Flow Matching</th></tr></thead><tbody>
-    <tr><td>路径构造</td><td>离散马尔可夫前向链</td><td>保留训练边际，可构造非马尔可夫路径</td><td>直接指定连续时间概率路径族</td></tr>
-    <tr><td>常见训练目标</td><td>预测加入的噪声 $\epsilon$</td><td>复用 DDPM 噪声预测器</td><td>回归条件路径速度，估计边际向量场</td></tr>
-    <tr><td>采样描述</td><td>反向随机转移</td><td>广义转移；$\eta=0$ 时确定</td><td>求解速度场定义的 ODE</td></tr>
-    <tr><td>跳步/少步</td><td>原始相邻链逐步采样</td><td>按选中时刻构造跨步更新</td><td>由 ODE 求解器步数控制</td></tr>
-  </tbody></table></div>
-  <p><em>表 3：三种方法的典型表述。具体扩散模型也可用其他参数化，FM 也可加入随机过程扩展；表格概括的是本文讨论的经典路线，不代表唯一实现。#Ho-et-al.-2020# #Song-et-al.-2021# #Lipman-et-al.-2023#</em></p>
-  <h3 class="section-title">FM 速度不等于扩散模型的 v-target</h3>
-  <p>“速度”在不同文章中可能指不同量。FM 的 $v_t(z)$ 是所选概率路径在数据空间中的 ODE 向量场。扩散模型里的 $v$ 参数化常指把样本 $x$ 与噪声 $\epsilon$ 线性组合成网络监督目标的一种输出坐标；它可以换算回噪声或原图预测，但不能仅凭名称就当成 FM 的边际向量场。#Salimans-Ho-2022# #Lipman-et-al.-2023#</p>
-  <h3 class="section-title">与 score 的数学联系</h3>
-  <p>对高斯条件路径，对 $z$ 求对数密度梯度，条件 score 为：</p>
-$$\nabla_z\log p_t(z\mid y)=-\frac{z-\alpha(t)y}{\sigma(t)^2}=-\frac{\epsilon}{\sigma(t)}$$
-  <p>边际 score 是条件 score 的后验平均。因此：</p>
-$$s_t(z)=\nabla_z\log p_t(z)=-\frac{\mathbb E[\epsilon\mid z,t]}{\sigma(t)}$$
-  <p>从路径速度 $w=\dot\alpha y+\dot\sigma\epsilon$ 出发，将 $y=(z-\sigma\epsilon)/\alpha$ 代入并对 $z,t$ 条件取期望：</p>
-$$v_t(z)=\frac{\dot\alpha}{\alpha}z+\left(\dot\sigma-\frac{\dot\alpha}{\alpha}\sigma\right)\mathbb E[\epsilon\mid z,t]$$
-  <p>再用 $\mathbb E[\epsilon\mid z,t]=-\sigma s_t(z)$，得到：</p>
-$$v_t(z)=\frac{\dot\alpha}{\alpha}z+\left(\frac{\dot\alpha}{\alpha}\sigma^2-\dot\sigma\sigma\right)s_t(z)$$
-  <p>该换算要求 $\alpha,\sigma$ 可微且式中分母非零，并使用同一高斯路径和时间约定。它说明 score 与速度可以在条件成立时相互联系，不说明所有 FM 路径就是某个固定扩散模型的概率流 ODE。#Lipman-et-al.-2023# #Song-et-al.-2021#</p>
-  <h3 class="section-title">Rectified Flow 是什么位置</h3>
-  <p>Rectified Flow 研究从噪声端点到数据端点的线性插值及其速度回归，并进一步通过 reflow 重新配对端点，让学习到的运输轨迹更直接。它与线性条件路径和速度匹配关系密切，但特定损失、端点耦合及 reflow 不能与所有 Flow Matching 设定混为一谈。#Liu-et-al.-2023-Rectified-Flow#</p>
-</div>
-
-<div class="ch fade-in">
-  <div class="ch-label">第 8 章｜视频生成</div>
-  <div class="ch-title">把图像样本换成视频潜变量</div>
-  <p>对视频生成，可以把数据端点 $y$ 从图像换成视频编码器输出的潜变量张量。张量含有时间、空间与通道维度，路径插值和速度回归按元素作用于整个张量；生成时间 $t$ 表示从噪声到目标分布的演化进度，帧索引 $k$ 表示一段视频内部的时间位置。二者不是同一个坐标。</p>
-  <p>视频模型可以把目标样本换成视频编码器得到的 latent 张量，并把文本等条件 $c$ 输入速度网络。Wan 技术报告给出了一个具体例子：先将视频 latent 记作 $x_1$、高斯噪声记作 $x_0$，用线性插值得到中间状态；模型接收文本条件和带噪 latent，预测目标速度。报告使用 logit-normal 分布抽取训练时间 $t$。#Wan-Team-2025#</p>
-$$x_t=t x_1+(1-t)x_0,\qquad v_t=\frac{dx_t}{dt}=x_1-x_0$$
-  <p>因此在这个视频模型案例里，“预测速度”具体指回归两端 latent 的差 $x_1-x_0$。目标 latent 是整段视频的时空张量，模型一次预测其中所有位置的速度分量；推理时再通过数值求解把噪声 latent 演化到生成 latent。具体的 VAE、DiT 结构和采样配置需按原报告的对应章节理解，不应从通用 Flow Matching 公式反推出未核实的工程细节。#Wan-Team-2025#</p>
-  <div class="table-wrap"><table><thead><tr><th>符号</th><th>表示什么</th><th>在一次生成中的作用</th></tr></thead><tbody>
-    <tr><td>$t$</td><td>生成过程时间</td><td>从噪声分布沿向量场积分到目标分布</td></tr>
-    <tr><td>$k$</td><td>视频帧索引</td><td>标识输出视频中的帧位置，可能进入 latent 的时间维</td></tr>
-  </tbody></table></div>
-  <p><em>表 4：生成时间与视频帧时间。实际模型可采用不同的时空 latent 编码，须以其原论文定义为准。</em></p>
+  <div class="ch-label">第 9 章｜总结</div>
+  <div class="ch-title">贡献、视频应用与局限</div>
+  <p>全文的数学主线可以压缩为：设计条件概率路径，对路径求导得到已知速度标签；利用平方误差学到后验加权的边际速度；由连续性方程确认该场推动整体分布；最后从噪声初值出发，用 ODE 求解器积分生成样本。</p>
+  <p>Flow Matching 的贡献是为一般路径下的生成向量场提供可计算的条件监督与梯度等价理论。Rectified Flow 的基本线性回归目标与线性路径 FM 重合，并进一步研究整流、端点配对与 reflow。路径、目标参数化和求解器分别影响不同环节，不能把效果改进归结为“把噪声改名为速度”。#Lipman-et-al.-2023# #Liu-et-al.-2023-RF#</p>
+  <h3 class="section-title">视频模型中的例子</h3>
+  <p>图像端点可以换成视频编码器产生的时空潜变量张量。Wan 技术报告在训练目标中将视频潜变量 $x_1$ 与噪声 $x_0$ 线性插值，回归两端差值，并使用 logit-normal 分布抽取生成时间；文本条件输入模型。这里的生成时间 $t$ 与视频内部帧索引不同。该例说明路径与速度监督可以作用于视频 latent，不代表所有视频生成模型都使用 FM，也不代表 FM 自身保证时间一致性。#Wan-Team-2025#</p>
+$$x_t=t x_1+(1-t)x_0,\qquad v_t=x_1-x_0$$
   {{< mermaid >}}
   flowchart LR
-    subgraph Train[训练]
-      A[真实视频] --> B[视频编码器]
-      B --> C[目标 latent y]
-      C --> D[路径样本 z_t 与速度标签 w_t]
-      D --> E[条件网络回归 v_theta]
-    end
-    subgraph Sample[生成]
-      F[噪声 latent] --> G[条件网络预测速度]
-      G --> H[ODE 求解]
-      H --> I[生成视频 latent]
-      I --> J[视频解码器]
-      J --> K[视频帧]
-    end
+    A[视频 latent 与噪声] --> B[按时间插值并计算速度标签]
+    B --> C[带文本条件的网络训练]
+    D[噪声 latent] --> E[网络预测速度并求解 ODE]
+    E --> F[生成视频 latent]
+    F --> G[视频解码]
   {{< /mermaid >}}
-  <p class="cap">图 7：视频潜变量上的 Flow Matching 数据流。训练路径中的 $t$ 是生成时间；网络状态的时间维度对应视频帧序列。依据 Wan 报告的线性插值与速度回归目标，以及 Lipman 等人的一般训练框架整理。#Wan-Team-2025# #Lipman-et-al.-2023#</p>
-  <div class="callout"><strong>读到这里，请能回答：</strong>速度标签如何从路径导出？为什么多个可能端点要按后验平均？CFM 如何避开直接计算边际场？推理时如何从噪声积分到数据？FM 速度与扩散 v-target 有何不同？</div>
+  <p class="cap">图 7：视频 latent 上的训练与推理概念流程。按 Wan 报告的线性插值及 Lipman 的 FM 框架整理。#Wan-Team-2025# #Lipman-et-al.-2023#</p>
+  <h3 class="section-title">仍需面对的问题</h3>
+  <ul>
+    <li><strong>有限步误差：</strong>轨迹不保证笔直，网络误差与积分误差都会影响质量；Heun 等高阶方法也有额外 NFE。</li>
+    <li><strong>路径与权重需要选择：</strong>不同路径、时间采样与损失参数化会改变学习难度，不存在普遍最优配置。</li>
+    <li><strong>Reflow 有成本：</strong>它要依赖旧模型产生端点并再次训练，也可能继承旧模型的分布偏差。</li>
+    <li><strong>速度不等于控制能力：</strong>CFM 的端点条件用于构造训练标签，不等于文本条件、参考图控制或视频时间一致性问题已经解决。</li>
+    <li><strong>条件 OT 不代表全局 OT：</strong>局部路径直线与运输代价下降，都不能单独证明整体生成场达到全局最优传输。</li>
+  </ul>
+  <div class="callout"><strong>读完应记住：</strong>Flow Matching 不是单独一种预测头，而是“概率路径 + 条件速度监督 + 整体场学习 + ODE 求解”的生成方法框架；Rectified Flow 则深入研究端点配对和 reflow 怎样影响轨迹与少步采样。</div>
 </div>
 
 <div class="chapter-nav">
-  <a class="nav-card nav-prev" href="ddim-fast-sampling.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">DDIM：从反向扩散到快速采样</span></a>
+  <a class="nav-card nav-prev" href="ddim-fast-sampling.html"><span class="nav-arrow">←</span><span class="nav-label">上一篇</span><span class="nav-title">视频生成系列（三）：DDIM</span></a>
   <a class="nav-card nav-hub" href="/categories/ai/video-generation/"><span class="nav-label">系列目录</span><span class="nav-title">视频生成系列</span></a>
-  <a class="nav-card nav-next" href="conditional-image-diffusion.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">条件扩散：从 CFG 到潜空间图像生成</span></a>
+  <a class="nav-card nav-next" href="edm-design-space.html"><span class="nav-arrow">→</span><span class="nav-label">下一篇</span><span class="nav-title">视频生成系列（五）：EDM</span></a>
 </div>
 
 <div class="sources">
   <h3>参考来源</h3>
   <ul>
     <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A. and Abbeel, P. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a>.</li>
-    <li data-cite-key="Song-et-al.-2021">Song, J., Meng, C. and Ermon, S. (2021). <em>Denoising Diffusion Implicit Models</em>. ICLR 2021. <a href="https://arxiv.org/abs/2010.02502" target="_blank">arXiv:2010.02502</a>.</li>
-    <li data-cite-key="Lipman-et-al.-2023">Lipman, Y. et al. (2023). <em>Flow Matching for Generative Modeling</em>. ICLR 2023. <a href="https://arxiv.org/abs/2210.02747" target="_blank">arXiv:2210.02747</a>.</li>
-    <li data-cite-key="Liu-et-al.-2023-Rectified-Flow">Liu, X., Gong, C. and Liu, Q. (2023). <em>Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</em>. ICLR 2023. <a href="https://arxiv.org/abs/2209.03003" target="_blank">arXiv:2209.03003</a>.</li>
+    <li data-cite-key="Song-et-al.-2021">Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S. and Poole, B. (2021). <em>Score-Based Generative Modeling through Stochastic Differential Equations</em>. ICLR 2021. <a href="https://arxiv.org/abs/2011.13456" target="_blank">arXiv:2011.13456</a>.</li>
+    <li data-cite-key="Song-et-al.-2020-DDIM">Song, J., Meng, C. and Ermon, S. (2020). <em>Denoising Diffusion Implicit Models</em>. ICLR 2021. <a href="https://arxiv.org/abs/2010.02502" target="_blank">arXiv:2010.02502</a>.</li>
+    <li data-cite-key="Lipman-et-al.-2023">Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M. and Le, M. (2023). <em>Flow Matching for Generative Modeling</em>. ICLR 2023. <a href="https://arxiv.org/abs/2210.02747" target="_blank">arXiv:2210.02747</a>.</li>
+    <li data-cite-key="Liu-et-al.-2023-RF">Liu, X., Gong, C. and Liu, Q. (2023). <em>Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</em>. ICLR 2023. <a href="https://arxiv.org/abs/2209.03003" target="_blank">arXiv:2209.03003</a>.</li>
     <li data-cite-key="Salimans-Ho-2022">Salimans, T. and Ho, J. (2022). <em>Progressive Distillation for Fast Sampling of Diffusion Models</em>. <a href="https://arxiv.org/abs/2202.00512" target="_blank">arXiv:2202.00512</a>.</li>
     <li data-cite-key="Wan-Team-2025">Wan Team (2025). <em>Wan: Open and Advanced Large-Scale Video Generative Models</em>. <a href="https://arxiv.org/abs/2503.20314" target="_blank">arXiv:2503.20314</a>.</li>
   </ul>

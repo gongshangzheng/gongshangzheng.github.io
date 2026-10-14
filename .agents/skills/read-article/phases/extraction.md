@@ -25,6 +25,10 @@ mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,images/${SLUG},figures/
 
 ## 1.3 素材获取流程
 
+### 原文整理触发门禁（必须先于阅读与写作）
+
+当用户要求“参考某篇论文原文”或等价表达（如阅读/核对/下载/总结/比较论文，或把论文用于回答问题、更新笔记、草稿、OpenSpec），立即按 `read-article` 执行 Phase 1。对 arXiv 论文，第一项实质操作必须运行 `fetch-arxiv-paper.py`；不得先手动下载或只凭已有 PDF 开始阅读。运行前检查 `raw/<slug>/` 是否已有内容，必要时为该论文选专属 slug，避免覆盖已有的 topic-level raw 目录。只有脚本失败后，才能按下方 source → HTML → PDF 降级，并将失败原因与回退来源写入 extraction log。
+
 默认由主 agent 执行。仅当素材规模确实超出单次上下文处理能力时，才把下面的块作为任务描述
 委派给一个执行型 subagent；委派时其输出只能写入 `raw/<slug>/`，不得改其他目录。
 

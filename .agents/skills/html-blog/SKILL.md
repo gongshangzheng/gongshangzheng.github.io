@@ -32,6 +32,10 @@ documentation: |
 
 > **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
 
+> **前置 · OpenSpec 与草稿门禁**：写入或实质改写 `src/pages/*.html` 前，必须已有对应 OpenSpec change；若其 `design.md` 包含文章大纲，必须确认大纲依据用户先前撰写的实质草稿并已获用户确认。没有草稿时，拒绝生成或补列该大纲，也不得直接写正文。共享规则见 `blog-rules/references/openspec-gate.md`。
+
+> **草稿持续参考**：Design 必须链接每篇的原始草稿；写正文前读取完整草稿，每章按对应草稿落实解释、例子、推导和图示，完成后同时对照草稿与 Design 审校。已确认大纲不能替代草稿。执行细则见共享规则的「草稿贯穿规划、写作与审校」。
+
 > **入门与实操教程**：撰写或重构工具使用教程时，读取 [`references/tutorial-writing.md`](references/tutorial-writing.md)。它规定读者路径、标题层级、事实核验、配图和规划同步；新建页面仍使用普通文章模板，更新已有文章则直接修改原页面。
 
 ---

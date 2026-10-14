@@ -45,6 +45,8 @@ metadata:
 
 > 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
 
+列入 `design.md` 的文章大纲必须先以用户写好的 `drafts/` 实质草稿为输入；若无草稿，拒绝代列大纲并请用户先写。正文仍须等 OpenSpec change 已存在且大纲获用户确认。
+
 `full` 模式产出已发布文章，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**以编年分节骨架给出（每节：写什么 + 史料来源 + 必备时间线/地图/图表），经用户确认后才进入写作。
 
 豁免：`oral` 模式（只在对话内讲述、不发布）不建 change；豁免时说明理由。

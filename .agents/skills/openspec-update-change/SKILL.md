@@ -12,9 +12,13 @@ metadata:
 
 Revise a change's existing planning artifacts and keep them coherent. Never edit code.
 
+**Draft traceability**: Each article in Design must link to its actual source draft, state its review status, and identify corresponding draft sections in the outline's sources. Read that draft before revising the outline; preserve its substantive explanations, examples, and derivations. Design organizes the draft and does not replace it as a writing source. Follow `blog-rules/references/openspec-gate.md` →「草稿贯穿规划、写作与审校」.
+
 **Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `openspec status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 **Input**: Optionally specify a change name. If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
+
+**Content article gate**: When revising a content change's article outline in `design.md`, verify a substantive user-authored draft already exists under `drafts/`. Without it, firmly refuse to create or revise the outline; ask the user to write their draft first and do not create a substitute. Ordinary software design changes are unaffected. Follow `blog-rules/references/openspec-gate.md`.
 
 `/openspec-continue-change` is an expanded-profile workflow and may not be installed. Before suggesting it anywhere below, verify that it is available. If it is unavailable, `openspec status --change "<name>" --json` shows the next artifact and `openspec instructions "<artifact-id>" --change "<name>" --json` explains how to create it.
 

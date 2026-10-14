@@ -57,6 +57,8 @@ tags: [book, pdf, epub, translation, chinese, html-blog, review, series, hub]
 
 > 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
 
+若 `design.md` 将列文章章节大纲，先要求用户在 `drafts/` 提供实质草稿；没有时拒绝代列大纲或代写替代草稿。完成 OpenSpec change 并获用户确认后才写 HTML 正文。
+
 两种模式都产出已发布 HTML，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**中，`full` 模式逐篇给章节清单与每章内容要点（一篇对应原书一章/一类），`extract` 模式给单篇分节骨架，经用户确认后才进入写作。
 
 豁免：小修（错字、错链、字段）与用户显式跳过；豁免时在回复中说明理由。

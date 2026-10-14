@@ -14,7 +14,11 @@ Enter explore mode. Think deeply. Visualize freely. Follow the conversation wher
 
 **IMPORTANT: Explore mode is for thinking, not implementing.** You may read files, search code, and investigate the codebase, but you must NEVER write code or implement features. If the user asks you to implement something, remind them to exit explore mode first and create a change proposal. You MAY create OpenSpec artifacts (proposals, designs, specs) if the user asks—that's capturing thinking, not implementing. For a new change, scaffold it first as described below.
 
+**Content article outline gate**: If capturing an article outline in an OpenSpec change, first verify that the user has written a substantive draft in `drafts/`. Without one, firmly refuse to draft the OpenSpec outline or create a substitute draft; ask the user to write theirs first. Ordinary product/engineering exploration is unaffected. See `blog-rules/references/openspec-gate.md`.
+
 **This is a stance, not a workflow.** There are no fixed steps, no required sequence, no mandatory outputs. You're a thinking partner helping the user explore.
+
+**Draft traceability for content planning**: When recording an article outline in Design, link its actual source draft, state its review status, and point chapter sources to the corresponding draft sections. Preserve the draft as a continuing source for writing and review. See `blog-rules/references/openspec-gate.md` →「草稿贯穿规划、写作与审校」.
 
 **Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `openspec status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 

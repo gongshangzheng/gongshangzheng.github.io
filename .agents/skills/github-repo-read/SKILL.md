@@ -48,6 +48,8 @@ metadata:
 
 `blog` / `blog-multi` 模式产出已发布 HTML，MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 artifact；`design.md` 的**「文章内容大纲」**给出分节骨架（每节：讲什么 + 源码/文档依据 + 必备时序图/代码片段/Mermaid 图），`blog-multi` 逐篇分列，经用户确认后才进入写作。
 
+创建该文章大纲前，必须先有用户本人在 `drafts/` 写下的实质草稿；缺少时拒绝代列大纲或代写替代草稿。素材调研可继续，但正文须等 OpenSpec change 存在且大纲获用户确认。
+
 豁免：只读分析（不产 HTML）模式、小修；豁免时在回复中说明理由。
 
 ## 执行规则

@@ -81,23 +81,27 @@ function collectPosts() {
     if (fm.excluded) continue;
 
     const aliases = parseListField(fm.aliases);
-    // Derive categoryPath from aliases: "categories/AI/动作识别/宠物动作识别" → ["AI", "动作识别", "宠物动作识别"]
+    // Derive all categoryPaths from aliases; /index aliases identify hub pages, not memberships.
     // Also support legacy categories/subcategory/subsubcategory fields during migration
-    let categoryPath = [];
-    const catAlias = aliases.find(a => typeof a === 'string' && a.startsWith('categories/') && !a.replace(/^\/+|\/+$/g, '').endsWith('/index'));
-    if (catAlias) {
-      categoryPath = catAlias.replace(/^\/+|\/+$/g, '').slice('categories/'.length).split('/').filter(Boolean);
-    } else {
+    let categoryPaths = aliases
+      .filter(a => typeof a === 'string')
+      .map(a => a.replace(/^\/+|\/+$/g, ''))
+      .filter(a => a.startsWith('categories/') && a !== 'categories/index' && !a.endsWith('/index'))
+      .map(a => a.slice('categories/'.length).split('/').filter(Boolean));
+    categoryPaths = categoryPaths.filter((p, i, all) => all.findIndex(other => JSON.stringify(other) === JSON.stringify(p)) === i);
+    if (!categoryPaths.length) {
       // Legacy fallback: derive from categories/subcategory/subsubcategory fields
       const cats = parseListField(fm.categories);
       const sub = String(fm.subcategory || '').trim();
       const subsub = String(fm.subsubcategory || '').trim();
       if (cats.length) {
-        categoryPath = [cats[0]];
+        const categoryPath = [cats[0]];
         if (sub) categoryPath.push(sub);
         if (subsub) categoryPath.push(subsub);
+        categoryPaths = [categoryPath];
       }
     }
+    const categoryPath = categoryPaths[0] || [];
 
     rawRecords.push({
       file,
@@ -106,6 +110,7 @@ function collectPosts() {
       description: fm.description || '',
       tags: parseListField(fm.tags),
       categoryPath,
+      categoryPaths,
       // Derived for backward compat with code that still reads .categories / .subcategory
       categories: categoryPath.length ? [categoryPath[0]] : [],
       subcategory: categoryPath.length > 1 ? categoryPath[1] : '',
@@ -209,6 +214,7 @@ function postsFingerprint(allPosts) {
     description: p.description,
     tags: p.tags,
     categoryPath: p.categoryPath,
+    categoryPaths: p.categoryPaths,
     aliases: p.aliases,
     pin: p.pin === true,
     created_at: p.created_at,

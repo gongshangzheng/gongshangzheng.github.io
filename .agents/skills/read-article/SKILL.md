@@ -7,7 +7,10 @@ description: |
   被 academic-research 调用时：core-survey / must-read-paper 用 full 模式，
   route-representative / context-only 用 collect 模式（只产素材）。
   为草稿调研时用 draft 模式（核心信息+核心图片落草稿，不产 HTML）。
-  触发词：读这篇论文、帮我看看这篇、总结这篇、read this paper、深读、解读、精读、存到草稿。
+  强制触发：用户要求参考、阅读、核对、下载、总结或比较某篇论文的原文/原始论文时，
+  即使最终任务是回答问题、补充草稿、更新笔记或 OpenSpec，也先启动本 skill 的 Phase 1 原文整理。
+  触发词：原文、原始论文、论文原文、参考这篇论文、按论文原文、读这篇论文、帮我看看这篇、总结这篇、
+  read the original paper、refer to the paper、read this paper、深读、解读、精读、存到草稿。
 metadata:
   default-enabled: true
   replaces: [capture-and-summarize, article-research]
@@ -25,6 +28,14 @@ metadata:
 # Read Article — 单篇论文深度阅读
 
 将**单篇论文/文章**彻底读透：先弄明白作者要解决什么问题、为什么重要、现有方法差在哪里；再提取全文 → 按需深读 → synthesis 索引 → 在 OpenSpec change 的 `design.md` 中规划文章 → 用户确认 → 教学式 HTML 撰写 → 统一审校 → 发布维护。
+
+## 强制触发：先整理原文，再执行主任务
+
+只要用户要求依据某篇具体论文的**原文**做工作，就必须调用本 skill。这里的“依据原文”包括：参考、阅读、核对、下载、讲解、引用、比较论文，或把论文内容补进笔记/草稿/OpenSpec。不要因为用户把主任务表述为“写草稿”“回答一个问题”或“更新设计”，就跳过论文整理流程。
+
+对于 arXiv 论文，Phase 1 的第一项实质操作必须运行 `fetch-arxiv-paper.py`；先读摘要、网页或先前下载的 PDF 都不能替代这一步。脚本成功后再阅读和写作。若脚本失败，记录失败原因，再按 `phases/extraction.md` 的降级顺序继续；不得静默绕过脚本。若已有资料目录，选用不会覆盖现有文件的论文专属 slug，或者先检查并确认脚本的覆盖范围，再运行。
+
+该门禁同样适用于 `draft` 与 `collect` 模式。模式决定 Phase 1 后写入哪里、是否继续分析，不改变“先运行原文提取脚本”的要求。若来源不是 arXiv，按 extraction 阶段相应的网页/PDF 流程执行并记录来源状态。
 
 > **核心理念**：每一次运行都充分榨取信息。不设文字量上限，宁可详尽不可遗漏。阅读顺序从问题出发：先建立“问题—动机—缺口”理解，再拆方法与实验。
 > **最终交付**：HTML 深度解读长文 + 博客发布链接 + 可选邮件通知。
@@ -56,6 +67,8 @@ metadata:
 **`collect` 不出 HTML**：若上游需要可构建的 HTML 参考页（如 academic-research 的 `core-survey-reference`），应改用 `full` 模式，走上游已批准 change 的审批路径；不得在 collect 模式下写入 `src/pages/`。
 
 `full` 模式在完成 Phase 1–3 的素材与分析后，于 Phase 4 直接创建文章 change；文章写作规划在该 change 的 `design.md` 中完成并由用户审阅。不得另建规划文件。
+
+**草稿先行门禁**：Phase 4 的「文章内容大纲」必须以用户已写好的实质草稿为输入。先检索并读取 `drafts/`；没有用户草稿时，不得创建或更新文章大纲，也不得自行补写一份草稿。明确请用户先把自己的初步内容写入 `drafts/<slug>.org` / `.md`。素材收集、论文阅读和答疑可继续，但须停在生成大纲之前。草稿可不完整，不能只是空白模板、标题清单或原文摘录。正文写入 `src/pages/` 仍须等待已有 OpenSpec change 的大纲经用户确认。共享规则见 `blog-rules/references/openspec-gate.md`。
 
 ---
 
@@ -97,7 +110,7 @@ Phase 3 · synthesis 导航索引 ── raw/<slug>/synthesis.md（轻量索引�
   ├─ [collect] ── 到此结束
   │
   ▼
-Phase 4 · 创建 change 并规划文章 [full] ── design.md「文章内容大纲」即审批对象
+Phase 4 · 用户草稿就绪后创建/更新 change 并规划文章 [full] ── design.md「文章内容大纲」即审批对象
   │
   ▼
 Phase 5 · 主 agent 写 HTML [full]
@@ -138,12 +151,14 @@ Phase 7 · 发布 + Hub + 交叉回链 [full]
    SLUG="<slug>"
    mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,figures/${SLUG},images/${SLUG},analysis}
    ```
-3. **arXiv 读取优先级**：source tarball（`https://arxiv.org/e-print/<id>`）→ arXiv HTML → PDF（Docling + `pdftotext -layout`）。
-   一键脚本：`~/gongshangzheng.github.io/.agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>`（下载 → 解压 → 图片 → WebP → extraction-log；同时创建 `analysis/`）。
+3. **arXiv 读取优先级与强制脚本**：source tarball（`https://arxiv.org/e-print/<id>`）→ arXiv HTML → PDF（Docling + `pdftotext -layout`）。只要用户要求参考某篇 arXiv 论文原文，必须先运行：
+   `~/.venv/bin/python3 .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <paper-slug> --html --pdf`
+   脚本下载 source、解压、提取正文与图片、转换 WebP 并生成 extraction log。确认脚本产物后再开始原文阅读；不得用手动下载或已有 PDF 代替脚本。脚本失败才按 `phases/extraction.md` 降级，并把失败与替代来源写入 log。
 4. **图片优先级**：用户截图 > arXiv source 原图 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图（`scripts/crop-figures-from-docling.py`）> 代码绘制 > 网络搜图。**AI 生图完全禁止**；Docling 自家 144 DPI referenced 渲染图禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 5. **必须写** `extraction-log.md`：记录每次来源尝试的成功/失败与回源指针。
 6. **必须写** `meta.md`：标题、作者、机构、摘要、发表时间、分类、代码仓库链接、素材索引表。
-7. **校验**：Markdown 非空、图片目录非空且非 Docling 来源、关键图片宽度 ≥ 1200 px、无 `*_artifacts` / `temp-docling-images/` 残留。
+7. **核验脚本产物**：不能只看脚本退出码或“提取完成”。确认 source tar、解压源码、Markdown、要求的 HTML/PDF、原图与 WebP 数量；检查转换器 stderr 和遗漏文件。当前转换器遇到单张超大图可能中止后续转换，而 fetch 脚本仍可能继续并返回成功；必须把这种部分失败写进 extraction log，再对失败图单独重试或记录原因。
+8. **校验**：Markdown 非空、图片目录非空且非 Docling 来源、关键图片宽度 ≥ 1200 px、无 `*_artifacts` / `temp-docling-images/` 残留。脚本不会可靠生成完整 `meta.md` 时，需根据原文与权威元数据补齐，不能把脚本日志当成 meta 文件。
 
 **`draft` 模式在此分叉**：提取完成后，主 agent 直读摘要 + 方法 + 实验（必要时读引言/消融/附录），填充草稿小节，拷 1–3 张核心图到 `drafts/assets/<草稿slug>/`，汇报后结束。详见下方「draft 模式 · 草稿调研路线」。
 
@@ -209,6 +224,8 @@ Slug：<slug>
 
 ## Phase 4 · 创建 OpenSpec change 并规划文章 [full only]
 
+进入本阶段前，必须确认 `drafts/` 中存在与本篇主题相关的用户实质草稿。没有时，依共享门禁明确拒绝代列 OpenSpec 大纲，停在这里等待用户草稿；不可把 raw 素材、analysis 或助手整理的章节标题当作替代品。
+
 主 agent 执行。在素材与分析完成后，文章规划**直接写入 change**，不创建独立规划草稿文件。
 
 **前置阅读**：按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/pre-generation-search.md` 做库内检索；读取 `phases/article-structure.md`、`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md` 与 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/`。
@@ -233,12 +250,14 @@ Slug：<slug>
 
 **由主 agent 直接撰写完整 HTML**，不再默认拆分术语、问题定义、方法、实验、代码、图片、总结等写作 subagent。
 
-写作数据源（按优先级）：
+写作依据（按职责同时使用）：
 
-1. OpenSpec change 中已确认的「文章内容大纲」
-2. 原文 `raw/<slug>/sources/`
-3. `raw/<slug>/analysis/` 已启用的 lane（事实存储层）
-4. `raw/<slug>/synthesis.md`（仅导航，不用作内容输入）
+1. OpenSpec change 中已确认的 Design：结构、范围、图表计划与取舍。
+2. Design 链接的完整原始草稿及对应小节：用户的思考、解释、例子、数学推导与教学顺序；每章写作都要对照，不能仅凭大纲重新自由写作。
+3. 原文 `raw/<slug>/sources/`：事实及公式的最终核验依据；发现草稿错误时核查并说明。
+4. `raw/<slug>/analysis/` 已启用的 lane：事实存储层；`raw/<slug>/synthesis.md` 仅作导航。
+
+开始写作和完成审校时都核对草稿覆盖，遵守 `blog-rules/references/openspec-gate.md` 的「草稿贯穿规划、写作与审校」。
 
 
 标准 **7-Part 结构**继续作为推荐骨架，字数下限和质量底线见 `references/article-structure-template.md`；允许根据论文实际内容合并或调整章节，调整必须在 change 中记录并获确认。
@@ -395,7 +414,7 @@ HTML 完成后，主 agent 对同一份文章按三个维度**连续审校**：
 12. `#key#` 引用标记同步配置底部 `.sources li` 的 `data-cite-key` 属性。
 13. 数学符号使用 MathJax：`\(...\)` 行内 / `\[...\]` 块级。
 14. **collect 模式下 survey 深读充分展开**：如果输入是 survey/review，collect 产物至少包括研究范围、taxonomy、任务输入/输出、metrics、datasets、代表方法表、关键结论、局限性、5-10 条可引用 claim。
-15. **扁平数据流**：analysis lane 是事实存储层，synthesis 是导航索引，Phase 5 直接从 analysis + 原文 + 已确认大纲写 HTML，三类产物各司其职。
+15. **写作依据**：analysis lane 是事实存储层，synthesis 是导航索引，Phase 5 同时依据原始草稿 + 原文 + 已确认 Design 写 HTML；草稿中的解释和推导不能被大纲替代。
 16. **规划只存在于 change**：写作规划及确认决策必须记录在 change 的 `design.md`，不得另建规划草稿文件。
 17. **draft 模式轻量路线**：只走 Phase 1 提取 + 主 agent 直读论文，填充草稿小节五类信息 + 1-3 张核心图到 `drafts/assets/<草稿slug>/`；不派 lane、不创建发布文章 change、不写 HTML、不 Review。
 

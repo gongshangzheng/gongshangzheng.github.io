@@ -12,7 +12,11 @@ metadata:
 
 Propose a new change - create the change and generate all artifacts in one step.
 
+**Draft traceability**: For each content article, Design must include a clickable relative link to its actual source draft, its review status, and the corresponding draft sections used by each chapter. The outline organizes the draft; the draft remains a required source during writing and review. Follow `blog-rules/references/openspec-gate.md` →「草稿贯穿规划、写作与审校」.
+
 **Planning boundary**: This workflow creates planning artifacts only. The user request that selected or triggered this workflow authorizes planning only, even if it asks to build or fix something. Do not edit project code. After the planning artifacts are complete, stop. Do not start implementation in the same response, even if the initial request asks for it. Wait for a new user request after the artifacts are presented; then start the apply workflow.
+
+**Content article gate**: If this proposal is for writing or substantially revising blog article content and its `design.md` would contain an article outline, first verify that the user has already written a substantive source draft in `drafts/`. If not, firmly refuse to create the article outline and ask the user to write the draft first; do not generate a substitute draft or outline. This gate does not apply to ordinary software changes whose design is not an article outline. Follow `blog-rules/references/openspec-gate.md` for the full policy.
 
 I'll create a change with the artifacts your schema defines. With the default spec-driven schema that is:
 - proposal.md (what & why)

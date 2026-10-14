@@ -48,6 +48,8 @@ metadata:
 
 > 规范、豁免细则与模板位置：`~/gongshangzheng.github.io/.agents/skills/blog-rules/references/openspec-gate.md`
 
+凡 `design.md` 要写文章大纲，先确认用户已在 `drafts/` 写好实质草稿；没有时不得生成 OpenSpec 大纲或代写草稿，明确请用户先写。仅素材收集且不产文章大纲的 `collect` 等豁免线路照常执行。正文仍须等 OpenSpec change 存在且大纲获确认。
+
 产 HTML（`survey-full`、`deep-read-only` 的公开参考页、`revision` 的内容级增补）MUST 先建 change，按 `~/gongshangzheng.github.io/.agents/skills/blog-rules/templates/content-change/` 填 `proposal.md` / `design.md` / `tasks.md`；`design.md` 的**「文章内容大纲」**（逐篇分节骨架 + 素材来源 + 必备表·公式·图）经用户确认后才进入写作，**未确认不得写 `src/pages/`**。
 
 豁免：`paper-pool` / `spine-only` 等不产 HTML 的阶段、纯检索与 `read-article` 的 `collect` 线路（只产素材）、小修；豁免时在回复中说明理由。

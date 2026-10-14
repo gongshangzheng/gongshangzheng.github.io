@@ -1,0 +1,253 @@
+#+TITLE: 扩散模型入门——从加噪直觉到 DDPM
+#+SLUG: diffusion-model-basics
+#+TYPE: survey-chapter
+#+STATUS: idea
+#+PROGRESS: 0
+#+TARGET_ALIAS: categories/AI/视频生成
+#+TARGET_SUB_ID: 10
+#+PIN: false
+#+SOURCE_URL: 
+#+TAGS: [生成模型, 视频生成]
+#+CREATED_AT: 2026-10-14T10:37:30
+#+UPDATED_AT: 2026-10-14T11:24:19
+#+PUBLISHED_AT: 
+#+PUBLISHED_FILE: 
+#+TARGET_HUB: video-generation-hub
+
+* 扩散模型入门——从加噪直觉到 DDPM
+
+** 数学直觉：为什么先破坏数据
+
+*** 图像虽高维，却集中在狭窄结构附近
+
+一张 \(512\times512\) 的 RGB 图像可以看作有 \(512\cdot512\cdot3\) 个数的向量。流形假设（Manifold Hypothesis）认为，高维数据虽然形式上位于 \(d\) 维空间 \(\mathbb{R}^d\) 中，但实际上集中在一个维数远小于 \(d\) 的流形 \(M\) 上或其附近。形式化地说，存在低维流形 \(M\subset\mathbb{R}^d\)，使实际观测到的数据点 \(x\in\mathbb{R}^d\) 位于 \(M\) 上，或与 \(M\) 的距离很小。对图像而言，这表示自然图像受物体形状、光照、材质和场景布局等规律约束，不会均匀填满整个像素空间。这里的“流形”是帮助理解数据结构的近似说法，不意味着所有图像都严格落在同一个已知维数的光滑曲面上。
+流形假设的通俗说明与 MNIST 示例可参见 [[https://inuyashayang.github.io/AIDIY/Mathematical_Foundation/Manifold/Manifold_hypothesis/][AIDIY Wiki：流形假设]]。
+
+流形还可以用“沿着它连续移动”来想象：如果两个点在同一个连通的流形区域里，通常可以沿着流形上的一条连续路径从一个点走到另一个点。路径上的状态仍留在这片数据结构附近。注意，这条路径一般是弯曲的；直接在像素空间里把两个图像做直线插值，中间结果未必仍然像一张真实图像。流形整体也不一定只有一个连通部分，所以不能断言任意两张自然图像之间都存在一条始终合理的路径。
+
+以 MNIST 为例，每张 \(28\times28\) 的灰度图像是 \(\mathbb{R}^{784}\) 中的一个点。把一类书写合理的数字 2 看作数据空间中的一片低维区域：一个 2 可以逐渐变粗、倾斜或改变大小，连续地变成另一个 2。我们可以把这段变化记作路径 \(\gamma(t)\)，其中 \(t\in[0,1]\)，起点 \(\gamma(0)\) 是第一种写法，终点 \(\gamma(1)\) 是另一种写法，沿途的图像仍是合理的数字 2。这个例子用于建立“高维像素点背后有更低维、连续变化的结构”的直觉；它不是对 MNIST 真实流形维数或连通性的严格证明。
+
+如果生成模型只把数据看作一张没有厚度的低维曲面，并直接要求模型分布与真实数据分布重合，训练可能遇到困难。想象二维平面里的两条互不相交的曲线：它们各自面积为零，彼此之间却有距离。若把真实分布记作 \(P\)、模型分布记作 \(Q\)，当 \(P\) 在某处有概率而 \(Q\) 在该处概率为零时，\(D_{\mathrm{KL}}(P\|Q)\) 可以是无穷大；在支撑集不相交时，常见散度也可能无法告诉模型“该往哪边移动”。早期 GAN 的训练分析展示了这类支撑集错位可能造成的梯度问题。
+
+这不是说 KL 散度总是不能训练：结论取决于散度方向、分布是否重叠以及模型如何参数化。DDPM 后面仍会出现 KL 项。这里的要点是，直接对准彼此相距很远、又很薄的分布来学习，可能让优化缺少平滑、可用的方向信号。
+
+[[file:../../media/images/diffusion-model-basics/ddpm-manifold-interpolation.webp]]
+
+图：Ho、Jain 与 Abbeel 展示的图像插值结果。图中的 image manifold 是直觉示意，不能据此断言所有自然图像都严格位于同一个低维流形上。
+
+*** 墨水扩散：用连续扰动把分布变得平滑
+
+可以借一滴墨水滴进水中后的扩散来建立直觉：墨水分子随机运动，从局部浓度高的区域逐渐向周围扩散，墨滴便由集中变得弥散。扩散模型把这种“由集中到分散”的变化抽象成一条概率路径：从自然图像分布出发，逐步加入随机扰动，让各时刻的数据分布逐渐变宽、变平滑，最终接近容易采样的噪声分布。这里得到的不是一条固定轨迹，而是一族随时间变化的概率分布，以及连接它们的随机转移。
+
+这条概率路径的意义，是把难以直接刻画的、集中在低维结构附近的数据分布，先平滑地扩展到整个空间，再学习怎样沿反方向回到数据分布。仍以墨水为比喻：正向扩散让墨水总体上从高浓度区域散向低浓度区域；若把过程反过来，就要让随机运动在统计上偏向高浓度区域，逐步回到墨滴原先那样集中的分布。它不是把每个墨水分子沿原路送回，也不是保证恢复某一滴墨水的唯一原始位置。
+
+澳大利亚控制理论学者 Brian D. O. Anderson 于 1982 年证明，在适当条件下，扩散过程的时间反演仍可写成扩散过程，其漂移项会加入由概率密度 score 决定的修正。这个修正为反向演化提供朝向高概率区域的统计方向。DDPM 并不模拟真实的水分子运动，而是用离散高斯转移构造前向概率路径，再学习反向转移。
+
+*** 二维螺旋：逐渐加噪会发生什么
+
+先把一条二维螺旋曲线当作玩具数据。曲线上的点代表数据样本；给每个点逐渐加入更强的高斯扰动后，点云从贴着螺旋的窄带，逐渐变成模糊、弥散的云团。这个例子把高维图像上的过程缩小到纸面上：噪声让数据分布变得更宽、更平滑，也让不同局部结构之间的空隙逐渐被填上。
+
+[[file:../../media/images/diffusion-model-basics/spiral-noising.webp]]
+
+图：二维螺旋点云在逐渐增大的高斯扰动下由清晰轨迹变成弥散点云。该图是合成数据上的加噪示意；面板中的噪声尺度用于说明过程，不对应特定 DDPM 日程。
+
+这个过程也解释了扩散训练为什么有明确的监督信号：每次扰动都是我们自己抽取的，所以加入的噪声是已知的。模型可以学习在不同噪声程度下如何反向移动。下一节用 DDPM 的离散公式把这一直觉具体化。
+
+* DDPM 的核心数学公式
+
+** 符号与前向加噪
+
+令 \(x_0\) 表示来自数据集的干净图像，\(x_t\) 表示第 \(t\) 步的带噪图像。DDPM 预先设定噪声日程 \(\beta_1,\ldots,\beta_T\)，其中 \(0<\beta_t<1\)，并定义
+
+\[
+\alpha_t=1-\beta_t,\qquad \bar\alpha_t=\prod_{s=1}^{t}\alpha_s.
+\]
+
+前向过程是一个固定的高斯马尔可夫链，每一步只依赖前一步：
+
+\[
+q(x_t\mid x_{t-1})=\mathcal{N}\!\left(x_t;\sqrt{\alpha_t}\,x_{t-1},\beta_t I\right).
+\]
+
+把这条链累积到第 \(t\) 步，可以得到从 \(x_0\) 直接采样 \(x_t\) 的边缘分布：
+
+\[
+q(x_t\mid x_0)=\mathcal{N}\!\left(x_t;\sqrt{\bar\alpha_t}\,x_0,(1-\bar\alpha_t)I\right),
+\qquad
+x_t=\sqrt{\bar\alpha_t}\,x_0+\sqrt{1-\bar\alpha_t}\,\epsilon,\quad \epsilon\sim\mathcal{N}(0,I).
+\]
+
+因此训练时可以随机抽取 \(t\) 和已知噪声 \(\epsilon\)，一次构造出 \(x_t\)，不必真的从 \(x_0\) 逐步加噪到 \(x_t\)。当 \(t\) 增大、\(\bar\alpha_t\) 减小时，原图信号逐渐减弱，噪声逐渐占主导。
+
+** 训练目标：预测已知噪声
+
+由前向边缘公式可将干净图像写成
+
+\[
+x_0=\frac{x_t-\sqrt{1-\bar\alpha_t}\,\epsilon}{\sqrt{\bar\alpha_t}}.
+\]
+
+** 从变分 KL 到噪声均方误差
+
+DDPM 把带噪状态 \(x_1,\ldots,x_T\) 当作潜变量，通过变分下界优化数据的负对数似然。负对数似然的上界可拆成终点先验项、逐步反向转移项和最后一步解码项：
+
+\[
+L_{\mathrm{VLB}}=\mathbb{E}_q\!\left[
+\underbrace{D_{\mathrm{KL}}\!\left(q(x_T\mid x_0)\|p(x_T)\right)}_{L_T}
++\sum_{t=2}^{T}\underbrace{D_{\mathrm{KL}}\!\left(q(x_{t-1}\mid x_t,x_0)\|p_\theta(x_{t-1}\mid x_t)\right)}_{L_{t-1}}+
+\underbrace{-\log p_\theta(x_0\mid x_1)}_{L_0}
+\right].
+\]
+
+关键在中间每一步的 KL：前向过程给出一个可计算的后验，模型则学习近似它的反向高斯转移。前向后验为
+
+\[
+q(x_{t-1}\mid x_t,x_0)=\mathcal{N}\!\left(x_{t-1};\tilde\mu_t,\tilde\beta_t I\right),
+\]
+
+前向后验的均值和方差为：
+
+\[
+\tilde\mu_t=\frac{\sqrt{\bar\alpha_{t-1}}\,\beta_t}{1-\bar\alpha_t}x_0+
+\frac{\sqrt{\alpha_t}(1-\bar\alpha_{t-1})}{1-\bar\alpha_t}x_t,
+\qquad
+\tilde\beta_t=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\beta_t.
+\]
+
+
+KL 散度的一般定义是：若样本来自分布 \(q\)，就对数密度比 \(\log\frac{q(x)}{p(x)}\) 在 \(q\) 下取平均：
+
+\[
+D_{\mathrm{KL}}(q\|p)=\mathbb{E}_{x\sim q}\left[\log\frac{q(x)}{p(x)}\right].
+\]
+
+它不对称，比较的是“用 \(p\) 近似 \(q\)”的代价。这里两个分布都是高斯：前向后验的均值、方差分别是 \(\tilde\mu_t,\tilde\beta_t I\)，反向模型的均值、方差分别是 \(\mu_\theta,\sigma_t^2 I\)。若 \(x\sim q=\mathcal{N}(\tilde\mu_t,\tilde\beta_t I)\)，则
+
+\[
+\mathbb{E}_q[\|x-\tilde\mu_t\|_2^2]=d\tilde\beta_t,\qquad
+\mathbb{E}_q[\|x-\mu_\theta\|_2^2]=d\tilde\beta_t+\|\tilde\mu_t-\mu_\theta\|_2^2.
+\]
+
+把这两个期望代入高斯密度的对数比，并对维数为 \(d\) 的各向同性高斯求平均，就得到
+
+\[
+D_{\mathrm{KL}}\!\left(\mathcal{N}(\tilde\mu_t,\tilde\beta_t I)\|\mathcal{N}(\mu_\theta,\sigma_t^2 I)\right)
+=\frac{1}{2}\left[
+\frac{d\tilde\beta_t}{\sigma_t^2}
++\frac{\|\tilde\mu_t-\mu_\theta\|_2^2}{\sigma_t^2}
+-d+d\log\frac{\sigma_t^2}{\tilde\beta_t}
+\right].
+\]
+
+
+若 \(\sigma_t^2\) 固定，上一式中除均值平方误差外的项都不依赖模型参数 \(\theta\)，可合并记作常数 \(C\)。因此该步 KL 对训练的贡献为
+
+\[
+L_{t-1}=\mathbb{E}_q\!\left[\frac{1}{2\sigma_t^2}\|\tilde\mu_t-\mu_\theta(x_t,t)\|_2^2\right]+C.
+\]
+
+现在利用前向重参数化关系（带噪样本由干净样本与已知高斯噪声按时间步系数组合而成），把真实干净样本消去，可将后验均值改写为：
+
+\[
+\tilde\mu_t=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon\right).
+\]
+
+于是用网络预测噪声来参数化反向均值：
+
+\[
+\mu_\theta(x_t,t)=\frac{1}{\sqrt{\alpha_t}}\left(x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon_\theta(x_t,t)\right).
+\]
+
+两种均值相减后，\(x_t\) 项抵消，剩下真实噪声与预测噪声之差：
+
+\[
+\tilde\mu_t-\mu_\theta=
+\frac{\beta_t}{\sqrt{\alpha_t}\sqrt{1-\bar\alpha_t}}\left(\epsilon_\theta(x_t,t)-\epsilon\right).
+\]
+
+代回高斯 KL，就得到带时间步权重的噪声回归损失：
+
+\[
+L_{t-1}=\mathbb{E}_{x_0,\epsilon}\!\left[
+\underbrace{\frac{\beta_t^2}{2\sigma_t^2\alpha_t(1-\bar\alpha_t)}}_{w_t}
+\left\|\epsilon-\epsilon_\theta\!\left(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon,t\right)\right\|_2^2
+\right]+C.
+\]
+
+所以噪声均方误差不是凭空选出的：它来自反向高斯分布与前向后验之间的 KL。原论文随后采用更简单的 \(L_{\mathrm{simple}}\)，把各时间步的权重 \(w_t\) 去掉，并均匀抽取时间步训练。它与 KL 推导出的变分目标相关，但并不等于完整变分下界；特别是 \(L_T\) 在固定前向日程时与网络无关，而 \(L_0\) 是单独的解码似然项。
+
+训练一个带时间步条件的网络 \(\epsilon_\theta(x_t,t)\) 来预测构造 \(x_t\) 时加入的噪声。DDPM 常用的简化目标为
+
+\[
+L_{\mathrm{simple}}=\mathbb{E}_{x_0,\epsilon,t}\!\left[
+\left\|\epsilon-\epsilon_\theta\!\left(\sqrt{\bar\alpha_t}x_0+\sqrt{1-\bar\alpha_t}\epsilon,t\right)\right\|_2^2
+\right],
+\]
+
+其中，干净样本从数据分布中抽取，噪声从标准高斯分布中抽取；时间步在 1 到 T 之间均匀抽取。这里监督标签是训练时实际抽取的噪声。这个简化均方误差与变分目标有推导联系，但不等于把完整变分下界原样照抄。
+
+** 训练演示图
+
+#+CAPTION: 噪声预测与干净图像估计的演示。网络根据带噪图像与时间预测噪声，按信号/噪声系数换算出干净图像估计；图中还展示了文本条件输入。用户提供的演示图，非 DDPM 原论文图。
+[[file:../assets/diffusion-model-basics/noise-prediction-training-demo.webp]]
+
+图右侧标作 x_0，实际应理解为预测的干净图像 hat x_0；训练仍使用预测噪声与实际加入噪声的 MSE。文本 “A cat” 属于条件扩散输入，原始无条件 DDPM 不使用它。
+
+** 生成阶段演示图
+
+#+CAPTION: DDPM 生成阶段的单步示意。网络预测当前噪声，按反向系数计算中心，再加入方差为 sigma_t^2 I 的随机项得到 x_{t-1}。取自用户提供的演示图；图中 “A cat” 文本条件属于条件扩散示例，原始无条件 DDPM 不使用该输入。
+[[file:../assets/diffusion-model-basics/reverse-sampling-step-demo.webp]]
+
+图中展示一步反向转移。采样时把 x_{t-1} 作为下一轮输入，重复预测与更新。新抽取的 z 不是将本轮移除的预测噪声原样加回去。
+
+** 采样与反向采样
+
+“采样”（sampling）就是按照一个概率分布随机抽取一个值。例如从标准高斯分布抽出一个噪声张量，或者从给定的条件高斯分布中抽出下一状态。训练时，我们从前向分布抽取噪声来构造带噪样本；生成时，则从模型定义的分布中抽样，得到新样本。
+
+扩散模型的“反向采样”是按时间倒序运行学到的反向马尔可夫链：先从噪声先验抽取 \(x_T\)，再在每个时间步根据当前状态 \(x_t\)，从 \(p_\theta(x_{t-1}\mid x_t)\) 抽取下一状态，直到得到 \(x_0\)。叫“反向”是因为时间指标从 \(T\) 递减到 0，近似抵消前向加噪造成的分布变化；它不是把训练时那份噪声原样减掉，也不保证还原某张特定训练图像。
+
+前面已经从前向链推导出真实 \(x_0\) 已知时的后验。生成时没有真实 \(x_0\)，因此用噪声预测器参数化反向均值：
+
+\[
+\mu_\theta(x_t,t)=\frac{1}{\sqrt{\alpha_t}}\left(
+x_t-\frac{\beta_t}{\sqrt{1-\bar\alpha_t}}\epsilon_\theta(x_t,t)
+\right).
+\]
+
+反向转移写作 \(p_\theta(x_{t-1}\mid x_t)=\mathcal{N}(x_{t-1};\mu_\theta(x_t,t),\sigma_t^2 I)\)。实际采样从 \(x_T\sim\mathcal{N}(0,I)\) 开始，逐步令 \(t=T,T-1,\ldots,1\)：
+
+\[
+x_{t-1}=\mu_\theta(x_t,t)+\sigma_t z,\qquad z\sim\mathcal{N}(0,I)\quad(t>1),
+\]
+
+最后一步不注入随机噪声。\(\sigma_t^2\) 可依论文设为 \(\beta_t\) 或 \(\tilde\beta_t\)。这就是 DDPM 的基本生成链：网络预测噪声并给出反向转移的均值，采样器再按该转移逐步生成较干净的状态。
+
+
+[[file:../../media/images/diffusion-model-basics/ddpm-training-sampling-algorithms.webp]]
+
+图 6：DDPM 原论文的训练与采样伪代码。Algorithm 1 展示如何抽取时间步和噪声、计算噪声预测损失；Algorithm 2 展示如何从高斯噪声开始，逐步采样反向转移得到图像。取自 Ho、Jain 与 Abbeel（2020）原论文 Algorithm 1–2。
+
+[[file:../../media/images/diffusion-model-basics/ddpm-progressive-generation.webp]]
+
+图 7：CIFAR-10 无条件样本的渐进生成。每行是一条采样轨迹，逐列展示反向过程中的干净图像估计；整体形状逐步显现，细节随后补全。取自 Ho、Jain 与 Abbeel（2020）原论文 Figure 6。
+
+
+** DDPM 的局限与后续路线
+
+原始 DDPM 展示了扩散模型如何从噪声逐步生成图像，但它的基本形式仍有几个实际限制。首先，本文介绍的是无条件 DDPM：模型学习训练图像的整体分布，采样时没有文字提示等额外输入，因此用户不能直接指定要生成的内容。扩散模型可以通过把类别、文字或其他信息作为条件来扩展；条件扩散与 classifier-free guidance 将在后续章节介绍。
+
+其次，原始 DDPM 的反向采样要从时间步 T 依次运行到时间步 1，每一步都要调用网络。论文示例采用 T=1000，而这些调用必须按顺序执行，因此生成速度较慢。原始链描述的是相邻时间步的转移，直接删掉中间步骤并不等于按原模型完成了同一条链；要可靠地减少步数，需要重新构造或选择适合跨步的采样方法。DDIM 将在后续章节推导如何沿较稀疏的时间步序列采样；EDM 章节则比较不同采样器及其数值求解方式。
+
+这些局限并不表示扩散模型只能无条件、逐步生成。后续的 Score/连续时间章节会解释反向过程的概率结构；条件扩散章节讨论怎样控制生成内容；DDIM 与 EDM 讨论如何更高效地采样；Flow Matching 则提供另一种构造概率路径与训练向量场的思路，并连接到视频生成。这样，DDPM 是理解后续方法的起点，而不是整个扩散模型家族的全部能力。
+
+* 参考文献
+
+- Sohl-Dickstein, J., Weiss, E., Maheswaranathan, N., & Ganguli, S. (2015). *Deep Unsupervised Learning using Nonequilibrium Thermodynamics*. ICML 2015. https://arxiv.org/abs/1503.03585
+- Anderson, B. D. O. (1982). *Reverse-Time Diffusion Equation Models*. Stochastic Processes and their Applications, 12(3), 313–326. https://doi.org/10.1016/0304-4149(82)90051-5
+- Ho, J., Jain, A., & Abbeel, P. (2020). *Denoising Diffusion Probabilistic Models*. NeurIPS 2020. https://arxiv.org/abs/2006.11239
+- Goodfellow, I. et al. (2014). *Generative Adversarial Nets*. NeurIPS 2014. https://arxiv.org/abs/1406.2661
+- Arjovsky, M., Chintala, S., & Bottou, L. (2017). *Wasserstein GAN*. ICML 2017. https://arxiv.org/abs/1701.07875
+- AIDIY Wiki. “流形假设 Manifold Hypothesis”, sections “数据的连续性” and “MNIST 数据集中的流形结构”. https://inuyashayang.github.io/AIDIY/Mathematical_Foundation/Manifold/Manifold_hypothesis/
+- Australian National University. “Brian D. O. Anderson” (official profile). https://users.cecs.anu.edu.au/~briandoa/
+- Stephen Welch / Welch Labs. “But how do AI images and videos actually work? (Diffusion models, CLIP, and the math of turning text into images)”. Guest video published by 3Blue1Brown, 2025. https://www.3blue1brown.com/lessons/diffusion-models/
+- 浙大猫学长. “Vibe 知识大赏｜AI 到底怎么画出一张图？”. 抖音精选视频（用户提供）. https://v.douyin.com/vYP9fbuu79I/

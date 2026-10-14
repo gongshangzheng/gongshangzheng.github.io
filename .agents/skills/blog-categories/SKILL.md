@@ -28,7 +28,7 @@ tags: [blog, taxonomy, categories, aliases, alias-path]
 
 ## 核心设计
 
-- **alias 路径即分类**：`aliases: ["categories/AI/动作识别/宠物动作识别"]` 决定文章在分类树中的位置
+- **alias 路径即分类**：每个非 `/index` 的 `categories/` alias 都是一条分类路径；文章可以同时属于多个分类，构建器会把它加入每条路径对应的分类页
 - **hub 页覆盖**：`aliases: ["categories/AI/动作识别/index"]` 替换该层级的索引页
 - **翻译注册表**：`data/category-names.json` 存储中文名→英文 slug 映射，无翻译时回退拼音
 - **显示用中文，URL 用英文/pinyin**
@@ -45,7 +45,7 @@ tags: [blog, taxonomy, categories, aliases, alias-path]
 
 ### 普通文章
 
-在 `aliases` 中添加 `categories/` 前缀的路径：
+在 `aliases` 中添加一个或多个 `categories/` 前缀的路径：
 
 ```yaml
 ---
@@ -54,6 +54,12 @@ aliases: ["categories/AI/动作识别/动作识别论文精读"]
 sub_id: 10
 tags: [VideoMAE, 自监督, 视频理解]
 ---
+```
+
+需要将同一篇文章放入多个分类时，列出多条路径：
+
+```yaml
+aliases: ["categories/AI/扩散模型", "categories/AI/视频生成"]
 ```
 
 路径段数决定层级深度：
@@ -215,8 +221,8 @@ sub_id: 0
 | 顶层分类 | 子分类 | 覆盖范围 |
 |---------|--------|----------|
 | **AI** | `视觉分词器` | 视觉 Tokenizer、离散分词器、1D Tokenizer、TiTok/DiTok 等 |
-| | `扩散模型` | 扩散模型、Flow Matching、Controllable Generation |
-| | `视频生成` | 视频合成与编辑、视频扩散、文本/图像到视频及流式生成 |
+| | `扩散模型` | 扩散模型、Controllable Generation |
+| | `视频生成` | 视频合成与编辑、视频扩散、Flow Matching、文本/图像到视频及流式生成 |
 | | `视觉模型` | 目标检测、视频理解、姿态估计、YOLO/DETR 等 |
 | | `动作识别` | 动作识别、行为识别、视频分类、Skeleton-Based、时空动作检测 |
 | | `动作识别/动作识别论文精读` | 动作识别单篇论文深度解读 |
