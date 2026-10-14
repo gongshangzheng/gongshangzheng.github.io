@@ -1,5 +1,8 @@
 ## Context
 
+**当前设计状态（2026-10-14）**：`drafts/video-generation/diffusion-model-basics.org` 已形成实质草稿，用户认可当前结构。本轮将首篇设计对齐该草稿：先讲流形与概率路径的直觉，再推导 DDPM 前向链、从变分 KL 到噪声预测损失、反向采样，并以局限章节连接后续方法。整体系列顺序的进一步调整仍按 proposal 中既有计划处理；本次只确认首篇结构，不据此推断尚未澄清的其他章节编号。
+
+用户强调正文引用必须位于文末参考来源；首篇保留已插入笔记的原论文图 4（Algorithms 1–2）和图 5（Figure 6），并列入用户给出的 AIDIY Wiki、抖音视频和 3Blue1Brown 客座视频。
 见 `proposal.md`。旧的 `drafts/video-generation.org` 已按用户要求删除，不再作为素材来源。系列规划为 10 篇正文和 1 个 Hub：首篇由扩散直觉进入 DDPM，第二篇讲 Score、DSM 与连续时间扩散，第三篇独立讲 EDM 的设计空间，随后讲 DDIM、Flow Matching、条件图像生成，再进入视频任务、架构、数据评测与长视频生成。
 
 主要素材入口：
@@ -35,10 +38,13 @@
 
 ## Writing Skills and Templates
 
+- **草稿持续参考**：各篇元数据中的「原始草稿」是正文写作与审校的持续依据。写作前完整读取，逐章核对其中的解释、例子、中间推导、图示和引用；Design 决定结构与范围，原论文核验事实。第二篇正在逐章共写，当前旧章节骨架尚未按新草稿修订；后续重写前须同步并确认 Design。
+
 - **正文页面**：使用库内 `html-blog` skill 作为生成和发布 HTML page 的唯一入口；调用 `capture.js <slug>`，以 `templates/article-template.html` 创建骨架。
 - **Hub 页面**：调用 `capture.js <slug> --hub`，以 `templates/hub-template.html` 创建骨架；保留模板的列表/卡片/图谱结构，不另造模板。
 - **语法与引用**：按需读取 `blog-syntax` skill 的 MathJax、引用、图片和组件规范；事实性内容用 `#key#` 引用，`.sources` 每项包含对应 `data-cite-key`。
 - **分类与系列**：使用 `blog-categories` 和 `blog-aliases` skills 核验 `categories/AI/视频生成`、Hub alias、sub_id、分类 alias 和前后篇导航；正文通过 `aliases` 中的 `categories/` 路径归类，不添加已废弃的 `hub` frontmatter 字段；按 `blog-rules` 执行内容型 change 审批门禁。
+- **多分类语义**：每条不以 `/index` 结尾的 `categories/` alias 都代表一条分类归属；构建器必须将文章加入所有对应分类页、搜索/图谱索引和按分类筛选结果。`categoryPath` 保留为首条路径供旧消费者兼容，完整列表使用 `categoryPaths`。文章元信息展示各条路径，Hub alias 继续只用于覆盖索引页。
 - **规划文档模板**：本 change 的提案、设计和任务分别遵循 `.agents/skills/blog-rules/templates/content-change/proposal.md`、`design.md`、`tasks.md`；本轮合并后的 Flow Matching 大纲、配图与系列顺序是新的审批对象；用户确认后再重写 Flow Matching 正文和调整新增编号/导航。EDM/DDIM 既有实施授权与完成记录仍有效。
 - **论文分析与正文边界**：EDM 按 `read-article` 的方法完成 raw 分析和 synthesis 定位；分析文件供作者回源，公开文章只引用 Karras et al. 原论文及其他一手来源，不提内部 Org 笔记。Flow Matching 同样采用原论文回源分析与 synthesis 方法。成文采用系列教学结构，不强套论文精读的 7-Part 格式。
 - **不适用项**：本系列不是课程笔记，不套用 `course-notes` 的课件模板。
@@ -71,6 +77,7 @@
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [video-generation-hub.org](../../../drafts/video-generation/video-generation-hub.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | Hub；aliases `视频生成系列`、`categories/AI/视频生成/index` 与 `categories/AI/视频生成`；sub_id `0` |
 | 服务对象 | 读者能按 DDPM、Score/DSM/SDE、EDM 设计空间、采样、Flow Matching、图像条件、视频架构、评测和长视频问题选择阅读路径。 |
 
@@ -89,108 +96,130 @@
 **关键数据点**：文章篇数与编号来自本设计；不在 Hub 中作未核验性能比较。
 **配图计划**：1 张自绘系列路线图；按 Hub 模板使用可排序列表、主题卡片和文章图谱。
 
-### `diffusion-model-basics`｜视频生成系列（1）：扩散模型入门——从加噪直觉到 DDPM
+### `diffusion-model-basics`｜视频生成系列（一）：扩散模型入门——从加噪直觉到 DDPM
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [diffusion-model-basics.org](../../../drafts/video-generation/diffusion-model-basics.org)；用户已认可结构；写作对照数学直觉、核心公式、采样与局限等小节 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `10`；Hub `video-generation-hub` |
-| 服务对象 | 尚未系统学习扩散的读者能从生成分布直觉出发，推导 DDPM 的训练目标并解释反向采样。 |
+| 服务对象 | 读者能理解为何对数据施加随机扰动、DDPM 如何训练噪声预测器，以及怎样从噪声反向采样生成图像。 |
 
 **章节骨架**
 
-#### 1 从生成分布到扩散直觉
-- **写什么**：用数据分布、样本、训练与采样建立生成模型框架；以流形假设作直觉性解释：高维图像空间中的自然图像可能集中在低维结构附近，但“维数只有几十到上百”只能作为示意，不能写成普适事实。说明真实数据分布与模型分布集中在错开的低维支撑集时，首次出现即解释 KL 散度（Kullback–Leibler divergence）和 JS 散度（Jensen–Shannon divergence）的全称、方向性/有界性及其公式；仅在明确的支撑集与 GAN 目标假设下说明 KL 发散、JS 饱和及梯度缺乏有效方向，不泛化为“KL 梯度几乎处处为零”。再解释布朗运动/墨滴扩散的物理直觉：单个分子作随机运动，宏观净通量从高浓度流向低浓度；DDPM 借用逐步抹去结构的启发，但不是模拟像素中的真实分子。用高斯卷积说明加噪怎样平滑薄支撑分布，并以二维玩具分布和 Ho et al. 的 Figure 8 插值图建立直觉；图中的 image manifold 是解释性概念，不是严格流形证明。
-- **素材来源**：`~/org/roam/notes/ai-ml/Diffusion Model.org`；`~/org/roam/notes/ai-ml/对扩散模型的理解.org`；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` Figures 2、6、8；`raw/diffusion-model-basics/sources/sohl-dickstein-2015-nonequilibrium-thermodynamics.pdf`；`raw/diffusion-model-basics/sources/goodfellow-2014-generative-adversarial-nets.pdf`；`raw/diffusion-model-basics/sources/arjovsky-2017-wasserstein-gan.pdf`；`raw/score-sde-continuous-diffusion/sources/vincent-2011-neural-computation-dsm.pdf`。
-- **必备元素**：符号表、训练与采样对照、噪声尺度示意；“流形假设 → 支撑集错位 → 散度/梯度问题 → 加噪平滑”的概念图；墨滴物理扩散与图像高斯扰动的类比边界。明确这是一种理解动机的简化图景：不可笼统声称 KL 在绝大多数地方梯度恒为零，也不可把 GAN 的训练困难全归因于流形错位；解释原始 GAN 理论中 JS 饱和与生成器梯度失效所依赖的条件。避免把物理直觉或通用高斯扰动误当成完整 DDPM 定义。
+#### 1 数学直觉
+- **写什么**：先定义流形假设：数据形式上处于 `R^d`，实际集中在低维流形 `M` 上或其近邻；用 MNIST 的 784 维像素点和同一连通区域内数字 2 的连续形变解释流形路径。明确当真实分布在某处有概率而模型分布在该处概率为零时，`D_KL(P||Q)` 可发散；解释直接分布匹配可能缺少有效梯度，但不泛化为“KL 总不可训练”。紧接着用墨滴扩散说明前向过程构造的是逐时刻变化的概率分布，反向过程在统计上从低密度区域走向高密度区域。介绍 Anderson 1982 的时间反演结论，并明确并非逐粒子倒放。最后用二维螺旋点云展示加噪后分布逐渐变宽、平滑。
+- **素材来源**：`drafts/video-generation/diffusion-model-basics.org`；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` Figure 8；`raw/score-sde-continuous-diffusion/sources/anderson-1982-reverse-time-diffusion-models.pdf`；`raw/diffusion-model-basics/sources/goodfellow-2014-generative-adversarial-nets.pdf` 与 `arjovsky-2017-wasserstein-gan.pdf`；用户提供的 AIDIY Wiki（流形假设/MNIST）；用户提供的抖音视频 `https://v.douyin.com/vYP9fbuu79I/`；3Blue1Brown 页面所列 Welch Labs 客座视频 `https://www.3blue1brown.com/lessons/diffusion-models/`。
+- **必备元素**：`x∈R^d`、`M⊂R^d` 与距离近似的解释；MNIST 数字 2 的路径 `γ(t)` 及“像素直线插值未必合理”的边界；KL 的定义和支撑集错位直觉；概率路径与单条随机轨迹的区别；物理扩散只作类比。正文图像含 `media/images/diffusion-model-basics/ddpm-manifold-interpolation.webp`（Ho et al. Figure 8）和 `media/images/diffusion-model-basics/spiral-noising.webp`（合成示意，不冒充原论文图）。引用集中于文末参考来源。
 
-#### 2 前向马尔可夫链与任意时刻闭式
-- **写什么**：定义 `β_t`、`α_t`、`ᾱ_t`，从 `q(x_t|x_{t-1})` 推导 `q(x_t|x_0)`，解释直接采样任意时间步的意义。
-- **素材来源**：`raw/ddpm-training-sampling/sources/` 中的 Ho et al. 原论文；`~/org/roam/articles/Denoising Diffusion Probablistic Models.org`。
-- **必备元素**：完整符号表、闭式公式和中间推导；明确 `T=1000` 是原论文配置示例而非普适常数。
+#### 2 前向加噪
+- **写什么**：定义 `β_t`、`α_t`、`ᾱ_t`；从一步高斯马尔可夫转移推导任意时刻边缘分布和重参数化式，解释为何训练时可直接采样指定时间步。
+- **素材来源**：`raw/ddpm-training-sampling/source-tar/main.tex` §3，Eqs. (1)–(4)；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §3。
+- **必备公式**：`q(x_t|x_{t-1})`、`q(x_t|x_0)`、`x_t=√ᾱ_t x_0+√(1−ᾱ_t)ε`；说明 `T=1000` 和线性噪声日程是 Ho et al. 的实验设置，不是通用常数。
 
-#### 3 后验、噪声预测与训练目标
-- **写什么**：推导 `q(x_{t-1}|x_t,x_0)`，解释前向过程由我们采样、所以实际加入的噪声 `ε` 已知，可以直接作为监督标签；网络预测该噪声并参数化反向均值，再说明 ELBO 项如何关联到噪声预测 MSE。以原论文 Algorithm 1 为依据写出训练伪代码，并指出噪声预测是常见参数化之一，不是扩散模型唯一训练目标。
-- **素材来源**：`raw/ddpm-training-sampling/source-tar/main.tex` §3、`alg:training` 与附录；`~/org/roam/articles/Denoising Diffusion Probablistic Models.org`；`~/org/roam/notes/ai-ml/Diffusion Model.org`。
-- **必备元素**：真实后验/模型反向分布对照；标明所加噪声是已知监督标签；理论加权目标与常用简化目标区别；忠实改写训练算法 1；参数化范围限定在 DDPM 本文所述内容。
+#### 3 从 KL 到噪声损失
+- **写什么**：写出变分目标中终点先验、逐步反向 KL、解码似然三类项；先求 `q(x_{t-1}|x_t,x_0)` 的高斯后验，再从 KL 的期望对数密度比推导各向同性高斯闭式。固定反向方差后，只保留依赖模型均值的平方误差；代入噪声预测参数化，推得带时间权重的噪声 MSE；最后解释原论文为何去掉权重并采用 `L_simple`，并说明简化目标不是完整 ELBO。
+- **素材来源**：`raw/ddpm-training-sampling/source-tar/main.tex` §3 Eqs. (5)–(14)，尤其 Eqs. (8)、(10)–(14)；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §3；草稿中的逐步推导。
+- **必备公式**：`D_KL(q||p)=E_q[log(q/p)]`；同方差各向同性高斯的 KL 均值平方项与方差项；`L_{t-1}` 的权重 `β_t²/[2σ_t²α_t(1−ᾱ_t)]`；`L_simple`。说明常数项为何与 `θ` 无关，并区分加权变分目标、`L_0` 解码项和简化训练目标。
 
-#### 4 反向采样与随机性
-- **写什么**：解释 DDPM 的反向链是学习到的概率转移，不是墨水自发聚拢或逐点倒放同一条前向噪声轨迹；从 `x_T ~ N(0,I)` 开始逐步估计反向分布并采样 `x_{t-1}`。可用“从稀疏区域回到高密度区域”作直觉，但把 score 称为随位置和时间变化的向量场，不定义成物理力。以原论文 Algorithm 2 写采样伪代码，并借 Figure 6 说明大尺度结构先出现、细节随后补齐。连续时间的反向 SDE 及 score 漂移修正留到正文 2 展开。
-- **素材来源**：`raw/ddpm-training-sampling/source-tar/main.tex` §3、`alg:sampling`、`fig:cropped_cifar10_progressive_samples`；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` Figures 2、6；`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §§3.2–3.3。
-- **必备元素**：单步更新式、忠实改写采样算法 2、Figure 6 逐步生成示例；说明原论文报告的两种固定反向方差选择 `σ_t²=β_t` 与 `σ_t²=\tildeβ_t`；区分单步条件均值和完整生成轨迹；说明反向链逐步恢复的是数据分布结构，不承诺找回训练时那张唯一原图。
+#### 4 采样与反向采样
+- **写什么**：先解释 sampling 是从概率分布随机抽取状态；再解释 DDPM 从 `x_T~N(0,I)` 开始，按模型的 `p_θ(x_{t-1}|x_t)` 逐时刻反向抽样直到 `x_0`。列出反向均值、方差与更新式，说明末步不注入随机噪声；反向采样不是减掉训练时原噪声、还原指定训练图像或逐步反转同一轨迹。
+- **素材来源**：`raw/ddpm-training-sampling/source-tar/main.tex` §3 `alg:training` / `alg:sampling` 与 Figure 6；PDF Algorithm 1–2 和 Figure 6。
+- **必备元素及配图**：在采样更新公式及说明之后保留**图 4：DDPM 训练与采样伪代码**（`media/images/diffusion-model-basics/ddpm-training-sampling-algorithms.webp`；只呈现原论文 Algorithm 1–2）和**图 5：CIFAR-10 无条件样本的渐进生成**（`media/images/diffusion-model-basics/ddpm-progressive-generation.webp`；原论文 Figure 6）；正文分别解释已知噪声如何作训练标签、从高斯噪声如何逐步抽样，以及图中展示的是 `x̂_0` 估计而非训练图像复原。图注注明 Ho、Jain 与 Abbeel（2020）和原文编号。
 
-#### 5 Score 直觉与连续扩散预告
-- **写什么**：用对数密度梯度解释 score，并指出它与噪声预测存在依赖噪声尺度的参数化联系；承接前文说明在加噪后的平滑分布上估计局部去噪方向，为后续 DSM/score matching 提供直觉，但不在本篇推导 DSM、Tweedie 或 SDE。
-- **素材来源**：`raw/score-sde-continuous-diffusion/sources/vincent-2011-neural-computation-dsm.pdf` §4.2；`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §§1、3；`~/org/roam/articles/EDM.org`；`~/org/roam/notes/ai-ml/对扩散模型的理解.org`。
-- **必备元素**：score 向量示意；用一个简短条件期望直觉说明固定带噪点可能对应多种干净样本，score 汇总各候选样本给出的局部去噪方向；完整 DSM 恒等式留给下一篇；明确 score 是局部对数密度梯度向量场，不是物理力，也不保证总是指向某个全局模态。
+#### 5 DDPM 的局限与后续路线
+- **写什么**：指出本篇介绍的原始形式是无条件模型，不能直接指定文字内容；指出其反向链按相邻时间步串行调用网络，原论文示例 `T=1000`，延迟较高。说明原链直接删步并非同一采样过程，跨步需专门构造；不要说扩散模型家族不能条件控制或永远不能跳步。
+- **素材来源**：`raw/ddpm-training-sampling/source-tar/main.tex` §3、§4；DDIM、EDM 与条件扩散各自对应的原论文及本 change 后续文章设计。
+- **必备元素**：指向 DDIM 的稀疏时间步采样、条件扩散/CFG 的内容控制、EDM 的采样器设计，以及 Score/SDE 和 Flow Matching 的概率路径视角；说明这些后续篇章分别处理不同问题，不把 Flow Matching 简化成 DDPM 的“换成预测速度”。
 
-#### 6 小结：从离散 DDPM 到连续时间扩散
-- **写什么**：回顾数据分布、前向链、噪声预测与反向采样；指出 DDPM 用离散时间组织噪声尺度，并引出下一篇的连续时间 score/DSM/SDE 视角。本节不提前展开视频任务。
-- **素材来源**：Ho et al. DDPM 原论文；Song et al. SDE 原论文。
-- **必备元素**：核心概念速查、离散与连续视角的衔接问题、下一篇阅读导航。
-
-**关键数据点**：原论文步数、噪声日程与实验数字严格按原文口径引用；不把 `T=1000` 写成默认标准。
-**配图计划**：使用 DDPM 原论文 Figure 2 的概率链图、Figure 6 的 CIFAR-10 逐步生成图和 Figure 8 的扩散潜变量插值/image manifold 图；保留自绘的支撑集错位、螺旋加噪和 score 向量场作为解释性补充。图中注明流形为启发式模型，不能暗示所有图像严格位于同一低维流形；原图注明论文图号与来源，正文不写文件转换等制作过程。
-
-### `score-sde-continuous-diffusion`｜视频生成系列（2）：Score、DSM 与连续时间扩散
+**关键数据点**：明确 `T=1000`、`β_1=10^{-4}` 至 `β_T=0.02` 是 Ho et al. 论文设置；反向固定方差两种选择为 `σ_t²=β_t` 与 `σ_t²=β̃_t`。所有数据随原文口径注明。
+**配图计划**：保留 Ho et al. Figure 8 流形插值图、作者合成二维螺旋加噪图、原论文 Algorithm 1–2 图 4 截图、原论文 Figure 6 图 5。图 4 紧随训练损失与反向更新的公式说明，裁切范围限于原文并排的 Algorithm 1/2 伪代码；图 5 紧随渐进生成解释，保留 Figure 6 的完整 CIFAR-10 样本网格；Figure 8 与螺旋图放在数学直觉部分。引用统一列在正文末尾的参考来源中。
+### `score-sde-continuous-diffusion`｜视频生成系列（二）：Score、DSM 与连续时间扩散
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [score-sde-continuous-diffusion.org](../../../drafts/video-generation/score-sde-continuous-diffusion.org)；用户逐章共写，当前确认转为正文；正文与审校继续对照完整草稿。 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `20`；Hub `video-generation-hub` |
-| 服务对象 | 读者能理解去噪训练与 score 的联系，并分辨正向 SDE、反向 SDE、Fokker–Planck 与 PF-ODE。 |
+| 服务对象 | 理解 DDPM 的噪声预测如何联系到 Score，掌握 SDE 如何描述前向路径、Score 如何进入反向 SDE 和概率流 ODE。 |
 
 **章节骨架**
 
-#### 1 Score Matching 与 DSM
-- **写什么**：先依 Hyvärinen 2005 分清 score matching 学的是对数密度梯度（向量场），再依 Pascal Vincent 2011 §4.2 解释 DSM 如何用已知扰动核的条件 score 作监督，并通过条件期望/Fisher identity 联系到扰动后边缘分布的 score。以固定带噪点为例，说明每个潜在干净样本给出一个条件去噪方向，边缘 score 是按后验概率加权的平均方向；这是概率梯度的数学关系，不是物理拉力。交代“DSM 是去噪 score 的训练目标”，不是连续时间扩散本身。
-- **素材来源**：`raw/score-sde-continuous-diffusion/sources/hyvarinen-2005-score-matching.pdf` §§2–3；`raw/score-sde-continuous-diffusion/sources/vincent-2011-neural-computation-dsm.pdf` §§3–4.2（尤其印刷页 1666–1667）；`raw/score-sde-continuous-diffusion/sources/song-2019-score-estimation-ncsn.pdf` §§2.1、4.2（多噪声尺度 NCSN）；`raw/score-sde-continuous-diffusion/sources/lipman-2023-flow-matching.pdf` §§2–3；`~/org/roam/articles/DAPS.org`；`~/org/roam/notes/ai-ml/Flow Matching.org`。
-- **必备元素**：score matching 与 DSM 目标；高斯扰动下 `∇_y log qσ(y|x)=(x-y)/σ²` 及 `∇_y log qσ(y)=E[(x-y)/σ²|y]` 的含义；条件 score 与边缘 score 的关系、各自假设和从噪声预测到 score 的尺度换算；明确 DSM 并非只针对连续时间。
+#### 1 DDPM 留下的问题
+- **写什么**：从 DDPM 的噪声监督出发，提出条件噪声均值为何能给去噪方向、如何从离散时间推广到连续概率路径、反向生成是否必须保留随机项。用此作为全篇问题线。
+- **草稿对应**：`* 从 DDPM 出发：我们还想理解什么`。
+- **素材来源**：`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` Introduction、§2.2；DDPM 定义复用 `raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §3。
+- **配图**：Song et al. (2021) Figure 3 作为概率流 ODE 自适应求解的预告，避免把实验结果说成普遍的步数保证。
 
-#### 2 多噪声尺度：NCSN 与退火 Langevin（Song & Ermon, 2019）
-- **写作目的**：从上一节固定噪声尺度的 DSM 自然过渡到有限个噪声尺度的 score-based 生成模型。不要只给出“多尺度训练、从大到小采样”的结论；先讲清单一尺度的困难，再把网络、损失和采样算法逐个拆开。
-- **动机与直觉**：原始图像分布可能集中在低维结构附近，且不同模态之间的低密度区域会令 score 难估、Langevin 链混合慢。高斯扰动后的每个 `qσ` 在整个环境空间有支撑，并填充部分低密度区域；大 `σ` 的分布更平滑、模态更容易连通，小 `σ` 则更接近原始数据分布。强调噪声尺度改变的是整族扰动分布，不是每个样本到“自然图像流形”的精确距离。
-- **机制顺序**：
-  1. 定义 `qσ(y)=∫ pdata(x) N(y;x,σ²I)dx`，并说明有限噪声层级按 `σ₁>σ₂>…>σL` 几何递减排列。
-  2. 定义共享的噪声条件 score 网络 `sθ(y,σ)`，目标是在每个层级估计 `∇y log qσ(y)`；解释 σ 是网络条件输入，输出与图像同维。说明论文的图像模型采用 U-Net、空洞卷积及对 σ 的条件归一化。
-  3. 从 `y=x+σz`、`z~N(0,I)` 推到条件标签 `∇y log qσ(y|x)=−z/σ`，再写单尺度 DSM 损失 `ℓ(θ;σ)=1/2 E||sθ(x+σz,σ)+z/σ||²`，解释网络预测边缘 score，而训练时用已知扰动核的条件 score 作监督。
-  4. 写出多尺度目标 `L(θ)=1/L Σᵢ λ(σᵢ)ℓ(θ;σᵢ)`；说明论文选 `λ(σ)=σ²` 是为了让各尺度损失量级较平衡，正权重不改变每个尺度各自的理想 score，只影响联合训练时的相对权重。
-  5. 先解释固定 `σᵢ` 时的 Langevin 更新，再写退火算法：外层按大到小遍历 σ，内层在当前尺度重复 `x←x+(αᵢ/2)sθ(x,σᵢ)+√αᵢz`，其中 `z~N(0,I)`、`αᵢ=εσᵢ²/σL²`；完成当前尺度后把样本作为下一尺度初值。逐项解释 score 漂移、随机探索项、步长递减，以及末级小噪声分布近似 `pdata` 的条件。说明它是基于学习 score 的随机采样链，不是对训练损失做梯度下降。
-  6. 插入论文 Algorithm 1 截图并逐行解释初始化、两层循环、步长、随机项和跨尺度传递；插入 Figure 3 时说明它是双峰高斯玩具实验，(a) 是精确采样，(b)(c) 使用真实 score 比较普通 Langevin 与退火 Langevin，目的是隔离考察采样器；不能把它说成 NCSN 网络生成结果，也不能误读成前向扩散/反向扩散示意图。
-  7. 结尾用一段区分 2019 NCSN 的有限噪声层级与 2021 连续时间 SDE 框架；指出二者有关联，但前者不是后者、DSM 也不是 SDE。
-- **素材来源**：Song & Ermon 2019 原文 `raw/score-sde-continuous-diffusion/sources/song-2019-score-estimation-ncsn.pdf` §§3.2.2、4.1–4.3，Eq. (5)–(6)、Algorithm 1、Figure 3；图像生成的参数口径见 §5 与 Appendix B.1–B.2。Algorithm 1 局部截图和 Figure 3 原图见 `media/images/score-sde-continuous-diffusion/`，提取记录见 `raw/score-sde-continuous-diffusion/extraction-log.md`。
-- **关键校验与图注**：统一使用原文的递减记法 `σ₁>…>σL`；不要混淆 Figure 3 玩具实验设置（`σ₁=20, σL=1`、真实 score）与图像实验设置（`L=10, σ₁=1, σL=0.01, T=100, ε=2×10⁻⁵`）。图片只标论文 Figure 3 / Algorithm 1 来源，不写入制作或转换过程。
+#### 2 数学基础
+- **写什么**：统一介绍概率密度、条件分布和边缘化；梯度、散度与拉普拉斯；ODE、Euler；SDE、布朗增量和 Euler–Maruyama；概率守恒与连续性方程；条件期望为何是均方误差的最优预测。
+- **草稿对应**：`* 数学基础` 全章。正文压缩重复解释，但保留 (\sqrt{\Delta t}) 随机尺度、均方误差分解与相应适用条件。
+- **素材来源**：Song et al. (2021) §3.1、Appendix D.1；基本概率与微积分按草稿自洽推导。
+- **必备公式**：(\partial_t p_t=-\nabla\cdot(p_tv))、Itô SDE 离散增量、(a^*(x)=\mathbb E[Y\mid X=x])。
 
-#### 3 Tweedie 公式与去噪估计
-- **写什么**：在明确高斯噪声参数化下推导条件均值估计，说明它不是逐样本精确逆变换。
-- **素材来源**：`~/org/roam/articles/DAPS++:-Rethinking-Diffusion-Inverse-Problems-with-Decoupled-Posterior-Annealing.org`。
-- **必备元素**：假设、推导步骤和参数化系数提示框。
+#### 3 Score 是什么
+- **写什么**：定义 (s_t(x)=\nabla_x\log p_t(x))，解释局部密度上升方向与对数密度的作用；用高斯和混合分布说明方向如何随位置改变；区分条件加噪核 Score 与整体边缘 Score。
+- **草稿对应**：`* 什么是 Score`。
+- **素材来源**：Hyvärinen (2005) §§2–3；Song et al. (2021) §2.2。
+- **配图**：Song et al. Figure 1，说明数据到噪声的前向 SDE与 Score 参与的反向过程。
 
-#### 4 SDE 与 Fokker–Planck 密度演化
-- **写什么**：在公式前先用白话定义 ODE（给定初值后，状态按确定性速度场演化）和 SDE（速度之外还有 Wiener/布朗随机增量，同一初值可产生不同路径）；说明这里的连续时间是噪声分布的索引，不是图像真实经历的物理时间。用表格比较 DDPM 的离散 Markov 链、Song & Ermon 2019 的有限噪声层级 + 退火 Langevin，以及 Song et al. 2021 的连续时间框架：后者把噪声过程写成 `dX_t=f(X_t,t)dt+g(t)dW_t`，学习时间条件 score `sθ(x,t)`，并把 DDPM/SMLD 分别联系到 VP/VE SDE 的离散化。补充连续 DSM 的时间条件目标，解释 SDE 描述样本路径、Fokker–Planck 描述同一过程诱导的密度演化。
-- **VP/VE 必备解释**：用小表给出 VP SDE `dX_t=−½β(t)X_tdt+√β(t)dW_t` 及其条件分布，解释“方差保持”指单位初始协方差下边缘方差保持为单位阵，并对应 DDPM 连续极限；给出 VE SDE `dX_t=√(dσ²(t)/dt)dW_t` 及 `X_t=X_0+σ(t)ε`（按 `σ(0)=0` 记法），解释噪声方差随时间增大并对应 NCSN/SMLD。说明二者是前向 SDE 的不同系数选择，反向时都代入同一通用反向公式。
-- **素材来源**：`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §§1、3.1、3.3–3.4、Appendix B；`raw/score-sde-continuous-diffusion/sources/song-2019-score-estimation-ncsn.pdf` §§4.1–4.3；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §3；`~/org/roam/articles/DAPS.org`。
-- **必备元素**：先讲 ODE/SDE 再给公式；解释连续时间 SDE 相对离散 DDPM/NCSN 增加了什么、保留了什么；用具体 VP/VE 公式建立与旧方法的对应；解释 Fokker–Planck 方程是密度视角而非另一条样本路径。
+#### 4 DSM 怎样学到整体 Score
+- **写什么**：从不可直接计算的边缘 Score matching 目标开始，推导高斯加噪核的已知条件 Score；用边缘化、贝叶斯后验平均与均方误差分解证明 DSM 理想最优解等于带噪边缘 Score。保留对称双来源示例、时间条件 DSM、Tweedie 后验均值估计和噪声/Score/干净样本的尺度关系。
+- **草稿对应**：`* DSM：怎样用已知噪声学到未知 Score`；Tweedie 公式沿用当前正文中的推导段落。
+- **素材来源**：Vincent (2011) §4.2、Appendix A（印刷页 1672）；Song et al. (2021) §3.3 Eq. (7)。
+- **必备公式**：(\nabla_y\log q_\sigma(y\mid x_0)=-\epsilon/\sigma)、边缘后验平均、DSM 与 SM 相差参数无关常数、(\mathbb E[x_0\mid y]=y+\sigma^2\nabla_y\log p_\sigma(y))。
 
-#### 5 反向 SDE 与 Probability Flow ODE
-- **写什么**：从 Anderson 1982 的反向时间扩散结果推出通用 reverse-time SDE；再给出同一前向 SDE 所对应的 probability flow ODE。用一张对照表并列：前向 SDE、反向 SDE（`t:T→0`）、前向 probability flow ODE、反向采样时从 `T` 积分到 `0` 的同一 ODE。逐项标出公式、是否含随机项、从哪个分布走向哪个分布，以及二者匹配的是每个时刻的边缘分布而非单条轨迹。解释反向 SDE 的 score 漂移修正、`d\bar W_t` 和负 `dt`；ODE 只在初始先验抽样时有随机性，之后路径由初值确定。用 VP/VE 的 `f,g` 代入此表，说明它们各自都有反向 SDE 和 probability flow ODE。
-- **素材来源**：`raw/score-sde-continuous-diffusion/sources/anderson-1982-reverse-time-diffusion-models.pdf` §§3–4；`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §§3.1–3.3、4.3。
-- **必备元素**：公式并列、时间方向/正则性条件；明确 score 是向量场，不是物理力；边缘分布相同不表示样本轨迹相同；正面解释连续时间框架相对于离散方法的新增视角及其限制。
+#### 5 多尺度 Score：NCSN 与退火 Langevin
+- **写什么**：说明单一噪声尺度的覆盖困难；介绍共享的噪声条件 Score 网络、多尺度 DSM、单尺度 Langevin 更新和从大噪声到小噪声的退火采样；对照 DDPM 相邻时刻反向转移。
+- **草稿对应**：`* NCSN：从多尺度 Score 到图像生成`。
+- **素材来源**：Song & Ermon (2019) §§3.2.2、4.1–4.3、Eq. (5)–(6)、Algorithm 1、Figure 3。
+- **原论文图**：仅保留 Algorithm 1 的局部截图和双峰高斯实验 Figure 3；明确后者用真实 Score，图像实验的超参数不与玩具实验混用。
 
-- **本篇边界**：SDE 与 PF-ODE 只说满足条件时边缘分布相同，不说单条轨迹相同；去噪器到 score 的等式说明理想总体最优条件；VP/VE 的公式各自注明参数化假设。本篇聚焦 Score、DSM、SDE/ODE 及其采样视角。
+#### 6 Song 的连续时间扩散框架
 
-#### 6 与 Flow Matching、v-prediction 的边界
-- **写什么**：区分 score、扩散 probability-flow vector field、Flow Matching target velocity 和 ε/x/v prediction。
-- **素材来源**：`raw/score-sde-continuous-diffusion/sources/lipman-2023-flow-matching.pdf` §§2–3；`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §4.3；`raw/score-sde-continuous-diffusion/sources/salimans-ho-2022-progressive-distillation.pdf` Appendix D §§26–31；`~/org/roam/notes/ai-ml/Flow Matching.org`。
-- **必备元素**：概念对照表和适用参数化说明，不宣称概念等价。
+四个小节依次展开前向 SDE、反向 SDE、Fokker–Planck 和概率流 ODE；后三者不是独立二级章。
 
-**关键数据点**：公式系数依所选 VP/VE 参数化逐项核验；反向公式固定使用从 `T` 向 `0` 的时间记法；SDE 与 PF-ODE 仅声称边缘分布一致，不声称轨迹一致。
-**配图计划**：概率密度随时间演化图、SDE/PF-ODE 边缘分布对照图、概念关系图；增加 DDPM/NCSN→VP/VE SDE 的对应表及前向/反向方程对照表。
+##### 6.1 前向 SDE
+- **写什么**：定义 (dX_t=f(X_t,t)dt+g(t)dW_t)，说明连续时间扩展的是噪声路径索引与可用求解器，不会自动减少计算量。推导 DDPM 的连续极限 VP SDE 和 NCSN/SMLD 对应的 VE SDE，解释命名与边缘分布；说明连续 DSM 如何在时间上抽样训练。
+- **草稿对应**：`* Song 的连续时间扩散框架`。
+- **素材来源**：Song et al. (2021) §§2.2、3.1、3.3–3.4、Appendix B；Song & Ermon (2019) §§4.1–4.3；Ho et al. (2020) §3。
+- **原论文图**：Figure 2 总览 SDE、反向 SDE 与概率流 ODE；Figure 5 对比离散扰动核和 VE/VP 连续推广。两图均附逐图解释。
 
-**历史定位**：DSM 的核心训练联系见 Vincent（2011），多噪声尺度的 score-based 建模与 annealed Langevin dynamics 见 Song & Ermon（2019）；Anderson（1982）给出一般反向时间扩散过程的理论结果。Song et al.（2021）将 score-based generative modeling 统一到连续时间 SDE 框架，并导出 reverse-time SDE 与 probability flow ODE。因此只把 2021 论文称作“连续时间 score-based 生成模型的统一框架”，不称作 SDE 或反向扩散理论的起源。
+##### 6.2 反向 SDE
+- **写什么**：紧接前向 VP/VE 路径，从 Anderson 反向时间结果写出 (T\to0) 的反向 SDE，解释 Score 修正漂移、负时间步与布朗增量的关系。先回答如何生成，再转向确定性路径的存在性。
+- **草稿对应**：`* 反向 SDE：Score 修正漂移，但过程仍有随机性`。
+- **素材来源**：Anderson (1982) §§3–4；Song et al. (2021) §3.2。
+- **必备元素**：反向 SDE 公式；与前向过程衔接，明确时间反演需要 Anderson 的结果，不依赖先讲 Fokker–Planck。
 
-### `edm-design-space`｜视频生成系列（3）：EDM——重新梳理扩散模型的设计空间
+##### 6.3 Fokker–Planck：从随机轨迹到概率密度
+- **写什么**：由短时布朗增量的均值与协方差推导 Fokker–Planck 方程；用热方程解释密度平滑；把扩散项写入概率流 (J_t=p_tf-\tfrac12g^2\nabla p_t=p_t(f-\tfrac12g^2s_t))，说明其作用是建立密度演化与 Score 的联系，为概率流 ODE 作准备。
+- **草稿对应**：`* Fokker–Planck：随机轨迹怎样改变分布`。
+- **素材来源**：Song et al. (2021) Appendix D.1 Eqs. (35)–(37)。
+- **写作边界**：Fokker–Planck 描述边缘密度演化；单靠密度方程不唯一确定随机轨迹，反向 SDE 另由 Anderson 时间反演结果导出。
+
+##### 6.4 概率流 ODE
+- **动机与用途补充**：先回答反向 SDE 已能生成、为何仍需 PFODE；解释 ODE 求解器、确定性双向编码、模型似然三项用途。推导沿轨迹的对数密度变化与端点积分关系，区分模型密度、真实密度及数值误差；不声称 ODE 必然更快。来源为 Song 2021 §4.3、Appendix D.2。
+- **写什么**：紧接 Fokker–Planck 的概率流表达，以连续性方程与密度演化方程对齐推导前向概率流 ODE，再说明从先验向数据反向积分；使用表格比较前向 SDE、反向 SDE 与 ODE 的随机性、时间方向和边缘分布关系。
+- **草稿对应**：`* 概率流 ODE`。
+- **素材来源**：Song et al. (2021) §4.3、Appendix D.1。
+- **必备图表**：复用 Figure 2；保留当前正文的过程对照表。与反向 SDE 分章，避免在概率流推导中打断主线。
+
+#### 7 与 Flow Matching、v-prediction 的边界
+- **写什么**：区分 Score、probability-flow ODE 的速度、Flow Matching target velocity 和网络的 (\epsilon/x_0/v) 参数化；指出概率路径或向量场视角有关联，但训练目标不因此等同。
+- **素材来源**：Lipman et al. (2023) §§2–3；Song et al. (2021) §4.3；Salimans & Ho (2022) Appendix D Eqs. (26)–(31)。
+- **必备元素**：概念对照表，明确各换算式的参数化假设；末尾回顾和系列前后篇导航。
+
+**关键数据点**：公式系数依 VP/VE 参数化核验；反向公式统一采用 (t:T\to0)；SDE 与概率流 ODE 只在适当条件下匹配各时刻边缘分布，不声称轨迹相同。NCSN 玩具实验与图像实验参数分别标注。
+
+**配图计划**：Song et al. (2021) Figures 1、2、3、5；Song & Ermon (2019) Algorithm 1 局部截图与 Figure 3；一张 Mermaid 图概括“前向路径—DSM 学 Score—反向 SDE/PF-ODE 采样”。所有图片放在解释对应公式的段落旁，图注标论文与编号。
+
+**本篇边界**：覆盖 Score/DSM、退火 Langevin、连续 SDE、Fokker–Planck、反向 SDE 与概率流 ODE 的关系；不展开 DDIM 跳步算法、EDM 参数化和完整 Flow Matching 推导，分别交给系列对应篇章。
+
+**历史定位**：DSM 训练联系见 Vincent (2011)，多噪声尺度与退火 Langevin 见 Song & Ermon (2019)，反向时间扩散理论见 Anderson (1982)；Song et al. (2021) 统一连续时间 Score-based 建模并提出反向 SDE 与概率流 ODE 框架。
+
+### `edm-design-space`｜视频生成系列（三）：EDM——重新梳理扩散模型的设计空间
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [edm-design-space.org](../../../drafts/video-generation/edm-design-space.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `30`；Hub `video-generation-hub` |
 | 服务对象 | 读者读完能说明 EDM 不是一种新 SDE，而是怎样用共同的去噪接口拆开扩散模型的训练与采样选择，并解释论文中的关键公式和实验边界。 |
 
@@ -259,10 +288,11 @@
 
 **审阅重点**：变量换算是否在单独章节一次推导完且假设明确；PF-ODE 是否被定位为连续动力学、Euler/Heun 是否被定位为数值求解器、churn 是否被定位为额外随机步骤；网络预条件、训练分布、推理日程和求解器是否分别成章；实验表是否把 sampler-only 与 retraining 分开。
 
-### `ddim-fast-sampling`｜视频生成系列（4）：DDIM——理解另一种扩散采样路径
+### `ddim-fast-sampling`｜视频生成系列（四）：DDIM——理解另一种扩散采样路径
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [ddim-fast-sampling.org](../../../drafts/video-generation/ddim-fast-sampling.org)；已与用户逐段共写并审阅；2026-10-14 用户授权同步本轮解释并发布正文 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `40`；Hub `video-generation-hub` |
 | 服务对象 | 学过 DDPM 的读者能解释 DDIM 为什么能跳步、如何构造跨步转移、如何实际生成样本，以及它和 DDPM 的区别。 |
 
@@ -270,19 +300,25 @@
 
 **符号与教学约定**：统一记 `a_t=\bar\alpha_t`，注明原 DDIM 论文的 `α_t` 对应这里的累计量 `a_t`；用 `t` 表示当前较高噪声时刻、`s<t` 表示目标较低噪声时刻。将跨步额外噪声标准差记为 `σ_{t→s}`，避免与全局噪声尺度混用。先讲已知 `x_0` 时的理论构造，再讲生成时只有 `x_t` 和网络的情况；两个阶段用明确段落分开。首次使用“边缘分布”时解释为“只观察某一个时刻的状态分布”，“联合分布”解释为“多个时刻怎样一起出现”；不能用术语替代解释。
 
+**本轮已确认决策**：实际使用保持噪声预测网络与权重，改变去噪采样更新公式。不能将 DDPM 的训练描述为规定目标 t-1；原始采样器选择相邻转移，DDPM 也能重新构造跨步随机更新。确定性 DDIM 每轮重新预测残差，不是始终固定第一轮噪声。保留现有七个简短主章，将草稿扩充的对照推导落入构造与跳步章，避免重复正文。
+
 **章节骨架**
 
 #### 1 DDPM 为什么慢
+- **草稿对应**：原始草稿中的“问题：采样为什么这么慢”及“构造：保留边际，改变路径”的对应解释、公式与图示；正文须逐项核对，不仅参照章节标题。
 - **写什么**：回顾常规 DDPM 从 `x_T` 到 `x_0` 的相邻反向链，每走一步调用一次网络。以 `T=1000` 为原论文配置例子，说明串行依赖和网络调用代价；与训练时直接抽取任意 `x_t` 区分。提出目标：保留已训练去噪器，用更少的状态完成生成。
 - **素材来源**：`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §2–3、Algorithm 2；`raw/ddim-fast-sampling/sources/ddim-fast-sampling.pdf` §1–2；`raw/ddim-fast-sampling/source.tar` 内 `sections/1_introduction.tex`、`sections/2_background.tex`。
+- **本轮补充**：开头明确训练 MSE 中没有目标 s，也不要求 t-1；写出相邻反向均值，说明独立对预测原图加噪不等于反向条件转移。提前放 DDPM/DDIM 对照表、Figure 1 左右子图和 Figure 2，加工后的箭头解释不得把条件依赖当作跳步。
 - **必备元素**：相邻反向链与网络调用示意；解释为何不能直接删除 DDPM 循环中的若干步却继续使用原相邻步系数。避免声称 DDPM 完全不能少步采样：重新定义时间日程和转移方差，也可以构造跨步随机采样。
 
 #### 2 去噪器学到了什么
+- **草稿对应**：原始草稿中的“问题：采样为什么这么慢”及“构造：保留边际，改变路径”的对应解释、公式与图示；正文须逐项核对，不仅参照章节标题。
 - **写什么**：写出 `x_t=√a_t x_0+√(1-a_t)ε` 与噪声预测 MSE，展示训练样本如何由 `(x_0,t,ε)` 直接产生。用“三个时刻各自的分布可以相同，而三者的关联不同”的小例子解释边缘与联合的区别。指出训练监督来自每个时刻的带噪样本，不要求网络输入整条加噪轨迹；因此同一噪声预测接口可以服务于不同的路径构造。说明这里提供的是重新设计的空间，实际可用的路径仍需下一节验证。
 - **素材来源**：`raw/ddim-fast-sampling/source.tar` 内 `sections/3_method.tex` §3 开头、§3.2 Theorem 1；`raw/ddim-fast-sampling/analysis/methodology.md`「核心观察：训练目标不唯一决定联合路径」「目标函数的限定」。
 - **必备元素**：带噪样本生成式、噪声回归损失、边缘/联合对照示意；用简短说明框保留 Theorem 1 对正方差和独立时间步参数的条件，并区分共享 U-Net 直接复用预训练网络的实验依据。不能把目标权重不同写成所有共享参数网络的损失严格相同。
 
 #### 3 构造新的采样路径
+- **草稿对应**：原始草稿中的“问题：采样为什么这么慢”及“构造：保留边际，改变路径”的对应解释、公式与图示；正文须逐项核对，不仅参照章节标题。
 - **写什么**：以已知真实 `x_0` 为起点，亲自构造从 `x_t` 到目标 `x_s` 的条件转移，解释原文公式的系数为什么如此选择。
   1. 从当前状态提取标准化残差 `ε_t=(x_t-√a_t x_0)/√(1-a_t)`；在给定 `x_0` 的边缘分布下它是标准高斯，解释这不是网络预测。
   2. 先构造无额外噪声的路径 `x_s=√a_s x_0+√(1-a_s)ε_t`：同一个残差改变信号/噪声比例，就得到另一噪声等级的状态。用同一原图、同一噪声的三个等级示意，解释共享残差如何建立跨时刻关联。
@@ -293,11 +329,14 @@
 - **必备元素**：从未知系数 `c` 的方差约束推导出条件高斯，而非直接贴最终公式；共享残差路径示意；明确验证的是理论构造的条件边缘，不代表实际网络采样严格保持真实数据分布，也不承诺找回唯一原图。
 
 #### 4 为什么可以跳步
+- **本轮推导要求**：用 r=a_t/a_s 合并前向链；从高斯精度相加推导跨步后验 V 与均值，再与广义 DDIM 的残差系数对照。给出 eta=0/1 的限定关系。证明的是已知真实 x_0 的条件构造；以预测替代后不保证精确边际或等于执行所有中间学习转移。
+- **草稿对应**：原始草稿中的“问题：采样为什么这么慢”及“构造：保留边际，改变路径”的对应解释、公式与图示；正文须逐项核对，不仅参照章节标题。
 - **写什么**：回到上一节的构造，指出它只需要两端噪声系数 `a_t,a_s`，并未要求 `s=t-1`。因此可以只保留时间子序列 `0=τ_0<τ_1<…<τ_S=T`，直接构造各选中点之间的转移；回查原文 Appendix C.1，说明这定义了新的缩短路径，其选中时刻的理论边缘仍可验证为训练时的分布。用 `1000→750→500→250→0` 展示跨步路线，与完整链对照。
 - **素材来源**：`raw/ddim-fast-sampling/source.tar` 内 `sections/3_method.tex` §4.2、Figure 2；`sections/9_appendix.tex` Appendix C.1「Accelerated sampling processes」；`raw/ddim-fast-sampling/figures/ddim-fast-sampling/diffusion-figure-acc.pdf`。
 - **必备元素**：完整链/缩短路径图；明确“一次直接构造转移”不等于“精确合并原 DDPM 的多个学习转移”；一句完整因果说明：保留训练噪声等级 → 两端系数定义跨步转移 → 只在选中点调用网络 → 调用数由 `T` 降为 `S`。说明少步带来预测误差与路径离散误差，理论边缘构造不能保证任意大跳步的实际生成质量。
 
 #### 5 DDIM 怎样采样
+- **草稿对应**：原始草稿中的“问题：采样为什么这么慢”及“构造：保留边际，改变路径”的对应解释、公式与图示；正文须逐项核对，不仅参照章节标题。
 - **写什么**：进入真正生成阶段：真实 `x_0` 不可知，从高斯初始状态开始，使用网络估计上一节需要的信号和残差。
   1. 给定当前 `x_t`，调用网络得到 `ε̂=ε_θ(x_t,t)`。
   2. 由前向公式逐行移项推导 `x̂_0=(x_t-√(1-a_t)ε̂)/√a_t`，解释它是当前状态下的干净图像估计。
@@ -309,6 +348,7 @@
 - **原文算法图要求**：回查原论文正文与附录的算法环境；有原文伪代码时只裁切该块。若没有独立伪代码，使用原文 Eq. (12) 及必要采样描述的局部截图，准确标作采样公式；自行整理的采样循环必须标注其性质，不能将其冒充原文伪代码截图。制作与转换过程不写进正文图注。
 
 #### 6 DDIM 与 DDPM
+- **草稿对应**：原始草稿中的“问题：采样为什么这么慢”及“构造：保留边际，改变路径”的对应解释、公式与图示；正文须逐项核对，不仅参照章节标题。
 - **写什么**：在读者已掌握构造和采样后，用一张表对比训练样本与噪声预测器、理论路径、生成转移、额外随机项和网络调用数。推导广义更新如何包含采用后验方差的 DDPM：令 `s=t-1`、`η=1`，算出 `σ_{t→s}²=β_t(1-a_{t-1})/(1-a_t)=\tildeβ_t`，再代入并合并信号项与残差项，得到 `μ_θ=(x_t-β_t ε̂/√(1-a_t))/√α_t`。不能只验证方差就宣称整条更新式相同。说明 DDPM 原论文也有 `β_t` 方差选择，等价结论需明确限定。
 - **素材来源**：`raw/ddim-fast-sampling/source.tar` 内 `sections/3_method.tex` §4.1 与 `sections/9_appendix.tex` Appendix C.2「Derivation of denoising objectives for DDPMs」；`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §3、Algorithm 2。
 - **必备元素**：DDPM/DDIM 公式对照表；相邻步 `η=1` 时方差和均值的代数验证；两种控制量对照：`η` 改变随机性，`S` 改变调用次数。强调确定性本身不会减少网络调用；广义跨步随机采样也可以加速，所以“有随机项就不能跳步”不是结论。
@@ -337,13 +377,16 @@
 
 **表格标题与位置**：第 6 节均值/方差等价推导后放“表 1：DDPM 与 DDIM 的训练和采样”，涵盖机制和公式；随后放“表 2：随机性与采样步数”，对应 `η` 与 `S`。第 7 节实验设置说明后放“表 3：不同采样步数下的生成质量”，数据回查原文 Table 1。公式对照表保持短公式，完整代数过程放在表外；第 6 节以表格完成对照，无需再添加重复关系图。ODE 延伸框不另配图，引用前篇已有解释即可。
 
+**本轮配图补充**：第一章将原论文 Figure 1 的两个子图并列对照，并使用原论文 Figure 2 预览短生成链；保留后文已有图与两个 Mermaid。图号按实际阅读顺序连续编号：共 12 个图示，含 2 个 Mermaid；开篇新增两幅对照图后，采样公式为图 9、采样循环为图 10。表格先给短对照，完整公式在表外推导。
+
 **读者理解验收**：读完后应能用自己的话回答：为什么保持训练边缘仍能改变轨迹？条件转移的根号系数如何由方差约束得到？为什么 `s` 可以不是 `t-1`？没有真实 `x_0` 时每一步用什么估计它？每轮有哪些旧量、预测量和新随机量？哪些条件下广义更新与 DDPM 相同？若正文只能提供最终公式而不能支撑这些回答，视为章节未完成。
 
-### `flow-matching`｜视频生成系列（5）：Flow Matching——从概率路径到视频生成
+### `flow-matching`｜视频生成系列（五）：Flow Matching——从概率路径到视频生成
 
 | 栏位 | 内容 |
 |------|------|
-| 类型与目标位置 | 既有文章重整 / 系列章节；slug `flow-matching`；保留 alias `categories/AI/扩散模型`，新增 `categories/AI/视频生成`；sub_id `50`；Hub `video-generation-hub`。旧英文标题作为检索 alias 保留。 |
+| 原始草稿 | [flow-matching.org](../../../drafts/video-generation/flow-matching.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
+| 类型与目标位置 | 既有文章重整 / 系列章节；slug `flow-matching`；分类 alias `categories/AI/视频生成`；sub_id `50`；Hub `video-generation-hub`。旧英文标题作为检索 alias 保留。 |
 | 服务对象 | 学过扩散模型的读者能从可采样的条件路径推导速度标签、理解为何条件监督能训练边际速度场，再解释如何积分生成视频潜变量。 |
 
 **合并范围**：吸收旧 change 的概念次序、重复清理、空标题/断链修复、术语与时间方向核验、配图、构建、相关页面回链及无关联草稿核查任务。复用旧页面，不额外创建第二篇 Flow Matching 入门；移除不服务主线的流形学习代码、未核实的 Terminal Velocity Matching 数值及空的 Guidance/Discrete Diffusion 标题。深入 SDE、采样器和完整视频架构引用系列对应篇章。
@@ -419,10 +462,11 @@
 
 **阅读验收**：读者能说明：路径如何产生已知速度标签？一个中间点为何需要对多个端点方向求条件平均？CFM 为什么能训练正确的边际场？推理时为何不用真实目标视频？数值积分每轮做什么？FM 速度与 DDPM 的噪声目标、VP v-target 有何区别？视频帧时间与生成时间为何不同？上述答案须能在推导、图示和流程中找到。
 
-### `conditional-image-diffusion`｜视频生成系列（6）：条件扩散——从 CFG 到潜空间图像生成
+### `conditional-image-diffusion`｜视频生成系列（六）：条件扩散——从 CFG 到潜空间图像生成
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [conditional-image-diffusion.org](../../../drafts/video-generation/conditional-image-diffusion.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `60`；Hub `video-generation-hub` |
 | 服务对象 | 读者能理解条件信号如何控制图像扩散，并看懂从图像扩散迁移到视频的概念接口。 |
 
@@ -456,10 +500,11 @@
 **关键数据点**：指导强度、模型分辨率、训练数据规模等仅在原论文/官方模型卡一致口径下对照。
 **配图计划**：CFG 预测组合图、DALL·E 2 数据流图、潜空间扩散图。
 
-### `video-generation-tasks-spacetime`｜视频生成系列（7）：视频生成任务与时空建模基础
+### `video-generation-tasks-spacetime`｜视频生成系列（七）：视频生成任务与时空建模基础
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [video-generation-tasks-spacetime.org](../../../drafts/video-generation/video-generation-tasks-spacetime.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `70`；Hub `video-generation-hub` |
 | 服务对象 | 读者能区分主要视频生成任务，并理解时空表示对生成模型的约束。 |
 
@@ -488,10 +533,11 @@
 **关键数据点**：帧率、帧数、分辨率等定义各异，引用时同时记录采样策略和视频长度口径。
 **配图计划**：视频任务地图、时空张量、R(2+1)D 分解示意。
 
-### `video-diffusion-architectures`｜视频生成系列（8）：视频扩散模型的架构演进
+### `video-diffusion-architectures`｜视频生成系列（八）：视频扩散模型的架构演进
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `80`；Hub `video-generation-hub` |
 | 服务对象 | 读者能比较代表性视频扩散架构如何扩展图像生成能力，而不把个别设计当成统一范式。 |
 
@@ -525,10 +571,11 @@
 **关键数据点**：各阶段分辨率、帧数、训练数据和报告指标须按原论文逐项标注；不得把不同评测口径直接作优劣排名。
 **配图计划**：方法时间线、三种代表架构/级联流程图、模型对照表。
 
-### `video-generation-data-evaluation`｜视频生成系列（9）：训练数据、评测基准与评价指标
+### `video-generation-data-evaluation`｜视频生成系列（九）：训练数据、评测基准与评价指标
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [video-generation-data-evaluation.org](../../../drafts/video-generation/video-generation-data-evaluation.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `90`；Hub `video-generation-hub` |
 | 服务对象 | 读者能判断视频生成论文中的数据来源、评测设置和数字是否可横向比较。 |
 
@@ -557,10 +604,11 @@
 **关键数据点**：WebVid-10M 的规模、视频/文本字段和许可状态以数据集原始说明为准；指标结果必须同时写明 benchmark 版本、提示词和生成配置。
 **配图计划**：训练/验证/测试数据流程图；评测维度矩阵；不同口径不可比示意。
 
-### `long-video-temporal-consistency`｜视频生成系列（10）：时间一致性、长视频与流式生成
+### `long-video-temporal-consistency`｜视频生成系列（十）：时间一致性、长视频与流式生成
 
 | 栏位 | 内容 |
 |------|------|
+| 原始草稿 | [long-video-temporal-consistency.org](../../../drafts/video-generation/long-video-temporal-consistency.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `100`；Hub `video-generation-hub` |
 | 服务对象 | 读者能把身份漂移、长程依赖和在线生成放入统一的时间建模问题中理解。 |
 
@@ -599,8 +647,9 @@
 - 合并扩散模型入门与 DDPM 为一篇完整基础章：先建立直觉，再推导前向链、噪声预测目标和反向采样；Score/DSM/SDE、EDM 与 DDIM 各自独立成篇，避免入门篇只铺垫却不落到具体模型，也避免 EDM 的训练/采样设计挤在连续时间理论章节中。
 - 系列共 10 篇正文；第 1–4 篇为 DDPM、Score/DSM/SDE、EDM、DDIM；第 5 篇 Flow Matching、第 6 篇条件图像扩散、第 7 篇视频任务、第 8 篇架构、第 9 篇评测、第 10 篇长视频。Flow Matching 复用旧页面并保留旧 URL/分类入口，避免另写重复入门篇。
 - 在 `categories/AI` 下新建独立二级 subcategory `categories/AI/视频生成`。视频生成会涵盖扩散、Flow Matching、自回归和其他范式，不应嵌套在 `categories/AI/扩散模型` 下。Hub aliases 使用 `视频生成系列`、该路径及其 `/index` 形式；若缺失则在 `data/category-names.json` 增加 `视频生成: video-generation` 映射。
-- Hub 使用 `sub_id: 0`，正文按 10–100 排序。前四篇保持 10–40；Flow Matching 为 50，条件图像及视频章节为 60–100。Flow Matching 保留 `categories/AI/扩散模型` 并新增视频生成 alias；实施前检查两个同级分类的排序冲突。元数据与导航变更在合并大纲获批后实施。
-- 文章标题统一采用“视频生成系列（N）：……”；所有正文共享系列 alias 和核心 tags，通过分类 alias 归类并使用 chapter-nav 链接 Hub；正文 frontmatter 不设置 `hub` 字段，Hub 使用 `capture.js --hub` 骨架。
+- Hub 使用 `sub_id: 0`，正文按 10–100 排序。前四篇保持 10–40；Flow Matching 为 50，条件图像及视频章节为 60–100。Flow Matching 只归入 `categories/AI/视频生成`，不额外建立或保留扩散模型分类入口；实施前检查同级排序冲突。元数据与导航变更在合并大纲获批后实施。
+- 系列标题固定使用中文序号格式“视频生成系列（五）：……”，避免阿拉伯数字与中文数字混用；按阅读顺序检查正文、文章清单和章节计划的序号与 `sub_id` 一致。
+- 文章标题统一采用“视频生成系列（中文序号）：……”（如“视频生成系列（五）：……”）；所有正文共享系列 alias 和核心 tags，通过分类 alias 归类并使用 chapter-nav 链接 Hub；正文 frontmatter 不设置 `hub` 字段，Hub 使用 `capture.js --hub` 骨架。
 - 教程文章不伪造论文式实验章节；数据评测单列一篇，代表性模型仅作为案例，不进行口径不一致的排行榜比较。
 - EDM 与 DDIM 的实施授权和完成记录保留；本轮将 Flow Matching 独立规划并入本 change。历史文件移至 `merged-plans/restructure-flow-matching-article/`，包含旧提案、设计、任务和 delta spec；旧 spec 的保留标题/无编号/无 Hub 约束由本轮系列整合决策替代，其连贯性、入口兼容和可读性要求已吸收到当前 Design 与 tasks。新章节仍先审阅设计，再逐篇写作、构建和审阅，不因规划合并而标记原待办实施完成。
 
