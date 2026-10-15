@@ -1,12 +1,12 @@
 ---
-title: "视频生成系列（五）：EDM——重新梳理扩散模型的设计空间"
-description: "从去噪器与 score 的共同接口出发，拆解 EDM 的概率流常微分方程、Heun 采样、随机 churn、网络预条件和训练噪声分布。"
+title: "视频生成系列（六）：EDM——重新梳理扩散模型的设计空间"
+description: "统一 DDPM、Score、DDIM、Flow Matching 与 x-prediction 的概率路径、预测量和训练目标，再推导 EDM 预条件、训练分配与 Heun/churn 采样。"
 created_at: 2026-10-13T15:29:04
-updated_at: 2026-10-13T19:11:27
+updated_at: 2026-10-15T15:54:26
 tags: [生成模型, 扩散模型, EDM, Score Matching, 视频生成]
 aliases: ["categories/AI/视频生成"]
-sub_id: 50
-papers: ["https://arxiv.org/abs/2206.00364"]
+sub_id: 60
+papers: ["https://arxiv.org/abs/2206.00364", "https://arxiv.org/abs/2210.02747", "https://arxiv.org/abs/2511.13720"]
 repos: ["https://github.com/NVlabs/edm"]
 paper_title: "Elucidating the Design Space of Diffusion-Based Generative Models"
 paper_authors: "Tero Karras, Miika Aittala, Timo Aila, Samuli Laine"
@@ -16,378 +16,1561 @@ paper_url: "https://arxiv.org/abs/2206.00364"
 paper_code: "https://github.com/NVlabs/edm"
 mathjax: true
 hero_title: "EDM：重新梳理扩散模型的设计空间"
-hero_sub: "视频生成系列 · 05"
+hero_sub: "视频生成系列 · 06"
 hero_tagline: "把训练与采样中的选择拆开，逐项理解它们如何影响生成"
 ---
 
-<div class="ch fade-in">
-  <div class="ch-label">第 1 章｜设计空间</div>
-  <div class="ch-title">EDM 想解决什么问题</div>
+<div class="ch fade-in" id="chapter-1">
+<div class="ch-label">第 1 章</div>
+<div class="ch-title">为什么需要统一框架</div>
 
-  <p>读完去噪扩散概率模型（Denoising Diffusion Probabilistic Models，DDPM）和连续时间扩散章节之后，容易把每篇论文里的做法看成一整套不可拆开的“模型配方”：一种噪声过程、一种网络输出、一种训练权重，再配上一种采样算法。Karras 等人在 2022 年发表的 EDM，完整标题是 <em>Elucidating the Design Space of Diffusion-Based Generative Models</em>。论文提出的关键工作不是另造一个前向随机微分方程（stochastic differential equation，SDE），而是把扩散模型常见的设计选择放进同一套记号里，逐项比较哪些选择能被替换、哪些组合在实验中有效。#Karras-et-al.-2022-EDM#</p>
+<h3 class="section-title">前五篇留下了什么问题</h3>
 
-  <p>这里聚焦的是通过高斯扰动并学习去噪器来建模数据分布的一类扩散方法。统一写法让我们能把“带噪图像是什么”“网络输出代表什么”和“采样器怎样更新”分开讨论。所谓“设计空间”，不是说所有模块都能任意拼接而不影响结果；预条件、训练噪声分布与采样器仍可能相互作用，论文的实验只支持它实际测试过的选择及配置。#Karras-et-al.-2022-EDM#</p>
+<p>从 DDPM 读到 x-prediction，我们已经见过好几种从噪声生成图像的方式。DDPM 通常预测噪声，Score Matching 学习对数密度的梯度，Flow Matching 回归速度；DDIM 可以复用去噪网络，改变生成时的更新；JiT 又让网络先预测干净图像，再转换出速度。</p>
 
-  <p>可以先用一张地图记住这篇论文的组织方式：同一个噪声条件去噪器连接两条设计轴。推理时选择噪声路径、离散噪声表、数值求解器和可选随机扰动；训练时选择网络预条件、训练噪声尺度分布、损失权重以及是否采用额外增强。#Karras-et-al.-2022-EDM#</p>
+<p>这些量能够通过公式联系，但每篇文章关心的问题并不相同。DDPM 构造了逐步加噪与学习反向生成的方法；Score/SDE 将密度梯度和连续时间动力学连接起来；DDIM 展示了训练边际与生成路径之间的自由度；Flow Matching 研究怎样为整体向量场构造可计算的条件监督；x-prediction 则追问有限网络应该直接实现哪个函数，以及信息怎样到达输出。</p>
 
-  {{< mermaid >}}
-  flowchart LR
-    A["共同接口<br/>x = y + σε<br/>Dθ(x; σ)"] --> sampling
-    A --> training
-    subgraph sampling["采样设计"]
-      B1["噪声路径与离散表"]
-      B2["数值求解器：Euler / Heun"]
-      B3["可选随机 churn"]
-    end
-    subgraph training["训练设计"]
-      C1["网络预条件"]
-      C2["训练噪声分布 p_train(σ)"]
-      C3["损失权重 λ(σ)"]
-      C4["可选非泄漏数据增强"]
-    end
-  {{< /mermaid >}}
+<p>因此，读完之后需要回答一个更整体的问题：<strong>我们究竟有多少种选择？改变其中一项，会不会连其他项也一起改变？</strong></p>
 
-  <p><em>图 1：EDM 把扩散模型训练和采样中的设计选项放在共同去噪器接口周围比较。图中分组是阅读地图，不表示各选项在数学上互相独立。#Karras-et-al.-2022-EDM#</em></p>
+<p>例如，将网络输出从噪声改成干净图像，不必同时把随机采样改成确定性采样；将 Euler 换成 Heun，也不必重新训练网络。另一方面，同一组变量虽然能换算，直接输出、误差权重和网络信息通路仍可能影响优化。我们需要一套能把这些变化明确写出来的共同语言。</p>
 
-  <p>下文先集中推导常见网络输出之间的换算，再分别讲模型参数化、训练配置、推理噪声表、连续概率流轨迹、数值求解器与随机 churn。这样可以把“模型学什么”“连续过程怎样定义”以及“有限步怎样近似”放在各自的层次理解。#Karras-et-al.-2022-EDM#</p>
+<h3 class="section-title">EDM 解决什么问题</h3>
+
+<p>2022 年，NVIDIA 的 Tero Karras 等人发表了 <em>Elucidating the Design Space of Diffusion-Based Generative Models</em>，简称 EDM。论文在引言中指出，不同方法的理论推导容易把噪声参数化、训练和采样呈现为一个紧密捆绑的整体，使读者难以看出哪些部分可以单独调整。#Karras-et-al.-2022-EDM#</p>
+
+<p>EDM 的办法是先找共同接口：在给数据加入不同强度的高斯噪声后，训练一个依赖噪声水平的去噪器。已有模型可以通过适当的输入输出换算接到这个接口上。随后再分别研究：怎样缩放网络输入和输出、怎样安排训练噪声和损失，以及怎样以更少的网络评估完成采样。#Karras-et-al.-2022-EDM#</p>
+
+<p>这个接口不是要求所有原始网络都直接输出图像。去噪器可以包含主网络之外的缩放、跳连和换算；同样，选定一个去噪器，也没有唯一规定采样必须使用随机过程还是确定性过程。前一篇关于“网络输出、损失和采样”的区分，在这里成为组织整个系统的方法。</p>
+
+<p>EDM 原文主要讨论高斯扰动下的去噪 Score Matching。Flow Matching、JiT 及其后续分析并不都在这篇 2022 年论文的研究范围内。本篇会借助共同数学关系把它们纳入系列总结；其中哪些是 EDM 的原始结论，哪些是结合后续论文作出的对照，将分别说明。</p>
+
+<h3 class="section-title">把生成系统拆成五个选择</h3>
+
+<p>先暂时不展开全部公式，可以把系统拆成以下五层：</p>
+
+<div class="table-wrap"><table><thead><tr><th>层次</th><th>需要决定什么</th><th>前面见过的例子</th></tr></thead><tbody><tr><td>概率路径与过程</td><td>各时刻的分布怎样变化，不同时刻怎样连接</td><td>DDPM 前向链、连续扩散、高斯插值路径</td></tr><tr><td>网络输出</td><td>主网络直接预测什么量</td><td>干净图像、噪声、score、速度</td></tr><tr><td>训练目标</td><td>监督标签从哪里来，在哪个空间计算误差</td><td>DSM、条件速度回归、加权去噪 MSE</td></tr><tr><td>网络实现</td><td>如何缩放信号，哪些信息通过主干或旁路</td><td>EDM 预条件、JiT 解析旁路、像素解码器</td></tr><tr><td>生成算法</td><td>如何从初始噪声得到有限步样本</td><td>DDPM 更新、DDIM 更新、Euler、Heun、churn</td></tr></tbody></table></div>
+
+<p>这五层相互联系。概率路径决定可用的训练标签和换算系数；网络输出与外部换算共同决定用于生成的向量场；误差权重和网络结构又影响这个场能学得多准确。因此，拆分是为了看清依赖关系，并不意味着任意组件都能无条件互换。</p>
+
+{{< mermaid >}}
+flowchart TD
+  A["概率路径与过程"] --> B["构造训练标签与变量换算"]
+  B --> C["网络输出与训练损失"]
+  D["网络实现：预条件、主干与旁路"] --> C
+  C --> E["学到的预测函数"]
+  E --> F["生成动力学与离散更新"]
+  A --> F
+  G["噪声节点、求解器与可选随机扰动"] --> F
+  F --> H["从初始噪声生成样本"]
+{{< /mermaid >}}
+
+<p class="cap">图 1：从概率路径到生成算法。路径为训练提供监督及换算关系，网络实现影响学习，生成时再把预测量接入选定的动力学和数值更新。图中表示各层之间的依赖，不是要求训练时数值求解整条生成轨迹。</p>
+
+<p>原论文 Table 1 把 VP、VE、iDDPM 配合 DDIM，以及作者提出的 EDM 配置并列，分别列出采样器、噪声日程、网络预条件和训练权重。这张表的意义，是展示一个方法可以拆成哪些具体选择。#Karras-et-al.-2022-EDM#</p>
+
+<div class="photo"><img src="media/images/edm-design-space/table-1-design-space.webp" alt="图 2：EDM 的设计空间总表。上半部分比较采样选择，下半部分比较网络参数化与训练。此时先看各行对应哪种设计责任，具体系数会在后续章节推导。来源：Karras 等人（2022），Table 1。" loading="lazy"><div class="cap">图 2：EDM 的设计空间总表。上半部分比较采样选择，下半部分比较网络参数化与训练。此时先看各行对应哪种设计责任，具体系数会在后续章节推导。来源：Karras 等人（2022），Table 1。</div></div>
+
+<h3 class="section-title">这套框架怎样帮助我们比较方法</h3>
+
+<p>先看一个已经熟悉的例子。DDPM 与 DDIM 可以使用同一个噪声预测网络，但生成时的转移公式不同。这说明训练得到的预测函数，并没有把生成算法完全锁死。原始 DDPM 使用相邻步更新；若要跨步，也需要重新构造对应转移，不能仅删除若干次网络调用。</p>
+
+<p>再看 x-prediction。网络可以直接预测干净图像，用速度空间的损失训练，并通过 ODE 生成。这里改变的是主网络输出及其与解析运算的分工，生成系统仍然使用速度场。能作代数换算，也不保证一个同宽网络直接预测速度时同样容易学习。</p>
+
+<p>EDM 在此基础上让我们继续问：即使概率模型和骨干大致不变，输入输出的数值尺度是否合适？训练是否把大量计算放在收益较小的噪声区间？生成时的误差来自网络本身，还是来自离散步长与求解器？加入新的随机扰动究竟改善了什么，又会造成什么退化？</p>
+
+<p>这些问题将贯穿后文。下一章先建立共同的高斯概率路径，区分边际与跨时刻过程；再推导干净图像、噪声、score 和速度的关系。有了这两层基础，才能准确理解 EDM 的训练和采样改动。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 2 章｜统一变量与换算</div>
-  <div class="ch-title">从 $x_0$、$x_t$、$\epsilon$、$v$ 到 score</div>
+<div class="ch fade-in" id="chapter-2">
+<div class="ch-label">第 2 章</div>
+<div class="ch-title">统一概率路径</div>
 
-  <p>先固定一个噪声标准差 $\sigma$。从真实数据分布抽取一张干净图像 $\mathbf{y}\sim p_{\mathrm{data}}$，再抽取标准高斯噪声 $\boldsymbol{\epsilon}\sim\mathcal{N}(0,I)$，构造带噪图像：</p>
+<h3 class="section-title">先描述一个时刻的带噪图像</h3>
 
-  $$\mathbf{x}=\mathbf{y}+\sigma\boldsymbol{\epsilon}$$
+<p>要比较这些方法，首先需要一套不会被某篇论文符号限制的记号。设干净数据为 $x_0\sim p_{\mathrm{data}}$，独立标准高斯噪声为 $\epsilon\sim\mathcal N(0,I)$。在时刻 $t$，构造</p>
 
-  <p>$\sigma$ 控制扰动强度，噪声协方差因此是 $\sigma^2 I$。固定噪声尺度后，所有可能干净图像经过高斯扰动会形成一个平滑的边缘分布，记作 $p_\sigma(\mathbf{x})$。模型 $D_\theta(\mathbf{x};\sigma)$ 接收带噪图像和噪声尺度，输出对干净图像的估计；它的理想平方误差解是给定当前带噪图像后的条件平均：</p>
+$$
+z_t=a(t)x_0+b(t)\epsilon.
+$$
 
-  $$D^*(\mathbf{x};\sigma)=\mathbb{E}[\mathbf{y}\mid\mathbf{x}]$$
+<p>$a(t)$ 是干净信号的系数，$b(t)\ge0$ 是噪声的标准差系数。这里的 $x_0$ 始终表示干净数据，不强制它位于每种记号的时间零点；后面比较时会单独说明时间方向。</p>
 
-  <p>这正好把上一章的去噪 score matching（denoising score matching，DSM）与 EDM 接起来：理想去噪器和扰动后边缘分布的 score 之间有一个精确关系。把高斯扰动核对 $\mathbf{x}$ 求导，再对所有可能的干净来源取后验平均，可得：</p>
+<p>固定 $x_0$ 后，这个构造对应一个高斯条件分布：</p>
 
-  $$\nabla_{\mathbf{x}}\log p_\sigma(\mathbf{x})=\mathbb{E}\!\left[\frac{\mathbf{y}-\mathbf{x}}{\sigma^2}\middle|\mathbf{x}\right]=\frac{D^*(\mathbf{x};\sigma)-\mathbf{x}}{\sigma^2}$$
+$$
+q_t(z\mid x_0)
+=\mathcal N\!\left(z;a(t)x_0,b(t)^2I\right),
+\qquad b(t)>0.
+$$
 
-  <p>因此，只要去噪器估计得好，我们就能从“干净图像估计与当前带噪点之间的差”换算出 score。这里的 $D^*$ 不是找回当初制造这张带噪图的唯一原图：同一个 $\mathbf{x}$ 可能由许多训练图像加噪得到，条件平均综合了这些潜在来源。score 则是扰动后分布在当前位置的对数密度梯度向量场，描述局部密度增加最快的方向。#Karras-et-al.-2022-EDM#</p>
+<p>它回答的是：“同一张干净图像在这个噪声水平上，可能变成什么样？”但生成模型面对的是整个数据集，所以还要把所有干净来源混合起来：</p>
 
-  <p>EDM 的这条关系把“预测干净图像”直接连到了 score。为了比较论文中常见的网络输出，还可以暂时换成归一化的 VP 记法：$x_t=\alpha_t x_0+\sigma_t\epsilon$，其中 $\alpha_t^2+\sigma_t^2=1$ 且 $\sigma_t>0$。沿用 Salimans 与 Ho 的一种约定，$v_t=\alpha_t\epsilon-\sigma_t x_0$。这里的 $v$ 是网络预测目标的一种参数化，不等于 probability-flow ODE 或 Flow Matching 的速度场。固定同一个 $x_t$ 和时间步后，四种输出可用线性关系互相换算：#Salimans-and-Ho-2022#</p>
+$$
+p_t(z)=\int q_t(z\mid x_0)\,p_{\mathrm{data}}(x_0)\,\mathrm d x_0.
+$$
 
-  <p>这两个定义是一组正交线性变换。把它们写成矩阵形式，可以直接看出为什么任意两种预测目标都能互相换算：</p>
+<p>若数据分布没有通常意义下的密度，这里也可以理解为对数据概率测度积分。重要的是：<strong>条件分布描述一张图怎样被扰动，边际分布描述所有图像扰动后形成的整体分布。</strong> 在 $b(t)>0$ 时，高斯平滑使后者可以用平滑密度描述。</p>
 
-  $$\begin{bmatrix}x_t\\v_t\end{bmatrix}=\begin{bmatrix}\alpha_t&\sigma_t\\-\sigma_t&\alpha_t\end{bmatrix}\begin{bmatrix}x_0\\\epsilon\end{bmatrix}$$
+<p>随着 $a,b$ 改变，我们得到一族 $\{p_t\}$，这就是本章所说的概率路径。它是一连串分布的变化，还没有告诉我们一个样本怎样从一个时刻移动到另一个时刻。#Karras-et-al.-2022-EDM# #Lipman-et-al.-2023#</p>
 
-  $$\begin{bmatrix}x_0\\\epsilon\end{bmatrix}=\begin{bmatrix}\alpha_t&-\sigma_t\\\sigma_t&\alpha_t\end{bmatrix}\begin{bmatrix}x_t\\v_t\end{bmatrix}$$
+<h3 class="section-title">边际相同，过程不一定相同</h3>
 
-  <p>第二个矩阵是第一个矩阵的转置，因为 $\alpha_t^2+\sigma_t^2=1$。例如，若网络输出 $\hat v$，就有 $\hat x_0=\alpha_t x_t-\sigma_t\hat v$、$\hat\epsilon=\sigma_t x_t+\alpha_t\hat v$。下面的表把同一组关系扩展到 score。#Ho-et-al.-2020# #Salimans-and-Ho-2022#</p>
+<p>这是统一框架中最需要守住的区别。写下</p>
 
-  <div class="table-wrap wide">
-    <table>
-      <thead><tr><th>网络预测</th><th>换算为 $x_0$</th><th>换算为 $\epsilon$</th><th>换算为 $v$</th><th>换算为 score $s_t$</th></tr></thead>
-      <tbody>
-        <tr><td>$\hat{x}_0$</td><td>$\hat{x}_0$</td><td>$(x_t-\alpha_t\hat{x}_0)/\sigma_t$</td><td>$(\alpha_t x_t-\hat{x}_0)/\sigma_t$</td><td>$(\alpha_t\hat{x}_0-x_t)/\sigma_t^2$</td></tr>
-        <tr><td>$\hat{\epsilon}$</td><td>$(x_t-\sigma_t\hat{\epsilon})/\alpha_t$</td><td>$\hat{\epsilon}$</td><td>$(\hat{\epsilon}-\sigma_t x_t)/\alpha_t$</td><td>$-\hat{\epsilon}/\sigma_t$</td></tr>
-        <tr><td>$\hat{v}$</td><td>$\alpha_t x_t-\sigma_t\hat{v}$</td><td>$\sigma_t x_t+\alpha_t\hat{v}$</td><td>$\hat{v}$</td><td>$-x_t-(\alpha_t/\sigma_t)\hat{v}$</td></tr>
-        <tr><td>$\hat{s}_t$</td><td>$(x_t+\sigma_t^2\hat{s}_t)/\alpha_t$</td><td>$-\sigma_t\hat{s}_t$</td><td>$-(\sigma_t/\alpha_t)(x_t+\hat{s}_t)$</td><td>$\hat{s}_t$</td></tr>
-      </tbody>
-    </table>
-  </div>
+$$
+z_t=a(t)x_0+b(t)\epsilon
+$$
 
-  <p><em>表 1：常见 VP 参数化的输出换算。这里 $s_t=\nabla_{x_t}\log p_t(x_t)$；score 与 $x_0$、$\epsilon$、$v$ 预测的等式按最优均方误差预测（条件均值）理解，实际网络输出不一定完全相容。$v$ 的定义依论文约定而异；本表采用 Salimans 与 Ho（2022）的定义。#Ho-et-al.-2020# #Salimans-and-Ho-2022# #Song-et-al.-2021-SDE#</em></p>
+<p>时，如果只是为了在训练中随机抽一个时刻，我们只需要它给出正确的条件边际。<strong>不能据此认为原始加噪过程在所有时刻都使用同一份噪声。</strong></p>
 
-  <p>回到 EDM 自己的加性噪声记法 $\mathbf{x}=\mathbf{y}+\sigma_{\mathrm{EDM}}\boldsymbol{\epsilon}$，网络输出是去噪估计 $D_\theta(\mathbf{x};\sigma_{\mathrm{EDM}})$。由此得到 $\hat{\epsilon}_D=(\mathbf{x}-D_\theta)/\sigma_{\mathrm{EDM}}$，以及 $s_\theta=(D_\theta-\mathbf{x})/\sigma_{\mathrm{EDM}}^2=-\hat{\epsilon}_D/\sigma_{\mathrm{EDM}}$。所以 EDM 确实把去噪器、噪声预测和 score 放进共同接口；但原论文的网络预测对象是 $D_\theta$，不是 $v$。若按 EDM 的数据尺度 $\sigma_{\mathrm{data}}$ 把它改写成单位方差 VP 坐标，则：</p>
+<p>可以看一个两个时刻的例子。固定同一个 $x_0$，令 $r\ne t$。一种构造共享噪声：</p>
 
-  $$\tilde{\mathbf{x}}_t=\frac{\mathbf{x}}{\sqrt{\sigma_{\mathrm{data}}^2+\sigma_{\mathrm{EDM}}^2}}=\underbrace{\frac{\sigma_{\mathrm{data}}}{\sqrt{\sigma_{\mathrm{data}}^2+\sigma_{\mathrm{EDM}}^2}}}_{\alpha_t}\frac{\mathbf{y}}{\sigma_{\mathrm{data}}}+\underbrace{\frac{\sigma_{\mathrm{EDM}}}{\sqrt{\sigma_{\mathrm{data}}^2+\sigma_{\mathrm{EDM}}^2}}}_{\sigma_t}\boldsymbol{\epsilon}$$
+$$
+z_r=a(r)x_0+b(r)\epsilon,
+\qquad
+z_t=a(t)x_0+b(t)\epsilon.
+$$
 
-  <p>因此表中的 $\sigma_t$ 是归一化后的 VP 噪声系数，不是 EDM 原始加性噪声的标准差 $\sigma_{\mathrm{EDM}}$；只有明确做了上述坐标归一化，才能把两套记法对照。#Karras-et-al.-2022-EDM#</p>
+<p>另一种构造在两个时刻独立采样：</p>
 
-  <p>原论文 Figure 1 用 CIFAR-10 图像展示噪声强度与理想去噪结果之间的关系。噪声越强，输入里可辨认的结构越少；对应的理想去噪输出也越趋向数据集平均图像。右侧不是 EDM 网络生成的一组样本，而是论文用来解释理想去噪器性质的图。#Karras-et-al.-2022-EDM#</p>
+$$
+\tilde z_r=a(r)x_0+b(r)\epsilon_r,
+\qquad
+\tilde z_t=a(t)x_0+b(t)\epsilon_t,
+\quad \epsilon_r\perp\epsilon_t.
+$$
 
-  <div style="display:flex;gap:1rem;flex-wrap:wrap;">
-    <div class="photo" style="flex:1;min-width:240px;">
-      <img src="media/images/edm-design-space/figure-1a-noisy-images.webp" alt="EDM 原论文 Figure 1 中不同噪声尺度下的带噪 CIFAR-10 图像" loading="lazy">
-      <div class="cap">图 2：同一组图像在不同 $\sigma$ 下受到高斯扰动；$\sigma$ 越大，输入结构越难辨认。取自 Karras 等人（2022）Figure 1。#Karras-et-al.-2022-EDM#</div>
-    </div>
-    <div class="photo" style="flex:1;min-width:240px;">
-      <img src="media/images/edm-design-space/figure-1b-ideal-denoiser.webp" alt="EDM 原论文 Figure 1 中理想去噪器随噪声尺度变化的输出" loading="lazy">
-      <div class="cap">图 3：对应的理想去噪器输出；在高噪声极限附近，条件平均趋向数据集均值。取自 Karras 等人（2022）Figure 1。#Karras-et-al.-2022-EDM#</div>
-    </div>
-  </div>
+<p>在任意单个时刻，两种构造都给出相同的高斯条件分布。但给定原图后，两时刻之间的条件交叉协方差不同：</p>
 
-  <div class="callout"><strong>本节的桥梁：</strong>DSM 让我们通过已知的高斯扰动学到 score；EDM 把网络明确写成带噪图像的去噪器，再用上面的等式把去噪预测换算成 score 与采样向量场。网络预测的对象、score 和 ODE 速度是相关量，但不是同一个术语。#Karras-et-al.-2022-EDM#</div>
+$$
+\operatorname{Cov}(z_r,z_t\mid x_0)=b(r)b(t)I,
+\qquad
+\operatorname{Cov}(\tilde z_r,\tilde z_t\mid x_0)=0.
+$$
+
+<p>因此，同样的单时刻分布可以对应不同的跨时刻联系。第二种构造在这里仅用于说明边际不足以确定联合分布，并不被当作连续生成轨迹的设计。</p>
+
+<p>DDPM、DDIM 与连续扩散之间的许多关系，都需要区分这两层：<strong>我们既可以保留每个时刻的分布，又重新选择跨时刻的过程。</strong> 不过，重新选择后仍须证明转移或向量场符合目标分布，不能随意连线就宣称得到正确生成算法。#Song-Meng-Ermon-2021-DDIM#</p>
+
+<h3 class="section-title">DDPM 与连续扩散放在哪里</h3>
+
+<p>DDPM 的实际前向过程首先是一条离散马尔可夫链：</p>
+
+$$
+q(z_k\mid z_{k-1})
+=\mathcal N\!\left(z_k;\sqrt{\alpha_k}z_{k-1},(1-\alpha_k)I\right),
+\qquad \alpha_k=1-\beta_k.
+$$
+
+<p>把前面各步的独立高斯扰动合并后，它的单时刻条件边际为</p>
+
+$$
+q(z_k\mid x_0)
+=\mathcal N\!\left(z_k;\sqrt{\bar\alpha_k}x_0,(1-\bar\alpha_k)I\right),
+\qquad
+\bar\alpha_k=\prod_{j=1}^{k}\alpha_j.
+$$
+
+<p>于是，在我们的共同记号中，</p>
+
+$$
+a_k=\sqrt{\bar\alpha_k},
+\qquad b_k=\sqrt{1-\bar\alpha_k}.
+$$
+
+<p>直接用 $z_k=a_kx_0+b_k\epsilon$ 生成训练输入，是把整条链在这个时刻的结果一次采样出来。它与逐步前向加噪有相同的条件边际，却没有把原链的全部跨时刻关系写出来。#Ho-et-al.-2020#</p>
+
+<p>连续时间 VP 扩散把类似的衰减与加噪写成 SDE。采用干净到噪声的时间 $\tau$，有</p>
+
+$$
+\mathrm d z_\tau
+=-\frac12\beta(\tau)z_\tau\,\mathrm d\tau
++\sqrt{\beta(\tau)}\,\mathrm dW_\tau.
+$$
+
+<p>其高斯条件边际对应</p>
+
+$$
+a(\tau)=\exp\!\left[-\frac12\int_0^\tau\beta(s)\,\mathrm ds\right],
+\qquad b(\tau)=\sqrt{1-a(\tau)^2}.
+$$
+
+<p>这里 $W_\tau$ 是标准布朗运动。VP（variance preserving，方差保持）中 $a^2+b^2=1$；若数据分量方差为 1，扰动后的分量方差也保持为 1。它不意味着任何未归一化数据的方差都不变。#Song-et-al.-2021-SDE# #Karras-et-al.-2022-EDM#</p>
+
+<p>VE（variance exploding，方差爆炸）则保持信号系数为 1，让加性噪声尺度增大。若实际扰动标准差记为 $\nu(\tau)$，可写作</p>
+
+$$
+z_\tau=x_0+\nu(\tau)\epsilon.
+$$
+
+<p>“方差爆炸”指其方差可以随噪声尺度持续增长，不要求在有限终点真的变成无穷大。具体 SDE 若从非零噪声水平起步，还须把初始平滑分布和后续累计噪声区分开，不能只凭日程名称把两者混成同一个量。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">DDIM 保留了什么，改变了什么</h3>
+
+<p>DDIM 保留 DDPM 的条件边际：</p>
+
+$$
+q(z_k\mid x_0)
+=\mathcal N\!\left(z_k;\sqrt{\bar\alpha_k}x_0,(1-\bar\alpha_k)I\right).
+$$
+
+<p>所以，训练仍可从同一张图像、同一个时间和独立高斯噪声构造输入，复用已有的噪声预测网络。但 DDIM 不要求前向联合分布仍等于 DDPM 的那条马尔可夫链，而是构造另一族联合过程和相应的生成更新。#Song-Meng-Ermon-2021-DDIM#</p>
+
+<p>这样，DDPM 与 DDIM 在本章的 $a_k,b_k$ 表中占据同一行，却不代表它们是同一个采样算法。DDIM 的贡献恰好说明：<strong>单时刻训练边际相同，并不把生成时的跨步转移锁死。</strong> 跨步更新如何构造，仍要使用前面 DDIM 篇推导的公式，而不能从“边际相同”直接跳到“任意跳步都正确”。</p>
+
+<h3 class="section-title">从采样看 SDE 与 ODE</h3>
+
+<p>原始 DDPM 使用随机反向采样，具有反向 SDE 的连续时间解释；确定性 DDIM（$\eta=0$）不再逐步注入新噪声，具有特定坐标下的 ODE 解释。两者可以复用同一个训练好的噪声预测网络。#Karras-et-al.-2022-EDM# #Ho-et-al.-2020# #Song-et-al.-2021-SDE# #Song-Meng-Ermon-2021-DDIM#</p>
+
+<p>这是典型采样方式的对照，不是将两个方法永久绑定到两类微分方程。原始采样公式都是离散更新；DDPM 预测器可以转换为 score 后接入 PFODE，DDIM 的广义过程族也允许随机更新。训练得到的预测函数、生成动力学与离散采样器，需要分开讨论。</p>
+
+<p>同样，是否加入新噪声不能单独解释跳步：随机采样也可以重新构造跨步转移，确定性 ODE 的大步长也会引入误差。DDIM 的少步能力来自有依据的跨时刻更新；EDM 则继续比较噪声坐标、计算节点、求解器和随机扰动各自的影响。</p>
+
+<h3 class="section-title">Flow Matching 怎样接入</h3>
+
+<p>Flow Matching 不限于高斯路径；本篇先讨论能与扩散直接对照的一类：独立噪声与数据之间的高斯条件插值。沿用前两篇从噪声到数据的时间方向，线性例子是</p>
+
+$$
+z_t=t x_0+(1-t)\epsilon,
+\qquad 0\le t\le1.
+$$
+
+<p>在共同记号中，它只是 $a(t)=t$、$b(t)=1-t$。给定一对端点 $(x_0,\epsilon)$，这个构造还指定了一条直线条件轨迹；对其求导，可以得到训练用的条件速度。总体模型要学习的速度则要对潜在来源取条件平均，因此它实际生成的轨迹不必也是直线。#Lipman-et-al.-2023# #Liu-et-al.-2023-RF# #Li-He-2025-JiT#</p>
+
+<p>这里要分清两层用途：只看 $a,b$，可以比较每个时刻的分布；固定端点对并求导，才进一步引入了可计算的条件运动与监督标签。前者用于本章统一路径，后者在预测目标和训练目标两章展开。</p>
+
+<p>如果改变噪声与图像的配对，例如通过 reflow 重新耦合端点，就不能再直接沿用“图像与噪声独立”这一假设。两端的边际即使不变，中间条件分布也未必仍是这里的简单高斯核。下面的统一是有明确适用范围的，并不覆盖任意 Flow Matching 或 Rectified Flow 路径。</p>
+
+<h3 class="section-title">换到 EDM 的噪声坐标</h3>
+
+<p>以上几种路径看起来不同，一个原因是信号系数也在变化。只要 $a(t)>0$，就能把它除出去：</p>
+
+$$
+y_t=\frac{z_t}{a(t)}
+=x_0+\frac{b(t)}{a(t)}\epsilon.
+$$
+
+<p>定义新的噪声水平</p>
+
+$$
+\sigma(t)=\frac{b(t)}{a(t)},
+$$
+
+<p>便得到 EDM 使用的加性噪声形式：</p>
+
+$$
+y_t=x_0+\sigma(t)\epsilon,
+\qquad
+z_t=a(t)y_t.
+$$
+
+<p>在 EDM 原文的写法中，外部信号缩放为 $s(t)$，这里对应 $s(t)=a(t)$。论文用 $s(t)$ 与 $\sigma(t)$ 拆开信号缩放和相对噪声水平；原图像尺度下的扰动分布记作 $p(y;\sigma)$。#Karras-et-al.-2022-EDM#</p>
+
+<p>这是一项坐标变换。$z_t$ 与 $y_t$ 的数值和密度不同，不能只替换符号而不缩放输入；在 $d$ 维空间，它们的密度满足</p>
+
+$$
+p_t(z)=a(t)^{-d}\,
+ p\!\left(\frac{z}{a(t)};\sigma(t)\right).
+$$
+
+<p>其中 $a^{-d}$ 是缩放的雅可比因子。等式表明它们怎样对应，并不表示两套坐标中的密度数值相等。</p>
+
+<p>现在就能把前面的路径放进一张表：</p>
+
+<div class="table-wrap"><table><thead><tr><th>路径或坐标</th><th>信号系数 $a$</th><th>噪声系数 $b$</th><th>EDM 相对噪声 $\sigma=b/a$</th></tr></thead><tbody><tr><td>DDPM / DDIM 边际</td><td>$\sqrt{\bar\alpha_k}$</td><td>$\sqrt{1-\bar\alpha_k}$</td><td>$\sqrt{(1-\bar\alpha_k)/\bar\alpha_k}$</td></tr><tr><td>连续 VP 边际</td><td>$a(\tau)$</td><td>$\sqrt{1-a(\tau)^2}$</td><td>$\sqrt{1-a(\tau)^2}/a(\tau)$</td></tr><tr><td>加性噪声形式</td><td>$1$</td><td>$\nu$</td><td>$\nu$</td></tr><tr><td>独立端点线性 FM / JiT</td><td>$t$</td><td>$1-t$</td><td>$(1-t)/t$</td></tr></tbody></table></div>
+
+<p>表中 DDPM 与 DDIM 的对应来自原论文；线性 FM/JiT 一行是按同一坐标规则作出的跨论文整理，不是 EDM 原文中的额外模型家族。</p>
+
+<p>以线性 FM 为例，$t=1/2$ 时 $\sigma=1$，$t=1/4$ 时 $\sigma=3$。越靠近噪声起点，相对于干净信号的噪声越强。这不要求 VP 的 $a^2+b^2=1$：线性 FM 的系数一般不满足这一归一化，却仍然可以在 $t>0$ 时换到加性噪声坐标。</p>
+
+<p>这个变换也有边界：线性 FM 的 $t=0$ 处 $a=0$，不能直接相除；它在新坐标中对应 $\sigma\to\infty$ 的极限。EDM 实际从有限的 $\sigma_{\max}$ 开始，用高斯分布近似高噪声数据分布，而不是在数学上取无穷大的初始噪声。若想直接把 $\sigma$ 用作时间坐标，还需在讨论区间内具有合适的单调性。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">图像被破坏，整体分布怎样变化</h3>
+
+<p>EDM 原论文 Figure 1 展示了这一共同对象：同一组 CIFAR-10 图像在不同加性噪声水平下的状态。左侧的图像逐渐失去可辨认结构，对应数据分布经过越来越强的高斯平滑。</p>
+
+<div class="photo"><img src="media/images/edm-design-space/figure-1a-noisy-images.webp" alt="图 3：不同噪声水平下的带噪图像。向右噪声逐渐增大，局部结构越来越难辨认；原论文为显示效果调整了高噪声图像的可视化尺度。来源：Karras 等人（2022），Figure 1(a)。" loading="lazy"><div class="cap">图 3：不同噪声水平下的带噪图像。向右噪声逐渐增大，局部结构越来越难辨认；原论文为显示效果调整了高噪声图像的可视化尺度。来源：Karras 等人（2022），Figure 1(a)。</div></div>
+
+<p>同一张图的另一部分给出理想平方误差去噪器的输出。它综合所有可能的干净来源；当输入几乎不再提供区分来源的信息时，输出逐渐接近数据集平均，而不是自动选择一张确定的训练图像。</p>
+
+<div class="photo"><img src="media/images/edm-design-space/figure-1b-ideal-denoiser.webp" alt="图 4：对应的理想去噪器输出。高噪声下，对可能来源取平均会使输出模糊并趋近数据集均值。这是原论文解析计算的理想去噪结果，不是训练网络的生成样本。来源：Karras 等人（2022），Figure 1(b)。" loading="lazy"><div class="cap">图 4：对应的理想去噪器输出。高噪声下，对可能来源取平均会使输出模糊并趋近数据集均值。这是原论文解析计算的理想去噪结果，不是训练网络的生成样本。来源：Karras 等人（2022），Figure 1(b)。</div></div>
+
+<p>因此，概率路径为我们规定了一族逐渐平滑的分布；它没有要求高噪声处的一次去噪预测就等于最终生成图像。怎样利用这些预测把分布逐步搬回数据端，需要后面的生成动力学与采样算法。</p>
+
+<p>本章可以收束为三句话：<strong>条件核规定一张图怎样被扰动；概率路径规定整体分布怎样变化；跨时刻过程规定样本怎样连接这些分布。</strong> EDM 的坐标把多种高斯路径写成可对照的加性噪声形式，但并没有因此抹去它们的联合过程、训练和生成算法差异。</p>
+
+<p>下一章将在同一个高斯条件核下，推导干净图像、噪声、score 与路径速度之间的换算。这时就能准确回答：哪些量是在描述同一时刻的信息，哪些量还依赖我们选择的时间方向与运动方式。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 3 章｜模型参数化</div>
-  <div class="ch-title">EDM 去噪器与网络预条件</div>
+<div class="ch fade-in" id="chapter-3">
+<div class="ch-label">第 3 章</div>
+<div class="ch-title">统一预测目标</div>
 
-  <p>建立去噪器这一共同接口后，先看 EDM 怎样给主网络输入、残差和噪声条件设置合适的数值尺度：同一个 $D_\theta(\mathbf{x};\sigma)$ 可以由不同的原始神经网络参数化来实现。EDM 将网络写成带有噪声依赖系数的形式：</p>
+<h3 class="section-title">先区分样本标签和模型预测</h3>
 
-  $$D_\theta(\mathbf{x};\sigma)=c_{\mathrm{skip}}(\sigma)\mathbf{x}+c_{\mathrm{out}}(\sigma)F_\theta\!\left(c_{\mathrm{in}}(\sigma)\mathbf{x};c_{\mathrm{noise}}(\sigma)\right)$$
+<p>上一章把多种方法写成了同一类高斯条件路径：</p>
 
-  <p>$F_\theta$ 是实际训练的主网络；其外部系数称为预条件。$c_{\mathrm{in}}$ 缩放输入，$c_{\mathrm{skip}}$ 保留一条直接从带噪输入到输出的通路，$c_{\mathrm{out}}$ 缩放神经网络预测的残差，$c_{\mathrm{noise}}$ 把当前噪声标准差编码成模型可用的条件。这样做不要求一种新的 U-Net 架构：EDM 的设计表允许 $F_\theta$ 使用不同骨干，预条件讨论的是包在网络输入、输出和条件周围的数值尺度。#Karras-et-al.-2022-EDM#</p>
+$$
+z_t=a(t)x_0+b(t)\epsilon,
+\qquad x_0\sim p_{\mathrm{data}},\quad
+\epsilon\sim\mathcal N(0,I),\quad x_0\perp\epsilon.
+$$
 
-  <p>系数的推导可以从图像信号和噪声的典型尺度开始。假设训练数据已归一化，使单个数据分量的标准差约为 $\sigma_{\mathrm{data}}$，噪声为 $\sigma$，则带噪输入的方差约为 $\sigma_{\mathrm{data}}^2+\sigma^2$。为把主网络的输入标准化到单位方差，原文采用下面这个输入系数。#Karras-et-al.-2022-EDM#</p>
+<p>本章在 $a(t)>0$、$b(t)>0$ 且系数可微的区间讨论；需要更强条件的公式会另行说明。为缩短公式，在固定时间时将 $a(t),b(t)$ 简记为 $a,b$。</p>
 
-  $$c_{\mathrm{in}}(\sigma)=\frac{1}{\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}}$$
+<p>训练时，我们知道采样出的 $x_0,\epsilon$，所以能构造标签。推理时，网络只看到当前位置 $z$ 和时间 $t$。由于不同端点对可能产生相同的中间状态，平方误差的最优预测一般是条件平均。分别记</p>
 
-  <p>skip 系数则可理解为线性最小均方估计的系数。对 $c\mathbf{x}$ 预测干净信号 $\mathbf{y}$，使 $\mathbb{E}\|c\mathbf{x}-\mathbf{y}\|^2$ 最小的系数是协方差除以输入方差，即 $c=\sigma_{\mathrm{data}}^2/(\sigma^2+\sigma_{\mathrm{data}}^2)$。这个直接预测之后剩下的残差标准差为 $\sigma\sigma_{\mathrm{data}}/\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}$，于是 EDM 用它作为输出残差的尺度。#Karras-et-al.-2022-EDM#</p>
+$$
+m_t(z)=\mathbb E[x_0\mid z_t=z],
+\qquad
+e_t(z)=\mathbb E[\epsilon\mid z_t=z].
+$$
 
-  $$c_{\mathrm{skip}}(\sigma)=\frac{\sigma_{\mathrm{data}}^2}{\sigma^2+\sigma_{\mathrm{data}}^2},\qquad c_{\mathrm{out}}(\sigma)=\frac{\sigma\sigma_{\mathrm{data}}}{\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}}$$
+<p>$m_t$ 是理想干净预测，$e_t$ 是理想标准噪声预测。对路径等式取条件期望，得到全文换算的第一个约束：</p>
 
-  <p>剩余两项承担不同角色：$c_{\mathrm{noise}}(\sigma)=\tfrac14\ln\sigma$ 是把噪声尺度映射为网络条件的经验选择；训练损失中的 $\lambda(\sigma)=1/c_{\mathrm{out}}(\sigma)^2$ 抵消不同噪声级输出残差尺度的变化，让原始网络面对的目标保持较均衡的数值量级。论文采用的系数和解释汇总如下。#Karras-et-al.-2022-EDM#</p>
+$$
+\boxed{z=a\,m_t(z)+b\,e_t(z).}
+$$
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>系数</th><th>EDM 形式</th><th>作用与理解</th></tr></thead>
-      <tbody>
-        <tr><td>$c_{\mathrm{in}}$</td><td>$1/\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}$</td><td>使主网络输入的典型方差接近 1</td></tr>
-        <tr><td>$c_{\mathrm{skip}}$</td><td>$\sigma_{\mathrm{data}}^2/(\sigma^2+\sigma_{\mathrm{data}}^2)$</td><td>先用线性通路解释带噪输入中可预测的信号</td></tr>
-        <tr><td>$c_{\mathrm{out}}$</td><td>$\sigma\sigma_{\mathrm{data}}/\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}$</td><td>设定主网络残差输出的典型尺度</td></tr>
-        <tr><td>$c_{\mathrm{noise}}$</td><td>$\tfrac14\ln\sigma$</td><td>把噪声尺度映射为网络条件；论文的经验性选择</td></tr>
-        <tr><td>$\lambda$</td><td>$1/c_{\mathrm{out}}^2=(\sigma^2+\sigma_{\mathrm{data}}^2)/(\sigma\sigma_{\mathrm{data}})^2$</td><td>抵消残差尺度变化，平衡不同噪声级的训练权重</td></tr>
-      </tbody>
-    </table>
-  </div>
+<p>因此，干净预测和噪声预测之间满足</p>
 
-  <p><em>表 2：EDM 网络预条件的系数、公式和功能。$\sigma_{\mathrm{data}}$ 描述归一化训练数据的典型尺度；论文报告图像配置取 $0.5$，不能当成对任意数据都适用的常数。#Karras-et-al.-2022-EDM#</em></p>
+$$
+e_t(z)=\frac{z-a m_t(z)}{b},
+\qquad
+m_t(z)=\frac{z-b e_t(z)}{a}.
+$$
+
+<p>这些等式没有说模型找回了制造输入时唯一的一份原图和噪声。它们说明：<strong>在同一个状态上，两种理想条件平均彼此约束。</strong> 实际网络若分别训练，有限容量与误差可能使两种输出并不完全相容。#Ho-et-al.-2020# #Lipman-et-al.-2023# #Li-He-2025-JiT#</p>
+
+<h3 class="section-title">Score 怎样从去噪预测中得到</h3>
+
+<p>Score 是整体带噪分布的对数密度梯度，记为</p>
+
+$$
+s_t(z)=\nabla_z\log p_t(z).
+$$
+
+<p>它不是图像质量的打分，也不是当前状态的移动速度。为了把它与预测量连接起来，先对已知的高斯条件核求导：</p>
+
+$$
+\nabla_z\log q_t(z\mid x_0)
+=-\frac{z-a x_0}{b^2}.
+$$
+
+<p>这里的 $b^2$ 来自高斯协方差。随后，对所有可能的干净来源取后验平均。交换微分和积分所需的条件满足时，由边际化及贝叶斯公式可得</p>
+
+$$
+\begin{aligned}
+s_t(z)
+&=\frac{\int \nabla_z q_t(z\mid x_0)\,p_{\mathrm{data}}(x_0)\,\mathrm d x_0}
+        {p_t(z)}\\
+&=\int \nabla_z\log q_t(z\mid x_0)\,
+        p(x_0\mid z_t=z)\,\mathrm d x_0\\
+&=\frac{a m_t(z)-z}{b^2}.
+\end{aligned}
+$$
+
+<p>再利用 $z-a m_t=b e_t$，便得到</p>
+
+$$
+\boxed{s_t(z)=-\frac{e_t(z)}{b}
+=\frac{a m_t(z)-z}{b^2}.}
+$$
+
+<p>反过来，从 score 得到干净预测：</p>
+
+$$
+\boxed{m_t(z)=\frac{z+b^2s_t(z)}{a}.}
+$$
+
+<p>这就是本篇需要的广义高斯去噪关系。它把 DSM、噪声预测和干净图像预测接起来：在同一个高斯扰动核下，它们指向相互换算的理想预测函数。#Karras-et-al.-2022-EDM# #Song-et-al.-2021-SDE#</p>
+
+<p>注意噪声的符号：预测噪声指向需要从当前状态中消去的扰动成分，因此 score 与它有一个负号。也要区分分母：噪声预测换 score 除以 $b$，干净预测换 score 除以 $b^2$。</p>
+
+<h3 class="section-title">速度还需要路径怎样变化</h3>
+
+<p>Score 描述当前密度往哪个方向增加；速度描述我们选择的运动怎样随时间推进。要得到后者，还需要对路径系数求导。</p>
+
+<p>先固定独立采样的端点对，定义条件轨迹</p>
+
+$$
+z_t=a(t)x_0+b(t)\epsilon.
+$$
+
+<p>其条件速度标签为</p>
+
+$$
+U_t=\dot a(t)x_0+\dot b(t)\epsilon.
+$$
+
+<p>对所有可能来源取条件平均，得到这类条件路径对应的整体速度场：</p>
+
+$$
+\boxed{u_t(z)=\mathbb E[U_t\mid z_t=z]
+=\dot a\,m_t(z)+\dot b\,e_t(z).}
+$$
+
+<p>这里的 $U_t$ 是训练样本对的速度，$u_t$ 是模型在平方损失下要学习的整体场。前面 Flow Matching 篇利用连续性方程说明，这个条件平均场能搬运对应的边际分布；它不要求整体生成轨迹仍沿每个训练端点对的直线移动。#Lipman-et-al.-2023#</p>
+
+<p>将 $e_t=(z-a m_t)/b$ 代入，可把速度写成干净预测的函数：</p>
+
+$$
+u_t(z)=\frac{\dot b}{b}z+
+\left(\dot a-\frac{a\dot b}{b}\right)m_t(z).
+$$
+
+<p>为了整理公式，定义系数矩阵的行列式</p>
+
+$$
+\Delta(t)=a(t)\dot b(t)-b(t)\dot a(t).
+$$
+
+<p>于是，速度可以有三种等价写法：</p>
+
+$$
+\boxed{
+\begin{aligned}
+u_t&=\frac{\dot b}{b}z-\frac{\Delta}{b}m_t,\\
+u_t&=\frac{\dot a}{a}z+\frac{\Delta}{a}e_t,\\
+u_t&=\frac{\dot a}{a}z-\frac{b\Delta}{a}s_t.
+\end{aligned}}
+$$
+
+<p>最后一行说明：<strong>score 要转换为速度，还需要位置项、路径系数及其时间导数。</strong> 同一个时刻的密度本身，并没有告诉我们生成时钟走多快。</p>
+
+<p>这里选定的是上述高斯条件轨迹诱导的速度场。单凭一族边际密度，一般不能唯一决定所有可能的搬运场；也不能直接把这个 $u_t$ 当作原始随机 SDE 样本轨迹的导数。布朗路径通常不可微，而这里是在构造确定性的分布搬运速度。它何时与某个扩散过程的 PFODE 一致，第七章再说明。</p>
+
+<h3 class="section-title">从速度怎样反推其他量</h3>
+
+<p>上面的推导也可以反过来。将位置和速度同时写成矩阵方程：</p>
+
+$$
+\begin{pmatrix}z\\u_t\end{pmatrix}
+=
+\begin{pmatrix}a&b\\\dot a&\dot b\end{pmatrix}
+\begin{pmatrix}m_t\\e_t\end{pmatrix}.
+$$
+
+<p>只有当 $\Delta\ne0$ 时，这个矩阵才可逆。此时</p>
+
+$$
+\boxed{
+ m_t=\frac{\dot b\,z-bu_t}{\Delta},
+ \qquad
+ e_t=\frac{a u_t-\dot a\,z}{\Delta}.}
+$$
+
+<p>如果 $\Delta=0$，位置和速度提供的两条约束线性相关，便不能用它们唯一解出两个条件平均。例如信号与噪声系数仅以同一比例整体缩放，速度可能只重复提供“当前状态怎样缩放”的信息。</p>
+
+<p>将常用入口整理成一张表：</p>
+
+<div class="table-wrap"><table><thead><tr><th>已知理想预测</th><th>干净预测 $m_t$</th><th>噪声预测 $e_t$</th></tr></thead><tbody><tr><td>干净预测 $m_t$</td><td>$m_t$</td><td>$(z-a m_t)/b$</td></tr><tr><td>噪声预测 $e_t$</td><td>$(z-b e_t)/a$</td><td>$e_t$</td></tr><tr><td>Score $s_t$</td><td>$(z+b^2s_t)/a$</td><td>$-b s_t$</td></tr><tr><td>路径速度 $u_t$</td><td>$(\dot b z-bu_t)/\Delta$</td><td>$(a u_t-\dot a z)/\Delta$</td></tr></tbody></table></div>
+
+<p>表中默认 $a,b>0$，速度行还要求 $\Delta\ne0$。得到 $m_t,e_t$ 后，分别用 $s_t=-e_t/b$ 与 $u_t=\dot a m_t+\dot b e_t$ 恢复其他量。这样比把全部换算塞进一张很宽的表更容易检查。</p>
+
+<p>对于实际模型，可以把某一列作为直接输出，再用这些关系*定义*其余估计。定义出来的量在代数上相容，但它们是否接近真实条件平均、score 或整体速度，仍取决于模型误差。</p>
+
+<h3 class="section-title">VP 的 v 为什么不是通用速度</h3>
+
+<p>扩散文献常见的 $v$-prediction 采用另一种线性组合。对满足 $a^2+b^2=1$ 的 VP 系数，定义样本标签</p>
+
+$$
+v_{\mathrm{VP}}=a\epsilon-bx_0.
+$$
+
+<p>它与加噪关系合起来是一组旋转：</p>
+
+$$
+\begin{pmatrix}z_t\\v_{\mathrm{VP}}\end{pmatrix}
+=
+\begin{pmatrix}a&b\\-b&a\end{pmatrix}
+\begin{pmatrix}x_0\\\epsilon\end{pmatrix}.
+$$
+
+<p>由于矩阵正交，逆矩阵就是转置。若模型直接输出 $\hat v$，可以定义</p>
+
+$$
+\boxed{\hat x_0=a z-b\hat v,
+\qquad \hat\epsilon=b z+a\hat v.}
+$$
+
+<p>进一步得到 score 估计</p>
+
+$$
+\hat s=-\frac{\hat\epsilon}{b}
+=-z-\frac{a}{b}\hat v.
+$$
+
+<p>这些是 VP 参数化特有的简洁公式。#Salimans-and-Ho-2022# 它们并没有使用时间导数，所以不能只凭 $v$ 这个字母，就把它当作 $\mathrm dz/\mathrm dt$。</p>
+
+<p>什么时候它又确实与路径速度有关？令</p>
+
+$$
+a(t)=\cos\vartheta(t),
+\qquad b(t)=\sin\vartheta(t).
+$$
+
+<p>对固定端点的轨迹求导：</p>
+
+$$
+\frac{\mathrm dz_t}{\mathrm dt}
+=\dot\vartheta(t)
+ \left[-\sin\vartheta(t)x_0+\cos\vartheta(t)\epsilon\right]
+=\dot\vartheta(t)v_{\mathrm{VP}}.
+$$
+
+<p>因此，对整体场有</p>
+
+$$
+u_t(z)=\dot\vartheta(t)\,
+\mathbb E[v_{\mathrm{VP}}\mid z_t=z].
+$$
+
+<p>两者相差一个由时钟决定的因子；只有使用相应的角度作为时间坐标时，才得到直接相等的形式。反转时间方向还会改变符号。<strong>VP 的 v 是输出参数化，路径速度则依赖系数如何随时间变化。</strong></p>
+
+<h3 class="section-title">线性 Flow Matching 与 JiT 的特例</h3>
+
+<p>沿用从噪声到数据的时间方向，令</p>
+
+$$
+a(t)=t,\quad b(t)=1-t,
+\qquad \dot a=1,\quad\dot b=-1.
+$$
+
+<p>此时 $\Delta=-1$，样本速度是 $U=x_0-\epsilon$，整体速度为 $u=m-e$。代入通用公式得到</p>
+
+$$
+\boxed{
+\begin{aligned}
+m_t(z)&=z+(1-t)u_t(z),\\
+e_t(z)&=z-tu_t(z),\\
+u_t(z)&=\frac{m_t(z)-z}{1-t},\\
+s_t(z)&=\frac{t m_t(z)-z}{(1-t)^2}.
+\end{aligned}}
+$$
+
+<p>前两行可以直接验证：$z=t m+(1-t)e$，再联立 $u=m-e$，即可消去其中一个未知量。后两行分别把干净预测转换为速度和 score。</p>
+
+<p>这就解释了 JiT 为什么能直接预测图像，同时仍然进行速度场采样：网络输出 $\hat x_0$，外部构造 $\hat u=(\hat x_0-z)/(1-t)$。这里的 $u$ 对应 JiT 原文所记的 $v$，但并不等于上一节的 VP 参数化。#Lipman-et-al.-2023# #Li-He-2025-JiT#</p>
+
+<p>同样要注意端点：$t=1$ 处噪声系数为零，不能直接计算这些含 $1/(1-t)$ 的式子；实际截断、终点输出和求解处理不能由形式上的换算省略。</p>
+
+<h3 class="section-title">EDM 去噪器怎样接到这些量</h3>
+
+<p>最后回到 EDM 的加性噪声坐标。上一章令 $y=z/a$、$\sigma=b/a$，得到</p>
+
+$$
+y=x_0+\sigma\epsilon.
+$$
+
+<p>固定 $\sigma$，理想去噪器是</p>
+
+$$
+D^*(y;\sigma)=\mathbb E[x_0\mid y].
+$$
+
+<p>用 $e_\sigma(y)$ 表示这个坐标下的标准噪声条件平均，用 $s_\sigma(y)$ 表示相对于 $y$ 的 score，便有</p>
+
+$$
+\boxed{
+ e_\sigma(y)=\frac{y-D^*(y;\sigma)}{\sigma},
+ \qquad
+ s_\sigma(y)=\frac{D^*(y;\sigma)-y}{\sigma^2}.}
+$$
+
+<p>若把 $\sigma$ 本身作为时间坐标，则条件轨迹 $y_\sigma=x_0+\sigma\epsilon$ 对 $\sigma$ 的导数是 $\epsilon$，对应的条件平均速度为</p>
+
+$$
+\boxed{u_\sigma(y)
+=e_\sigma(y)
+=\frac{y-D^*(y;\sigma)}{\sigma}
+=-\sigma s_\sigma(y).}
+$$
+
+<p>这里“速度等于噪声预测”成立，是因为我们选了加性噪声坐标，并以噪声标准差 $\sigma$ 为时钟。它不能直接推广到任意 $a(t),b(t)$。生成时 $\sigma$ 递减，负的步长会使状态朝去噪估计移动；速度表达式的正负要与积分方向一起理解。#Karras-et-al.-2022-EDM#</p>
+
+<p>坐标变换也会改变 score。固定时间，上一章的密度缩放关系给出</p>
+
+$$
+s_t(z)=\frac1a\,
+ s_\sigma\!\left(\frac za\right).
+$$
+
+<p>因此，模型若在 $z$ 坐标接收归一化输入，不能把它输出的 score 数值原封不动当成 $y$ 坐标中的 score。模型接口、位置坐标与噪声定义必须成套匹配。</p>
+
+<p>在有限网络下，把 $D^*$ 换成 $D_\theta$，就能构造相应的噪声、score 和采样速度估计。至于 EDM 内部主网络 $F_\theta$ 是否直接输出这个 $D_\theta$，答案还取决于外部预条件；第五章将拆开说明。</p>
+
+<p>本章统一了四类对象：<strong>干净图像与噪声是条件估计，score 是当前密度梯度，路径速度是选定运动的时间变化率。</strong> 在高斯条件路径和相应非退化条件下，它们能互相转换，但不能因此混用名称。</p>
+
+<p>接下来还必须回答：既然理想预测函数可以转换，为什么训练结果不同？下一章会把这些关系代入误差，推导不同损失的权重，再讨论有限网络的信息保存责任怎样改变学习难度。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 4 章｜训练</div>
-  <div class="ch-title">噪声分布、损失权重与数据增强</div>
-  <p>按这个参数化，训练时先采一个干净样本、一个高斯噪声和一个噪声级，再让模型还原干净图像。加权去噪目标可以写成：</p>
+<div class="ch fade-in" id="chapter-4">
+<div class="ch-label">第 4 章</div>
+<div class="ch-title">统一训练目标</div>
 
-  $$\mathcal{L}(\theta)=\mathbb{E}_{\mathbf{y},\boldsymbol{\epsilon},\sigma}\!\left[\lambda(\sigma)\left\|D_\theta(\mathbf{y}+\sigma\boldsymbol{\epsilon};\sigma)-\mathbf{y}\right\|_2^2\right]$$
+<h3 class="section-title">一个已知标签，怎样学到未知的整体函数</h3>
 
-  <p>EDM 还重新选择训练中出现哪些噪声级。它采用对数正态噪声分布：先采 $z\sim\mathcal{N}(P_{\mathrm{mean}},P_{\mathrm{std}}^2)$，再令 $\sigma=e^z$。论文报告的图像实验设置是 $P_{\mathrm{mean}}=-1.2$、$P_{\mathrm{std}}=1.2$。这个训练分布 $p_{\mathrm{train}}(\sigma)$ 和推理时按顺序走过的噪声表 $\{\sigma_i\}$ 是两个旋钮：前者决定模型训练时见到各种噪声的频率，后者决定生成时调用网络的噪声级和步长。#Karras-et-al.-2022-EDM#</p>
+<p>上一章说明，在同一条高斯路径上，干净图像、噪声、score 与速度可以换算。但训练时，我们并没有预先知道整体分布的 score，也没有一个现成的整体速度场可供查询。真正知道的是自己抽取的干净图像、噪声与时间。</p>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>参数</th><th>论文配置</th><th>所在环节</th></tr></thead>
-      <tbody>
-        <tr><td>$\sigma_{\mathrm{data}}$</td><td>$0.5$</td><td>网络预条件</td></tr>
-        <tr><td>$P_{\mathrm{mean}},P_{\mathrm{std}}$</td><td>$-1.2, 1.2$</td><td>训练噪声分布 $\ln\sigma$</td></tr>
-      </tbody>
-    </table>
-  </div>
+<p>这正是 DDPM、DSM 与条件 Flow Matching 的一个共同点：<strong>利用可计算的样本标签，学习给定带噪状态后的整体条件平均。</strong> 它们构造标签的理由各有不同，但可以先用同一个平方误差恒等式理解监督为何有效。</p>
 
-  <p><em>表 3：论文图像实验中常用的训练尺度与噪声分布参数。推理噪声范围和步长参数见第 5 章。#Karras-et-al.-2022-EDM#</em></p>
+<p>设 $Y$ 是某种训练标签，模型输入为 $z_t,t$，理想回归函数为</p>
 
-  <p>对于小数据集，作者还测试了非泄漏数据增强：训练时把增强参数作为网络条件提供，推理时将增强参数设为零，以避免模型把训练时的几何变换带入生成结果。它是实验中的辅助正则化选择，不是 EDM 的定义组成部分。#Karras-et-al.-2022-EDM#</p>
+$$
+\bar Y(z_t,t)=\mathbb E[Y\mid z_t,t].
+$$
+
+<p>把预测误差拆成两部分：</p>
+
+$$
+f_\theta-Y=(f_\theta-\bar Y)+(\bar Y-Y).
+$$
+
+<p>展开平方并取期望，交叉项消失，因为给定输入后，$f_\theta-\bar Y$ 已确定，而 $\mathbb E[\bar Y-Y\mid z_t,t]=0$。于是</p>
+
+$$
+\boxed{
+\mathbb E\|f_\theta-Y\|^2
+=\mathbb E\|f_\theta-\bar Y\|^2
++\mathbb E\|Y-\bar Y\|^2.}
+$$
+
+<p>后一项不依赖模型参数。因此，只要相关期望与求导条件成立，用样本标签训练，与直接回归其未知条件平均具有相同的总体参数梯度。两种损失的数值并不相同，小批量梯度也仍有抽样波动。</p>
+
+<p>这个恒等式将帮助我们把前几篇的监督放到一张图景里；它并不意味着这些方法最初都从同一种推导出发。</p>
+
+<h3 class="section-title">DDPM：从反向转移得到噪声损失</h3>
+
+<p>DDPM 首先学习离散反向生成转移。变分下界中的中间项比较真实后验与模型反向分布：</p>
+
+$$
+\mathbb E_q\!\left[
+D_{\mathrm{KL}}\bigl(q(z_{k-1}\mid z_k,x_0)
+\,\|\,p_\theta(z_{k-1}\mid z_k)\bigr)\right].
+$$
+
+<p>在固定反向方差的高斯参数化下，参数相关部分成为均值平方误差。再将均值写成噪声预测的函数，便得到</p>
+
+$$
+L_{k-1}
+=\mathbb E\!\left[w_k
+\|\epsilon_\theta(z_k,k)-\epsilon\|^2\right]+C,
+$$
+
+$$
+w_k=\frac{\beta_k^2}
+ {2\varsigma_k^2\alpha_k(1-\bar\alpha_k)}.
+$$
+
+<p>这里 $\alpha_k=1-\beta_k$，$\varsigma_k^2$ 表示选定的反向方差，用不同符号避免与前向噪声系数混淆。原论文常用的简化目标则直接采用均匀时间抽样与无额外权重的噪声误差：</p>
+
+$$
+\mathcal L_{\mathrm{simple}}
+=\mathbb E_{k,x_0,\epsilon}
+\|\epsilon_\theta(z_k,k)-\epsilon\|^2.
+$$
+
+<p>简化目标改变了不同时间步之间的权重，不能把它与完整变分目标逐项视为同一个数值函数。本章重点比较其噪声回归部分；重建端项、先验项以及学习方差的扩展并未被这一行公式全部概括。#Ho-et-al.-2020#</p>
+
+<p>给定 $z_k,k$ 后，最优噪声回归是 $e_k(z_k)$。上一章证明 $s_k=-e_k/b_k$，因此 DDPM 的预测器也能提供 score 估计。这是目标之间的数学联系，并不要求 DDPM 原论文先以连续 SDE 为出发点。</p>
+
+<h3 class="section-title">DSM：用条件 Score 学整体 Score</h3>
+
+<p>对高斯核 $q_t(z\mid x_0)=\mathcal N(a x_0,b^2I)$，训练时的条件 score 标签可以直接计算：</p>
+
+$$
+S_t=\nabla_z\log q_t(z_t\mid x_0)
+=-\frac{z_t-a x_0}{b^2}
+=-\frac{\epsilon}{b}.
+$$
+
+<p>而未知的整体 score 是其后验平均：</p>
+
+$$
+\mathbb E[S_t\mid z_t,t]=s_t(z_t).
+$$
+
+<p>于是，可以训练</p>
+
+$$
+\mathcal L_{\mathrm{DSM}}
+=\mathbb E\left[
+ w_s(t)\left\|s_\theta(z_t,t)+\frac{\epsilon}{b(t)}\right\|^2
+\right].
+$$
+
+<p>若 $w_s$ 只依赖时间，条件平均恒等式给出</p>
+
+$$
+\mathcal L_{\mathrm{DSM}}
+=\mathbb E\left[w_s(t)\|s_\theta-s_t\|^2\right]+C_s.
+$$
+
+<p>$C_s$ 与参数无关。因此，DSM 不需要先估计整份数据分布的密度，再对它求导；已知的高斯扰动就能提供训练标签。#Song-et-al.-2021-SDE# #Karras-et-al.-2022-EDM#</p>
+
+<p>若用噪声网络定义 $s_\theta=-\epsilon_\theta/b$，则逐样本误差还满足</p>
+
+$$
+\left\|s_\theta+\frac\epsilon b\right\|^2
+=\frac1{b^2}\|\epsilon_\theta-\epsilon\|^2.
+$$
+
+<p>因此，无额外权重的噪声损失，对应权重为 $b^2$ 的条件 score 损失。在相同路径与相同时间抽样下，这样才是精确的损失对应；直接把两个无权重 MSE 放在一起，它们通常不同。</p>
+
+<h3 class="section-title">Flow Matching：用条件速度学整体速度</h3>
+
+<p>仍固定同一组独立端点与高斯条件轨迹，已知的速度标签是</p>
+
+$$
+U_t=\dot a(t)x_0+\dot b(t)\epsilon.
+$$
+
+<p>它对应的整体速度为 $u_t(z_t)=\mathbb E[U_t\mid z_t,t]$。条件 Flow Matching 训练目标是</p>
+
+$$
+\mathcal L_{\mathrm{CFM}}
+=\mathbb E\left[w_u(t)
+\|u_\theta(z_t,t)-U_t\|^2\right].
+$$
+
+<p>应用同一个平方误差恒等式：</p>
+
+$$
+\boxed{
+\mathcal L_{\mathrm{CFM}}
+=\mathbb E\left[w_u(t)
+\|u_\theta(z_t,t)-u_t(z_t)\|^2\right]+C_u.}
+$$
+
+<p>这正是可计算的条件监督与未知整体流匹配之间的桥梁。训练一次只需抽端点与时间，计算当前状态和标签；不需要为这一步训练先数值求解整条生成 ODE。#Lipman-et-al.-2023#</p>
+
+<p>因此，DSM 与 CFM 在这里有相似的监督结构：前者平均条件密度梯度，后者平均条件速度。但条件标签由不同对象定义，最终对应的整体函数也不同；对于非高斯路径或重新耦合的端点，不能直接沿用本章全部标签换算。</p>
+
+<h3 class="section-title">把不同损失换到同一把尺子上</h3>
+
+<p>现在固定同一个训练样本、同一条路径，并让网络直接输出干净估计 $\hat x_0$。用上一章的公式构造其余预测，而不是另训几套独立网络：</p>
+
+$$
+\begin{aligned}
+\hat\epsilon&=\frac{z_t-a\hat x_0}{b},\\
+\hat s&=\frac{a\hat x_0-z_t}{b^2},\\
+\hat u&=\frac{\dot b}{b}z_t-\frac{\Delta}{b}\hat x_0,
+\qquad \Delta=a\dot b-b\dot a.
+\end{aligned}
+$$
+
+<p>令干净误差 $\delta x=\hat x_0-x_0$。因为真实样本与预测量满足相同的线性约束，相减后输入项抵消：</p>
+
+$$
+\begin{aligned}
+\hat\epsilon-\epsilon&=-\frac ab\,\delta x,\\
+\hat s-S_t&=\frac a{b^2}\,\delta x,\\
+\hat u-U_t&=-\frac\Delta b\,\delta x.
+\end{aligned}
+$$
+
+<p>这里第二行比较的是模型 score 与已知的*条件 score 标签*，不是逐样本拿未知整体 score 作标签。由此得到：</p>
+
+<div class="table-wrap"><table><thead><tr><th>误差空间</th><th>与同一组干净预测误差的关系</th></tr></thead><tbody><tr><td>干净图像</td><td>$\|\hat x_0-x_0\|^2$</td></tr><tr><td>标准噪声</td><td>$(a^2/b^2)\|\hat x_0-x_0\|^2$</td></tr><tr><td>条件 Score</td><td>$(a^2/b^4)\|\hat x_0-x_0\|^2$</td></tr><tr><td>路径速度</td><td>$(\Delta^2/b^2)\|\hat x_0-x_0\|^2$</td></tr></tbody></table></div>
+
+<p>对 VP 的 $v_{\mathrm{VP}}=a\epsilon-bx_0$，还可以把 $\hat\epsilon$ 代入，利用 $a^2+b^2=1$，得到</p>
+
+$$
+\hat v-v_{\mathrm{VP}}
+=a(\hat\epsilon-\epsilon)-b(\hat x_0-x_0)
+=-\frac1b\,\delta x.
+$$
+
+<p>因此 VP v 误差对应的系数为 $1/b^2$。这是 VP 归一化条件下的结果，不能套用到任意线性 FM 系数。#Salimans-and-Ho-2022#</p>
+
+<p>这张表的含义是：<strong>在同一计算图上，预测量的换算会把一种误差精确变成另一种加权误差。</strong> 这些逐样本等式也包括了标签本身的条件不确定性；与“整体回归目标差一个常数”的解释相互兼容，但不是同一条等式。</p>
+
+<h3 class="section-title">JiT 的选择：预测图像，优化速度</h3>
+
+<p>线性 FM 路径中 $a=t$、$b=1-t$、$\Delta=-1$，所以</p>
+
+$$
+\|\hat u-U\|^2
+=\frac1{(1-t)^2}\|\hat x_0-x_0\|^2.
+$$
+
+<p>JiT 可以直接输出干净图像，再换成速度计算损失。这等价于对干净误差施加上述时间权重，并不等于无权重的干净图像 MSE。#Li-He-2025-JiT#</p>
+
+<p>对照噪声损失，则有</p>
+
+$$
+\|\hat\epsilon-\epsilon\|^2
+=\frac{t^2}{(1-t)^2}\|\hat x_0-x_0\|^2.
+$$
+
+<p>两种损失的时间系数不同。即使使用同一条路径、相同的干净输出，也不能把“训练速度”和“训练噪声”直接当成相同目标。</p>
+
+<div class="photo"><img src="media/images/edm-design-space/table-01.webp" alt="图 5：JiT 将网络直接输出与计算损失的空间分别列出，形成九种组合。行表示损失空间，列表示网络输出；其中原文 v 指线性路径速度，对应本篇的 u。来源：Li 与 He（2025），Table 1。" loading="lazy"><div class="cap">图 5：JiT 将网络直接输出与计算损失的空间分别列出，形成九种组合。行表示损失空间，列表示网络输出；其中原文 v 指线性路径速度，对应本篇的 u。来源：Li 与 He（2025），Table 1。</div></div>
+
+<p>公式还必须与实际端点实现匹配。以上使用未截断分母；若实现截断 $1-t$，就需要按截断后的预测和标签重新推导权重。不能一边修改除法，一边仍声称完全等于理想速度损失。</p>
+
+<h3 class="section-title">时间抽样也是训练目标的一部分</h3>
+
+<p>除了误差空间，还要问各个时间出现多频繁。设训练时间密度为 $\pi(t)$，误差的额外权重为 $w(t)$，则目标可写成</p>
+
+$$
+\mathcal L
+=\int\pi(t)w(t)
+\,\mathbb E[\ell_\theta\mid t]\,\mathrm dt.
+$$
+
+<p>所以模型面对的训练分配由时间抽样与损失权重共同决定。两个方法即使写着相同的 MSE，只要 $\pi$ 不同，也可能优化不同的总体目标。</p>
+
+<p>换时间坐标时，还要变换密度。例如在单调可逆区间，令 $\sigma=\sigma(t)$，则</p>
+
+$$
+\pi_\sigma(\sigma)
+=\pi_t(t(\sigma))
+ \left|\frac{\mathrm dt}{\mathrm d\sigma}\right|.
+$$
+
+<p>这意味着“均匀抽时间”和“均匀抽噪声标准差”不是同一个选择。对于离散 DDPM，则由各时间步的抽样概率与权重共同决定求和中的贡献。</p>
+
+<p>从总体期望看，可以通过重要性权重在适当条件下补偿抽样分布的改变；但这不保证小批量梯度方差、数值稳定性与实际训练效率也相同。EDM 后面采用的噪声分布，需要与其损失和预条件一起理解。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">为什么统一公式仍不能保证同样好学</h3>
+
+<p>现在能更准确地区分两种“换目标”。第一种只是对同一网络的损失作代数重写。例如，将图像输出换成速度再计算误差，与直接按推导出的时间权重计算图像误差，二者在相同计算图、相同端点处理下，函数值与参数梯度一致。</p>
+
+<p>第二种却是把原有主网络改成直接输出另一种量。对线性 FM，可以比较</p>
+
+$$
+\hat u_{\mathrm{direct}}=G_\phi(z,t),
+\qquad
+\hat u_{\mathrm{clean}}=\frac{F_\theta(z,t)-z}{1-t}.
+$$
+
+<p>这两种实现都输出速度，却使用不同的参数化与信息通路。第二个实现把输入相关项交给解析旁路，主干只需形成干净估计；第一个若没有独立通路，就要在内部保留足够信息来完成整个速度预测。</p>
+
+<p>即使在理想无限函数空间中，两种写法能对应相同的整体速度，它们也未必在固定宽度、固定训练预算下同样容易实现。前一篇 <a href="x-prediction.html">x-prediction</a> 中的 JiT 与残差流实验讨论的正是这个差别。统一换算没有消除网络容量、表征或优化问题。#Li-He-2025-JiT#</p>
+
+<p>同理，某个时间上的正标量权重，不改变无限函数空间中该时间的条件均值最优解；但实际网络用同一组有限参数同时拟合多个时间，权重会影响它在不同区域之间如何分配能力。</p>
+
+<h3 class="section-title">EDM 将从哪里继续改进</h3>
+
+<p>EDM 的共同去噪目标写成</p>
+
+$$
+\mathcal L_D
+=\mathbb E_{\sigma,x_0,\epsilon}
+\left[\lambda(\sigma)
+\|D_\theta(x_0+\sigma\epsilon;\sigma)-x_0\|^2\right],
+\qquad \sigma\sim p_{\mathrm{train}}.
+$$
+
+<p>至此，我们已经知道其中三项责任：$D_\theta$ 规定去噪接口，$\lambda$ 规定误差权重，$p_{\mathrm{train}}$ 规定噪声级出现的频率。但主网络并不一定直接实现 $D_\theta$；外部预条件还会改变它实际回归的目标与误差尺度。#Karras-et-al.-2022-EDM#</p>
+
+<p>因此，前几种方法可以按监督来源与理想函数作如下总结：</p>
+
+<div class="table-wrap"><table><thead><tr><th>典型训练方式</th><th>可以直接构造的标签</th><th>对应的理想回归函数</th></tr></thead><tbody><tr><td>DDPM 噪声回归</td><td>$\epsilon$</td><td>$e_t(z)$</td></tr><tr><td>高斯 DSM</td><td>$-\epsilon/b$</td><td>$s_t(z)$</td></tr><tr><td>高斯路径 CFM</td><td>$\dot a x_0+\dot b\epsilon$</td><td>$u_t(z)$</td></tr><tr><td>JiT 图像输出、速度损失</td><td>干净标签与速度标签，经解析换算比较</td><td>干净条件均值及对应速度，非退化时</td></tr><tr><td>EDM 加权去噪</td><td>$x_0$，噪声级为 $\sigma$</td><td>$D^*(y;\sigma)$</td></tr></tbody></table></div>
+
+<p>这张表列出典型回归形式，不把完整 DDPM 变分目标、一般非高斯 FM，以及各种扩展训练都压缩成完全相同的算法。</p>
+
+<p>本章的结论是：<strong>先明确路径，再明确标签、输出、误差空间、时间抽样与网络实现，才能判断两种训练究竟哪里相同、哪里不同。</strong> 可换算的理想函数提供了共同框架；具体的学习难度仍由这些选择共同决定。</p>
+
+<p>下一章进入 EDM 的网络预条件，从输入方差、残差目标和误差放大出发，推导主网络 $F_\theta$ 怎样组成去噪器 $D_\theta$。这将把前面的抽象训练比较落实为一组具体系数。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 5 章｜推理配置</div>
-  <div class="ch-title">噪声日程、初始状态与 NFE</div>
-  <p>连续 ODE 规定了状态如何随噪声尺度变化，但推理还要选有限个噪声级作为计算节点。EDM 从高斯初始状态 $\mathbf{x}_{\mathrm{init}}=\sigma_{\max}\boldsymbol{\epsilon}$ 出发，沿递减噪声表走向 $\sigma=0$。节点间距由 $\rho$ 控制；具体用 Euler 还是 Heun 积分，留到下一章：</p>
+<div class="ch fade-in" id="chapter-5">
+<div class="ch-label">第 5 章</div>
+<div class="ch-title">EDM 的网络预条件</div>
 
-  $$\sigma_i=\left[\sigma_{\max}^{1/\rho}+\frac{i}{N-1}\left(\sigma_{\min}^{1/\rho}-\sigma_{\max}^{1/\rho}\right)\right]^\rho,\quad i=0,\ldots,N-1;\qquad \sigma_N=0$$
+<h3 class="section-title">为什么去噪器外面还需要一层变换</h3>
 
-  <p>该表从 $\sigma_0=\sigma_{\max}$ 逐步降到 $\sigma_{N-1}=\sigma_{\min}$，最后再增加一个 $0$ 作为终点。$\rho$ 改变中间噪声级的间距，不会改变网络架构；论文在图像实验中使用 $\rho=7$，并指出 $\rho$ 约在 5–10 的范围内表现较好。这是该论文实验中的经验选择，不是所有模型都必须使用的定律。#Karras-et-al.-2022-EDM#</p>
+<p>前面把不同预测目标统一到了去噪接口 $D_\theta(y;\sigma)$。但同一个网络要处理从接近干净图像到几乎纯噪声的输入，数值尺度相差很大。直接把这些输入交给主干、直接回归同一尺度的图像，并不是唯一选择。</p>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>设计对象</th><th>它决定什么</th><th>EDM 图像实验示例</th></tr></thead>
-      <tbody>
-        <tr><td>连续噪声坐标</td><td>ODE 沿哪条噪声路径演化</td><td>$\sigma(t)=t$，$s(t)=1$</td></tr>
-        <tr><td>离散噪声表</td><td>有限步数落在哪些噪声级</td><td>$\sigma_{\min}=0.002$，$\sigma_{\max}=80$，$\rho=7$</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p><em>表 4：连续噪声坐标和离散噪声表决定采样沿哪条噪声尺度路径、在哪些位置调用模型；ODE 求解器另见第 7 章。#Karras-et-al.-2022-EDM#</em></p>
+<p>EDM 的预条件（preconditioning）是在主网络前后加上依赖噪声级的确定性缩放与旁路，让主干接收的输入、需要回归的目标具有较稳定的尺度。它改变的是网络怎样实现去噪函数，不会另造一条概率路径。#Karras-et-al.-2022-EDM#</p>
+
+<p>继续使用 $y=x_0+\sigma\epsilon$，EDM 写成：</p>
+
+$$
+\boxed{D_\theta(y;\sigma)
+=c_{\mathrm{skip}}(\sigma)y
++c_{\mathrm{out}}(\sigma)
+F_\theta\!\left(c_{\mathrm{in}}(\sigma)y;
+ c_{\mathrm{noise}}(\sigma)\right).}
+$$
+
+<p>这里有两个不同层次：$D_\theta$ 对外提供干净图像估计；$F_\theta$ 是实际训练的主网络，其直接输出一般不是干净图像。四个系数的分工如下。</p>
+
+<div class="table-wrap"><table><thead><tr><th>系数</th><th>作用</th></tr></thead><tbody><tr><td>$c_{\mathrm{in}}$</td><td>缩放带噪输入后送入主干</td></tr><tr><td>$c_{\mathrm{noise}}$</td><td>把噪声级转换为主干的条件输入</td></tr><tr><td>$c_{\mathrm{skip}}$</td><td>通过旁路保留输入的一部分</td></tr><tr><td>$c_{\mathrm{out}}$</td><td>将主干输出缩放后加到旁路上</td></tr></tbody></table></div>
+
+<p>所以，判断 EDM 是什么 prediction，不能只看接口名称。需要把外部组合公式展开，看主干真正接受什么监督。</p>
+
+<h3 class="section-title">第一步：让输入方差保持稳定</h3>
+
+<p>为推导标量缩放，采用原文的方差近似：数据已适当中心化，每个分量用共同的代表性方差 $\sigma_{\mathrm{data}}^2$ 描述；标准高斯噪声与数据独立。它不要求图像本身服从高斯分布，也不表示所有像素的真实方差完全相同。</p>
+
+<p>于是带噪输入的代表性方差为：</p>
+
+$$
+\operatorname{Var}(y)=\sigma_{\mathrm{data}}^2+\sigma^2.
+$$
+
+<p>希望主干输入具有单位方差，就令：</p>
+
+$$
+\operatorname{Var}(c_{\mathrm{in}}y)
+=c_{\mathrm{in}}^2(\sigma_{\mathrm{data}}^2+\sigma^2)=1,
+\qquad
+\boxed{c_{\mathrm{in}}=
+\frac{1}{\sqrt{\sigma_{\mathrm{data}}^2+\sigma^2}}.}
+$$
+
+<p>高噪声时，输入主要除以噪声尺度；低噪声时，主要按数据尺度归一化。这里统一的是二阶尺度，并没有让不同噪声级的输入分布完全一致。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">第二步：看清主干实际预测的残差</h3>
+
+<p>将预条件公式代入去噪误差，对 $\sigma>0$ 写出：</p>
+
+$$
+D_\theta-x_0
+=c_{\mathrm{out}}\left(F_\theta-F_{\mathrm{target}}\right),
+\qquad
+F_{\mathrm{target}}
+=\frac{x_0-c_{\mathrm{skip}}y}{c_{\mathrm{out}}}.
+$$
+
+<p>因此主干预测的是“干净图像减去输入旁路”以后，再经过归一化的残差。旁路负责一部分容易保留的信息，主干补足剩余部分。</p>
+
+<p>若记 $k=c_{\mathrm{skip}}$，未归一化残差为：</p>
+
+$$
+r=x_0-ky=(1-k)x_0-k\sigma\epsilon.
+$$
+
+<p>由独立性，其方差为：</p>
+
+$$
+\operatorname{Var}(r)
+=(1-k)^2\sigma_{\mathrm{data}}^2+k^2\sigma^2.
+$$
+
+<p>要让 $F_{\mathrm{target}}$ 具有单位方差，可以选择正的 $c_{\mathrm{out}}$，使 $c_{\mathrm{out}}^2=\operatorname{Var}(r)$。现在还差一个问题：旁路比例 $k$ 取多少？</p>
+
+<h3 class="section-title">第三步：选择旁路，减少输出误差的放大</h3>
+
+<p>同样大小的主干误差 $\delta F$，在去噪接口中成为 $\delta D=c_{\mathrm{out}}\delta F$。EDM 在目标单位方差这一约束下，选择使 $c_{\mathrm{out}}^2$ 最小的旁路比例。对上式求导：</p>
+
+$$
+\frac{d}{dk}\left[(1-k)^2\sigma_{\mathrm{data}}^2+k^2\sigma^2\right]
+=-2(1-k)\sigma_{\mathrm{data}}^2+2k\sigma^2=0.
+$$
+
+<p>于是：</p>
+
+$$
+\boxed{c_{\mathrm{skip}}
+=\frac{\sigma_{\mathrm{data}}^2}{\sigma_{\mathrm{data}}^2+\sigma^2},}
+\qquad
+\boxed{c_{\mathrm{out}}
+=\frac{\sigma\sigma_{\mathrm{data}}}
+{\sqrt{\sigma_{\mathrm{data}}^2+\sigma^2}}.}
+$$
+
+<p>二阶导数为 $2(\sigma_{\mathrm{data}}^2+\sigma^2)>0$，所以这是该标量方差问题的唯一最小值。#Karras-et-al.-2022-EDM#</p>
+
+<p>这与用标量线性估计器 $ky$ 估计图像时的最小均方误差系数相同。但自然图像不是高斯数据，真正的最优去噪器通常是非线性的；旁路只是提供一个线性起点，剩余结构仍由网络学习。这个局部推导也不是“所有网络中训练效果全局最优”的证明。</p>
+
+<h3 class="section-title">主干目标怎样随噪声变化</h3>
+
+<p>把两个系数代回 $F_{\mathrm{target}}$，得到更直观的形式：</p>
+
+$$
+\boxed{F_{\mathrm{target}}
+=\frac{\sigma}{\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}}
+\frac{x_0}{\sigma_{\mathrm{data}}}
+-\frac{\sigma_{\mathrm{data}}}{\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}}
+\epsilon.}
+$$
+
+<p>这说明 EDM 的主干目标并非固定的纯 x 标签，也并非固定的纯噪声标签：</p>
+
+<ul><li>当 $\sigma\ll\sigma_{\mathrm{data}}$ 时，旁路接近保留整个输入，主干目标接近 $-\epsilon$，负责小幅去噪修正。</li><li>当 $\sigma\gg\sigma_{\mathrm{data}}$ 时，旁路衰减，主干目标接近 $x_0/\sigma_{\mathrm{data}}$，负责估计图像结构。</li><li>中间噪声级下，主干回归归一化图像与噪声的线性组合。</li></ul>
+
+<p>这些是 <strong>训练标签</strong> 的极限。网络只看到输入和噪声级，平方误差下学到的仍是这些标签的条件均值，不能因此认为它能精确恢复每一份未知噪声。</p>
+
+<p>例如取 $\sigma=\sigma_{\mathrm{data}}$，则 $c_{\mathrm{skip}}=1/2$，目标为 $(x_0/\sigma_{\mathrm{data}}-\epsilon)/\sqrt2$。此时既不让主干完全复制输入，也不要求它独自承担全部输出。</p>
+
+<h3 class="section-title">四个系数与训练权重怎样衔接</h3>
+
+<p>EDM 使用的系数可以集中列成一张表：#Karras-et-al.-2022-EDM#</p>
+
+<div class="table-wrap"><table><thead><tr><th>系数</th><th>EDM 取值</th><th>依据</th></tr></thead><tbody><tr><td>$c_{\mathrm{in}}$</td><td>$1/\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}$</td><td>归一化输入方差</td></tr><tr><td>$c_{\mathrm{skip}}$</td><td>$\sigma_{\mathrm{data}}^2/(\sigma^2+\sigma_{\mathrm{data}}^2)$</td><td>最小化标量残差方差</td></tr><tr><td>$c_{\mathrm{out}}$</td><td>$\sigma\sigma_{\mathrm{data}}/\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}$</td><td>归一化残差目标</td></tr><tr><td>$c_{\mathrm{noise}}$</td><td>$\log(\sigma)/4$</td><td>原论文经验选择的噪声条件映射</td></tr></tbody></table></div>
+
+<p>前三个系数来自上述尺度要求，$c_{\mathrm{noise}}$ 的具体形式不由这些方差等式推出。原论文实验采用 $\sigma_{\mathrm{data}}=0.5$，它依赖图像数值尺度，不应脱离数据预处理照搬。#Karras-et-al.-2022-EDM#</p>
+
+<div class="photo"><img src="media/images/edm-design-space/table-1-design-space.webp" alt="EDM 原论文 Table 1：回看 Network and preconditioning 各行，可以看到统一去噪接口下，VP、VE 与 EDM 仍使用不同的主干输入和输出组合。" loading="lazy"><div class="cap">EDM 原论文 Table 1：回看 Network and preconditioning 各行，可以看到统一去噪接口下，VP、VE 与 EDM 仍使用不同的主干输入和输出组合。#Karras-et-al.-2022-EDM#</div></div>
+
+<p>最后，将去噪损失写成主干残差损失：</p>
+
+$$
+\lambda(\sigma)\|D_\theta-x_0\|^2
+=\lambda(\sigma)c_{\mathrm{out}}(\sigma)^2
+\|F_\theta-F_{\mathrm{target}}\|^2.
+$$
+
+<p>EDM 取 $\lambda(\sigma)=1/c_{\mathrm{out}}(\sigma)^2$，从而抵消这里的显式尺度因子。它让主干残差损失的有效系数为 1；这不表示所有噪声级在实际训练中同等重要，因为噪声抽样频率、任务难度与梯度仍可能不同。下一章将单独解释噪声级怎样分配。#Karras-et-al.-2022-EDM#</p>
+
+<p>本章可以概括为：<strong>统一去噪接口解决函数之间怎样换算；预条件解决主干以什么尺度、通过哪些通路实现这个接口。</strong> EDM 与前篇 x-prediction 的联系在于都需要区分接口、直接输出和解析旁路；两者的具体目标、结构与实验结论仍需分别讨论。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 6 章｜连续动力学</div>
-  <div class="ch-title">Probability Flow ODE：连续去噪轨迹</div>
+<div class="ch fade-in" id="chapter-6">
+<div class="ch-label">第 6 章</div>
+<div class="ch-title">EDM 怎样分配训练</div>
 
-  <p>前一篇已介绍过概率流 ODE：在理想 score 条件下，它与对应的扩散 SDE 具有相同的各时刻边缘分布，但两者的样本轨迹不同。EDM 选择一个便于解释的噪声坐标：令连续噪声水平为 $\sigma(t)=t$，并令信号缩放 $s(t)=1$。在这个坐标下，PF-ODE 的采样速度可以写成 score 的函数；再代入本篇第 2 章的去噪器关系，就得到：</p>
+<h3 class="section-title">先区分频率与权重</h3>
 
-  $$\frac{d\mathbf{x}}{dt}=-\dot{\sigma}(t)\,\sigma(t)\nabla_{\mathbf{x}}\log p_{\sigma(t)}(\mathbf{x})$$
+<p>上一章让主干输入与目标的代表性方差保持稳定，但训练还有一项资源分配问题：一次更新该抽到哪个噪声级？抽到以后，该样本的误差又应放大多少？</p>
 
-  $$\frac{d\mathbf{x}}{d\sigma}=\frac{\mathbf{x}-D_\theta(\mathbf{x};\sigma)}{\sigma}$$
+<p>EDM 将两件事分开。$p_{\mathrm{train}}(\sigma)$ 决定噪声级出现的频率，$\lambda(\sigma)$ 决定去噪误差的权重。连同预条件，训练目标为：</p>
 
-  <p>生成时，求解器从高噪声水平向低噪声水平走。第二个式子是相对于噪声尺度 $\sigma$ 的速度；由于采样的 $\Delta\sigma$ 为负，状态会朝去噪器预测的干净图像方向更新。严格说这是模型给出的数值向量场，不是把每个图像像素当作粒子、再用物理力推回原图。理想 score 下，连续概率流 ODE 与相应 SDE 匹配边缘分布；实际网络误差和离散步长会让有限步采样出现误差。#Song-et-al.-2021-SDE# #Karras-et-al.-2022-EDM#</p>
+$$
+\mathcal L
+=\int_0^\infty p_{\mathrm{train}}(\sigma)
+\lambda(\sigma)\,
+\mathbb E\|D_\theta(y;\sigma)-x_0\|^2\,d\sigma,
+\qquad y=x_0+\sigma\epsilon.
+$$
+
+<p>因此，在这个积分测度下，去噪误差前面的总系数是 $p_{\mathrm{train}}\lambda$。改写到主干误差空间以后，它又成为 $p_{\mathrm{train}}\lambda c_{\mathrm{out}}^2$。只看其中一个系数，会误判哪些噪声级真正获得了更多训练。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">损失权重先抵消预条件的尺度</h3>
+
+<p>由上一章的系数，EDM 选择：</p>
+
+$$
+\boxed{\lambda(\sigma)
+=\frac{1}{c_{\mathrm{out}}(\sigma)^2}
+=\frac{\sigma^2+\sigma_{\mathrm{data}}^2}
+{\sigma^2\sigma_{\mathrm{data}}^2}
+=\frac{1}{\sigma^2}+\frac{1}{\sigma_{\mathrm{data}}^2}.}
+$$
+
+<p>这样每个样本的加权去噪误差正好等于归一化残差误差：</p>
+
+$$
+\lambda(\sigma)\|D_\theta-x_0\|^2
+=\|F_\theta-F_{\mathrm{target}}\|^2.
+$$
+
+<p>低噪声时 $\lambda$ 很大，并不意味着主干一定承受发散的监督尺度：$c_{\mathrm{out}}$ 同时变小，两者在上式中精确抵消。公式用于 $\sigma>0$；训练不直接把 $\sigma=0$ 代入这些含倒数的表达式。</p>
+
+<p>原文还采用主干输出层零初始化。在第五章的方差近似下，归一化标签每分量的二阶矩为 1，因此初始化时每个噪声级的期望损失都约为 1；若使用各分量平方和而非平均，则应再乘分量数。这解释了原文 Figure 5(a) 的初始化基线，但不保证各噪声级的梯度范数或学习速度也相等。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">为什么不把训练平均分给所有噪声级</h3>
+
+<p>权重消除了一个已知尺度差异，却没有消除任务本身的难度差异。可以从两端理解：</p>
+
+<ul><li><strong>极低噪声</strong>：输入已经非常接近图像。主干标签接近负噪声，但要从单个近乎干净的输入中分辨微小随机扰动仍然困难。在原文实验中，这一端的归一化损失可改善空间有限；噪声幅度本身又很小。</li><li><strong>极高噪声</strong>：输入几乎不提供原图信息。主干标签接近归一化图像，而平方误差的理想预测趋向数据均值，无法猜中训练时随机配对的具体图像。</li><li><strong>中间噪声</strong>：输入保留一些结构，同时仍有显著破坏。模型可以利用这些结构减少不确定性，是原文观察到训练后损失下降最明显的区间。</li></ul>
+
+<p>这里不能把“高噪声损失较大”简单解释成模型能力不足。即使达到条件均值最优解，也存在第四章讨论过的不可约误差：</p>
+
+$$
+\mathbb E\|F_\theta-F_{\mathrm{target}}\|^2
+=\mathbb E\|F_\theta-\mathbb E[F_{\mathrm{target}}\mid y,\sigma]\|^2
++\mathbb E\|F_{\mathrm{target}}-\mathbb E[F_{\mathrm{target}}\mid y,\sigma]\|^2.
+$$
+
+<p>第二项来自输入不能唯一决定标签。高噪声时，这种不确定性尤为明显。原文据逐噪声损失曲线，将更多训练投入中间范围；这是一项有实验依据的资源选择，不是证明两端可以完全不训练。#Karras-et-al.-2022-EDM#</p>
+
+<div class="photo"><img src="media/images/edm-design-space/figure-5-training-and-churn.webp" alt="EDM 原论文 Figure 5。此处重点看左侧 (a)：绿线是初始化损失，蓝线与橙线是训练后的逐噪声损失，红色虚线表示训练噪声分布。损失下降主要集中在中间噪声区间；右侧 (b) 的随机采样实验留到采样章节解释。" loading="lazy"><div class="cap">EDM 原论文 Figure 5。此处重点看左侧 (a)：绿线是初始化损失，蓝线与橙线是训练后的逐噪声损失，红色虚线表示训练噪声分布。损失下降主要集中在中间噪声区间；右侧 (b) 的随机采样实验留到采样章节解释。#Karras-et-al.-2022-EDM#</div></div>
+
+<h3 class="section-title">用对数正态分布抽取噪声级</h3>
+
+<p>EDM 不是均匀抽取 $\sigma$，也不是在一段对数区间上均匀抽取，而是令对数噪声服从正态分布：</p>
+
+$$
+\ell\sim\mathcal N(P_{\mathrm{mean}},P_{\mathrm{std}}^2),
+\qquad \sigma=e^\ell.
+$$
+
+<p>对应 $\sigma$ 的概率密度为：</p>
+
+$$
+\boxed{p_{\mathrm{train}}(\sigma)
+=\frac{1}{\sigma P_{\mathrm{std}}\sqrt{2\pi}}
+\exp\!\left[-\frac{(\log\sigma-P_{\mathrm{mean}})^2}
+{2P_{\mathrm{std}}^2}\right],\qquad \sigma>0.}
+$$
+
+<p>$P_{\mathrm{mean}}$ 控制训练集中在哪个对数噪声范围，$P_{\mathrm{std}}$ 控制覆盖宽度。原论文 Table 1 使用 $P_{\mathrm{mean}}=-1.2$、$P_{\mathrm{std}}=1.2$，配合 $\sigma_{\mathrm{data}}=0.5$。这些是论文配置，不是不同数据尺度与模型下都成立的最优常数。#Karras-et-al.-2022-EDM#</p>
+
+<p>这里有一个读图细节：Figure 5(a) 的横轴是对数噪声。对数坐标中每单位区间的抽样概率由 $\ell=\log\sigma$ 的密度描述，而不是直接由 $p_{\mathrm{train}}(\sigma)$ 描述。两者满足：</p>
+
+$$
+p_\ell(\ell)=e^\ell p_{\mathrm{train}}(e^\ell)
+=\sigma p_{\mathrm{train}}(\sigma).
+$$
+
+<p>所以不能把对数轴上画出的钟形曲线直接当成关于 $d\sigma$ 的密度，漏掉变量变换中的 $1/\sigma$。本配置下，$\sigma$ 的中位数为 $e^{-1.2}\approx0.30$，也不应把它误称为 $\sigma$ 密度的峰值。</p>
+
+<h3 class="section-title">一次训练具体做什么</h3>
+
+<p>将前两章组合，一次 EDM 训练更新可以写成下面的教学伪代码。它整理自原文目标与配置，不是论文中的算法截图。#Karras-et-al.-2022-EDM#</p>
+
+<pre><code class="language-text">抽取训练图像 x0
+抽取 g ~ N(0, 1)，令 sigma = exp(P_mean + P_std * g)
+抽取 epsilon ~ N(0, I)，令 y = x0 + sigma * epsilon
+按 sigma 计算 c_in、c_skip、c_out、c_noise
+F = F_theta(c_in * y, c_noise)
+D = c_skip * y + c_out * F
+loss = mean((D - x0)^2) / c_out^2
+对模型参数反向传播并更新</code></pre>
+
+<p>实际小批量中可以为每张图像分别抽取噪声级；这里仅展开基础去噪目标，未展开类别条件或增强正则化。它也可以等价地实现成主干对归一化残差标签的平方误差。</p>
+
+<h3 class="section-title">训练噪声分布不是采样时间表</h3>
+
+<p>训练中的噪声抽样与生成中的噪声级序列是两个不同问题：</p>
+
+<div class="table-wrap"><table><thead><tr><th>选择</th><th>决定什么</th><th>是否必须按顺序执行</th></tr></thead><tbody><tr><td>$p_{\mathrm{train}}(\sigma)$</td><td>网络在哪些噪声级获得多少训练样本</td><td>否；每次可独立抽取</td></tr><tr><td>$\lambda(\sigma)$</td><td>每个样本的去噪误差怎样加权</td><td>不规定生成顺序</td></tr><tr><td>推理序列 $\sigma_0>\cdots>\sigma_N$</td><td>生成时在哪些噪声级计算向量场</td><td>是；按求解器推进</td></tr></tbody></table></div>
+
+<p>训练时抽到某个 $\sigma$，直接构造 $x_0+\sigma\epsilon$ 就能监督，不需要先跑完整条轨迹。推理时则要沿学到的场逐步生成；节点怎样分配，需要考虑轨迹曲率与数值误差。因而，训练采用对数正态分布，并不要求生成也按该分布随机选步。#Karras-et-al.-2022-EDM#</p>
+
+<p>本章的结论是：<strong>预条件稳定尺度，损失权重抵消已知的输出缩放，噪声抽样分配训练频率。</strong> 三者共同作用，不能把 EDM 的训练改进只归为某一个权重公式。原文将预条件配置与随后加入的权重、噪声抽样分别做消融；完整实验结论将在末章结合 Table 2 讨论。</p>
+
+<p>下一章回到生成：同一个去噪器怎样构造确定性 ODE 与随机 SDE，它们与前面 DDPM、DDIM 和 Flow Matching 的采样分别是什么关系。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 7 章｜数值求解器</div>
-  <div class="ch-title">Euler 与 Heun：怎样离散积分 PF-ODE</div>
-  <p>求解器方面，EDM 用 Heun 二阶方法：先以当前点的斜率做 Euler 预测，再在预测点重新调用去噪器，计算终点斜率，最后取两处斜率的平均作校正。原论文 Algorithm 1 把这几个步骤写成了采样循环：</p>
+<div class="ch fade-in" id="chapter-7">
+<div class="ch-label">第 7 章</div>
+<div class="ch-title">统一生成过程</div>
 
-  <div class="photo">
-    <img src="media/images/edm-design-space/algorithm-1-heun.webp" alt="EDM 原论文 Algorithm 1：确定性 Heun 采样器伪代码" loading="lazy">
-    <div class="cap">图 4：EDM 确定性 Heun 采样器。每步先做 Euler 预测，再用预测终点的斜率校正；到 $\sigma=0$ 的最后一步跳过第二次评估。取自 Karras 等人（2022）Algorithm 1。#Karras-et-al.-2022-EDM#</div>
-  </div>
+<h3 class="section-title">去噪器并不等于采样器</h3>
 
-  <p>Euler 只在区间起点计算一次斜率，按切线走完整步；Heun 再在 Euler 预测点计算终点斜率，并平均两端斜率修正结果。记 $\Delta\sigma_i=\sigma_{i+1}-\sigma_i$，两种更新分别是：</p>
+<p>训练结束后，我们得到 $D_\theta(y;\sigma)$。它接收当前状态和噪声水平，估计干净图像；但它没有规定下一步必须去哪、是否重新注入噪声、用多少次网络计算。</p>
 
-  $$\text{Euler: }\mathbf{x}_{i+1}=\mathbf{x}_i+\Delta\sigma_i d_i,\qquad d_i=\frac{\mathbf{x}_i-D_\theta(\mathbf{x}_i;\sigma_i)}{\sigma_i}$$
+<p>因此需要区分三个层次：</p>
 
-  $$\text{Heun: }\mathbf{x}'_{i+1}=\mathbf{x}_i+\Delta\sigma_i d_i,\quad d'_{i+1}=\frac{\mathbf{x}'_{i+1}-D_\theta(\mathbf{x}'_{i+1};\sigma_{i+1})}{\sigma_{i+1}},\quad \mathbf{x}_{i+1}=\mathbf{x}_i+\frac{\Delta\sigma_i}{2}(d_i+d'_{i+1})$$
+<ol><li><strong>预测函数</strong>：去噪器、score 或速度场提供什么局部信息。</li><li><strong>连续生成过程</strong>：选择哪条 ODE 或 SDE，将一族边际分布连接起来。</li><li><strong>数值采样器</strong>：用 Euler、Heun 或其他离散算法，近似执行这个连续过程。</li></ol>
 
+<p>本章讨论第二层，下一章再讨论第三层。DDPM 和 DDIM 原始算法本身是离散过程；将它们放入连续框架，是为了理解关系，不能省略从连续方程到离散更新的区别。#Karras-et-al.-2022-EDM# #Song-et-al.-2021-SDE# #Song-Meng-Ermon-2021-DDIM#</p>
 
-  <p><strong>起点斜率：</strong>在当前状态 $\mathbf{x}_i$ 和噪声级 $\sigma_i$ 调用去噪器，计算 $d_i$。</p>
+<h3 class="section-title">从去噪器得到概率流 ODE</h3>
 
-  <p><strong>Euler 预测：</strong>沿起点斜率走完整个噪声区间，得到试探状态 $\mathbf{x}'_{i+1}$。</p>
+<p>继续使用 EDM 的加性噪声坐标：</p>
 
-  <p><strong>终点斜率：</strong>在试探状态和下一噪声级 $\sigma_{i+1}$ 再调用一次去噪器，得到 $d'_{i+1}$。</p>
+$$
+y=x_0+\sigma\epsilon,
+\qquad p(y;\sigma)=p_{\mathrm{data}}*\mathcal N(0,\sigma^2I).
+$$
 
-  <p><strong>平均修正：</strong>取 $d_i$ 与 $d'_{i+1}$ 的平均值，完成最终更新。由于 $\Delta\sigma_i<0$，状态沿噪声降低的方向移动。可以把 Heun 理解为用“起点方向和试走后方向的平均值”代替只看起点方向。</p>
+<p>这里描述的是每个噪声级的边际分布，尚未指定不同噪声级之间怎样配对。高斯平滑满足热方程：</p>
 
-  <div class="callout"><strong>一维算例（只演示更新算术）：</strong>假设当前位置 $x_i=6$、$\sigma_i=4$，模型预测 $D_\theta(6;4)=2$，那么起点斜率 $d_i=(6-2)/4=1$。若下一噪声级为 $\sigma_{i+1}=2$，则 $\Delta\sigma_i=-2$，Euler 预测点是 $x'_{i+1}=6+(-2)\times1=4$。再假设模型在预测点给出 $D_\theta(4;2)=1$，终点斜率为 $d'_{i+1}=(4-1)/2=1.5$。Heun 用两端斜率的平均值 $1.25$ 更新，得到 $x_{i+1}=6+(-2)\times1.25=3.5$；只用 Euler 则会得到 $4$。这些数值是为说明步骤而设的示例。</div>
+$$
+\partial_\sigma p(y;\sigma)=\sigma\Delta_y p(y;\sigma).
+$$
 
-  <p>Euler 每个区间只需一次网络评估，计算便宜但全局误差为一阶；Heun 的普通区间需要两次评估，全局误差为二阶，通常能在相同步数下得到更准确的离散轨迹。EDM Algorithm 1 的最后一步直达 $\sigma=0$，此时跳过第二次评估，避免在公式含 $1/\sigma$ 的终点计算斜率。该步的 Euler 更新会直接落到去噪器预测值：$\mathbf{x}_{i+1}=D_\theta(\mathbf{x}_i;\sigma_i)$。因此若有 $N$ 个区间，总 NFE 为 $2N-1$。Heun 改变的是对同一 ODE 的数值近似。#Karras-et-al.-2022-EDM#</p>
+<p>若用时间 $t$ 控制噪声级，则：</p>
+
+$$
+\partial_t p=\dot\sigma(t)\sigma(t)\Delta_y p.
+$$
+
+<p>另一方面，ODE $dy/dt=v(y,t)$ 通过连续性方程改变密度：</p>
+
+$$
+\partial_t p=-\nabla_y\cdot(pv).
+$$
+
+<p>利用 $p\nabla\log p=\nabla p$，选择下面的速度，就能让这两个密度方程一致：</p>
+
+$$
+\boxed{v(y,t)
+=-\dot\sigma(t)\sigma(t)s(y;\sigma(t)),
+\qquad s=\nabla_y\log p.}
+$$
+
+<p>第三章已经得到 $s=(D^*-y)/\sigma^2$，因此用训练好的去噪器近似后：</p>
+
+$$
+\boxed{\frac{dy}{dt}
+=\frac{\dot\sigma(t)}{\sigma(t)}
+\left[y-D_\theta(y;\sigma(t))\right].}
+$$
+
+<p>这就是 EDM 在不额外缩放状态时使用的概率流 ODE。它不是要求主干直接训练成速度网络，而是把去噪输出解析换算成向量场。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">为什么噪声减小时会朝干净图像移动</h3>
+
+<p>若直接以噪声水平作独立变量，取 $\sigma(t)=t$，方程成为：</p>
+
+$$
+\boxed{\frac{dy}{d\sigma}
+=\frac{y-D_\theta(y;\sigma)}{\sigma}.}
+$$
+
+<p>右侧看上去指向“远离干净估计”的方向，但生成是从大 $\sigma$ 向小 $\sigma$ 积分。对负的噪声增量 $\Delta\sigma<0$，Euler 更新为：</p>
+
+$$
+y_{\mathrm{next}}
+=y+\frac{\Delta\sigma}{\sigma}
+\left[y-D_\theta(y;\sigma)\right].
+$$
+
+<p>例如 $\Delta\sigma=-0.1\sigma$，就得到 $y_{\mathrm{next}}=0.9y+0.1D_\theta$，实际移动方向是朝向干净估计。这里仅用 Euler 说明方向；具体误差与 Heun 修正留到下一章。</p>
+
+<p>而且 $D_\theta$ 随当前状态和噪声级变化，不能把首次预测当作整条轨迹固定不变的终点。</p>
+
+<h3 class="section-title">确定性路径有什么作用</h3>
+
+<p>概率流 ODE 在运行时不再注入新的随机噪声。给定初始潜变量、模型和求解设置，生成结果就确定；不同初始噪声仍能生成不同样本，所以确定性不意味着没有多样性。</p>
+
+<p>在向量场具有适当正则性、解唯一且可在所考察区间双向求解的条件下，ODE 在不同时间之间建立可逆的一对一映射。这提供了图像反演的基础：沿相反方向积分，寻找对应的噪声潜变量，再沿生成方向返回。#Karras-et-al.-2022-EDM# #Song-et-al.-2021-SDE# #Song-Meng-Ermon-2021-DDIM#</p>
+
+<p>但要区分连续理想过程与实际反演。有限步数、网络误差、条件改变以及接近零噪声时的正则性问题，都可能破坏精确重建。若数据严格集中于低维流形，也不能直接声称一个处处光滑可逆映射能在有限时间把全维高斯压成低维数据；前述可逆性更稳妥地适用于正噪声区间。</p>
+
+<h3 class="section-title">同一族边际也能由随机过程实现</h3>
+
+<p>既然 ODE 已能生成，为什么还需要 SDE？关键在于：边际分布并不唯一决定样本路径。可以在确定性搬运之外加入随机探索，同时调整漂移，使理想边际保持一致。</p>
+
+<p>为了避免反向时间中的符号混淆，下面另设 <strong>沿生成方向递增</strong> 的时间 $r$，规定 $\sigma(r)$ 逐渐减小。记：</p>
+
+$$
+\kappa(r)=-\sigma(r)\frac{d\sigma(r)}{dr}\ge0,
+\qquad p_r(y)=p(y;\sigma(r)).
+$$
+
+<p>此时 ODE 的速度是 $\kappa s$。再取非负、只依赖时间的系数 $\eta(r)$，构造：</p>
+
+$$
+\boxed{dy
+=\underbrace{\kappa(r)s(y;\sigma(r))\,dr}_{\text{确定性分布搬运}}
++\underbrace{\eta(r)s(y;\sigma(r))\,dr
++\sqrt{2\eta(r)}\,dW_r}_{\text{Langevin 修正}}.}
+$$
+
+<p>这里 $W_r$ 是沿 $r$ 的标准布朗运动；$\eta$ 是本章为说明随机强度引入的系数，<strong>不是 DDIM 的同名参数</strong>。相对于 EDM 原文的 Langevin 强度记法，它对应 $\eta=\beta\sigma^2$。#Karras-et-al.-2022-EDM#</p>
+
+<p>这个 SDE 不只增加噪声，还增加了一项沿 score 的漂移。两项为何需要配套，可以直接用 Fokker–Planck 方程核对：</p>
+
+$$
+\begin{aligned}
+\partial_r p_r
+&=-\nabla\cdot[(\kappa+\eta)p_rs]
+  +\eta\Delta p_r\\
+&=-(\kappa+\eta)\Delta p_r+\eta\Delta p_r\\
+&=-\kappa\Delta p_r
+=\sigma\frac{d\sigma}{dr}\Delta p_r.
+\end{aligned}
+$$
+
+<p>它恰好等于目标高斯平滑分布的变化率。随机扩散与新增的 score 漂移在密度方程中抵消，剩下的仍是所需的分布搬运。因此，在真实 score、正确初始分布及适当正则条件下，不同 $\eta$ 可以得到同样的逐时边际；但单个样本走过的路径不同。</p>
+
+<ul><li>$\eta=0$：概率流 ODE。</li><li>$\eta>0$：在搬运同时进行 Langevin 式随机修正。</li><li>$\eta=\kappa$：漂移为 $2\kappa s$，随机项为 $\sqrt{2\kappa}\,dW_r$，对应加性布朗加噪过程的反向 SDE。</li></ul>
+
+<p>这也解释了同一边际下，反向 SDE 与 PFODE 的 score 系数为什么通常相差一倍：SDE 还要补偿自身随机项造成的扩散。#Song-et-al.-2021-SDE# #Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">随机修正为什么可能有帮助</h3>
+
+<p>固定噪声级时，Langevin 项的目标是让分布朝该噪声级的目标密度调整。实际生成存在预测与离散误差，适度随机修正因此可能缓解先前积累的偏差。这是 EDM 对随机采样价值的解释。#Karras-et-al.-2022-EDM#</p>
+
+<p>它不保证每个样本都离某张原图更近，也不保证随机性越大越好：错误 score 会引入错误漂移，离散 Langevin 步本身也有误差，过量噪声还会损伤细节。原论文因此通过实验调节随机性，并提出 churn 的具体离散实现。下一章会说明 churn 怎样先提高噪声级，再用去噪步骤返回。</p>
+
+<h3 class="section-title">前面几种方法怎样放进来</h3>
+
+<div class="table-wrap"><table><thead><tr><th>方法</th><th>生成过程中的位置</th><th>需要保留的区别</th></tr></thead><tbody><tr><td>原始 DDPM</td><td>离散随机反向转移；有反向 SDE 的连续解释</td><td>原始更新系数由离散后验构造，不是直接把连续 SDE 当作其精确算法</td></tr><tr><td>Score SDE</td><td>由 score 构造反向 SDE，也可构造相同边际的 PFODE</td><td>训练 score 不意味着只能随机采样</td></tr><tr><td>确定性 DDIM</td><td>无新噪声的离散更新，在相应坐标下有 ODE 解释</td><td>广义 DDIM 可带随机性；跨步依据来自其转移构造</td></tr><tr><td>Flow Matching</td><td>直接回归边际速度场，用 ODE 生成</td><td>一般 FM 路径不必是高斯扩散路径</td></tr><tr><td>EDM</td><td>把已有预测器接到共同去噪接口，比较确定性与随机采样选择</td><td>预条件、训练分配、连续过程、数值求解器是不同层次</td></tr></tbody></table></div>
+
+<p>对第三章的高斯路径 $z_t=a(t)x_0+b(t)\epsilon$，CFM 理想速度已推导为：</p>
+
+$$
+u_t(z)=\frac{\dot a}{a}z
+-\frac{b(a\dot b-b\dot a)}{a}s_t(z).
+$$
+
+<p>除去信号缩放并改用 $\sigma=b/a$ 后，就回到本章的去噪器 ODE。这里统一的是这类路径的 <strong>理想边际速度</strong>；CFM 的条件训练标签、EDM 的预条件残差、以及两者的损失权重仍不相同。一般非高斯 Flow Matching 也不能仅靠一个高斯 score 换算公式概括。#Lipman-et-al.-2023#</p>
+
+<p>本章的结论是：<strong>同一个预测器可以服务于不同生成过程；同一族边际也可以由不同路径实现。</strong> 确定性路径方便复现与反演，随机过程提供额外的分布修正机制。两者是否能少步生成，还取决于数值求解，而不是由“有没有随机噪声”单独决定。</p>
+
+<p>下一章将落实到 Euler、Heun、噪声节点与 churn，解释一次采样究竟怎样执行、为什么这些选择会改变计算量与误差。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 8 章｜随机采样</div>
-  <div class="ch-title">Churn：暂时加噪，再继续去噪</div>
+<div class="ch fade-in" id="chapter-8">
+<div class="ch-label">第 8 章</div>
+<div class="ch-title">EDM 怎样采样</div>
 
-  <p>确定性 Heun 采样给定初始高斯噪声后，整条轨迹由网络和噪声表决定。EDM 还定义了一个可选的随机采样器：每一步可以先把噪声级短暂调高，注入一份新的高斯噪声，再从新的状态执行 ODE 更新。这种暂时增加噪声的操作叫 churn。它的直觉不是“把采样退回 DDPM 的反向后验”，而是在连续数值轨迹中补入随机扰动，允许后续去噪修正前面累积的误差。#Karras-et-al.-2022-EDM#</p>
+<h3 class="section-title">先把一次生成的输入说清楚</h3>
 
-  <p>若第 $i$ 步原噪声水平是 $\sigma_i$，先计算临时水平 $\hat{\sigma}_i=\sigma_i(1+\gamma_i)$，再抽取新噪声并构造 $\hat{\mathbf{x}}_i$：</p>
+<p>上一章确定了连续向量场，本章将它变成有限次网络调用。采用 EDM 推荐的坐标：不额外缩放状态，直接以噪声水平 $\sigma$ 为独立变量。记：</p>
 
-  $$\hat{\sigma}_i=\sigma_i(1+\gamma_i),\qquad \hat{\mathbf{x}}_i=\mathbf{x}_i+S_{\mathrm{noise}}\sqrt{\hat{\sigma}_i^2-\sigma_i^2}\,\boldsymbol{\epsilon}_i,\qquad \boldsymbol{\epsilon}_i\sim\mathcal{N}(0,I)$$
+$$
+f_\theta(y,\sigma)
+=\frac{y-D_\theta(y;\sigma)}{\sigma},
+\qquad \frac{dy}{d\sigma}=f_\theta(y,\sigma).
+$$
 
-  <p>其中 $\gamma_i$ 通常只在指定的噪声区间 $[S_{\min},S_{\max}]$ 内非零，并受每步上限控制：</p>
+<p>生成从高噪声开始，沿递减序列 $\sigma_0>\sigma_1>\cdots>\sigma_{N-1}>\sigma_N=0$ 推进。通常取初值：</p>
 
-  $$\gamma_i=\begin{cases}\min\!\left(\frac{S_{\mathrm{churn}}}{N},\sqrt{2}-1\right),&\sigma_i\in[S_{\min},S_{\max}]\\0,&\text{其他情况}\end{cases}$$
+$$
+y_0=\sigma_0 z,\qquad z\sim\mathcal N(0,I).
+$$
 
-  <p>Algorithm 2 的后续步骤是：在加噪后的 $\hat{\mathbf{x}}_i$、$\hat{\sigma}_i$ 上先算 Euler 斜率，向下一噪声级预测，再按 Heun 方式作校正（除最终一步）。因此 churn 不是一种与 ODE 无关的通用 SDE 求解器；它是“噪声注入 + 去噪 ODE 步”的特定组合。新噪声的幅度由 $S_{\mathrm{noise}}$ 调整，注入范围和强度则由 $S_{\mathrm{churn}},S_{\min},S_{\max}$ 控制。#Karras-et-al.-2022-EDM#</p>
+<p>有限 $\sigma_0$ 下，真正的起点边际是数据加高斯噪声的卷积，并不严格等于这个纯高斯。只有当起始噪声远大于数据尺度时，二者才足够接近；这是实际采样的一个近似来源。#Karras-et-al.-2022-EDM#</p>
 
-  <div class="photo">
-    <img src="media/images/edm-design-space/algorithm-2-stochastic.webp" alt="EDM 原论文 Algorithm 2：带 churn 随机扰动的采样器伪代码" loading="lazy">
-    <div class="cap">图 5：随机采样器 Algorithm 2。每一步先选择是否 churn、注入新噪声，再沿去噪向量场更新到下一噪声级。取自 Karras 等人（2022）Algorithm 2。#Karras-et-al.-2022-EDM#</div>
-  </div>
+<p>本章的 $N$ 表示从 $\sigma_0$ 到零的更新次数。一次更新可能调用网络两次，所以“采样步数”不能直接当作网络计算次数。</p>
 
-  <p>作者观察到，随机性不是越多越好：噪声注入过强会逐渐损失图像细节，也可能造成颜色过饱和；效果取决于具体模型、训练设置和数据集。为了控制退化，论文限制启用 churn 的噪声范围，并通过网格搜索调整参数。后面的实验也会看到，随机 churn 对不同训练方案的收益方向并不相同。#Karras-et-al.-2022-EDM#</p>
+<h3 class="section-title">Euler：按当前方向走一步</h3>
 
-  <div class="callout"><strong>如何读两张算法图：</strong>Algorithm 1 只在确定性噪声表上解 ODE；Algorithm 2 在每次 ODE 更新前增加了可选的噪声提升与随机注入。两者共享去噪器和大部分积分步骤，区别在于随机噪声在哪一步、以什么尺度进入。#Karras-et-al.-2022-EDM#</div>
+<p>在第 $i$ 步，先计算当前斜率，再用它近似整段运动：</p>
+
+$$
+d_i=f_\theta(y_i,\sigma_i),\qquad
+h_i=\sigma_{i+1}-\sigma_i<0,
+\qquad
+\boxed{y_{i+1}^{\mathrm E}=y_i+h_i d_i.}
+$$
+
+<p>它只调用一次去噪器，但默认这一段中的方向变化可以忽略。若轨迹弯曲明显，大步会偏离真实解。</p>
+
+<p>特别地，若直接取 $\sigma_{i+1}=0$，则 $h_i=-\sigma_i$，Euler 更新恰好成为 $D_\theta(y_i;\sigma_i)$。这只是一次去噪估计；在高噪声处直接这样跳到零，通常无法获得多步生成的质量。能够写出跨越很远的更新，不代表其数值误差足够小。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">Heun：试走以后再修正</h3>
+
+<p>Heun 是显式二阶方法，也称改进 Euler 法。它的思路是：先按当前方向试走，到预测的新位置再问一次网络，用首尾两个斜率的平均值更新。</p>
+
+<p>当 $\sigma_{i+1}>0$ 时：</p>
+
+$$
+\begin{aligned}
+d_i&=f_\theta(y_i,\sigma_i),\\
+\widetilde y_{i+1}&=y_i+h_i d_i,\\
+d_i'&=f_\theta(\widetilde y_{i+1},\sigma_{i+1}),\\
+\boxed{y_{i+1}}&\boxed{=y_i+\frac{h_i}{2}(d_i+d_i').}
+\end{aligned}
+$$
+
+<p>第二次调用必须使用 <strong>预测的新状态和下一噪声级</strong>，不能把同一个输入再算一遍；最后从原位置 $y_i$ 出发修正，也不是在试走结果上再走一个完整步长。</p>
+
+<p>例如用一维数值说明：设 $y_i=2$、$\sigma_i=1$、$\sigma_{i+1}=0.5$，第一次去噪估计为 $D_\theta(2;1)=1$，于是 $d_i=1$，Euler 试走到 $1.5$。若网络在新位置给出 $D_\theta(1.5;0.5)=1.1$，则第二个斜率为 $0.8$，Heun 修正结果为：</p>
+
+$$
+y_{i+1}=2+\frac{-0.5}{2}(1+0.8)=1.55.
+$$
+
+<p>这些数值仅为展示计算顺序；不能仅凭结果不同，就断定这个具体例子的 Heun 误差更小。</p>
+
+<p>对足够光滑的向量场，在通常的稳定性条件下，Euler 的单步局部误差为 $O(|h|^2)$、全局一阶；Heun 的单步局部误差为 $O(|h|^3)$、全局二阶。这衡量对给定 ODE 的求解精度，不会消除网络对真实向量场的估计误差。#Karras-et-al.-2022-EDM#</p>
+
+<div class="photo"><img src="media/images/edm-design-space/algorithm-1-heun.webp" alt="EDM 原论文 Algorithm 1：确定性采样算法。重点看 Euler 预测与二阶修正的先后关系；原算法同时包含更一般的状态缩放，本章公式取其推荐的无额外缩放、时间等于噪声级的情形。" loading="lazy"><div class="cap">EDM 原论文 Algorithm 1：确定性采样算法。重点看 Euler 预测与二阶修正的先后关系；原算法同时包含更一般的状态缩放，本章公式取其推荐的无额外缩放、时间等于噪声级的情形。#Karras-et-al.-2022-EDM#</div></div>
+
+<h3 class="section-title">为什么最后一步不用 Heun</h3>
+
+<p>当下一噪声级为零时，第二次斜率计算会出现除以 $\sigma_{i+1}=0$ 的问题。EDM 因此在最后一步仅执行 Euler，不进行端点修正。#Karras-et-al.-2022-EDM#</p>
+
+<p>在没有额外模型调用的基本实现中，前 $N-1$ 步各调用两次网络，最后一步调用一次，所以：</p>
+
+$$
+\boxed{\mathrm{NFE}=2(N-1)+1=2N-1.}
+$$
+
+<p>例如 18 个更新对应 35 次网络调用。NFE 是神经网络函数评估次数；实际耗时还受模型大小、硬件、批量以及引导实现影响，不能跨不同实现只比较步数。</p>
+
+<h3 class="section-title">噪声节点怎样分配</h3>
+
+<p>即使固定为 Heun，仍要决定每步跨多远。EDM 在 $\sigma^{1/\rho}$ 坐标中均匀放置正噪声节点：</p>
+
+$$
+\boxed{\sigma_i=
+\left[\sigma_{\max}^{1/\rho}
++\frac{i}{N-1}
+\left(\sigma_{\min}^{1/\rho}-\sigma_{\max}^{1/\rho}\right)
+\right]^\rho,\quad 0\le i<N,}
+\qquad \sigma_N=0.
+$$
+
+<p>对于这里使用的 $\rho>1$，低噪声处的绝对步长更小，高噪声处允许更大步长。注意 $\sigma_{\min}$ 是最后一个 <strong>正</strong> 噪声节点，随后还要单独走到零。</p>
+
+<p>原文分析中，$\rho=3$ 近似均衡单步截断误差，但图像实验中 $5$ 到 $10$ 更好，论文最终采用 $\rho=7$。作者据此认为低噪声误差对图像质量的影响更大：数值误差均衡，不等于感知质量最优。#Karras-et-al.-2022-EDM#</p>
+
+<p>Table 1 的 EDM 配置采用 $\sigma_{\min}=0.002$、$\sigma_{\max}=80$。这些数值依赖数据尺度与模型可用范围；调用已有模型时，必须适配其噪声支持范围，离散噪声模型还可能需要取到支持的噪声级。#Karras-et-al.-2022-EDM#</p>
+
+<div class="photo"><img src="media/images/edm-design-space/figure-3-trajectory-curvature.webp" alt="EDM 原论文 Figure 3：不同坐标与噪声日程下的轨迹形状。此图解释为什么采样不仅要选择求解器，还要选择让轨迹便于数值推进的坐标；轨迹并不因此保证完全笔直。" loading="lazy"><div class="cap">EDM 原论文 Figure 3：不同坐标与噪声日程下的轨迹形状。此图解释为什么采样不仅要选择求解器，还要选择让轨迹便于数值推进的坐标；轨迹并不因此保证完全笔直。#Karras-et-al.-2022-EDM#</div></div>
+
+<h3 class="section-title">Churn：先加一点噪声，再去噪</h3>
+
+<p>前述方法是确定性的。EDM 的随机采样在每步前增加一个短暂的加噪阶段，称为 churn。给定 $(y_i,\sigma_i)$，先提高噪声级：</p>
+
+$$
+\widehat\sigma_i=(1+\gamma_i)\sigma_i,
+\qquad
+\widehat y_i=y_i+
+\sqrt{\widehat\sigma_i^2-\sigma_i^2}\,S_{\mathrm{noise}}\xi_i,
+\qquad \xi_i\sim\mathcal N(0,I).
+$$
+
+<p>随后以 $(\widehat y_i,\widehat\sigma_i)$ 为新起点，用刚才的 Heun 更新走到 $\sigma_{i+1}$。也就是说，本次去噪步长变为 $h_i=\sigma_{i+1}-\widehat\sigma_i$，第一、第二次斜率都按这段新的运动计算；并不是先用旧状态预测，再随意把噪声补到结果上。#Karras-et-al.-2022-EDM#</p>
+
+<p>当 $S_{\mathrm{noise}}=1$ 且输入确实服从 $p(\cdot;\sigma_i)$ 时，独立高斯方差相加：</p>
+
+$$
+\sigma_i^2+(\widehat\sigma_i^2-\sigma_i^2)
+=\widehat\sigma_i^2.
+$$
+
+<p>因此加噪子步准确到达更高噪声边际，再由 ODE 近似搬运回较低噪声。这是该算法的分布依据，不是重新训练，也不是 Rectified Flow 的 reflow。原文强调它是针对该问题设计的交替采样程序，而不是通用 SDE 求解器。</p>
+
+<div class="photo"><img src="media/images/edm-design-space/algorithm-2-stochastic.webp" alt="EDM 原论文 Algorithm 2：随机采样算法。先提高噪声级并更新状态，再在新状态上执行 Euler 预测与 Heun 修正；最后到零时仍跳过二阶修正。" loading="lazy"><div class="cap">EDM 原论文 Algorithm 2：随机采样算法。先提高噪声级并更新状态，再在新状态上执行 Euler 预测与 Heun 修正；最后到零时仍跳过二阶修正。#Karras-et-al.-2022-EDM#</div></div>
+
+<h3 class="section-title">Churn 的四个参数控制什么</h3>
+
+<p>原论文令：</p>
+
+$$
+\gamma_i=
+\begin{cases}
+\min\!\left(S_{\mathrm{churn}}/N,\sqrt2-1\right),
+&\sigma_i\in[S_{\min},S_{\max}],\\
+0,&\text{其他情况}.
+\end{cases}
+$$
+
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>作用</th></tr></thead><tbody><tr><td>$S_{\mathrm{churn}}$</td><td>控制总体随机扰动强度；为零时回到确定性采样</td></tr><tr><td>$S_{\min},S_{\max}$</td><td>只在指定噪声区间启用 churn；不同于整个采样的 $\sigma_{\min},\sigma_{\max}$</td></tr><tr><td>$S_{\mathrm{noise}}$</td><td>缩放新增噪声，原文发现略大于 1 有时能改善结果</td></tr></tbody></table></div>
+
+<p>当 $S_{\mathrm{noise}}=1$ 时，$\gamma_i\le\sqrt2-1$ 保证本次新增噪声方差不超过当前噪声方差。若把 $S_{\mathrm{noise}}$ 调大，实际新增方差还要乘其平方，不能继续无条件声称满足同一个上界。</p>
+
+<p>同样，$S_{\mathrm{noise}}>1$ 时，实际加噪量不再严格对应标记的 $\widehat\sigma_i$；这是原论文针对实际模型偏差采取的经验调整，应与上面的理想边际论证分开。#Karras-et-al.-2022-EDM#</p>
+
+<p>适当随机性可能改善质量，但过多 churn 会损失细节、带来颜色过饱和。四个参数需要根据模型和数据调节，不能认为随机版普遍优于确定性版。#Karras-et-al.-2022-EDM#</p>
+
+<h3 class="section-title">怎样判断采样改进来自哪里</h3>
+
+<p>现在可以将采样决策分开检查：</p>
+
+<div class="table-wrap"><table><thead><tr><th>决策</th><th>改变什么</th><th>主要代价与边界</th></tr></thead><tbody><tr><td>Euler 换成 Heun</td><td>更准确地近似同一个 ODE</td><td>通常每步多一次网络调用</td></tr><tr><td>改噪声节点</td><td>将有限计算分配到不同噪声区间</td><td>不同位置的误差对质量影响不同</td></tr><tr><td>改坐标与连续日程</td><td>改变求解轨迹的参数化与数值性质</td><td>需要正确变换状态和预测接口</td></tr><tr><td>加入 churn</td><td>引入随机刷新与额外去噪</td><td>有机会纠偏，也会引入离散误差与细节损失</td></tr></tbody></table></div>
+
+<div class="photo"><img src="media/images/edm-design-space/figure-2-deterministic-sampling.webp" alt="EDM 原论文 Figure 2：在预训练模型上替换确定性采样设置，比较 FID 与 NFE。它考察的是采样端的改进，不能与重新训练网络后的收益混为一谈；具体模型与实验结论在下一章集中说明。" loading="lazy"><div class="cap">EDM 原论文 Figure 2：在预训练模型上替换确定性采样设置，比较 FID 与 NFE。它考察的是采样端的改进，不能与重新训练网络后的收益混为一谈；具体模型与实验结论在下一章集中说明。#Karras-et-al.-2022-EDM#</div></div>
+
+<p>本章的结论是：<strong>少步采样不是仅把时间点删掉，而是要选择合适的连续场、坐标、节点与求解器，并控制模型误差和离散误差。</strong> Heun、节点分配与 churn 各自解决不同问题；它们都能在不把主干改成直接速度预测器的情况下使用去噪接口。</p>
+
+<p>下一章回到实验与整篇总结，将只改采样器、重新训练模型的证据分开，并说明 EDM 统一框架的适用边界。</p>
+
 </div>
 
-<div class="ch fade-in">
-  <div class="ch-label">第 9 章｜实验与消融</div>
-  <div class="ch-title">哪些设计选择带来了什么变化</div>
+<div class="ch fade-in" id="chapter-9">
+<div class="ch-label">第 9 章</div>
+<div class="ch-title">实验、总结与边界</div>
 
-  <p>论文把采样器替换实验和重新训练实验分开做。前者尽量保留已有模型，只改生成时的数值采样过程；后者则用新的预条件、训练噪声分布与损失权重训练模型。两类结果回答不同问题：前者检验现成模型能否从更好的采样器受益，后者衡量训练设计改变后模型能达到什么结果。#Karras-et-al.-2022-EDM#</p>
+<h3 class="section-title">先分清实验改了什么</h3>
 
-  <p>先看 CIFAR-10 的训练结果。表 5 摘出论文配置 f：数据集分辨率为 $32\times32$，条件任务按类别标签生成；四个 Fréchet Inception Distance（FID，Fréchet Inception 距离）都以 35 次网络评估报告。FID 利用 Inception 图像特征分布衡量生成样本与真实样本的差异，数值越低表示该评测设置下两组特征分布越接近。表中的 VP 是方差保持（variance preserving），VE 是方差爆炸（variance exploding），指两类噪声过程参数化。#Karras-et-al.-2022-EDM#</p>
+<p>EDM 的实验回答两类问题：不改网络、只换采样设置，是否能改善已有模型？重新选择网络预条件与训练分配，是否还能进一步改善？这两类证据必须分开，否则容易把重新训练的收益归给 Heun，或把更好的采样结果误认为模型已经重新学过数据。</p>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>数据集与分辨率</th><th>生成方式</th><th>VP FID</th><th>VE FID</th><th>NFE</th></tr></thead>
-      <tbody>
-        <tr><td rowspan="2">CIFAR-10，$32\times32$</td><td>类别条件生成</td><td>1.79</td><td>1.79</td><td>35</td></tr>
-        <tr><td>无条件生成</td><td>1.97</td><td>1.98</td><td>35</td></tr>
-      </tbody>
-    </table>
-  </div>
+<p>论文主要使用 FID（Fréchet Inception Distance，弗雷歇 Inception 距离）评价生成分布与真实分布在特征空间中的差异，越低越好；使用 NFE 衡量每个样本需要多少次网络评估。FID 不直接衡量某张图是否符合文本，也不覆盖视频时序一致性。#Karras-et-al.-2022-EDM#</p>
 
-  <p><em>表 5：EDM 论文报告的 CIFAR-10 配置 f 结果。配置 f 包含预条件、噪声分布与损失改动，以及非泄漏增强；VP/VE 指两种模型家族，不代表此表只比较了采样器。#Karras-et-al.-2022-EDM#</em></p>
+<p>下面的数字都是原论文图像实验结果，不是本系列重新运行得到的结果。</p>
 
-  <p>这些 FID 背后有不同的训练预算。补充材料记录了 CIFAR-10、FFHQ、AFHQv2 与 ImageNet-64 的 GPU 数、样本预算、batch、学习率、精度和训练耗时；小分辨率图像与 ImageNet 使用的资源规模差别很大。表里的 EMA 指指数移动平均（exponential moving average），用于平滑保存模型参数；FP16 和 FP32 分别是 16 位半精度与 32 位单精度浮点格式，Mimg 表示百万张训练图像。#Karras-et-al.-2022-EDM#</p>
+<h3 class="section-title">只换采样器，已有模型能改善多少</h3>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>训练任务（EDM 配置）</th><th>GPU</th><th>样本预算 / batch</th><th>学习率 / EMA 半衰期</th><th>参数量</th><th>混合精度 / 用时</th></tr></thead>
-      <tbody>
-        <tr><td>CIFAR-10，$32\times32$</td><td>8 张 V100</td><td>200 Mimg / 512</td><td>$10^{-3}$ / 0.5 Mimg</td><td>约 56M</td><td>否 / 约 2 天</td></tr>
-        <tr><td>FFHQ、AFHQv2，$64\times64$</td><td>8 张 V100</td><td>200 Mimg / 256</td><td>$2\times10^{-4}$ / 0.5 Mimg</td><td>约 62M</td><td>否 / 约 4 天</td></tr>
-        <tr><td>ImageNet-64，类别条件</td><td>32 张 Ampere GPU，4 节点</td><td>2500 Mimg / 4096</td><td>$10^{-4}$ / 50 Mimg</td><td>约 296M</td><td>FP16/FP32 / 约 2 周</td></tr>
-      </tbody>
-    </table>
-  </div>
+<p>原论文 §3 的确定性采样实验固定已有预测器，比较原始采样、统一框架下的复现、Heun 与节点分配，以及坐标和日程选择。原论文 Figure 2 分别展示无条件 CIFAR-10 的 VP、VE 模型，以及类别条件 ImageNet-64 的 ADM 模型。#Karras-et-al.-2022-EDM#</p>
 
-  <p><em>表 6：原论文补充材料中的 EDM 训练配置摘要。ImageNet 一行沿用 ADM（Ablated Diffusion Model）架构。补充材料没有在这张参数表中列出优化器名称，因此这里不据此推断。#Karras-et-al.-2022-EDM#</em></p>
+<p>读这张图时要同时看横轴 NFE 与纵轴 FID：可以比较相同计算量下谁质量更好，也可以比较达到相近质量需要多少计算。不能只把“18 步”与另一个实现的“35 次调用”直接比较。</p>
 
-  <p>对 CIFAR-10、FFHQ 与 AFHQv2，作者训练到 200 Mimg，约 400,000 次迭代，并每 2.5 Mimg 保存一次 snapshot；报告的是由确定性采样器评估后 FID 最低的 snapshot，采样评估使用 NFE 35（$32\times32$）或 79（$64\times64$）。ImageNet-64 则训练约 2.5 billion 张图像、约 600,000 次迭代，使用 32 张 NVIDIA Ampere GPU、batch 4096 和 FP16/FP32 混合精度。采样时，论文使用 float64 执行常微分方程数值更新、float32 执行神经网络，以减少轨迹累计的舍入误差。#Karras-et-al.-2022-EDM#</p>
+<p>原论文随后在随机采样实验中，将类别条件 ImageNet-64 的预训练 ADM 模型从原先 FID 2.07 改善到 1.55，仍未重新训练主干。这个结果来自论文改进的采样设置，不能单独归因于 Heun，也不能与 Figure 2 的确定性曲线混为一个实验。#Karras-et-al.-2022-EDM#</p>
 
-  <p>论文的训练消融从 Song 等人的 VP/VE 基线出发，逐步调整超参数、重新分配网络容量、加入 EDM 预条件、替换训练噪声分布与损失，最后再加入非泄漏增强。下表只列 CIFAR-10 无条件 FID，便于看清改动的顺序：</p>
+<div class="photo"><img src="media/images/edm-design-space/figure-4-stochastic-sampling.webp" alt="EDM 原论文 Figure 4：预训练模型上的随机采样设置比较。不同曲线改变 churn 的启用区间及新增噪声缩放，说明随机性收益依赖具体配置；红线是确定性采样参照。" loading="lazy"><div class="cap">EDM 原论文 Figure 4：预训练模型上的随机采样设置比较。不同曲线改变 churn 的启用区间及新增噪声缩放，说明随机性收益依赖具体配置；红线是确定性采样参照。#Karras-et-al.-2022-EDM#</div></div>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>配置</th><th>累计加入的训练改动</th><th>VP FID</th><th>VE FID</th></tr></thead>
-      <tbody>
-        <tr><td>a</td><td>Song 等人基线</td><td>3.01</td><td>3.77</td></tr>
-        <tr><td>b</td><td>调整超参数</td><td>2.51</td><td>2.94</td></tr>
-        <tr><td>c</td><td>重新分配网络容量</td><td>2.31</td><td>2.83</td></tr>
-        <tr><td>d</td><td>加入 EDM 预条件</td><td>2.29</td><td>3.10</td></tr>
-        <tr><td>e</td><td>再加入新噪声分布与损失</td><td>2.05</td><td>1.99</td></tr>
-        <tr><td>f</td><td>再加入非泄漏增强</td><td>1.97</td><td>1.98</td></tr>
-      </tbody>
-    </table>
-  </div>
+<p>这组实验支持的结论是：训练好的预测器并没有唯一绑定原采样器，换一种适配正确的采样方式就可能获得收益。它不证明任意预测器都能在任意噪声级被无损调用；离散噪声模型仍需要按原文方式处理其支持的噪声级。</p>
 
-  <p><em>表 7：论文 Table 2 中 CIFAR-10 无条件训练消融的节选。每一行是在前一配置上累积增加改动，不能把单行差值解释成独立于其他组件的因果效应。#Karras-et-al.-2022-EDM#</em></p>
+<h3 class="section-title">重新训练，哪些改动贡献了收益</h3>
 
-  <p>这组数值提醒我们不要把“EDM 预条件”单独当作全部提升来源：VP 从配置 c 到 d 略有改善，但 VE 从 2.83 变为 3.10，反而变差；把新的噪声分布和损失加入到配置 e 后，两列才都明显改善。最后的增强也有贡献，但幅度较小。由于每个配置沿着一条累积路线构造，这些消融支持“组合设计整体有效”，并不证明每个选项在所有模型上独立起效。#Karras-et-al.-2022-EDM#</p>
+<p>Table 2 则固定使用论文的确定性采样器，逐步调整训练配置。其起点已经使用了改进采样，因此表中训练改进不能再次计为采样收益。#Karras-et-al.-2022-EDM#</p>
 
-  <p>ImageNet-64 的两个常被引用结果也必须分开。只替换预训练类别条件 ADM（Ablated Diffusion Model）模型的采样器，论文报告 FID 从 2.07 降到 1.55；从头按新的训练设置训练 ADM，另得到 FID 1.36，而且这一训练没有使用数据增强。前者是 sampler-only，后者同时改变了训练，不能把 1.55 和 1.36 合并成同一个采样改进。论文在采样曲线中按 NFE 展示了多个点；由于主文中的这两个摘要数字没有绑定到一个共同的单点 NFE，下面不为它们补写统一 NFE。#Karras-et-al.-2022-EDM#</p>
+<div class="photo"><img src="media/images/edm-design-space/table-2-training-ablation.webp" alt="EDM 原论文 Table 2：训练配置的累计消融。CIFAR-10 使用 35 NFE，FFHQ 与 AFHQv2 使用 79 NFE；各列有不同数据集、条件设置与主干，不应跨列直接比较优劣。" loading="lazy"><div class="cap">EDM 原论文 Table 2：训练配置的累计消融。CIFAR-10 使用 35 NFE，FFHQ 与 AFHQv2 使用 79 NFE；各列有不同数据集、条件设置与主干，不应跨列直接比较优劣。#Karras-et-al.-2022-EDM#</div></div>
 
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>数据集与任务</th><th>干预</th><th>FID</th><th>NFE 口径</th></tr></thead>
-      <tbody>
-        <tr><td>ImageNet-64，类别条件</td><td>只替换预训练 ADM 采样器</td><td>2.07 → 1.55</td><td>论文以 FID–NFE 曲线比较；此摘要不对应统一单点</td></tr>
-        <tr><td>ImageNet-64，类别条件</td><td>用 EDM 训练改动从头训练 ADM</td><td>1.36</td><td>摘要值未与单一 NFE 绑定</td></tr>
-      </tbody>
-    </table>
-  </div>
+<div class="table-wrap"><table><thead><tr><th>配置变化</th><th>主要修改</th><th>应怎样理解</th></tr></thead><tbody><tr><td>a → b</td><td>调整训练超参数</td><td>原始训练设置并非固定不可改</td></tr><tr><td>b → c</td><td>重新分配网络容量</td><td>改变主干实现，不是只换目标公式</td></tr><tr><td>c → d</td><td>加入 EDM 预条件</td><td>统一输入与目标尺度，收益随模型和数据变化</td></tr><tr><td>d → e</td><td>加入新的损失权重与噪声抽样</td><td>与预条件配合，改善训练分配</td></tr><tr><td>e → f</td><td>加入带增强条件的正则化</td><td>进一步减轻过拟合</td></tr></tbody></table></div>
 
-  <p><em>表 8：ImageNet-64 的 sampler-only 与 retraining 结果分列，避免混淆干预来源。FID 为论文 2022 年实验报告值，不表示当前方法排行榜。#Karras-et-al.-2022-EDM#</em></p>
+<p>这里最值得注意的是：预条件并非每一列都立即降低 FID。例如无条件 CIFAR-10 的 VP 列从配置 c 的 2.31 到 d 的 2.29，变化很小；VE 列则从 2.83 到 3.10，反而变差。随后配置 e 分别达到 2.05 与 1.99。论文对预条件的定位，主要是让训练更稳健，使后续重新设计损失更容易，而不是宣称三个系数单独就一定改善质量。#Karras-et-al.-2022-EDM#</p>
 
-  <p>随机 churn 的实验进一步说明训练与采样会相互作用。论文在 CIFAR-10 无条件任务中用 256 个求解区间分析 churn，对应 NFE 为 511：原 Song 等人的训练方案从随机采样中受益，而作者的新训练方案在确定性采样下结果更好；ImageNet-64 的随机采样则仍有帮助。也就是说，“增加随机性总能改善生成”不是论文支持的结论。NFE=511 是这组 churn 曲线的专门设置，不能与上面 CIFAR-10 主表的 35 NFE 混为一谈。#Karras-et-al.-2022-EDM#</p>
+<p>另一方面，FFHQ-64 的 VE 列从 c 的 41.62 到 d 的 3.39，表明某些原配置的尺度问题确实很严重。不同列的差异，也提醒我们不要把一个设置的消融结论当成所有模型的共同规律。</p>
+
+<p>这是一组累计配置实验：配置 e 同时改变权重与噪声抽样，因而不能只凭这一行就独立测出两者各自贡献了多少。</p>
+
+<h3 class="section-title">最终结果与随机性的边界</h3>
+
+<p>原论文报告的代表性结果可以分别列出：</p>
+
+<div class="table-wrap"><table><thead><tr><th>实验</th><th>是否重新训练</th><th>论文报告的结果</th></tr></thead><tbody><tr><td>类别条件 ImageNet-64，改进已有 ADM 的采样设置</td><td>否</td><td>FID 2.07 → 1.55</td></tr><tr><td>类别条件 ImageNet-64，原 ADM 架构、配置 e 训练</td><td>是</td><td>FID 1.36</td></tr><tr><td>类别条件 CIFAR-10，配置 f、确定性采样</td><td>是</td><td>FID 1.79，35 NFE</td></tr><tr><td>无条件 CIFAR-10，配置 f、VP 主干列、确定性采样</td><td>是</td><td>FID 1.97，35 NFE</td></tr></tbody></table></div>
+
+<p>ImageNet-64 的 1.36 采用配置 e，没有使用增强正则化；该数据集的最佳结果仍受益于随机采样。不能把 CIFAR-10 的 35 NFE 或确定性设置直接附到这个数字后面。#Karras-et-al.-2022-EDM#</p>
+
+<p>再回看第六章的 Figure 5(b,c)：两幅随机强度扫描都使用 256 个更新、511 NFE。改进训练后的无条件 CIFAR-10 在该实验中不需要 churn，加入随机性反而变差；类别条件 ImageNet-64 则仍然受益于适度随机性。它们表明随机采样的作用依赖模型、训练方式和数据复杂度，不存在一条“加噪总是更好”或“ODE 总是更好”的统一结论。</p>
+
+<h3 class="section-title">前五篇怎样统一到这张图里</h3>
+
+<p>现在可以回到本篇最初的问题：DDPM、Score、DDIM、Flow Matching 与 x-prediction 究竟是在竞争什么？它们往往改变的是生成系统的不同层次。</p>
+
+<div class="table-wrap"><table><thead><tr><th>方法或主题</th><th>主要回答的问题</th><th>在共同框架中的位置</th></tr></thead><tbody><tr><td>DDPM</td><td>怎样用已知高斯扰动训练离散反向生成过程</td><td>概率路径、反向转移、噪声监督</td></tr><tr><td>Score / DSM</td><td>不知道真实密度时，怎样学习局部密度方向</td><td>从条件 score 标签学边际 score</td></tr><tr><td>Score SDE / PFODE</td><td>怎样把连续边际连接为随机或确定性过程</td><td>连续动力学与反向过程</td></tr><tr><td>DDIM</td><td>怎样复用噪声预测器，重新构造生成路径并少步采样</td><td>相同训练边际，不同离散生成转移</td></tr><tr><td>Flow Matching</td><td>怎样直接监督搬运分布的速度场</td><td>条件路径、条件速度与边际场回归</td></tr><tr><td>x-prediction</td><td>主干直接预测什么，有限容量下是否更容易学习</td><td>直接输出、损失空间与信息通路</td></tr><tr><td>EDM</td><td>怎样拆开这些选择，并改进训练与采样</td><td>去噪接口、预条件、训练分配、求解器与随机性</td></tr></tbody></table></div>
+
+<p>这不是给每个名字分配一个互不重叠的格子。同一方法可以跨越多个层次；同一预测器也可以接不同的采样器。表格的作用，是在比较时先问清楚“这次究竟改了哪一项”。</p>
+
+<p>例如，换成速度输出不自动意味着换了概率路径；换成 ODE 不自动意味着使用 DDIM；引入干净图像接口也不自动意味着主干直接进行 x-prediction。需要同时检查路径、网络组合式、损失和采样更新。</p>
+
+<p>EDM 发表于 2022 年，晚于本文讨论的 DDPM、Score SDE 与 DDIM；本篇对后续 Flow Matching、JiT 及其架构讨论的连接，是系列的综合分析，不是 EDM 原论文已经分析了这些后来的工作。</p>
+
+<h3 class="section-title">一条完整的方法分析链</h3>
+
+<p>经过前八章，面对一个新的生成方法，可以依次写下五件事：</p>
+
+<ol><li><strong>路径</strong>：写出 $z_t=a(t)x_0+b(t)\epsilon$ 或其他条件路径，明确时间方向、端点与边际。</li><li><strong>标签与函数</strong>：区分单个训练标签和条件均值，说明网络在学习干净估计、噪声、score 还是瞬时速度。</li><li><strong>实现</strong>：展开主干输出与解析旁路，检查模型真正承担的信息和尺度。</li><li><strong>训练</strong>：写明误差空间、时间或噪声抽样分布、显式权重及变量变换。</li><li><strong>生成</strong>：先确定 ODE、SDE 或离散转移，再列求解器、节点、随机性和网络调用次数。</li></ol>
+
+<p>在 EDM 的加性噪声坐标里，这条链可以压缩成：</p>
+
+$$
+\begin{aligned}
+y&=x_0+\sigma\epsilon,\\
+D_\theta&=c_{\mathrm{skip}}y+c_{\mathrm{out}}
+ F_\theta(c_{\mathrm{in}}y;c_{\mathrm{noise}}),\\
+\mathcal L&=\mathbb E_{\sigma\sim p_{\mathrm{train}}}
+ \left[\lambda(\sigma)\|D_\theta-x_0\|^2\right],\\
+s_\theta&=\frac{D_\theta-y}{\sigma^2},\\
+\frac{dy}{d\sigma}&=\frac{y-D_\theta}{\sigma}.
+\end{aligned}
+$$
+
+<p>最后一行还只是连续方程，要用 Heun 与选定噪声节点等方法才能实际生成。随机版本则在其基础上引入配套的噪声刷新与去噪操作。</p>
+
+<p>这组公式解释了为什么我们能把多种预测量接到共同接口，却不能据此断言所有训练同样容易、所有路径同样好走。</p>
+
+<h3 class="section-title">EDM 仍没有解决什么</h3>
+
+<p>首先，统一范围有边界。本篇核心换算依赖高斯扰动路径及相关非退化条件；一般 Flow Matching、非高斯桥或其他离散生成过程不能全部压入同一套系数。</p>
+
+<p>其次，理想等价不消除有限模型差异。条件均值、score 与速度之间可以换算，但主干容量、表征、噪声信息的保存方式和时间权重会改变实际优化。EDM 的预条件也没有证明所有架构都应采用同一种输出。</p>
+
+<p>第三，采样加速仍然有限。更高阶求解器减少的是离散误差，不保证一两次调用就足够；模型误差、起始高斯近似和低噪声端的数值问题依然存在。反演的精确性也受这些因素限制。</p>
+
+<p>第四，随机性与训练目标的关系尚不完全清楚。原文通过实验调节 churn，并指出这种交互仍值得研究；$\rho$、训练噪声分布与随机参数都需要随任务重新评估。#Karras-et-al.-2022-EDM#</p>
+
+<p>最后，本文建立的是生成的数学与计算框架，还没有解决“生成什么”和“跨帧保持什么”的问题。文本、类别、参考图像如何控制输出，条件引导怎样改变向量场，以及视频中的运动、时序一致性与计算量，都需要后续专题。EDM 原论文的这些低分辨率图像结果，不能直接充当视频生成效果的证据。</p>
+
+<p>本篇最终可以总结为：<strong>先选择希望连接的分布，再选择可学习的监督与网络实现，最后选择怎样走过这条路径。</strong> EDM 的价值，是让这些选择能够被明确写出、分别检查并通过实验比较；统一框架帮助我们理解方法之间的联系，也帮助我们看清它们仍然不同的地方。</p>
+
 </div>
-
-<div class="ch fade-in">
-  <div class="ch-label">第 10 章｜总结</div>
-  <div class="ch-title">EDM 的贡献、边界与下一篇</div>
-
-  <p>EDM 给我们的主要工具，是一套共同的噪声条件去噪器接口，以及一张把采样与训练选项明确分开的设计地图。它展示了如何通过概率流常微分方程、Heun 求解、噪声离散、随机 churn、网络预条件和训练分布来系统改进已有扩散模型；它没有提出一种新的前向 SDE，也没有证明这些选项可以在所有数据和架构中彼此独立。#Karras-et-al.-2022-EDM#</p>
-
-  <p>下一篇会讲去噪扩散隐式模型（Denoising Diffusion Implicit Models，DDIM）。它也能得到确定性的少步采样路径，但它从非马尔可夫前向路径出发；EDM 则把多类扩散模型的训练和采样选择放进共同设计空间中比较。#Song-Meng-Ermon-2021-DDIM# #Karras-et-al.-2022-EDM#</p>
-
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>主题</th><th>主要问题</th><th>本文中的位置</th></tr></thead>
-      <tbody>
-        <tr><td>Score/SDE</td><td>怎样用连续随机过程统一描述加噪、score 与反向采样？</td><td>提供连续时间概率框架；反向 SDE 与 probability-flow ODE 在对应条件下匹配边缘分布。#Song-et-al.-2021-SDE#</td></tr>
-        <tr><td>EDM</td><td>扩散模型的训练与采样中，哪些具体选择能被拆开检查？</td><td>提供去噪器公共接口，并实证比较求解器、噪声表、churn、预条件和训练分布。#Karras-et-al.-2022-EDM#</td></tr>
-        <tr><td>DDIM</td><td>如何在保留训练时边缘分布的条件下，构造不同的非马尔可夫生成路径？</td><td>从另一种前向联合路径和隐式采样更新解释少步生成。#Song-Meng-Ermon-2021-DDIM#</td></tr>
-      </tbody>
-    </table>
+<div class="chapter-nav">
+    <a class="nav-card nav-prev" href="x-prediction.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">x-prediction：让网络预测干净图像</span></a>
+    <a class="nav-card nav-hub" href="/categories/ai/video-generation/"><span class="nav-label">枢纽页</span><span class="nav-title">视频生成系列总览</span></a>
+    <a class="nav-card nav-next" href="conditional-image-diffusion.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">条件扩散：控制、适配与编辑</span></a>
   </div>
-
-  <p><em>表 9：三篇内容关注的问题不同。DDIM 也可得到确定性少步采样路径，但它的构造来自非马尔可夫前向族；EDM 则把多类扩散模型的训练和采样选择放到共同设计空间里比较。#Karras-et-al.-2022-EDM# #Song-Meng-Ermon-2021-DDIM#</em></p>
-
-  <p>阅读其他扩散论文时，可以沿用这套问题清单：论文定义了什么噪声坐标？网络预测的是去噪图像、噪声还是其他参数化？训练时如何抽取噪声级、怎样加权误差？采样器走过哪些噪声点、调用几次网络、是否再注入噪声？实验究竟只替换了采样器，还是连训练也一起改变？这样逐项拆解，就能更公平地理解不同论文的结果。#Karras-et-al.-2022-EDM#</p>
-
-  <div class="review-box">
-    <h3>本篇复习速查</h3>
-    <ul>
-      <li><strong>共同接口</strong>：$\mathbf{x}=\mathbf{y}+\sigma\boldsymbol{\epsilon}$，去噪器 $D_\theta(\mathbf{x};\sigma)$ 预测干净数据。</li>
-      <li><strong>score 关系</strong>：$\nabla_{\mathbf{x}}\log p_\sigma=(D^*-\mathbf{x})/\sigma^2$。</li>
-      <li><strong>Heun 采样</strong>：Euler 预测，再用终点斜率作二阶校正；最后一步跳过校正。</li>
-      <li><strong>Churn</strong>：选择性提高噪声、注入新高斯噪声，再继续 ODE 更新；效果依模型与训练而变。</li>
-      <li><strong>两个噪声选择</strong>：训练分布 $p_{\mathrm{train}}(\sigma)$ 与推理噪声表 $\{\sigma_i\}$ 不同。</li>
-      <li><strong>结果口径</strong>：sampler-only 的 1.55 与重训练得到的 1.36 是不同实验。</li>
-    </ul>
-  </div>
-
-  <div class="chapter-nav">
-    <a class="nav-card nav-prev" href="flow-matching.html"><span class="nav-arrow">←</span><span class="nav-label">上一章</span><span class="nav-title">Flow Matching：从概率路径到视频生成</span></a>
-    <a class="nav-card nav-hub" href="video-generation-hub.html"><span class="nav-label">枢纽页</span><span class="nav-title">视频生成系列总览</span></a>
-    <a class="nav-card nav-next" href="conditional-image-diffusion.html"><span class="nav-arrow">→</span><span class="nav-label">下一章</span><span class="nav-title">条件扩散：从 CFG 到潜空间图像生成</span></a>
-  </div>
-</div>
-<div class="sources">
-  <h3>参考来源</h3>
-  <ul>
-    <li data-cite-key="Karras-et-al.-2022-EDM">Karras, T., Aittala, M., Aila, T. and Laine, S. (2022). <em>Elucidating the Design Space of Diffusion-Based Generative Models</em>. NeurIPS 2022. <a href="https://arxiv.org/abs/2206.00364" target="_blank">arXiv:2206.00364</a></li>
-    <li data-cite-key="Ho-et-al.-2020">Ho, J., Jain, A. and Abbeel, P. (2020). <em>Denoising Diffusion Probabilistic Models</em>. NeurIPS 2020. <a href="https://arxiv.org/abs/2006.11239" target="_blank">arXiv:2006.11239</a></li>
-    <li data-cite-key="Salimans-and-Ho-2022">Salimans, T. and Ho, J. (2022). <em>Progressive Distillation for Fast Sampling of Diffusion Models</em>. ICLR 2022. Appendix D, Eqs. 26–31. <a href="https://arxiv.org/abs/2202.00512" target="_blank">arXiv:2202.00512</a></li>
-    <li data-cite-key="Song-et-al.-2021-SDE">Song, Y. et al. (2021). <em>Score-Based Generative Modeling through Stochastic Differential Equations</em>. ICLR 2021. <a href="https://arxiv.org/abs/2011.13456" target="_blank">arXiv:2011.13456</a></li>
-    <li data-cite-key="Song-Meng-Ermon-2021-DDIM">Song, J., Meng, C. and Ermon, S. (2021). <em>Denoising Diffusion Implicit Models</em>. ICLR 2021. <a href="https://arxiv.org/abs/2010.02502" target="_blank">arXiv:2010.02502</a></li>
-  </ul>
-</div>
+<div class="sources"><h3>参考来源</h3><ul>
+<li data-cite-key="Karras-et-al.-2022-EDM">Tero Karras, Miika Aittala, Timo Aila, Samuli Laine. <a href="https://arxiv.org/abs/2206.00364" target="_blank" rel="noopener">Elucidating the Design Space of Diffusion-Based Generative Models</a>. NeurIPS 2022。<a href="https://github.com/NVlabs/edm" target="_blank" rel="noopener">官方实现</a>。</li>
+<li data-cite-key="Ho-et-al.-2020">Jonathan Ho, Ajay Jain, Pieter Abbeel. <a href="https://arxiv.org/abs/2006.11239" target="_blank" rel="noopener">Denoising Diffusion Probabilistic Models</a>. 2020。</li>
+<li data-cite-key="Song-et-al.-2021-SDE">Yang Song et al. <a href="https://arxiv.org/abs/2011.13456" target="_blank" rel="noopener">Score-Based Generative Modeling through Stochastic Differential Equations</a>. ICLR 2021。</li>
+<li data-cite-key="Song-Meng-Ermon-2021-DDIM">Jiaming Song, Chenlin Meng, Stefano Ermon. <a href="https://arxiv.org/abs/2010.02502" target="_blank" rel="noopener">Denoising Diffusion Implicit Models</a>. ICLR 2021。</li>
+<li data-cite-key="Lipman-et-al.-2023">Yaron Lipman et al. <a href="https://arxiv.org/abs/2210.02747" target="_blank" rel="noopener">Flow Matching for Generative Modeling</a>. ICLR 2023。</li>
+<li data-cite-key="Liu-et-al.-2023-RF">Xingchao Liu, Chengyue Gong, Qiang Liu. <a href="https://arxiv.org/abs/2209.03003" target="_blank" rel="noopener">Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</a>. ICLR 2023。</li>
+<li data-cite-key="Li-He-2025-JiT">Tianhong Li, Kaiming He. <a href="https://arxiv.org/abs/2511.13720" target="_blank" rel="noopener">Back to Basics: Let Denoising Generative Models Denoise</a>. 2025。</li>
+<li data-cite-key="Salimans-and-Ho-2022">Tim Salimans, Jonathan Ho. <a href="https://arxiv.org/abs/2202.00512" target="_blank" rel="noopener">Progressive Distillation for Fast Sampling of Diffusion Models</a>. ICLR 2022，Appendix D 的 VP v 参数化。</li>
+</ul></div>

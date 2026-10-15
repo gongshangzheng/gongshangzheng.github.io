@@ -1,9 +1,9 @@
 ## Context
 
-**当前设计状态（2026-10-14）**：`drafts/video-generation/diffusion-model-basics.org` 已形成实质草稿，用户认可当前结构。本轮将首篇设计对齐该草稿：先讲流形与概率路径的直觉，再推导 DDPM 前向链、从变分 KL 到噪声预测损失、反向采样，并以局限章节连接后续方法。整体系列顺序的进一步调整仍按 proposal 中既有计划处理；本次只确认首篇结构，不据此推断尚未澄清的其他章节编号。
+**当前设计状态（2026-10-15）**：EDM 九章正文已完成。最新规划新增图像基模篇，接在条件扩散后、视频任务前；完整 Stable Diffusion/VAE/LDM 内容移入图像基模篇，条件扩散扩展控制、适配与编辑。图像基模十章草稿及现代基模增补均已获写作授权，正文已生成（八/80）；条件扩散十章及 prior 增补均已审阅通过，用户已授权正文写作，正文已依据草稿完成。
 
 用户强调正文引用必须位于文末参考来源；首篇保留已插入笔记的原论文图 4（Algorithms 1–2）和图 5（Figure 6），并列入用户给出的 AIDIY Wiki、抖音视频和 3Blue1Brown 客座视频。
-见 `proposal.md`。旧的 `drafts/video-generation.org` 已按用户要求删除，不再作为素材来源。系列规划为 10 篇正文和 1 个 Hub：首篇由扩散直觉进入 DDPM，第二篇讲 Score、DSM 与连续时间扩散，第三篇独立讲 EDM 的设计空间，随后讲 DDIM、Flow Matching、条件图像生成，再进入视频任务、架构、数据评测与长视频生成。
+见 `proposal.md`。旧的 `drafts/video-generation.org` 已按用户要求删除，不再作为素材来源。系列规划为 12 篇正文和 1 个 Hub，按本轮确认的阅读顺序组织；EDM 保留为前述方法的总结与设计空间分析。
 
 主要素材入口：
 - **内部素材使用规则**：下列 Org 路径仅供作者查找和核对素材，不在面向读者的文章中提及，也不作为正文引用；正文引用应指向原始论文、官方文档或可核验的一手来源。
@@ -71,7 +71,7 @@
 
 ## 文章内容大纲
 
-系列共 10 篇正文和 1 个 Hub。首篇合并扩散模型入门与 DDPM，避免把加噪、噪声预测和反向采样的直觉与数学定义人为拆开；EDM 作为独立篇章接在 Score/DSM 与连续时间扩散之后，Flow Matching 接在 DDIM 之后，桥接现代视频生成。下列逐节素材路径是当前可用入口；已归档来源以 `raw/` 中的原论文、源码和分析文件为准。教程性文章不强行套用论文精读的“方法—实验”结构；关键数据点若无可比口径则明确说明，不拼凑排行榜。
+系列共 12 篇正文和 1 个 Hub。阅读顺序：DDPM → Score/DSM/SDE → DDIM → Flow Matching → x-prediction → EDM → 条件图像扩散 → 图像基模 → 视频任务 → 视频架构 → 数据评测 → 长视频。各篇仍须以实质草稿为依据，分别确认大纲后写作。
 
 ### `video-generation-hub`｜视频生成系列总览
 
@@ -79,13 +79,13 @@
 |------|------|
 | 原始草稿 | [video-generation-hub.org](../../../drafts/video-generation/video-generation-hub.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
 | 类型与目标位置 | Hub；aliases `视频生成系列`、`categories/AI/视频生成/index` 与 `categories/AI/视频生成`；sub_id `0` |
-| 服务对象 | 读者能按 DDPM、Score/DSM/SDE、EDM 设计空间、采样、Flow Matching、图像条件、视频架构、评测和长视频问题选择阅读路径。 |
+| 服务对象 | 读者能按 DDPM、Score/DSM/SDE、DDIM、Flow Matching、x-prediction、EDM 设计空间、图像条件、视频架构、评测和长视频问题选择阅读路径。 |
 
 **章节骨架**
 
 #### 1 系列范围与阅读路线
-- **写什么**：说明系列从 DDPM、Score/DSM/SDE 与 EDM 进入 DDIM、Flow Matching 和条件图像，再转入视频生成的组织逻辑，列出先修路线及各篇解决的问题。
-- **素材来源**：本设计文档的 10 篇章节规划及各篇已核验的 sources。
+- **写什么**：说明系列从 DDPM、Score/DSM/SDE、DDIM、Flow Matching 进入 x-prediction，再由 EDM 总结并进入条件图像，再转入视频生成的组织逻辑，列出先修路线及各篇解决的问题。
+- **素材来源**：本设计文档的 12 篇章节规划及各篇已核验的 sources。
 - **必备元素**：系列目录、先修关系图、阅读建议和术语约定。
 
 #### 2 主题地图与延伸资源
@@ -406,124 +406,252 @@
 
 **验收**：正文须与九章草稿逐章对应；原论文事实与文末 `.sources` 一一对应；校验损失梯度等价、时间方向、`σ_min` 端点、v-prediction 记号及可逆条件；原图裁切需保留本图面板标签与必要上下文；单页 lint 和构建后交用户审阅。视频例子只采用已归档 Wan 报告中核实的信息。
 
-### `edm-design-space`｜视频生成系列（五）：EDM——重新梳理扩散模型的设计空间
+### `x-prediction`｜视频生成系列（五）：x-prediction——让网络预测干净图像
 
-| 栏位 | 内容 |
-|------|------|
-| 原始草稿 | [edm-design-space.org](../../../drafts/video-generation/edm-design-space.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `50`；Hub `video-generation-hub` |
-| 服务对象 | 读者读完能说明 EDM 不是一种新 SDE，而是怎样用共同的去噪接口拆开扩散模型的训练与采样选择，并解释论文中的关键公式和实验边界。 |
+- **持续内容依据**：[原始草稿 x-prediction.org](../../../drafts/video-generation/x-prediction.org)。七章均已获用户审阅通过，2026-10-15 用户授权写作正文；本次记录与已审稿一致的设计，不新增未审章节。
+- **位置**：`src/pages/x-prediction.html`，alias `categories/AI/视频生成`，sub_id `50`；Flow Matching 后、EDM 前。EDM 为第六篇、sub_id 60；最新篇序为条件扩散第七篇（70）、图像基模第八篇（80），保留已有 URL。
+- **问题与解法**：变量可换算不保证有限网络同样容易学习。以 JiT 的大 patch 对照为起点，区分直接输出、损失空间、信息通路、ODE 采样，推导解析旁路如何改变主干的信息保存责任；以 Liang 的谱、白化、DINO 和 HC/SiHC 实验限定结论。
+- **资料**：JiT、DiP、DeCo、PixelDiT 与 residual-stream-burden 原文均已整理并阅读；网页解读和配图在 `raw/x-prediction-references/` 与 `drafts/assets/x-prediction/`。正文保留原始图和表格，不将提取、裁图过程写入面向读者的说明。
 
-**结构选型（Read Article Phase 4）**：以 **B. 对比驱动型** 为主，吸收 **D. 技术解析型** 的方法展开。EDM 的主要贡献是把扩散模型的训练和采样选择放进可比较的设计空间，而非提出一套新的端到端网络。文章先用一个独立数学章节统一推导 `x₀`、`x_t`、`ε`、`v`、score 与 EDM 去噪器之间的换算；后续章节引用这组结果，不在训练、ODE 和采样章节重复推导。再分别讲网络参数化、训练配置、推理噪声日程、PF-ODE 连续轨迹、Euler/Heun 数值求解器、随机 churn 和实验。概念层级要明确：PF-ODE 给出确定性连续向量场，Euler 与 Heun 是对它作离散数值积分的求解器；churn 会额外注入随机噪声，因此不是同一条纯 ODE 轨迹。正文目标不少于 3000 字，数学推导和方法占主体，实验部分不少于 600 字。
+**章节骨架与逐图位置（逐章对照已批准草稿）**
 
-**章节骨架**
+#### 1 为什么重新考虑预测目标
+- **写什么与数学重点**：从大 patch 的容量问题提出动机，保留高维螺旋对照与雕刻比喻，限定实验配置。
+- **草稿对应**：原始草稿「1 为什么重新考虑预测目标」及其全部子节，保留解释、推导和数据边界。
+- **配图**：图 1：JiT 的螺旋点云实验。各行对应不同观测维数，各列依次为真实数据、直接预测干净数据、噪声与速度的生成结果；结果均投影回二维展示。来源：Li 与 He，原论文 Figure 2。；素材 `../assets/x-prediction/jit-toy-comparison.webp`；紧随草稿中相同论证位置。
+- **配图**：图 2：雕刻与携带碎石。Liang Tongtong 用这个比喻解释，直接预测干净结构与同时保留噪声相关信息，对主网络提出了不同要求。来源：知乎回答，答主使用 GPT 生成的概念示意图。[2]；素材 `../assets/x-prediction/liang-noise-burden-metaphor.jpg`；紧随草稿中相同论证位置。
 
-#### 1 为什么要把扩散模型拆成“设计空间”
-- **写什么**：从 Karras 等人指出的阅读与工程问题切入：不同扩散方法往往把理论过程、噪声参数化、网络预条件、训练目标和采样器绑成整体，难看出哪个选择带来收益。交代 EDM 的任务是把这些决策显式列出并逐项评估；它不是一套新前向 SDE，也不意味着模块在所有组合下都能无损互换。说明本文聚焦 DSM 类、对高斯扰动数据分布建模的扩散方法。
-- **素材来源**：`raw/edm-2022/sources/edm-2022.pdf`；`raw/edm-2022/source-tar/paper.tex` §1，lines 79–105；`raw/edm-2022/analysis/methodology.md` §Research question and motivation。
-- **必备元素**：一张训练设计轴 × 采样设计轴的自绘路线图；术语框解释 EDM 全称、论文年份与它在本系列中的位置。
+#### 2 预测目标与训练目标
+- **写什么与数学重点**：固定噪声到数据时间方向，逐步推导 x、epsilon、路径速度 u 的换算及损失权重；解释条件均值、截断分母与解析旁路，不能混淆 VP v。
+- **草稿对应**：原始草稿「2 预测目标与训练目标」及其全部子节，保留解释、推导和数据边界。
+- **配图**：图 3：网络预测空间与损失空间的九种组合。列表示网络直接输出，行表示用哪个空间的误差训练；非对角项需要先做换算。来源：Li 与 He，原论文 Table 1。原文 v 在本篇记作路径速度 u。[1]；素材 `../assets/x-prediction/jit-tables/table-01.webp`；紧随草稿中相同论证位置。
+- **配图**：图 4：普通残差流的信息传递方式。同一个状态既沿恒等连接继续保存，也供下一层计算使用。来源：Liang Tongtong 博客 Figure 1。[3]；素材 `../assets/x-prediction/liang-blog/plain-residual-blog.svg`；紧随草稿中相同论证位置。
+- **配图**：图 5：训练中学出的输入旁路。左上比较学习系数与解析参考，右上把系数归一化后与 1 比较，下方展示 FID 随训练变化。来源：Liang 等人原论文 Figure 17，PDF 第 26 页；对应博客 Figure 10。[3][4]；素材 `../assets/x-prediction/liang-paper/learned_long_skip.webp`；紧随草稿中相同论证位置。
 
-#### 2 统一变量与换算：从 `x₀`、`ε`、`v` 到 score
-- **写什么**：集中完成全文的核心推导。先定义 VP 记法 `x_t=α_t x₀+σ_t ε`、`α_t²+σ_t²=1`，以及一种明确标注约定的 `v_t=α_t ε−σ_t x₀`。把两者写成正交线性变换矩阵并推导逆变换，给出任意一种网络输出到其余变量的完整换算表。再从高斯扰动核推出 score 关系 `s_t=−E[ε|x_t]/σ_t=(α_t E[x₀|x_t]−x_t)/σ_t²`，说明由 `x₀`、`ε` 或 `v` 预测得到 score 时依赖平方误差最优的条件均值假设。随后回到 EDM 的加性噪声 `x=y+σ_EDM ε`，推导去噪器 `Dθ`、噪声预测与 score 的关系；若对照 VP 记法，明确需要先按 `σ_data` 归一化，不能把两种 `σ` 直接等同。强调 `v` 是网络目标参数化，不是 PF-ODE 或 Flow Matching 的速度场；后续章节引用本章公式，不重复推导。
-- **素材来源**：`raw/ddpm-training-sampling/sources/ddpm-training-sampling.pdf` §2–3；`raw/score-sde-continuous-diffusion/sources/salimans-ho-2022-progressive-distillation.pdf` Appendix D，Eqs. 26–31；`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §3.2；`raw/edm-2022/source-tar/paper.tex` §2，`eq:score`、`eq:scoredenoiser`；`raw/edm-2022/source-tar/supplemental-body.tex` Appendix §Score matching，`eq:idealdenoiser`，lines 198–234。
-- **必备元素**：统一符号表；`[x_t,v_t]` 与 `[x₀,ε]` 的矩阵正逆变换；`x₀`/`ε`/`v`/score 互换表；各公式成立的 VP、加性高斯噪声和最优 MSE 假设；EDM 与归一化 VP 噪声尺度的换算提示；一张 σ 增大时的带噪图和理想去噪输出图。不得将条件均值误说成逐样本找回原图，也不得把 v-target 与连续 ODE 速度混为一谈。
+#### 3 为什么可换算却不好学
+- **写什么与数学重点**：从线性子空间例子推导最佳仿射预测及方向方差，解释 PCA 谱集中而非内禀维数；保留白化反例。
+- **草稿对应**：原始草稿「3 为什么可换算却不好学」及其全部子节，保留解释、推导和数据边界。
+- **配图**：图 6：只保留少量 patch 主方向，也能恢复可辨认结构。各面板对每个 16×16 patch 保留指定数量的主方向。来源：Liang 等人原论文 Figure 2，PDF 第 4 页。[4]；素材 `../assets/x-prediction/liang-paper/reconstruction_example.webp`；紧随草稿中相同论证位置。
+- **配图**：图 7：同一组干净 patch 协方差谱下，最佳仿射预测的方差集中程度。表内数字是解释 90% 预测方差所需的方向数，不是网络隐藏宽度。来源：Liang 等人原论文 Table 8，PDF 第 22 页。[4]；素材 `../assets/x-prediction/liang-paper/table-08-affine-ranks.webp`；紧随草稿中相同论证位置。
+- **配图**：图 8：目标协方差谱与学习所得输入嵌入谱。左侧为目标的累计方差，右侧为输入嵌入 Gram 矩阵特征值的累计占比，各曲线独立排序并归一化。来源：Liang 等人原论文 Figure 13，PDF 第 23 页。[4]；素材 `../assets/x-prediction/liang-paper/prediction_covariance_gram.webp`；紧随草稿中相同论证位置。
 
-#### 3 EDM 的模型输出与网络预条件
-- **写什么**：解释 EDM 选择去噪器 `Dθ(x;σ)` 作为共同网络接口，以及主网络 `Fθ` 如何通过 `c_in`、`c_skip`、`c_out`、`c_noise` 组合成去噪预测。推导预条件系数与 `σ_data` 的关系，说明这些系数改变网络的数值参数化，不改变上一章变量之间的概率关系；`Dθ` 是 EDM 论文的输出对象，不能称为 v-prediction。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §5，`eq:preconditioning`，lines 369–410；`raw/edm-2022/source-tar/figures.tex` Table 1 `tab:specifics`；`raw/edm-2022/source-tar/supplemental-body.tex` Appendix §Our preconditioning and training，lines 421–523。
-- **必备元素**：`c_in/c_skip/c_out/c_noise` 的系数表；从单位输入方差、线性 skip 估计和残差尺度解释推导约束；标注 `σ_data=0.5` 是论文图像配置。
+#### 4 JiT 如何训练与生成
+- **写什么与数学重点**：解释 patch、条件输入、训练与 Euler/Heun 生成，保留原论文算法及九组合表、瓶颈实验；有效自由度不等于输出坐标数或主干宽度。
+- **草稿对应**：原始草稿「4 JiT 如何训练与生成」及其全部子节，保留解释、推导和数据边界。
+- **配图**：图 9：JiT 的像素空间 Transformer。主干直接处理图像 patch，并输出干净图像估计。来源：Li 与 He，原论文 Figure 3。[1]；素材 `../assets/x-prediction/jit-method/framework.webp`；紧随草稿中相同论证位置。
+- **配图**：图 10：JiT 原文的单步训练伪代码。网络输出 x_pred，再换算 v_pred，用速度误差训练；原文 v 对应本篇的路径速度 u。来源：Li 与 He，Algorithm 1。[1]；素材 `../assets/x-prediction/jit-method/algorithm-1.webp`；紧随草稿中相同论证位置。
+- **配图**：图 11：JiT 原文的 Euler 单步采样伪代码。先预测图像，再转换成速度，最后更新当前状态。来源：Li 与 He，Algorithm 2。[1]；素材 `../assets/x-prediction/jit-method/algorithm-2.webp`；紧随草稿中相同论证位置。
+- **配图**：图 12：直接输出与损失空间的九种组合。上表为 ImageNet 256×256 的 JiT-B/16，下表为 64×64 的 JiT-B/4。来源：Li 与 He，原论文 Table 2。[1]；素材 `../assets/x-prediction/jit-tables/table-02.webp`；紧随草稿中相同论证位置。
+- **配图**：图 13：输入嵌入瓶颈实验。横轴为中间瓶颈维数，纵轴为 FID；原始 patch 为 768 维。来源：Li 与 He，原论文 Figure 4。[1]；素材 `../assets/x-prediction/jit-method/bottleneck.webp`；紧随草稿中相同论证位置。
+- **配图**：图 14：通用 Transformer 组件带来的增益。括号内数字使用额外的 CFG interval 设置，比较时应保持口径一致。来源：Li 与 He，原论文 Table 4。[1]；素材 `../assets/x-prediction/jit-tables/table-04.webp`；紧随草稿中相同论证位置。
 
-#### 4 EDM 的训练：噪声分布、损失与数据增强
-- **写什么**：说明训练时从 `y`、`ε` 和 `σ` 构造 `x=y+σε`，优化加权去噪 MSE；推导 `λ(σ)` 如何抵消输出残差尺度，并解释对数正态 `p_train(σ)` 决定训练中各噪声级出现频率。单独标出可选的非泄漏数据增强，避免把它说成 EDM 定义的一部分。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §5，`eq:precloss`、lines 411–440；`raw/edm-2022/source-tar/figures.tex` Table 1；`raw/edm-2022/source-tar/data/TrainingTable.tex`；`raw/edm-2022/analysis/methodology.md` §Network preconditioning and training。
-- **必备元素**：训练目标、噪声抽样分布及 loss weighting；`P_mean=-1.2`、`P_std=1.2` 标成论文图像配置；训练噪声分布与推理噪声 schedule 的区别。
+#### 5 其他像素模型如何处理
+- **写什么与数学重点**：逐项讲 DiP、DeCo、PixelDiT 的局部输入通路、频率损失及像素调制，分清各原论文与 Liang 统一实验口径。
+- **草稿对应**：原始草稿「5 其他像素模型如何处理」及其全部子节，保留解释、推导和数据边界。
+- **配图**：图 15：DiP 的局部细化头。局部模块结合带噪 patch 和全局语义特征，采用轻量卷积 U-Net 完成像素级预测。来源：Chen 等人，原论文 Figure 6。[6]；素材 `../assets/x-prediction/pixel-architectures/dip-detailer.webp`；紧随草稿中相同论证位置。
+- **配图**：图 16：局部细化头的不同放置方式。阅读重点是局部像素信息在哪里进入，以及细化结果是否重新回到主干。来源：Chen 等人，原论文 Figure 5。[6]；素材 `../assets/x-prediction/pixel-architectures/dip-placement.webp`；紧随草稿中相同论证位置。
+- **配图**：图 17：DeCo 的频率分工。主干提供语义特征，像素解码器直接接收带噪像素，并通过条件调制完成速度预测。来源：Ma 等人，原论文 Figure 3。[7]；素材 `../assets/x-prediction/pixel-architectures/deco-architecture.webp`；紧随草稿中相同论证位置。
+- **配图**：图 18：PixelDiT 的双层架构与 PiT 块。左侧区分 patch 与像素通路，右侧展示像素条件调制及压缩—注意力—展开结构。来源：Yu 等人，原论文 Figure 2。[8]；素材 `../assets/x-prediction/pixel-architectures/pixeldit-architecture.webp`；紧随草稿中相同论证位置。
+- **配图**：图 19：全局、patch 级和逐像素调制的区别。重点看条件参数是在何种空间粒度上共享或分别生成。来源：Yu 等人，原论文 Figure 3。[8]；素材 `../assets/x-prediction/pixel-architectures/pixeldit-adaln.webp`；紧随草稿中相同论证位置。
 
-#### 5 推理配置：噪声日程、初始状态与 NFE
-- **写什么**：解释推理从高噪声状态 `x(σ_max)=σ_max ε` 开始，沿递减的噪声表到 `σ=0`；给出 EDM 的 `ρ` 日程公式，分别说明 `σ_min`、`σ_max`、`ρ`、步数和 NFE 的含义。明确推理时的 `{σ_i}` 与训练时的 `p_train(σ)` 是两个独立选择。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §3，`eq:discretization`，lines 218–284；`raw/edm-2022/source-tar/figures.tex` Table 1；`raw/edm-2022/analysis/methodology.md` §Deterministic sampler。
-- **必备元素**：噪声日程公式、从高噪声到零噪声的时间线、参数表，以及“步数不等于 NFE”的说明。
+#### 6 残差流为什么成为瓶颈
+- **写什么与数学重点**：定义残差状态、方向增益和噪声敏感度，解释 HC/SiHC 读写、FID 变化及 DINO 探针。区分信息内容、轨迹唯一性及跨时刻终点一致性。
+- **草稿对应**：原始草稿「6 残差流为什么成为瓶颈」及其全部子节，保留解释、推导和数据边界。
+- **配图**：图20：不同预测目标下，输入嵌入对干净数据主方向的对齐与增益。来源：Liang 等人原论文，Selective filtering depends on target and patch geometry。；素材 `../assets/x-prediction/liang-paper/prediction_spectra_alignment.webp`；紧随草稿中相同论证位置。
+- **配图**：图21：同一原论文中，各类模型沿网络深度的类别线性探针结果。各列固定加噪时间；它与噪声方差测量互为补充，不能将两种指标的数值直接比较。来源：Liang 等人原论文，Class readability follows the burden。；素材 `../assets/x-prediction/liang-paper/linear_probes.webp`；紧随草稿中相同论证位置。
+- **配图**：图22：普通残差、HC 与 SiHC 的持续状态和计算工作区。按图中箭头从下向上阅读：SiHC 将局部输入和局部预测交给不同状态，再通过读写映射共享计算。来源：Liang 等人原论文，Persistent state and workspace in three residual designs。；素材 `../assets/x-prediction/liang-paper/sihc_overview.webp`；紧随草稿中相同论证位置。
+- **配图**：图23：DINO 与像素表示的类别线性探针对照。高维状态中承载的是预训练特征还是像素噪声，会改变“需要保留很多方向”的意义。来源：Liang Tongtong 博客 Figure 13；具体数值以上述论文附录为准。；素材 `../assets/x-prediction/liang-blog/dino-pixel-probes.png`；紧随草稿中相同论证位置。
 
-#### 6 PF-ODE：EDM 确定性采样所沿的连续轨迹
-- **写什么**：从前面已建立的去噪器—score 公式代入 probability-flow ODE，得到 EDM 坐标下 `dx/dσ=(x−Dθ(x;σ))/σ`。解释这是确定性连续向量场，采样从大 `σ` 向小 `σ` 积分；与对应 SDE 只在理想条件下匹配各时刻边缘分布，不代表轨迹相同。强调 PF-ODE 定义连续动力学，本身还没有规定用几步、用哪种数值求解器。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §2，`eq:ode`、`eq:odescale`，lines 126–179；`raw/score-sde-continuous-diffusion/sources/song-2021-score-sde.pdf` §3.2；`raw/edm-2022/analysis/methodology.md` §Deterministic sampler。
-- **必备元素**：从 score 到 EDM ODE 的短推导（引用第 2 章结果，不重推变量换算）；明确 PF-ODE 与离散 sampler 的层级关系及路径边界。
+#### 7 总结与边界
+- **写什么与数学重点**：综合概率路径、输出、损失、信息通路及采样四项选择，陈述容量理论、优化动力学、配置依赖及端点问题，过渡到 EDM；不宣称 2022 EDM 已覆盖后续工作。
+- **草稿对应**：原始草稿「7 总结与边界」及其全部子节，保留解释、推导和数据边界。
 
-- **写什么**：在第 6 章给出的同一 PF-ODE 向量场上，令 `d_i=(x_i−Dθ(x_i;σ_i))/σ_i`、`Δσ_i=σ_{i+1}−σ_i`，分别写出 Euler 更新 `x_{i+1}=x_i+Δσ_i d_i` 和 Heun 的预测—校正更新：先得 `x̂_{i+1}=x_i+Δσ_i d_i`，再计算 `d̂_{i+1}=(x̂_{i+1}−Dθ(x̂_{i+1};σ_{i+1}))/σ_{i+1}`，最后令 `x_{i+1}=x_i+Δσ_i(d_i+d̂_{i+1})/2`。比较每步函数评估次数、局部误差和质量/计算权衡。准确解释 EDM Algorithm 1：普通步先 Euler 预测，再在预测点做第二次去噪器评估并校正；最后到 `σ=0` 的一步跳过第二次评估，避免在零噪声处计算含 `1/σ` 的斜率。不要把 Heun 称为新的概率过程，也不要把 PF-ODE 与 Heun 当成同一个概念。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §3，lines 218–284；`raw/edm-2022/source-tar/figures.tex` Algorithm 1 `alg:heun`，lines 264–295；`raw/edm-2022/analysis/experiment.md` §Sampler evaluation。
-- **必备元素**：Euler 与 Heun 更新式、两者预测路径示意、NFE 统计；只截原论文 Algorithm 1 的伪代码区域，并逐步解释 predictor/corrector 与末步例外。
+**图表与引用实施**：保留 23 张已审图（含原论文表格和算法截图），转换为本站 photo/cap 组件并在末尾列出九项公开来源；不复制作者工作清单及内部素材备注。无新增 Mermaid：本篇现有原图已覆盖结构，避免重复表达。完成后构建本地预览，不自动提交或推送。
 
-#### 8 随机采样：churn 怎样改变确定性轨迹
-- **写什么**：按 Algorithm 2 解释先临时提高噪声尺度、注入新的高斯噪声，再调用 Euler/Heun 更新。说明 churn 是叠加在数值求解上的随机步骤，因此加入 churn 后采样轨迹不再是纯 PF-ODE 解；它也不是 DDPM 的反向后验采样。解释过强 churn 会损失细节或造成颜色偏移，效果依模型训练与数据而变。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §4，`eq:sde` 与 lines 289–365；`raw/edm-2022/source-tar/figures.tex` Algorithm 2 `alg:stochastic`，lines 346–377；`raw/edm-2022/analysis/methodology.md` §Optional stochastic churn；`raw/edm-2022/analysis/experiment.md` §Stochastic sampling and interaction with training。
-- **必备元素**：只截原论文 Algorithm 2 的伪代码区域；自绘“暂时升噪并注入随机量 → 再沿选定求解器去噪”的图；指出不同训练设置下 churn 的收益方向可能相反。
+### `edm-design-space`｜视频生成系列（六）：EDM——重新梳理扩散模型的设计空间
 
-#### 9 实验与消融：哪些训练和推理选择带来了变化
-- **写什么**：先用简化表呈现 VP/VE 基线到超参数调整、容量重分配、预条件、训练 loss/噪声分布和非泄漏增强的累积变化；再分开比较“只替换已有模型采样器”与“用 EDM 训练配置重新训练”。报告 CIFAR-10 32×32 条件/无条件 FID 与 35 NFE，ImageNet-64 sampler-only `2.07→1.55` 与重新训练 `1.36` 分开呈现。用 churn sweep 说明确定性与随机采样优劣会随训练方案和数据集改变，不把 2022 年结果说成当前 SOTA。
-- **素材来源**：`raw/edm-2022/source-tar/data/TrainingTable.tex`；`raw/edm-2022/source-tar/figures.tex` Table 2 `tab:TrainingTable` 与 Figure 5 `fig:TrainingPlots`；`raw/edm-2022/source-tar/paper.tex` §§3–5，lines 248–284、356–365、442–468；`raw/edm-2022/analysis/experiment.md`。
-- **必备元素**：标明数据集、分辨率、条件设置、FID、NFE 和是否重训的结果表；训练/推理消融表；Figure 5 churn sweep 的 `256 steps (NFE=511)` 口径，不与 CIFAR-10 `35 NFE` 混用。
+**原始草稿与审批**：[edm-design-space.org](../../../drafts/video-generation/edm-design-space.org)。九章实质草稿已逐章审阅，用户已明确授权正文写作。正文持续以草稿的解释、推导、表格和原图为依据；本九章结构替代此前十节骨架。系列顺序为 DDPM → Score/DSM/SDE → DDIM → Flow Matching → x-prediction → EDM → 条件生成。
 
-#### 10 总结：设计空间、适用边界与下一篇
-- **写什么**：总结 EDM 将输出参数化、网络预条件、训练分布、推理 schedule、ODE 求解器与随机 churn 拆开比较的价值；指出这些选择仍有交互，论文参数是具体实验配置。连接下一篇 DDIM：两者可能出现确定性少步采样，但 DDIM 的非马尔可夫前向族与 EDM 的设计空间分析是不同层次的问题。
-- **素材来源**：`raw/edm-2022/source-tar/paper.tex` §§2–5、Conclusion，lines 472–483；`raw/edm-2022/analysis/methodology.md` §Scope and interpretation limits；`raw/edm-2022/analysis/experiment.md` §Reporting limits；下一篇 DDIM 的 `design.md` 条目及 `raw/ddim-fast-sampling/` 原论文来源。
-- **必备元素**：总结变量换算、训练轴和推理轴的关系；EDM / DDIM / Score-SDE 边界表；一段读者可复用的扩散论文阅读框架。
+#### 1 为什么需要统一框架
 
-**关键数据点**（均指论文报告值，写作时维持原口径）：
+- **草稿位置**：第 1 章「为什么需要统一框架」。
+- **写作与图示**：从前五篇的疑问引入五个设计层次，插入依赖关系 Mermaid 和原论文 Table 1。区分 EDM 原始贡献与对后续 FM、JiT 的综合分析。
 
-- EDM 的代表性噪声参数为 `σ_min=.002, σ_max=80, σ_data=.5, ρ=7`；训练噪声分布 `lnσ~N(-1.2,1.2²)`。来源：`source-tar/figures.tex` Table 1 `tab:specifics`。
-- CIFAR-10 32×32：config f 的条件 VP/VE FID 均为 `1.79`，无条件 VP `1.97`、VE `1.98`；表列 `35 NFE`。来源：`source-tar/data/TrainingTable.tex`、Table 2 `tab:TrainingTable`。
-- 预训练 class-conditional ImageNet-64：只替换 sampler 后 FID `2.07→1.55`。来源：`source-tar/paper.tex` §4，lines 356–365。
-- 重新训练的 class-conditional ImageNet-64：FID `1.36`，前述 sampler-only 结果另列；论文写明该模型未使用 augmentation。来源：`source-tar/paper.tex` §5，lines 460–468。
-- 论文的 churn 曲线使用 `256 steps (NFE=511)`；明确它是单独的随机性分析设置。来源：`source-tar/figures.tex` Figure 5 `fig:TrainingPlots`。
+#### 2 统一概率路径
 
-**配图计划**：① EDM 设计轴自绘图；② 论文 Figure 1 去噪示例；③ 正文中的统一变量换算表（公式表，不另做图）；④ PF-ODE 连续轨迹与离散步点示意；⑤ Euler 单斜率与 Heun predictor/corrector 对照图；⑥ 仅含 Algorithm 1、Algorithm 2 伪代码区域的截图；⑦ Figure 5 相关训练/随机采样面板或基于原始数据的摘要图。算法截图不得带整页，图注注明 Karras et al.（2022）原文算法编号；正文不写图像转换过程。
+- **草稿位置**：第 2 章「统一概率路径」。
+- **写作与图示**：从一般高斯核与单时刻边际开始，区分联合过程；对照 DDPM、VP/VE、DDIM、线性 FM，推导 y=z/a、sigma=b/a 及密度雅可比，插入 Figure 1(a,b)。
 
-**审阅重点**：变量换算是否在单独章节一次推导完且假设明确；PF-ODE 是否被定位为连续动力学、Euler/Heun 是否被定位为数值求解器、churn 是否被定位为额外随机步骤；网络预条件、训练分布、推理日程和求解器是否分别成章；实验表是否把 sampler-only 与 retraining 分开。
+#### 3 统一预测目标
 
+- **草稿位置**：第 3 章「统一预测目标」。
+- **写作与图示**：从条件均值推导 x、epsilon、score、通用路径速度的正逆换算及 Delta 非退化条件；单独解释 VP v、角度时钟、线性 FM 与 EDM 坐标，保留换算表。
 
-### `conditional-image-diffusion`｜视频生成系列（六）：条件扩散——从 CFG 到潜空间图像生成
+#### 4 统一训练目标
 
-| 栏位 | 内容 |
-|------|------|
-| 原始草稿 | [conditional-image-diffusion.org](../../../drafts/video-generation/conditional-image-diffusion.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `60`；Hub `video-generation-hub` |
-| 服务对象 | 读者能理解条件信号如何控制图像扩散，并看懂从图像扩散迁移到视频的概念接口。 |
+- **草稿位置**：第 4 章「统一训练目标」。
+- **写作与图示**：用条件方差分解连接 DDPM KL 到 MSE、DSM、CFM；推导统一干净误差下的时间权重，解释 JiT 输出与损失、时间抽样及有限容量。插入 JiT Table 1。
 
-**章节骨架**
+#### 5 EDM 的网络预条件
 
-#### 1 条件生成与 Guidance
-- **写什么**：解释条件分布、classifier guidance 与 classifier-free guidance，区分二者训练和推理机制。
-- **素材来源**：对应 classifier guidance/CFG 原论文（收集至 `raw/conditional-image-diffusion/sources/`）；`~/org/roam/notes/ai-ml/Stable Diffusion.org`。
-- **必备元素**：空条件 dropout 训练、条件/无条件预测组合公式和 guidance scale 作用。
+- **草稿位置**：第 5 章「EDM 的网络预条件」。
+- **写作与图示**：区分去噪接口 D 与主干 F；依次推导输入缩放、残差目标、最小方差旁路和输出缩放，列四系数表及目标随噪声变化的极限。回看 EDM Table 1。
 
-#### 2 CLIP 与 DALL·E 2 的条件接口
-- **写什么**：说明 CLIP 的图文表示用途及 DALL·E 2 中 prior 与 diffusion decoder 的职责，不把 CLIP 说成图像生成器。
-- **素材来源**：`~/org/roam/notes/ai-ml/CLIP.org`；DALL·E 2 原论文/官方材料（收集至 raw sources）。
-- **必备元素**：CLIP、prior、decoder 数据流图；区分 CLIP guidance 与 CFG。
+#### 6 EDM 怎样分配训练
 
-#### 3 Latent Diffusion 与 Stable Diffusion
-- **写什么**：说明压缩潜空间中的扩散、文本条件注入与像素空间扩散的计算差别。
-- **素材来源**：`~/org/roam/notes/ai-ml/Stable Diffusion.org`；LDM 原论文来源文件待收集。
-- **必备元素**：编码器—潜空间去噪器—解码器示意；分辨率/计算量等数值按原文注明口径。
+- **草稿位置**：第 6 章「EDM 怎样分配训练」。
+- **写作与图示**：区分频率与权重，推导 lambda 抵消输出缩放、对数正态及密度雅可比；插入 Figure 5(a)，解释两端不可约误差，保留教学伪代码。
 
-#### 4 可控与个性化案例
-- **写什么**：精简介绍 ControlNet、DreamBooth、LoRA 的适用问题和方法层级，不将其混为同类。
-- **素材来源**：`~/org/roam/notes/ai-ml/ControlNet.org`、`~/org/roam/articles/DreamBooth.org`、`~/org/roam/articles/LoRA.org`、`~/org/roam/articles/Stable Diffusion 3.org`。
-- **必备元素**：方法目标与训练/适配方式对照表；作为侧栏案例，不扩写为独立长综述。
+#### 7 统一生成过程
 
-#### 5 过渡到视频条件生成
-- **写什么**：指出图像扩散可迁移的组件和视频额外需要处理的时间维度问题。
-- **素材来源**：CVPR 2024 教程 PDF（对应页码在任务 1.3 记录）；`~/org/roam/notes/ai-ml/对扩散模型的理解.org`。
-- **必备元素**：图像/视频条件维度对照和下一篇导航。
+- **草稿位置**：第 7 章「统一生成过程」。
+- **写作与图示**：用热方程和连续性方程推导 PFODE；用沿生成方向递增时间的 SDE 与 Fokker–Planck 方程证明相同边际，解释反演、随机修正及方法对照。
 
-**关键数据点**：指导强度、模型分辨率、训练数据规模等仅在原论文/官方模型卡一致口径下对照。
-**配图计划**：CFG 预测组合图、DALL·E 2 数据流图、潜空间扩散图。
+#### 8 EDM 怎样采样
 
-### `video-generation-tasks-spacetime`｜视频生成系列（七）：视频生成任务与时空建模基础
+- **草稿位置**：第 8 章「EDM 怎样采样」。
+- **写作与图示**：展开 Euler 与 Heun 预测校正算例、终点例外和 NFE；推导 rho 节点及 churn 方差。插入 Algorithms 1–2 的独立算法截图、Figures 3、2；区分 S_noise=1 理想证明和经验缩放。
+
+#### 9 实验、总结与边界
+
+- **草稿位置**：第 9 章「实验、总结与边界」。
+- **写作与图示**：分开 sampler-only 与 retraining，插入 Figure 4、Table 2，并解释 Figure 5(b,c)；核对条件、分辨率、NFE。以前五篇总表、方法分析链与尚未解决的问题收束，导航指向条件生成。
+
+**原始依据**：`raw/edm-2022/source-tar/paper.tex` §§1–6、`supplemental-body.tex` 预条件/score/SDE 附录、`figures.tex`、`data/TrainingTable.tex`；其他七篇原论文按草稿末尾参考文献交叉对照。图表来源记录在 `drafts/assets/edm-design-space/manifest.json`。图片操作不写入正文；公式不嵌入段落标签。
+
+**验证交付**：单页结构与引用检查、媒体路径核对、全站构建、本地预览；保留原 URL、sub_id 60、前后篇导航。只完成本篇，不推进条件生成。
+
+### `image-foundation-models`｜视频生成系列（八）：图像基模——表示空间与生成编辑
+
+- **原始草稿**：[image-foundation-models.org](../../../drafts/video-generation/image-foundation-models.org)。依据「用户补充的核心主线」「与现代图像基模的连接」「最新分工」组织；已有实质草稿；十章及现代基模扩充已审阅并获正文授权；正文已生成，保留 28 张配图、4 个 Mermaid、24 项参考来源，构建与本地预览通过。
+- **目标位置**：`categories/AI/视频生成`；sub_id `80`；已实施，接条件扩散（70）后、视频任务（90）前。
+- **核心问题**：生成应该在哪种表示空间进行？完整基模如何组合图像表示、生成主干、条件与编辑任务？
+
+#### 1 像素生成的成本
+- **写什么**：区分重复采样成本、单次主干计算和高维噪声学习负担，解释引入压缩空间的动机；不能说像素扩散无法工作。
+- **素材来源**：草稿「像素空间为什么贵」；LDM 原文 `raw/latent-diffusion-2021/` 与前文 x-prediction。
+- **图表**：表示维度与计算路径对照表；原论文压缩效率实验图，具体图号待核验。
+
+#### 2 VAE 与图像表示
+- **写什么**：编码、重参数化、解码，从 ELBO 推到重建项与 KL 正则；区分理论 VAE 和实际图像压缩器配置。
+- **素材来源**：草稿「VAE 与 Latent Diffusion 如何改变问题」；内部 VAE 素材及待整理的 VAE 原论文。
+- **图表**：图「图像如何编码与重建」，优先原图；Mermaid「编码、采样与解码」辅助解释训练数据流。给出 `z=μ(x)+σ(x)⊙ε` 及变分目标推导。
+
+#### 3 U-Net 与多尺度建模
+- **写什么**：解释下采样、上采样、跳跃连接如何组合语义与细节，再解释扩散 U-Net 的残差块、时间嵌入及 attention。区分原始分割 U-Net、VAE 内部网络和扩散生成主干。
+- **素材来源**：草稿「用户补充：生成主干 U-Net 与 DiT」；U-Net 原论文（1505.04597）待整理；复用 DDPM、LDM 原文。
+- **数学**：跟踪各尺度张量尺寸，给出 skip 特征拼接与残差/时间调制示意式，逐项解释输入和输出。
+- **图表**：原文图「U-Net 的多尺度与跳跃连接」；扩散版结构图核验后选取；Mermaid「带噪状态、时间与条件进入主干」，放在模块解释后。
+
+#### 4 潜空间与 Stable Diffusion
+- **写什么**：编解码器训练与 latent 扩散训练分开；从像素前向式迁移到 latent，解释文本条件、主干与采样器各自职责，以及压缩损失。
+- **素材来源**：同一草稿节；LDM 原文及明确版本的 Stable Diffusion 官方资料。
+- **图表**：原论文整体架构图与重建效果图；图题「潜空间中的生成流程」。完整系统说明由本篇承担。
+
+#### 5 DiT 与图像 Token
+- **写什么**：先承接 Stable Diffusion 的 U-Net 主干，提出生成主干能否换成 Transformer，再讲 patchify、位置编码、Transformer、自适应归一化与 unpatchify；讲原始 DiT 的条件注入和可扩展性，再与 U-Net 比较。现代双流/多模态变体留到完整基模章节。
+- **素材来源**：同一草稿节；Peebles 与 Xie 的 DiT（2212.09748）已整理至 `raw/dit-2022/`；JiT 已有材料只作跨篇联系。
+- **数学**：推导 token 数 `N=(H/p)(W/p)`，区分固定通道时的像素/latent 尺寸；解释 attention、adaLN 调制及标准全注意力交互的二次项，不把整个网络成本都简化成该项。
+- **图表**：原论文主干与条件模块图、计算规模实验图；图号待核验。表「U-Net 与 DiT 的设计取舍」，覆盖多尺度、交互、条件与成本。
+- **共同接口**：两种主干均映射带噪状态、时间和条件到预测张量；表示空间、主干、预测参数化、训练损失与采样器分开比较，不宣称 DiT 必然预测速度或必须使用 ODE。
+
+#### 6 DiT 的改进
+- **原始草稿位置**：`image-foundation-models.org`「第六章：DiT 的改进」；按用户决定独立成章，第五章保留原始 DiT。
+- **写什么**：SiT 对比连续时间、预测对象、插值与 ODE/SDE 采样；REPA 解释教师表征、中间层对齐与训练/推理分工；DDT 解释语义编码、速度解码、联合监督及跨步缓存，不混同于 RAE 的宽头。
+- **原文**：`raw/sit-2024/`、`raw/repa-2024/`、`raw/ddt-decoupled-2025/`，均已运行原文提取脚本。
+- **数学**：配对导数到条件平均速度；同边际 ODE/反向 SDE；余弦对齐损失；DDT encoder/decoder 与刷新集合公式。统一数据端为 0、噪声端为 1，注明 DDT 原文时间方向转换。
+- **图表**：草稿图 13–16 为 SiT 收敛、REPA 对齐、DDT 架构与跨步特征相似度原图；表「这些方法分别改了哪一层」。
+- **边界**：不把特定实验瓶颈、相似度代价下最优缓存或频率分析推广为普遍保证。新增章待用户审阅。
+
+#### 7 RAE 与 JiT
+- **写什么**：RAE 保留 latent 生成而更换表征接口；JiT 直接像素生成、绕过预训练图像压缩器。比较重建、语义、高维 latent 与生成成本，不写成严格替代链。
+- **素材来源**：草稿对应两节及「两条路线的比较」；RAE 原文已整理至 `raw/rae-2025/`；JiT 复用 `raw/jit-x-prediction-2025/`，预测目标推导链接第五篇。
+- **图表**：RAE 原文结构与宽头图已插入草稿；JiT 原图按论点复用；表「压缩潜空间、表征空间与像素空间」。
+
+#### 8 现代图像基模
+- **章节层级**：每个基模独占三级标题：Stable Diffusion 3、FLUX.1、Qwen-Image、Qwen-Image-2.1、Z-Image、HunyuanImage 3.0、Seedream 5.0 Pro、FLUX.2；其下用四级标题展开架构、关键机制、训练采样及证据边界。导读置前，跨模型内容集中在末尾「统一比较」，不把两个基模合成一个标题。
+- **写什么**：正式加入 Stable Diffusion 3（SD3），置于 FLUX.1 之前，解释其 Rectified Flow 与 MMDiT，并采用 Esser et al.（2403.03206）的原始架构图（Figure 2(a–b) 已插入草稿，资产 `sd3-mmdit-architecture.webp`，含整体接口和单块机制说明）；不得标为 FLUX.1 论文。保留 FLUX.1-dev 与初代 Qwen-Image 的已核验机制，增加 FLUX.2、Qwen-Image-2.1、Seedream 5.0 Pro、Z-Image 与 HunyuanImage 3.0。逐一说明问题、架构与创新依据，再作统一接口比较；不写成严格继承链。
+- **素材来源**：[原始草稿](../../../drafts/video-generation/image-foundation-models.org)「与现代图像基模的连接」「现代基模扩充（用户确认，2026-10-15）」及现有第八章；新增资料由 Luna 整理至 `raw/modern-image-models-2026/`，原论文按 read-article 提取；Z-Image Figure 10 与 HunyuanImage 整体架构原图已插入草稿，资产为 `z-image-architecture.webp`、`hunyuan-image3-architecture.webp`；尚待核验的架构不作事实写入。
+- **版本边界**：Qwen 初代的 20B/60 层双流结构与 2.1 模型卡的视觉生成 7B/32 层单流分别说明；Seedream 等仅有产品资料的部分不推断训练目标与架构。
+- **图表位置与标题**：各模型机制段开头优先插入对应论文/官方报告的原始架构图，标题为「模型名与版本：整体架构」，标明原图号及来源；没有公开结构图则记缺。能力示例另用「模型名与版本：生成与编辑示例」，不能冒充架构图。章节末放表「现代图像基模的系统接口」，比较表示、主干、条件、训练/采样与任务范围，并标明未披露项。保留现有 FLUX Mermaid 接口示意及 Qwen 原图，不用新 Mermaid 代替未公开架构。
+- **审阅状态**：现有第八章已通过；扩充范围已获用户确认，新增内容已获正文授权并落实到页面；FLUX.2 [dev] 官方配置已核实。
+
+#### 9 生成与编辑基模
+- **章节层级**：FLUX.1 Kontext、Qwen-Image 编辑路线、ACE、ACE++ 各占三级标题，模型内部的机制与训练说明用四级标题。
+- **写什么**：Kontext、Qwen-Image-Edit、ACE 与 ACE++ 的参考图、上下文及任务组织；区分基础生成模型与编辑版本。
+- **素材来源**：草稿 ACE 与现代基模段落；各原文待核验，ACE 二手笔记不能代替一手来源。
+- **图表**：原文上下文/编辑结构图；Mermaid「基座如何承接生成与编辑任务」，不替代原文结构证据。
+
+#### 10 总结与边界
+- **写什么**：依草稿第十章，从表示、主干、路径与预测、条件、任务五个问题统一全篇；给出编码—状态—预测—采样—解码接口，分解条件编码、主干评估和解码成本；总结表示损失、条件遵循、编辑保真、计算与视频时序边界，连接下一篇条件机制。第十章已获正文授权并完成页面。
+- **图表**：表「表示、生成主干、条件接口与任务」；同口径数据才作定量比较。
+
+**素材门禁**：选定新原文后先执行 read-article 提取与整理，记录原图位置、版本和来源；未定位图号不编造编号。内部 Org 素材不出现在公开正文中。
+
+### `conditional-image-diffusion`｜视频生成系列（七）：条件扩散——控制、适配与编辑
+
+- **原始草稿**：[conditional-image-diffusion.org](../../../drafts/video-generation/conditional-image-diffusion.org)。十章及 prior 增补均已审阅通过；正文写作持续参照该草稿，已完成十章、24 张配图、5 个 Mermaid 和 15 项参考来源。
+- **目标位置**：`categories/AI/视频生成`；sub_id `70`。既有页面仍是旧版本，不将其完成状态算作本轮重写完成。
+- **分工**：本篇讲控制已有生成器的方法；完整 VAE、LDM/Stable Diffusion 与现代基模架构交由后续图像基模篇。各方法存在可组合关系，不构造一条虚假的继承链。
+
+#### 1 条件改变了什么
+- **写什么**：保留已审阅通过的草稿首章，从 `p(x)` 到 `p(x|c)`，区分条件输入、采样指导与参数适配。
+- **素材来源**：草稿「文章草稿／1 条件到底改变了什么」。
+- **图表**：Mermaid「条件进入生成的三个位置」；方法层级表。
+
+#### 2 CLIP 与条件接口
+- **写什么**：CLIP 对齐与双向对比损失、文本特征和 cross-attention；只补理解后续方法必需的 latent/Stable Diffusion 接口。DALL·E 2 作接口案例，按草稿详细解释 prior 的条件表征分布、干净表征预测损失、两阶段生成和原文小模型消融；明确文本向量不能无代价替换图像向量，prior 并非所有文生图模型的必要模块。
+- **素材来源**：草稿原第二章及迁移决定；`raw/clip-2021/`、`raw/dalle-2-2022/`、LDM 原文。
+- **图表**：CLIP 原图；图「文本特征怎样进入去噪器」与 attention 公式，不重复前篇 VAE 推导。
+
+#### 3 CFG 增强条件
+- **写什么**：条件 dropout、Bayes 推导 `s_c-s_u=∇log p_t(c|x)`、`s_cfg=s_u+w(s_c-s_u)`；解释 0、1、超过 1 的含义与原文权重约定差异。
+- **素材来源**：草稿「CFG 的直觉与数学引导」；`raw/classifier-free-guidance-2022/`。
+- **图表**：图「公共方向与条件差异」，用草稿二维向量例子；原文强度实验图。不是压制某个普适的分布中心；固定时间密度解释不等于严格终点分布保证。
+
+#### 4 GLIGEN 与位置
+- **写什么**：grounding token、冻结主干与零门控；先解释位置条件缺口，再给 gated 模块公式。
+- **素材来源**：草稿原第五章；`raw/gligen-2023/` 的 TeX/PDF。
+- **图表**：原文 `gated-self-attention.pdf`、`approach.pdf`，图题「位置条件如何进入主干」。
+
+#### 5 ControlNet 与空间
+- **写什么**：可训练分支、零卷积与条件残差；对照 T2I-Adapter 的注入与训练成本。
+- **素材来源**：草稿原第六章；`raw/controlnet-2023/`；T2I-Adapter 原文已提取至 `raw/t2i-adapter-2023/`，正文/结构图已核对；比较静态条件特征复用与逐步控制分支计算。
+- **图表**：ControlNet 原文结构及控制样例；解释初始输出不扰动与梯度传播，不声称全部参数首步均有梯度。
+
+#### 6 IP-Adapter 与参考图
+- **写什么**：图像特征与解耦 attention，说明参考图条件与主体微调的区别。
+- **素材来源**：草稿原第七章；IP-Adapter 原文已提取至 `raw/ip-adapter-2023/`；正文和 Figures 2/10/11 已核对，草稿比较共同 softmax 与独立归一化，区分基础版和细粒度变体。
+- **图表**：原文解耦 attention 图；条件分支公式与参考图效果。
+
+#### 7 DreamBooth 与主体
+- **写什么**：稀有标识、少样本个性化、先验保持损失及过拟合。
+- **素材来源**：草稿原第八章；`raw/dreambooth-2023/`。
+- **图表**：原文训练流程、主体示例；推导训练损失各项职责。
+
+#### 8 LoRA 与适配
+- **写什么**：`ΔW=BA`、初始化、参数量与组合；LoRA 是更新参数化，可以用于 DreamBooth 等任务。
+- **素材来源**：草稿原第九章；`raw/lora-2021/`，图像应用需另核实现。
+- **图表**：LoRA 原文矩阵图；公式 `ΔW=ΣᵢλᵢBᵢAᵢ`，不分别相加 A/B 再相乘。
+
+#### 9 图像编辑
+- **写什么**：围绕保留与修改组织 Blended Latent Diffusion、Prompt-to-Prompt、MasaCtrl、InstructPix2Pix；依次解释掩码混合、cross-attention、互注意力与指令训练。真实图像反演连接 DDIM，不混同经典 GAN pix2pix。
+- **素材来源**：草稿「新增图像编辑材料」；原论文 2206.02779、2208.01626、2304.08465、2211.09800 已运行提取脚本归档，方法章节已回查 TeX/PDF。
+- **图表**：原图依次为 BLD Figure 3、Prompt-to-Prompt Figure 3、MasaCtrl Figure 3、InstructPix2Pix Figure 2；Mermaid「编辑时保留哪些信息」。掩码混合要求源状态处于相同噪声层级；MasaCtrl 分清目标 Q 与源 K/V。ACE 仅作基模篇桥接。
+
+#### 10 组合与边界
+- **写什么**：对照控制位置、需训练参数、条件来源、保留能力与失效情形；说明视频新增时间一致性问题。
+- **素材来源**：草稿「文章草稿／10 组合与边界」及前九章；各原论文验证局限。
+- **图表与数学**：统一方法矩阵、图 29 多条件执行 Mermaid；从 Bayes 推导联合条件 score 的分解，指出分条件相加需要额外假设；用视频联合分布对照逐帧独立近似。归纳条件软约束、保留/改变冲突、表征局限、成本与评测，不作无口径排行榜；导航至视频任务篇。
+
+**共同写作要求**：各章按问题→直觉→公式推导→原文结构图→证据和局限展开。现有内部图片清单 `drafts/assets/conditional-image-diffusion/org-materials-manifest.json` 只作候选索引；核验公开来源后再插图。原文已有归档优先复用，新论文先走 read-article 提取流程；本次不将素材盘点标作精读完成。
+
+### `video-generation-tasks-spacetime`｜视频生成系列（九）：视频生成任务与时空建模基础
 
 | 栏位 | 内容 |
 |------|------|
 | 原始草稿 | [video-generation-tasks-spacetime.org](../../../drafts/video-generation/video-generation-tasks-spacetime.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `70`；Hub `video-generation-hub` |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `90`；Hub `video-generation-hub` |
 | 服务对象 | 读者能区分主要视频生成任务，并理解时空表示对生成模型的约束。 |
 
 **章节骨架**
@@ -551,12 +679,12 @@
 **关键数据点**：帧率、帧数、分辨率等定义各异，引用时同时记录采样策略和视频长度口径。
 **配图计划**：视频任务地图、时空张量、R(2+1)D 分解示意。
 
-### `video-diffusion-architectures`｜视频生成系列（八）：视频扩散模型的架构演进
+### `video-diffusion-architectures`｜视频生成系列（十）：视频扩散模型的架构演进
 
 | 栏位 | 内容 |
 |------|------|
 | 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `80`；Hub `video-generation-hub` |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `100`；Hub `video-generation-hub` |
 | 服务对象 | 读者能比较代表性视频扩散架构如何扩展图像生成能力，而不把个别设计当成统一范式。 |
 
 **章节骨架**
@@ -582,19 +710,19 @@
 - **必备元素**：阶段流程和训练数据来源表。
 
 #### 5 视频 Flow Matching 基模
-- **写什么**：以核验后的 Wan 原始技术报告为例，说明视频 VAE、条件 DiT 与 Flow Matching 训练/采样如何组合；引用第 5 篇的速度场推导，不重复基础数学。ModelScopeT2V、Show-1、LaVie 作为扩散模型的补充对照，不归为 Flow Matching 模型。
+- **写什么**：以核验后的 Wan 原始技术报告为例，说明视频 VAE、条件 DiT 与 Flow Matching 训练/采样如何组合；引用第 4 篇的速度场推导，不重复基础数学。ModelScopeT2V、Show-1、LaVie 作为扩散模型的补充对照，不归为 Flow Matching 模型。
 - **素材来源**：Wan 原始技术报告、官方仓库与模型卡；对照模型各自的原论文，收集至 raw sources；Show Lab `Awesome-Video-Diffusion` 仅作发现索引。
 - **必备元素**：标注原论文出处的视频 latent 架构图、与第 5 篇对应的训练目标、统一比较表；明确权重/许可证/评测口径差异，不做无依据排名。
 
 **关键数据点**：各阶段分辨率、帧数、训练数据和报告指标须按原论文逐项标注；不得把不同评测口径直接作优劣排名。
 **配图计划**：方法时间线、三种代表架构/级联流程图、模型对照表。
 
-### `video-generation-data-evaluation`｜视频生成系列（九）：训练数据、评测基准与评价指标
+### `video-generation-data-evaluation`｜视频生成系列（十一）：训练数据、评测基准与评价指标
 
 | 栏位 | 内容 |
 |------|------|
 | 原始草稿 | [video-generation-data-evaluation.org](../../../drafts/video-generation/video-generation-data-evaluation.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `90`；Hub `video-generation-hub` |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `110`；Hub `video-generation-hub` |
 | 服务对象 | 读者能判断视频生成论文中的数据来源、评测设置和数字是否可横向比较。 |
 
 **章节骨架**
@@ -622,12 +750,12 @@
 **关键数据点**：WebVid-10M 的规模、视频/文本字段和许可状态以数据集原始说明为准；指标结果必须同时写明 benchmark 版本、提示词和生成配置。
 **配图计划**：训练/验证/测试数据流程图；评测维度矩阵；不同口径不可比示意。
 
-### `long-video-temporal-consistency`｜视频生成系列（十）：时间一致性、长视频与流式生成
+### `long-video-temporal-consistency`｜视频生成系列（十二）：时间一致性、长视频与流式生成
 
 | 栏位 | 内容 |
 |------|------|
 | 原始草稿 | [long-video-temporal-consistency.org](../../../drafts/video-generation/long-video-temporal-consistency.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；sub_id `100`；Hub `video-generation-hub` |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `120`；Hub `video-generation-hub` |
 | 服务对象 | 读者能把身份漂移、长程依赖和在线生成放入统一的时间建模问题中理解。 |
 
 **章节骨架**
@@ -663,9 +791,9 @@
 ## Decisions
 
 - 合并扩散模型入门与 DDPM 为一篇完整基础章：先建立直觉，再推导前向链、噪声预测目标和反向采样；Score/DSM/SDE、EDM 与 DDIM 各自独立成篇，避免入门篇只铺垫却不落到具体模型，也避免 EDM 的训练/采样设计挤在连续时间理论章节中。
-- 系列共 10 篇正文；第 1–4 篇为 DDPM、Score/DSM/SDE、EDM、DDIM；第 5 篇 Flow Matching、第 6 篇条件图像扩散、第 7 篇视频任务、第 8 篇架构、第 9 篇评测、第 10 篇长视频。Flow Matching 复用旧页面并保留旧 URL/分类入口，避免另写重复入门篇。
+- 系列共 12 篇正文；阅读顺序：DDPM → Score/DSM/SDE → DDIM → Flow Matching → x-prediction → EDM → 条件图像扩散 → 图像基模 → 视频任务 → 视频架构 → 数据评测 → 长视频。Flow Matching 复用既有页面，不另建重复文章。
 - 在 `categories/AI` 下新建独立二级 subcategory `categories/AI/视频生成`。视频生成会涵盖扩散、Flow Matching、自回归和其他范式，不应嵌套在 `categories/AI/扩散模型` 下。Hub aliases 使用 `视频生成系列`、该路径及其 `/index` 形式；若缺失则在 `data/category-names.json` 增加 `视频生成: video-generation` 映射。
-- Hub 使用 `sub_id: 0`，正文按 10–100 排序。前五篇依次为 DDPM（10）、Score/DSM/SDE（20）、DDIM（30）、Flow Matching（40）、EDM（50）；EDM 作为前述方法的总结与设计空间分析，条件图像及视频章节为 60–100。Flow Matching 只归入 `categories/AI/视频生成`，不额外建立或保留扩散模型分类入口；实施前检查同级排序冲突。元数据与导航变更在合并大纲获批后实施。
+- Hub 使用 `sub_id: 0`，正文规划按 10–120 排序。前六篇依次为 DDPM（10）、Score（20）、DDIM（30）、Flow Matching（40）、x-prediction（50）、EDM（60）；条件扩散 70、图像基模 80、视频任务 90、视频架构 100、数据评测 110、长视频 120。新增篇及后续顺延尚未实施，须审核结构后核验编号、同步页面与导航。
 - 系列标题固定使用中文序号格式“视频生成系列（五）：……”，避免阿拉伯数字与中文数字混用；按阅读顺序检查正文、文章清单和章节计划的序号与 `sub_id` 一致。
 - 文章标题统一采用“视频生成系列（中文序号）：……”（如“视频生成系列（五）：……”）；所有正文共享系列 alias 和核心 tags，通过分类 alias 归类并使用 chapter-nav 链接 Hub；正文 frontmatter 不设置 `hub` 字段，Hub 使用 `capture.js --hub` 骨架。
 - 教程文章不伪造论文式实验章节；数据评测单列一篇，代表性模型仅作为案例，不进行口径不一致的排行榜比较。
@@ -678,6 +806,33 @@
 - [新 subcategory 尚未登记] → 发布前补充 `data/category-names.json` 映射和分类组织文档中的系列登记，对新路径重跑编号检查，并验证 Hub 索引替换效果。
 - [不同模型评测不可直接横比] → 报告数字时同步列出数据集、分辨率、帧数、提示词、推理配置、硬件和指标版本；缺项则不作强结论。
 - [理论公式依赖参数化] → 先固定符号约定，逐式核对 VP/VE 系数、时间方向和适用条件。
-- [系列编号变化影响已有页面导航] → 合并大纲获批后更新 DDIM → Flow Matching → 条件图像扩散的直接导航，后续章节顺延；保留旧 URL、分类与标题检索别名，每完成一篇即交用户审阅。
+- [系列编号变化影响已有页面导航] → 合并大纲获批后更新 DDIM → Flow Matching → x-prediction → EDM → 条件图像扩散 → 图像基模的直接导航，后续章节顺延；保留旧 URL、分类与标题检索别名，每完成一篇即交用户审阅。
 - [Score/SDE 与 EDM 内容重复] → 从 Score/SDE 文章移除现有 EDM 信息框、相关正文和论文引用，不添加 EDM 预告；相邻关系由系列导航呈现，EDM 内容集中在独立篇章。
 - [原论文配置容易被误读为通用默认值] → 所有 `ρ`、噪声上下界、`σ_data`、训练噪声分布、FID 与 NFE 均标为论文实验配置，保留数据集和条件设置。
+
+### 本轮研究边界
+
+- EDM 原论文发表于 2022 年；后文对 Flow Matching、JiT 的比较属于本系列的综合分析，不能归为 EDM 原论文贡献。
+- 区分 EDM 的去噪接口 Dθ 与预条件主网络 Fθ；接口给出干净图像估计，并不意味着 Fθ 直接进行 x-prediction。
+- x-prediction 的研究须区分网络直接输出、损失空间和采样向量场；不得仅因变量可代数换算，就断言有限容量网络的优化难度相同。文章结构依上述七章已审草稿执行。
+
+### DDPM / DDIM 采样解释补充（用户确认）
+
+DDIM 正文对照部分、EDM 正文 PFODE 部分及 EDM 草稿第二章同步说明：原始 DDPM 是离散随机反向采样，具有反向 SDE 连续解释；确定性 DDIM（eta=0）是离散确定性更新，具有特定坐标下 ODE 解释。预测器不绑定采样器，广义 DDIM 允许随机性；跳步能力需要具体跨时刻转移依据，不能由 SDE/ODE 分类直接推出。EDM 后续重写须保留此说明。
+
+### Flow Matching 速度含义补充（用户确认）
+
+正文与[原始草稿](../../../drafts/video-generation/flow-matching.org)同步区分：线性条件路径的恒定速度标签，与固定位置和时间下对可能端点配对取条件平均所得的瞬时边际向量场。明确平均针对来源而非时间；生成时随状态、时间重新评估速度，条件直线不保证生成轨迹笔直。
+
+
+**独立选题边界（2026-10-15）**：`drafts/image-editing.org` 是用户新增的独立任务，不属于视频生成 subcategory，不纳入本 change 的篇数与编号；本篇现有编辑接口说明暂保留，未来是否迁移需单独确认。
+
+### 条件扩散正文实施记录（2026-10-15）
+
+- 已将审阅通过的十章草稿转为 `src/pages/conditional-image-diffusion.html`，保留数学推导、论文原图及文末引用。
+- 图像基模已生成第八篇正文、`sub_id: 80`，条件扩散保持第七篇、`sub_id: 70`；图像基模按最新决定接在其后，使用第八篇、80。
+- 已构建并进行本地预览检查；修复页头参考链接溢出、引用转换及 Org 强调残留。
+
+**篇序修订（用户确认，2026-10-15）**：条件扩散保持第七篇（70），图像基模为第八篇（80），之后接视频任务与时空建模（90）。图像基模结尾改为引出视频，不再将条件扩散称为下一篇。正文写作授权保留，本轮先回应并落实篇序调整。
+
+**图像基模正文交付（2026-10-15）**：`src/pages/image-foundation-models.html` 已按原始草稿生成十章，保留 28 张原图/配图、4 个 Mermaid 与 24 项来源；模型三级、机制四级。条件扩散新增下一篇导航。单页语法检查与构建通过，本地预览可用；未推送或部署。
