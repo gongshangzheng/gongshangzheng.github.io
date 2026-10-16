@@ -44,6 +44,10 @@ metadata:
 
 > **前置 · 库内检索（必做）**：Phase 4 建 change 并规划文章前，先按 [`pre-generation-search.md`](../blog-rules/references/pre-generation-search.md)（库内检索规范）做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
 
+## 论文表格素材
+
+表格支持两条路径：从选定 LaTeX 片段编译并裁白边生成图片，或回源核对后手工整理为 Markdown / Org 表格。下载源码不会自动生成表格图片。准备表格素材、将原表插入草稿时，读取 [references/tables.md](references/tables.md)，使用 `scripts/render-latex-table.py` 或可编辑整理表；标明来源及删选范围，不把源码渲染图称为 PDF 截图。
+
 ## 阅读起点：先回答“为什么需要这篇论文”
 
 在深入模型结构、公式或实验之前，先基于摘要、引言、相关工作和问题定义，形成并核实以下三点：

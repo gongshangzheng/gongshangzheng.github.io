@@ -5,6 +5,10 @@ description: Phase 1 素材获取按需参考。配合 read-article/SKILL.md 使
 
 # Phase 1 · 素材获取
 
+## 表格素材入口
+
+原始表格源码随 source tarball 保留；图片文件收集不能替代表格提取。选用重要表格时按 [../references/tables.md](../references/tables.md) 建立来源索引，选择 `render-latex-table.py` 编译片段生成裁边图，或手工整理为 Markdown / Org 表格。两者均需回源核对。PDF 裁图是保留原始版式的备选，不是必经步骤。
+
 > **定位**：read-article 新流程 Phase 1 的按需参考。本文件提供 source → HTML → PDF 三级降级、
 > 图片优先级、extraction-log 与 meta.md 规范。默认由主 agent 直接执行；只有素材规模很大
 > （如长 survey 需要同时抓多篇、PDF 需 OCR 且页数多）时才考虑委派一个执行型 subagent。

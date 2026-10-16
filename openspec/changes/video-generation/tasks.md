@@ -166,3 +166,15 @@
 - [x] 13.29 图像基模十章正文已依据草稿与 Design 生成，保留 28 张图、4 个 Mermaid 与 24 项引用；四级标题与 Jensen 文字方向修复后复核通过，完成语法检查、构建与本地预览。条件七70→基模八80导航已接通，未推送远端。
 
 - [ ] 14.1 依据用户七类论文清单扩充 `drafts/video-generation/video-diffusion-architectures.org`；首章先定义视频任务、帧时间/扩散时间、3D/(2+1)D卷积，再讲开创性工作；其余按用户路线逐篇共写，原文与图由 Luna 分组整理。首章基础已写待审阅，不代表整篇或 Design 新骨架获批。
+
+- [x] 14.2 根据用户反馈重排视频基模草稿前两章：各类内按 arXiv v1 时间，修复 Make-A-Video 的旧顺序叙述，同步图号、时间表及 Design 草稿状态。
+- [x] 14.3 VideoCrafter2 获审阅通过后补写 ModelScope T2V 原文、时间卷积与训练采样机制，解释 VideoCrafter2 的组件来源；插入四处原图及公式，本节已完成、待用户审阅，不代表整篇批准发布。
+- [ ] 14.4 后五类占位选题在展开前核验首次公开时间并按类排序，检查前置依赖与图号。
+
+- [x] 14.5 按用户继续授权补写 Stable Video Diffusion 草稿：三阶段、数据筛选、EDM 训练与 PF ODE、I2V 双条件和逐帧 CFG、补帧/相机 LoRA 边界；五处原图及精选数据表已插入。本节待审，不代表发布获批。
+
+- [x] 14.6 Stable Video Diffusion 审阅通过后，核验第三章四篇 v1 日期并重排；完成 VideoFusion 草稿，含相关噪声推导、中央帧、双网络损失与梯度边界、DDIM/DDPM采样、四处原图和 Tables 5/7 整理。VideoFusion 待审，未展开 Latent-Shift。14.4 后四类日期核验仍未完成。
+
+- [x] 14.7 VideoFusion 审阅通过后补回 Tables 1/4/6 的比较与计时边界；按原文完成 Latent-Shift 草稿、四处原图和四张实验整理表，明确三等分通道移位、视频微调/冻结范围、100步 DDPM 与评估协议。Latent-Shift 待用户审阅，未继续 PYoCo。
+
+- [x] 14.8 Latent-Shift 审阅通过后完成 PYoCo 草稿；回源核验反演相关性、两类噪声、EDM/采样及四级级联，补协方差推导、四处论文原图与 Tables 1/2/3/5 整理，区分小规模无条件与大规模零样本结果。PYoCo 待审，未展开 VideoFactory。

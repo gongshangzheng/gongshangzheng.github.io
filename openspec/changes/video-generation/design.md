@@ -679,43 +679,31 @@
 **关键数据点**：帧率、帧数、分辨率等定义各异，引用时同时记录采样策略和视频长度口径。
 **配图计划**：视频任务地图、时空张量、R(2+1)D 分解示意。
 
-### `video-diffusion-architectures`｜视频生成系列（十）：视频扩散模型的架构演进
+### `video-diffusion-architectures`｜视频生成系列（十）：视频生成基模与技术路线
 
 | 栏位 | 内容 |
 |------|------|
-| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
+| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；用户提出七类实质选题并逐篇共写；第一章及 Show-1、LaVie、VideoCrafter1 已审阅，VideoCrafter2 已审阅，ModelScope T2V 已补写、编解码器已核验为 KL VAE，Stable Video Diffusion 已审阅通过，第三章 VideoFusion 已审阅并补回实验表，Latent-Shift 已审阅，PYoCo 已写待审，其余待展开 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `100`；Hub `video-generation-hub` |
-| 服务对象 | 读者能比较代表性视频扩散架构如何扩展图像生成能力，而不把个别设计当成统一范式。 |
+| 服务对象 | 读者能理解各论文要解决的问题、训练与采样机制及前作依赖，而非只记模型名称。 |
 
-**章节骨架**
+**排序决策（2026-10-16）**：保留用户七类路线，各类内部按论文首次公开时间组织。日期采用 arXiv v1，不以会议年份或最新修订年份排序；先行模型发布另注。已完成前两章重排；后五章占位选题正式展开前须核验时间并排序。技术借用需交代来源，不把时间先后自动写成继承关系。
 
-#### 1 从早期视频生成到扩散范式
-- **写什么**：概览视频生成建模路线，限定案例范围并解释为何逐步聚焦扩散。
-- **素材来源**：CVPR 2024 教程 PDF（页码待核）；入选原论文 sources。
-- **必备元素**：方法时间线，区分生成、预测和动作识别任务。
+**章节骨架与草稿对应**
 
-#### 2 Imagen Video 与级联生成
-- **写什么**：解释文本到图像先验/视频扩展、级联空间或帧率超分辨阶段的具体设置。
-- **素材来源**：Imagen Video 原论文/官方技术报告，收集至 `raw/video-diffusion-architectures/sources/`；教程 PDF。
-- **必备元素**：作者提出的级联流程图和阶段对照表。
+1. **视频生成任务与开创性工作**：对应草稿第一章。任务、帧时间与扩散时间、3D/(2+1)D 基础后，依次 VDM（2022-04-07）→ Make-A-Video（2022-09-29）→ Imagen Video（2022-10-05）→ Align Your Latents（2023-04-18）。保留各篇已审阅推导、训练/推理解释和原图。
+2. **开放视频基模**：对应草稿第二章。ModelScope T2V（2023-08-12）→ LaVie（2023-09-26）→ Show-1（2023-09-27）→ VideoCrafter1（2023-10-30）→ Stable Video Diffusion（2023-11-25）→ VideoCrafter2（2024-01-17）。ModelScope 模型于 2023 年 3 月先行公开，须区别论文日期。后续先补 ModelScope 的时间卷积等机制，再推进未写论文；VideoCrafter2 显式回链前置机制。
+3. **其他早期研究**：对应草稿第三章，按 arXiv v1 日期排列 VideoFusion（2023-03-15）→ Latent-Shift（2023-04-17）→ PYoCo（2023-05-17）→ VideoFactory（2023-05-18）；“闭源”为历史课件口径，逐篇核验。VideoFusion 的噪声分解与双去噪器训练已通过审阅，Tables 1/4/6 已回补。Latent-Shift 同名三级小节已补时间移位公式、训练/采样、四处原图及 Tables 1/2/4/5 整理，已审阅通过。PYoCo 同名三级小节补 mixed/progressive 协方差、EDM 训练与相关噪声概率流推导、四级级联与 Figures 2/3/7、Tables 1/2/3/5 整理，待审阅；VideoFactory 尚未展开。
+4. **训练高效方法**：对应草稿第四章，保留 AnimateDiff、DSDN、Text2Video-Zero、MagicVideo、SimDA。
+5. **分镜与生成规划**：对应草稿第五章，保留用户选题及已有名称核验记录。
+6. **长视频生成**：对应草稿第六章，与独立长视频篇确定分工，不重复全文。
+7. **多模态引导生成**：对应草稿第七章，保留用户选题，逐篇核验输入输出和方法边界。
 
-#### 3 Video Diffusion Models 与时空去噪
-- **写什么**：分析该论文的 3D U-Net 与时空建模设计，标出哪些是论文特定设置。
-- **素材来源**：Video Diffusion Models 原论文；教程 PDF。
-- **必备元素**：时空网络示意、训练目标与推理过程区分。
+每篇方法占三级标题，内部机制占四级标题；依次解释问题、核心思路、数学机制、训练、采样、实验与局限。原文整理与原图准备由 Luna 承担，主 agent 核验推理并写作；一次完成一篇后交用户审阅。具体写作仍同时对照完整草稿与原论文，不能只依据本骨架重写。
 
-#### 4 Make-A-Video 与数据利用
-- **写什么**：解释其级联结构及图像/视频数据结合策略，区分论文事实与作者归纳。
-- **素材来源**：Make-A-Video 原论文/官方材料；教程 PDF。
-- **必备元素**：阶段流程和训练数据来源表。
+**素材与配图**：使用各论文已提取的 `raw/<paper-slug>/` 原文与 `drafts/assets/video-diffusion-architectures/` 资产。既有论文原图随所属小节移动，图号及正文引用按新顺序同步；未展开小节的图在核读后选择，不预设不存在的架构图。
 
-#### 5 视频 Flow Matching 基模
-- **写什么**：以核验后的 Wan 原始技术报告为例，说明视频 VAE、条件 DiT 与 Flow Matching 训练/采样如何组合；引用第 4 篇的速度场推导，不重复基础数学。ModelScopeT2V、Show-1、LaVie 作为扩散模型的补充对照，不归为 Flow Matching 模型。
-- **素材来源**：Wan 原始技术报告、官方仓库与模型卡；对照模型各自的原论文，收集至 raw sources；Show Lab `Awesome-Video-Diffusion` 仅作发现索引。
-- **必备元素**：标注原论文出处的视频 latent 架构图、与第 5 篇对应的训练目标、统一比较表；明确权重/许可证/评测口径差异，不做无依据排名。
-
-**关键数据点**：各阶段分辨率、帧数、训练数据和报告指标须按原论文逐项标注；不得把不同评测口径直接作优劣排名。
-**配图计划**：方法时间线、三种代表架构/级联流程图、模型对照表。
+**当前边界**：本轮只重排草稿及同步规划，不生成 HTML；后五章的具体章节内容与全篇发布仍按逐篇审阅推进。现代 Flow Matching 视频模型不替代用户已确定的早期七类论文主线，后续纳入须另据实质草稿更新。
 
 ### `video-generation-data-evaluation`｜视频生成系列（十一）：训练数据、评测基准与评价指标
 
