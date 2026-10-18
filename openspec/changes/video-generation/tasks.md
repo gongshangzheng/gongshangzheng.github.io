@@ -178,3 +178,9 @@
 - [x] 14.7 VideoFusion 审阅通过后补回 Tables 1/4/6 的比较与计时边界；按原文完成 Latent-Shift 草稿、四处原图和四张实验整理表，明确三等分通道移位、视频微调/冻结范围、100步 DDPM 与评估协议。Latent-Shift 待用户审阅，未继续 PYoCo。
 
 - [x] 14.8 Latent-Shift 审阅通过后完成 PYoCo 草稿；回源核验反演相关性、两类噪声、EDM/采样及四级级联，补协方差推导、四处论文原图与 Tables 1/2/3/5 整理，区分小规模无条件与大规模零样本结果。PYoCo 待审，未展开 VideoFactory。
+
+- [x] 14.9 PYoCo 与噪声搬运猜想审阅通过后完成 VideoFactory 首发 v1 草稿。识别提取脚本剥离版本号后用精确 v1 URL 获取原文；保留 Swap-CA 方向/窗口推导、训练采样披露边界、四处原图、交互/数据消融及基准/完整人评结果，区分首发与后续版。VideoFactory 待审，未展开第四章。
+
+- [x] 14.10 VideoFactory 审阅通过后开始第四章；按类内时间顺序整理为 MagicVideo → Text2Video-Zero → AnimateDiff → DSDN → SimDA。完成 MagicVideo 原文核读及草稿，含适配器/注意力/损失推导、训练采样披露边界、三张原图、原图消融整理与 Tables 1–3。MagicVideo 待审，未继续 Text2Video-Zero；后续三类日期清点仍待完成。
+
+- [x] 14.11 MagicVideo 审阅通过后完成 Text2Video-Zero 原文提取及草稿，补运动构造与重加噪、首帧跨帧注意力、DDIM 生成、背景平滑、Algorithm 1 与 Figures 2/10、25 视频 CLIP 比较及证据边界。素材与表格来源记录于 `raw/text2video-zero-2023/`；本节待审阅，未继续 AnimateDiff。

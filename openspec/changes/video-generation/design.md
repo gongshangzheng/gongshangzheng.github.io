@@ -683,7 +683,7 @@
 
 | 栏位 | 内容 |
 |------|------|
-| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；用户提出七类实质选题并逐篇共写；第一章及 Show-1、LaVie、VideoCrafter1 已审阅，VideoCrafter2 已审阅，ModelScope T2V 已补写、编解码器已核验为 KL VAE，Stable Video Diffusion 已审阅通过，第三章 VideoFusion 已审阅并补回实验表，Latent-Shift 已审阅，PYoCo 已写待审，其余待展开 |
+| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；用户提出七类实质选题并逐篇共写；第一章及 Show-1、LaVie、VideoCrafter1 已审阅，VideoCrafter2 已审阅，ModelScope T2V 已补写、编解码器已核验为 KL VAE，Stable Video Diffusion 已审阅通过，第三章 VideoFusion 已审阅并补回实验表，Latent-Shift 已审阅，PYoCo 已审阅，VideoFactory 已审阅，第四章 MagicVideo 已审阅通过，Text2Video-Zero 已写待审，其余待展开 |
 | 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `100`；Hub `video-generation-hub` |
 | 服务对象 | 读者能理解各论文要解决的问题、训练与采样机制及前作依赖，而非只记模型名称。 |
 
@@ -693,8 +693,8 @@
 
 1. **视频生成任务与开创性工作**：对应草稿第一章。任务、帧时间与扩散时间、3D/(2+1)D 基础后，依次 VDM（2022-04-07）→ Make-A-Video（2022-09-29）→ Imagen Video（2022-10-05）→ Align Your Latents（2023-04-18）。保留各篇已审阅推导、训练/推理解释和原图。
 2. **开放视频基模**：对应草稿第二章。ModelScope T2V（2023-08-12）→ LaVie（2023-09-26）→ Show-1（2023-09-27）→ VideoCrafter1（2023-10-30）→ Stable Video Diffusion（2023-11-25）→ VideoCrafter2（2024-01-17）。ModelScope 模型于 2023 年 3 月先行公开，须区别论文日期。后续先补 ModelScope 的时间卷积等机制，再推进未写论文；VideoCrafter2 显式回链前置机制。
-3. **其他早期研究**：对应草稿第三章，按 arXiv v1 日期排列 VideoFusion（2023-03-15）→ Latent-Shift（2023-04-17）→ PYoCo（2023-05-17）→ VideoFactory（2023-05-18）；“闭源”为历史课件口径，逐篇核验。VideoFusion 的噪声分解与双去噪器训练已通过审阅，Tables 1/4/6 已回补。Latent-Shift 同名三级小节已补时间移位公式、训练/采样、四处原图及 Tables 1/2/4/5 整理，已审阅通过。PYoCo 同名三级小节补 mixed/progressive 协方差、EDM 训练与相关噪声概率流推导、四级级联与 Figures 2/3/7、Tables 1/2/3/5 整理，待审阅；VideoFactory 尚未展开。
-4. **训练高效方法**：对应草稿第四章，保留 AnimateDiff、DSDN、Text2Video-Zero、MagicVideo、SimDA。
+3. **其他早期研究**：对应草稿第三章，按 arXiv v1 日期排列 VideoFusion（2023-03-15）→ Latent-Shift（2023-04-17）→ PYoCo（2023-05-17）→ VideoFactory（2023-05-18）；“闭源”为历史课件口径，逐篇核验。VideoFusion 的噪声分解与双去噪器训练已通过审阅，Tables 1/4/6 已回补。Latent-Shift 同名三级小节已补时间移位公式、训练/采样、四处原图及 Tables 1/2/4/5 整理，已审阅通过。PYoCo 同名三级小节补 mixed/progressive 协方差、EDM 训练与相关噪声概率流推导、四级级联与 Figures 2/3/7、Tables 1/2/3/5 整理，已审阅通过，并保留用户提出的可学习噪声搬运猜想。VideoFactory 同名三级小节按首发 v1 完成 Swap-CA/窗口数学解释、训练采样披露边界、四处原图及 Tables 2–7 的精选结果，已审阅通过；第四章转入 MagicVideo。
+4. **训练高效方法**：对应草稿第四章，类内按首次公开时间排序为 MagicVideo（2022-11-20）→ Text2Video-Zero（2023-03-23）→ AnimateDiff（2023-07-10）→ DSDN（2023-08-16）→ SimDA（2023-08-18）。日期依据 `raw/video-foundation-models-collection/efficient-video-order.md`。MagicVideo 依据已提取的 arXiv v2（2023-05-11），同名三级小节已补潜空间/图像权重复用、逐帧适配器、定向时间注意力、重建目标推导、无文本预训练与配对微调、FPS、插帧/VideoVAE/超分、Figures 2/3/7 与 Tables 1–3 及原图消融整理，已审阅通过。Text2Video-Zero 同名三级小节已按“问题 → 潜变量运动 → 首帧跨帧注意力 → DDIM 生成及条件模型复用 → 可选背景平滑 → 实验 → 局限”展开，包含运动/前向转移/注意力/采样公式、Algorithm 1 与 Figures 2/10、原文 25 视频 CLIP 比较整理；待审阅，AnimateDiff 等仍保留占位。
 5. **分镜与生成规划**：对应草稿第五章，保留用户选题及已有名称核验记录。
 6. **长视频生成**：对应草稿第六章，与独立长视频篇确定分工，不重复全文。
 7. **多模态引导生成**：对应草稿第七章，保留用户选题，逐篇核验输入输出和方法边界。
