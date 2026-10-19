@@ -184,3 +184,15 @@
 - [x] 14.10 VideoFactory 审阅通过后开始第四章；按类内时间顺序整理为 MagicVideo → Text2Video-Zero → AnimateDiff → DSDN → SimDA。完成 MagicVideo 原文核读及草稿，含适配器/注意力/损失推导、训练采样披露边界、三张原图、原图消融整理与 Tables 1–3。MagicVideo 待审，未继续 Text2Video-Zero；后续三类日期清点仍待完成。
 
 - [x] 14.11 MagicVideo 审阅通过后完成 Text2Video-Zero 原文提取及草稿，补运动构造与重加噪、首帧跨帧注意力、DDIM 生成、背景平滑、Algorithm 1 与 Figures 2/10、25 视频 CLIP 比较及证据边界。素材与表格来源记录于 `raw/text2video-zero-2023/`；本节待审阅，未继续 AnimateDiff。
+
+- [x] 14.12 Text2Video-Zero 审阅通过后完成 AnimateDiff 原文整理与草稿。核对 v1/v2 边界，补时间 Transformer、域适配器、MotionLoRA、训练/采样公式及与前篇对比；插入 Figures 2/3/6，完整保留 Table 1 六项指标，注明补充配置与评测实现未核实的边界。素材存 `raw/animatediff-2023/`；AnimateDiff 待审阅，未继续 DSDN。
+
+- [x] 14.13 AnimateDiff 审阅通过后完成 DSDN 原文提取与草稿，依据 v3 补双流表示、运动分解/合成、加噪与交互、训练目标、采样教学公式及披露边界；插入 Figures 2/3/4/7 与完整 Table 1，保留参数更新图文不一致及潜空间兼容缺口。素材 `raw/dsdn-2023/`；DSDN 待审阅，未继续 SimDA。
+
+- [x] 14.14 DSDN 审阅通过后完成 SimDA 原文整理与草稿：空间/时间适配器、LSA patch 拼图及复杂度、噪声 loss 与 DDIM、超分和编辑扩展；插入 Figures 2/3/4/7，整理 Tables 1/2/3/5/6，区分参数更新量/完整模型成本及评测协议，注明初始化记号与百分比矛盾。素材 `raw/simda-2023/`；SimDA 待审阅，未展开第五章。
+
+- [x] 14.15 SimDA 审阅通过后完成第五章时间清点与分类边界，五篇视频规划按 v1 日期排序，VisorGPT 单列视觉先验。完成 DirecT2V 原文整理与草稿：逐帧条件、RVM/DSF、PNDM 推理及帧率扩展，Figures 1/3/4/8、Table 1 逐帧 CLIP 与 Table 2 用户研究及协议；素材 `raw/direct2v-2023/`，待审阅，未展开 Dysen-VDM。
+
+- [x] 14.16 DirecT2V 审阅通过后完成 Dysen-VDM 原文提取与草稿：动作区间、DSG 构造、两轮场景补充、RGTrm 与双交叉注意力、噪声训练和采样依赖；插入 Figures 2/3/4 与完整 Tables 1/3/4（消融省略差值列），说明评估协议、版本和原文披露边界。素材 `raw/dysen-vdm-2023/`；Dysen-VDM 待审阅，未展开 Free-Bloom。
+
+- [x] 14.17 按用户要求将视频基模长草稿拆为七个独立章节 Org 文件；原文件改为总览与导航，保留写作主线、来源边界、参考总索引与共写记录。各章保留公式、图片、表格、编号及本章参考文献，增加前后章导航；Design 链接实际章节草稿。未改变发布文章数量与逐篇审阅节奏。
