@@ -1,0 +1,1641 @@
+---
+title: "视频生成系列（十三）：分镜与生成规划"
+description: "从逐帧提示、动态场景图到布局与身份条件，解读 DirecT2V、Dysen-VDM、Free-Bloom、VideoDirectorGPT、LVD 和 VisorGPT，比较规划如何影响视频生成。"
+created_at: 2026-10-21T18:25:03
+updated_at: 2026-10-21T20:25:37
+tags: [视频生成, 扩散模型, 大语言模型, 布局控制]
+aliases: ["categories/AI/视频生成", "分镜与生成规划"]
+sub_id: 130
+papers: ["https://arxiv.org/abs/2305.14330v3", "https://arxiv.org/abs/2308.13812v2", "https://arxiv.org/abs/2309.14494v1", "https://arxiv.org/abs/2309.15091v2", "https://arxiv.org/abs/2309.17444v3", "https://arxiv.org/abs/2305.13777v4"]
+repos: ["https://github.com/SooLab/Free-Bloom", "https://github.com/Sierkinhane/VisorGPT"]
+mathjax: true
+hero_title: "分镜与生成规划"
+hero_sub: "视频生成系列 · 13"
+hero_tagline: "从应该发生什么，到生成器如何执行计划"
+---
+<style>.ch .math-block {max-width:100%;overflow-x:auto;overflow-y:hidden;}</style>
+<div class="callout"><strong>本篇主线：</strong>上一篇讨论<a href="video-models-04-efficient-training.html">视频生成的训练高效方法</a>，本篇转向条件组织：先安排事件、帧描述或布局，再让视觉生成器执行。规划正确与画面正确是两件事，关键在于二者之间的接口。</div>
+<p>下面五项视频规划方法按首次公开时间排列，不表示直接继承关系。“分镜”在这里是宽泛称呼，并非每项工作都生成电影镜头脚本。最后的 VisorGPT 单列为相关空间先验：它生成图像空间条件，没有建模视频时间。 #Hong-2023-DirecT2V# #Fei-2023-DysenVDM# #Huang-2023-FreeBloom# #Lin-2023-VideoDirectorGPT# #Lian-2023-LVD# #Xie-2023-VisorGPT#</p>
+<div class="ch fade-in">
+<div class="ch-title" id="direct2v">DirecT2V</div>
+
+<h3 class="section-title" id="问题一句故事不等于每帧都画同一件事">问题与思路</h3>
+<p>前面的生成方法主要讨论如何画得清楚、连续、便宜。但视频还有一个不同的问题：<strong>事件应该在什么时候发生？</strong> 例如“一只柯基正在跑，另一只随后加入”，前半段应只有一只，后半段才出现两只。若所有帧始终使用同一句描述，生成器可能从一开始就画两只，也可能始终只有一只。 #Hong-2023-DirecT2V#</p>
+<p>Hong 等人提出的 DirecT2V，全称为 Large Language Models are Frame-Level Directors for Zero-Shot Text-to-Video Generation，让大语言模型担任“逐帧导演”。它先把整体提示词展开为每帧的描述，再修改图像扩散模型内部的跨帧信息共享，使画面既能保持共同内容，也允许新内容随剧情出现。本节依据 2024 年 2 月 6 日的 arXiv v3；论文首次公开于 2023 年 5 月。 #Hong-2023-DirecT2V#</p>
+<p>这类“规划”不一定意味着电影式的多镜头分镜。DirecT2V 首先规划的是<strong>每帧发生什么</strong>，不是直接输出相机的三维轨迹、人物骨架或像素。文本规划与视觉实现仍然是两层不同任务。 #Hong-2023-DirecT2V#</p>
+<div class="photo"><img alt="图 1：DirecT2V 总体流程，取自原论文 Figure 1。语言模型把抽象提示展开为逐帧条件，图像扩散模型通过修改自注意力组织帧间关系。" loading="lazy" src="media/images/video-models-05-storyboard-planning/direct2v-pipeline.webp"/><div class="cap">图 1：DirecT2V 总体流程，取自原论文 Figure 1。语言模型把抽象提示展开为逐帧条件，图像扩散模型通过修改自注意力组织帧间关系。 #Hong-2023-DirecT2V#</div></div>
+<h3 class="section-title" id="规划把时间变化写进逐帧条件">逐帧规划</h3>
+<p>给定整体提示词 \(P\)、帧数 \(F\) 与目标帧率 \(R\)，语言模型根据任务指令生成描述序列。用教学记号概括为 #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ (P_1,\ldots,P_F) =\operatorname{LLM}(P,F,R,\text{任务指令}), \qquad c_f=\operatorname{TextEnc}(P_f). \]
+
+ 
+
+<p>例如“另一只柯基随后加入”，可以展开为：开始只有一只柯基在跑；中间另一只从旁边进入；后面两只一起跑。这是帮助理解的简化例子，不是额外新增的监督数据。论文将动作、物体描述、场景背景、镜头信息以及剧情都纳入语言模型的补充范围。 #Hong-2023-DirecT2V#</p>
+<p>与单一提示词相比，新的条件序列明确了“先后”；但它本身不保证视觉一致性。两次生成即使都写“同一只柯基”，也可能画出不同外观。语言模型解决的是<strong>语义时间表</strong>，而不是直接把生成器变成一个懂得身份和运动的物理模拟器。 #Hong-2023-DirecT2V#</p>
+<div class="photo"><img alt="图 2：语言模型输出逐帧指令的例子，取自原论文 Figure 3。整体事件被细化为随时间改变的描述，静态内容与动态变化共同进入每帧条件。" loading="lazy" src="media/images/video-models-05-storyboard-planning/direct2v-frame-prompts.webp"/><div class="cap">图 2：语言模型输出逐帧指令的例子，取自原论文 Figure 3。整体事件被细化为随时间改变的描述，静态内容与动态变化共同进入每帧条件。 #Hong-2023-DirecT2V#</div></div>
+<h3 class="section-title" id="共享为什么不能永远只看首帧">轮换参照</h3>
+<p>Text2Video-Zero 让各帧读取首帧的 Key/Value，有利于稳定外观。但当后面需要出现首帧没有的物体或状态时，始终依赖首帧也会形成限制：后续帧的提示词要求新内容，注意力却持续从旧内容中取信息。 #Hong-2023-DirecT2V#</p>
+<p>DirecT2V 因此提出 value mapping（VM，值映射）。这里的名字虽然强调 Value，实际公式同时从参照帧读取 Key 和 Value。对第 \(f\) 帧，原有自注意力为 #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ O_f^{\rm self} =\operatorname{softmax}\!\left( \frac{Q_fK_f^\top}{\sqrt d}\right)V_f. \]
+
+ 
+
+<p>从参照帧 \(r\) 读取特征则为</p>
+
+ 
+
+\[ O_f^{\rm VM} =\operatorname{softmax}\!\left( \frac{Q_fK_r^\top}{\sqrt d}\right)V_r. \]
+
+ 
+
+<p>\(Q_f\) 由当前帧特征生成，\(K_r,V_r\) 由同一去噪时刻、同一网络层的参照帧特征生成，\(d\) 是注意力缩放所用维数。它不是把已经生成好的参照图片直接复制过来，也不是输出最终像素。 #Hong-2023-DirecT2V#</p>
+<p>关键变化在于：参照帧不再永远固定为第一帧，而是沿<strong>去噪迭代</strong>轮换。论文称其为 Rotational Value Mapping（RVM，轮换值映射）： #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ r(n)=1+\operatorname{mod} \!\left(\left\lfloor\frac{n}{m}\right\rfloor,F\right). \]
+
+ 
+
+<p>这里 \(n\) 表示开始值映射后的迭代计数，为便于读者理解从零计；\(m\) 是每个参照持续的迭代周期，原文经验取 \(m=4\)。<strong>切换参照发生在扩散去噪步骤之间，不是播放视频时每隔四帧切换镜头。</strong> #Hong-2023-DirecT2V#</p>
+<p>这样，较后帧因自身提示词形成的新内容也有机会参与共享，信息能在多个视频时间位置之间传播。若周期大到整个映射阶段始终只选首帧，就接近前文固定首帧参照的做法。它改变的是特征共享规则，没有额外学习一套运动网络，也不保证任意新对象都一定能被正确画出来。 #Hong-2023-DirecT2V#</p>
+<h3 class="section-title" id="过滤找不到对应内容时保留自己">双向匹配过滤</h3>
+<p>轮换参照还会遇到一个问题：两帧不一定存在可靠对应。例如，一帧猫睁眼、另一帧闭眼，强行共享可能把睁开的眼睛映射到本应闭眼的位置；新出现的第二只柯基，也未必能在早期帧中找到对应物体。 #Hong-2023-DirecT2V#</p>
+<p>普通注意力的 softmax 总要分配权重，即使候选都不合适，也会从中挑出相对较大的项。“注意力权重大”因此不自动等于“确实找到了同一个物体”。 #Hong-2023-DirecT2V#</p>
+<p>论文引入 Dual-Softmax Filtering（DSF，双 softmax 过滤），同时考虑两个方向的匹配。为了把方向讲清楚，设 #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ S=Q_fK_r^\top. \]
+
+ 
+
+<p>对当前帧位置 \(i\) 与参照帧位置 \(j\)，将双向概率用同一组索引展开为 #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ C_{ij} =\frac{\exp S_{ij}}{\sum_{j'}\exp S_{ij'}} \cdot \frac{\exp S_{ij}}{\sum_{i'}\exp S_{i'j}}. \]
+
+ 
+
+<p>第一项问“当前位置更匹配参照帧的哪里”，第二项反过来问“这个参照位置更匹配当前帧的哪里”。两边都集中于同一对应时，乘积才较高。用矩阵表示，就是行 softmax 与列 softmax 的逐元素乘积；原文双向矩阵乘积省略了反向结果转置到同一索引布局的书写，这里显式按 \((i,j)\) 对齐。 #Hong-2023-DirecT2V#</p>
+<p>随后按原文的平均、广播操作 \(\mathcal A\) 得到可作用于输出特征的置信度，再以预设分位数阈值 \(\tau\) 构造掩码： #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ M_f=\mathbf 1\!\left[\mathcal A(C)>\tau\right], \]
+
+   
+
+\[ O_f=(1-M_f)\odot O_f^{\rm self} +M_f\odot O_f^{\rm VM}. \]
+
+ 
+
+<p>可靠的位置使用跨帧共享，不可靠的位置回到当前帧自身注意力。<strong>这不是删除低置信度内容，而是允许它不借用其他帧。</strong> 这样能给新对象、新状态留下生成空间。 #Hong-2023-DirecT2V#</p>
+<p>置信度仍然来自模型特征，并非真实对应关系的证明；正文没有展开所有掩码聚合细节与阈值配置。因此这里能解释其机制，不应宣称过滤后绝无错配。 #Hong-2023-DirecT2V#</p>
+<div class="photo"><img alt="图 3：DirecT2V 的帧间交互机制，取自原论文 Figure 4。轮换参照负责共享不同帧的内容，双 softmax 过滤决定哪些位置应该共享、哪些保留当前帧自身信息。" loading="lazy" src="media/images/video-models-05-storyboard-planning/direct2v-frame-interaction.webp"/><div class="cap">图 3：DirecT2V 的帧间交互机制，取自原论文 Figure 4。轮换参照负责共享不同帧的内容，双 softmax 过滤决定哪些位置应该共享、哪些保留当前帧自身信息。 #Hong-2023-DirecT2V#</div></div>
+<h3 class="section-title" id="生成改变条件与注意力不再训练视频模型">生成流程</h3>
+<p>DirecT2V 使用预训练语言模型和图像扩散模型，不针对这个生成流程新增视频训练 loss。每帧的文本条件不同，网络内部又通过上述注意力机制交换信息，因此噪声预测可概括为 #Hong-2023-DirecT2V#</p>
+
+ 
+
+\[ \widehat\epsilon_f =\epsilon_\theta (Z_t^{1:F},t,c_f;\operatorname{RVM},\operatorname{DSF}). \]
+
+ 
+
+<p>这不是重新定义扩散的数学目标，而是复用已有去噪器、改变推理条件与中间计算。各帧仍从高噪声状态向清晰图像生成，最终通过图像自编码器解码；没有独立训练的显式速度场或动作解码器。 #Hong-2023-DirecT2V#</p>
+<p>论文实验使用 GPT-4，基于 Text2Video-Zero 框架，在单张 RTX 3090 上采样，使用 PNDM 调度器与强度 12.0 的 classifier-free guidance（CFG，无分类器引导），并报告日程参数 \(T=100,T'=96\)。这些是本文的采样日程设置，不能与前文其他论文的噪声时间索引直接混为同一配置。 #Hong-2023-DirecT2V#</p>
+<p>特别需要区分两件事：<strong>逐帧文本可以描述动作，潜变量的几何平移则是另一种运动注入。</strong> 为集中比较注意力机制，原文主实验把 Text2Video-Zero 式平移动力学强度设为零；补充材料另展示开启平移的结果。不能把主实验效果全部归因于提前搬移噪声。 #Hong-2023-DirecT2V#</p>
+<p>论文实际采用 PNDM，因此这里不把 DDIM 的单步公式冒充其完整运行算法。与前面生成器相比，新增的核心是逐帧条件、参照选择和共享掩码；图像模型与语言模型本身的预训练成本仍然存在，“零样本”也不意味着模型从未训练。 #Hong-2023-DirecT2V#</p>
+<h3 class="section-title" id="帧率细化描述而非简单重复图片">帧率扩展</h3>
+<p>论文还通过语言模型细分已有逐帧描述，将 \(F\) 帧、\(R\) FPS 的计划变为 \(2F\) 帧、\(2R\) FPS 的计划。两者覆盖的总时长近似相同，但新增时间位置需要新的中间描述，再由生成器产生图像。 #Hong-2023-DirecT2V#</p>
+<p>这不是传统的像素插帧，也不是仅修改视频文件的播放帧率。若帧数超过一次可处理的批量，原文通过分段与缓存注意力组织生成。这样的扩展仍受计算资源、文本细化质量和长程外观一致性限制，不能将“可以继续细分”理解为任意长、任意高帧率都没有代价。 #Hong-2023-DirecT2V#</p>
+<h3 class="section-title" id="实验后续帧是否仍然听从自己的描述">实验与边界</h3>
+<p>原论文 Table 1 比较相同任务下的不同注意力机制。T2V-Z 表示 Text2Video-Zero 的注意力，TAV 表示 Tune-a-Video 的注意力；此处只借用 TAV 的注意力做零样本生成，并不是比较经过完整视频微调的 Tune-a-Video 系统。 #Hong-2023-DirecT2V#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>帧号</th>
+<th>T2V-Z</th>
+<th>TAV</th>
+<th>RVM</th>
+<th>RVM＋DSF</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.3208</td>
+<td>0.3236</td>
+<td>0.3143</td>
+<td>0.3180</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.2950</td>
+<td>0.2947</td>
+<td>0.3026</td>
+<td>0.3077</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.2894</td>
+<td>0.2909</td>
+<td>0.3056</td>
+<td>0.3077</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.2865</td>
+<td>0.2931</td>
+<td>0.3123</td>
+<td>0.3095</td>
+</tr>
+<tr>
+<td>5</td>
+<td>0.2935</td>
+<td>0.3006</td>
+<td>0.3137</td>
+<td>0.3131</td>
+</tr>
+<tr>
+<td>6</td>
+<td>0.2889</td>
+<td>0.3013</td>
+<td>0.3052</td>
+<td>0.3122</td>
+</tr>
+<tr>
+<td>7</td>
+<td>0.2858</td>
+<td>0.2980</td>
+<td>0.3103</td>
+<td>0.3142</td>
+</tr>
+<tr>
+<td>8</td>
+<td>0.2888</td>
+<td>0.2988</td>
+<td>0.3052</td>
+<td>0.3077</td>
+</tr>
+<tr>
+<td>平均</td>
+<td>0.2930</td>
+<td>0.3001</td>
+<td>0.3087</td>
+<td>0.3113</td>
+</tr>
+</tbody>
+</table></div>
+<p>来源：根据原论文 Table 1 整理，保留逐帧 CLIP 相似度与平均值，省略其 Avg. Dist. 派生行。CLIP 相似度越高越好。这张表关注帧与文本的对应，不是像素重建误差，也不是 FVD。 #Hong-2023-DirecT2V#</p>
+<p>从首帧向后观察，固定参照的对照更容易出现文本相似度下降，而 RVM 保持得更均衡；DSF 进一步提高平均分，但不是每一帧都优于仅用 RVM。它支持“更好响应时间变化的文本”这一判断，不直接证明物理运动更真实，也不能代替对抖动、身份和遮挡的专门评估。原文未为此表提供完整样本量与误差区间，结论以所报告实验为限。 #Hong-2023-DirecT2V#</p>
+<p>原论文 Table 2 的主观比较如下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>提示词忠实度</th>
+<th>真实感</th>
+<th>叙事表现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Text2Video-Zero</td>
+<td>9.52%</td>
+<td>6.55%</td>
+<td>7.14%</td>
+</tr>
+<tr>
+<td>DirecT2V</td>
+<td>90.48%</td>
+<td>93.45%</td>
+<td>92.86%</td>
+</tr>
+</tbody>
+</table></div>
+<p>来源：根据原论文 Table 2 整理，各列是两种结果的偏好比例。补充材料说明采用隐藏方法身份、随机摆放的双视频比较，21 位参与者每人评价 8 个案例，并回答三个维度的问题，形成每个维度 168 次判断。它表明这些案例下的主观偏好，不能外推为所有提示词上的普遍胜率。 #Hong-2023-DirecT2V#</p>
+<div class="photo"><img alt="图 4：双 softmax 过滤的消融，取自原论文 Figure 8。比较只使用 RVM 与同时使用 DSF，观察错误的跨帧对应是否把不该共享的细节带入目标帧。" loading="lazy" src="media/images/video-models-05-storyboard-planning/direct2v-dsf-ablation.webp"/><div class="cap">图 4：双 softmax 过滤的消融，取自原论文 Figure 8。比较只使用 RVM 与同时使用 DSF，观察错误的跨帧对应是否把不该共享的细节带入目标帧。 #Hong-2023-DirecT2V#</div></div>
+<h3 class="section-title" id="小结规划与生成必须互相配合">小结与局限</h3>
+<p>DirecT2V 展示了一个重要的分工：<strong>语言模型安排语义随时间怎样变化，生成器负责把这些安排变成图像，跨帧机制负责在保持共同内容与允许新变化之间取舍。</strong> 只扩写提示词不够，始终复制首帧信息也不够；RVM 与 DSF 正是为两者之间的矛盾而设计。 #Hong-2023-DirecT2V#</p>
+<p>它还没有提供精确的空间布局、物体轨迹和身份约束。语言模型可能写出歧义描述，图像模型也可能数错物体或放错位置；注意力置信度只能缓解错配，不能保证正确对应。逐帧生成的叙事连贯也不自动等于流畅运动或多镜头身份一致。 #Hong-2023-DirecT2V#</p>
+<p>后面的工作会继续探索：把语言计划变成更明确的动态结构、场景布局或跨场景身份约束，让底层生成器获得比逐帧文字更可执行的条件。 #Hong-2023-DirecT2V#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="dysen-vdm">Dysen-VDM</div>
+
+<h3 class="section-title" id="问题画出动作还要安排动作怎样发生">问题与思路</h3>
+<p>前一节 DirecT2V 已把一句故事展开为逐帧提示，但“把动作写进文字”和“让动作按合理顺序发生”仍有距离。例如“一个人走到椅子旁坐下”：视频既要出现人和椅子，也要表达走近、靠近、坐下的变化。如果只有最后的“坐在椅子上”，画面可以清楚、文本相似度也可能不低，却没有完成整段动作。 #Fei-2023-DysenVDM#</p>
+<p>Fei 等人提出的 Dysen-VDM，关注的正是<strong>抽象语言与具体动态过程之间的缺口</strong>。Dysen 来自 dynamic scene manager（动态场景管理器）：先规划动作，再把动作变成随时间变化的场景图，最后补充连续发生所需要的细节。本节依据 arXiv:2308.13812v2（2024 年 3 月 19 日）；首次公开日期为 2023 年 8 月 26 日。 #Fei-2023-DysenVDM#</p>
+<p>与 DirecT2V 相比，它的重要变化有两点：<strong>中间条件从逐帧文字变成结构化的动态场景图；视频生成器要训练读取这些结构化条件。</strong> 因而不能把它理解成只给现成模型换一段提示词，也不能把它归入免视频训练的方法。 #Fei-2023-DysenVDM#</p>
+<div class="photo"><img alt="图 5：Dysen-VDM 总体结构，取自原论文 Figure 2。Dysen 从输入文字构造动态场景图，图编码器提取时空条件，再将这些条件注入潜空间视频扩散模型。" loading="lazy" src="media/images/video-models-05-storyboard-planning/dysen-framework.webp"/><div class="cap">图 5：Dysen-VDM 总体结构，取自原论文 Figure 2。Dysen 从输入文字构造动态场景图，图编码器提取时空条件，再将这些条件注入潜空间视频扩散模型。 #Fei-2023-DysenVDM#</div></div>
+<h3 class="section-title" id="动作计划先确定事件与时间区间">动作与时间计划</h3>
+<p>一句话中的书写顺序，不一定就是事件发生顺序。例如“坐下之前，他走向椅子”，实际发生的顺序依然是先走近、后坐下。Dysen 首先用 ChatGPT 提取事件，并为其安排时间区间。 #Fei-2023-DysenVDM#</p>
+<p>用与原文对应的记号，一个事件可以写成</p>
+
+ 
+
+\[ e_i=(s_i,p_i,o_i,[u_i,v_i]), \]
+
+ 
+
+<p>其中 \(s_i\) 是动作主体，\(p_i\) 是动作谓词，\(o_i\) 是目标或对象，\([u_i,v_i]\) 是事件持续区间。例如“人—走向—椅子”与“人—坐在—椅子”是两个关系三元组，可以分配到前后两个区间。区间也可以重叠，以表达同时发生的动作。 #Fei-2023-DysenVDM#</p>
+<p>这里有两种不同的时间：<strong>事件区间属于视频播放时间；扩散步 \(t\) 属于去噪计算过程。</strong> 原文还强调，事件计划使用抽象时间单位，不直接绑定为若干真实秒钟；要生成视频，仍需把这些区间对应到实际的帧序列。 #Fei-2023-DysenVDM#</p>
+<p>ChatGPT 的调用采用 In-context Learning（ICL，上下文学习）：提示词包含任务说明、输入—输出示例与本次输入，模型照示例组织结果。实验默认 GPT-3.5 turbo，每次使用 5 个示例。这里的“学习”指从上下文理解任务格式，不意味着为每条输入更新 ChatGPT 权重。 #Fei-2023-DysenVDM#</p>
+<h3 class="section-title" id="动态场景图把事件计划变成逐帧结构">动态场景图</h3>
+<p>场景图（Scene Graph，SG）用结构表达一幅画面中的对象、属性和关系。例如“人—走向—椅子”描述对象之间的关系，“椅子—颜色—棕色”描述属性。它比一串文字更明确地拆出了<strong>谁、有什么属性、与谁发生什么关系</strong>。 #Fei-2023-DysenVDM#</p>
+<p>动态场景图（Dynamic Scene Graph，DSG）则是一串按视频时间排列的场景图：</p>
+
+ 
+
+\[ G=(G_1,\ldots,G_M). \]
+
+ 
+
+<p>Dysen 先建立一个粗略版本。用教学记号表示，第 \(m\) 个时间位置的关系集合可以写成 #Fei-2023-DysenVDM#</p>
+
+ 
+
+\[ \overline{\mathcal R}_m =\{(s_i,p_i,o_i):u_i\le m\le v_i\}. \]
+
+ 
+
+<p>这只是把原文“沿时间轴加入或移除事件三元组”的过程写清楚：某事件开始就加入相应关系，结束就移除；同时发生的事件会同时保留。由这些关系及其关联对象构造 \(\overline G_m\)，得到动态场景的骨架。实际区间端点须按所用离散时间约定处理。 #Fei-2023-DysenVDM#</p>
+<p>但如果连续好几帧都只有同一个“人—坐在—椅子”关系，结构依然可能过于粗糙。因此，Dysen 还要补充从走近到坐下的过渡，而不是让一个静态关系机械重复。 #Fei-2023-DysenVDM#</p>
+<div class="photo"><img alt="图 6：Dysen 的三步处理，取自原论文 Figure 3。输入文字先成为动作计划，再转成初始动态场景图，最后通过场景想象补充属性、关系和时间变化。" loading="lazy" src="media/images/video-models-05-storyboard-planning/dysen-three-stage.webp"/><div class="cap">图 6：Dysen 的三步处理，取自原论文 Figure 3。输入文字先成为动作计划，再转成初始动态场景图，最后通过场景想象补充属性、关系和时间变化。 #Fei-2023-DysenVDM#</div></div>
+<h3 class="section-title" id="场景补充让相邻状态能够接起来">场景补充</h3>
+<p>原文把第三步称为 Scene Imagination（场景想象）。这里的“想象”不是直接生成像素，而是为场景图添加或修改合理的关系和属性。例如“坐下”可以细化成接近椅子、位于椅子旁、坐到椅子上。背景和对象属性也可以被补充，但应服从原始描述。 #Fei-2023-DysenVDM#</p>
+<p>它分为两轮。第一轮逐个处理场景图，同时读取一个 Sliding Window Context（SWC，滑动窗口上下文）。原文给出的窗口包含：上一位置已经补充的图 \(G_{m-1}\)、当前位置的初始图 \(\overline G_m\)，以及下一位置的初始图 \(\overline G_{m+1}\)。用教学记号概括为 #Fei-2023-DysenVDM#</p>
+
+ 
+
+\[ G_m^{\mathrm{local}} =\operatorname{LLM} \bigl(Y,G_{m-1}^{\mathrm{local}}, \overline G_m,\overline G_{m+1};\text{示例}\bigr). \]
+
+ 
+
+<p>看前一帧，是为了继承已经建立的人物和场景；看后一帧，是为了让当前补充朝下一个状态过渡。第二轮再从整体检查整串图，修整局部合理、全局却冲突的内容，得到最终 \(G\)。这两个步骤都是语义规划，不能保证物理运动必然正确。 #Fei-2023-DysenVDM#</p>
+<p>训练素材的来源也需要说明。附录使用视频片段定位模型为示例事件提供起止位置，并用对象检测器、关系分类器和属性分类器构造场景图示例。因此，演示条件并不完全来自人工逐帧标注，也可能继承这些自动工具的错误。生成新视频时，Dysen 依据输入文字规划，不需要先取得一段与目标相同的真实视频。 #Fei-2023-DysenVDM#</p>
+<h3 class="section-title" id="图编码与注入让去噪器真正读懂计划">图编码与注入：让去噪器真正读懂计划</h3>
+<p>写出场景图之后，还要解决接口问题：图中的对象与关系，怎样成为视频去噪网络可使用的特征？</p>
+<p>Dysen-VDM 使用 Recurrent Graph Transformer（RGTrm，循环图 Transformer）。图内注意力聚合对象与关系信息，图间递推传递前后场景状态；关系边的嵌入也参与注意力。这里的循环沿<strong>视频时间</strong>进行，不是沿扩散步进行。 #Fei-2023-DysenVDM#</p>
+<p>其中一个关键设计是混合当前场景与前一场景的查询特征。省略层号和注意力头号，原文的门控关系为</p>
+
+ 
+
+\[ \widehat Q_m =(1-z_m)\odot Q_{m-1}+z_m\odot Q_m, \qquad 0\le z_m\le1. \]
+
+ 
+
+<p>\(Q_m\) 来自当前图，\(Q_{m-1}\) 来自前一图，\(z_m\) 是 sigmoid 产生的门控。直观上，它让当前图既参考之前的场景，又能吸收当前变化；多头聚合时再利用关系边信息。不能将这一机制理解为图中每个节点都只复制上一帧。原文的完整矩阵记号较简略，没有充分展开对象增删后的跨图节点对齐和各项张量维度；这里保留其门控含义，不据此补造实现细节。 #Fei-2023-DysenVDM#</p>
+<p>编码后得到图特征序列 \(H^G\)。视频 U-Net 解码端新增交叉注意力：先读图特征，再读原始文本特征 \(H^Y\)。为明确查询与条件的角色，可以用标准的投影记号解释这个过程： #Fei-2023-DysenVDM#</p>
+
+ 
+
+\[ \operatorname{CA}(U,C) =\operatorname{softmax} \left(\frac{(UW_Q)(CW_K)^\top}{\sqrt d}\right) (CW_V), \]
+
+ 
+
+
+ 
+
+\[ H' =\operatorname{CA}(H,H^G), \qquad H''=\operatorname{CA}(H',H^Y). \]
+
+ 
+
+<p>这是对原文两次交叉注意力的教学展开，省略残差和其他网络操作。\(H\) 是当前视频特征；第一次读取细化的动态关系，第二次继续参考 CLIP 编码的原始文本，防止解释时把图条件误认为替代了文本条件。图特征也不是像素坐标或光流，关系约束仍需网络学习如何落实到画面。 #Fei-2023-DysenVDM#</p>
+<div class="photo"><img alt="图 7：动态场景图特征注入，取自原论文 Figure 4。图条件与文本条件通过额外的交叉注意力参与 U-Net 解码端的去噪计算。" loading="lazy" src="media/images/video-models-05-storyboard-planning/dysen-dsg-injection.webp"/><div class="cap">图 7：动态场景图特征注入，取自原论文 Figure 4。图条件与文本条件通过额外的交叉注意力参与 U-Net 解码端的去噪计算。 #Fei-2023-DysenVDM#</div></div>
+<h3 class="section-title" id="训练与生成改变条件不另造一条加噪路径">训练与生成</h3>
+<p>Dysen-VDM 仍在连续潜变量上训练视频扩散模型。令真实视频为 \(X\)，编码得到 \(Z_0=\mathcal E(X)\)。用前文统一的 DDPM 记号，其前向边际可以写成 #Fei-2023-DysenVDM#</p>
+
+ 
+
+\[ Z_t=\sqrt{\bar\alpha_t}Z_0 +\sqrt{1-\bar\alpha_t}\,\epsilon, \qquad \epsilon\sim\mathcal N(0,I). \]
+
+ 
+
+<p>图条件通过网络内部参与噪声预测，因此可以把主文的噪声均方误差目标展开为</p>
+
+ 
+
+\[ \mathcal L_{\mathrm{noise}} =\mathbb E_{X,Y,t,\epsilon} \left[ \left\|\epsilon-\epsilon_{\theta,\phi} \bigl(Z_t,t,\mathcal C(Y),H^G_\phi(G(Y))\bigr) \right\|_2^2 \right]. \]
+
+ 
+
+<p>这里 \(\theta\) 表示视频去噪网络参数，\(\phi\) 表示图编码等可训练参数，\(G(Y)\) 表示从文字获得的动态图条件。该式是把条件接口显式写出的教学形式：<strong>监督标签依然是已知噪声；新增的是帮助预测噪声的动态条件，不是把场景图当作噪声标签。</strong> #Fei-2023-DysenVDM#</p>
+<p>原文把训练概括为三阶段：先在 WebVid 上预训练带自编码器的潜空间视频主干；再进行带图条件的文本到视频预训练，更新 3D U-Net 与 RGTrm；最后训练整体 Dysen-VDM。第三阶段的参数划分和优化细节并未充分展开，不能据“整体训练”推断作者反向传播更新了 ChatGPT。论文结论和消融还提到强化学习优化 ICL，但当前原文没有给出足以复现的策略、奖励和更新公式；下文保留该实验项，不将它解释成已明确披露的 ChatGPT 微调方法。 #Fei-2023-DysenVDM#</p>
+<p>生成时先由输入文字得到动态图，再编码文本与图条件，从高斯潜变量 \(Z_T\) 出发反复去噪，最后解码为视频。可将其依赖概括为 #Fei-2023-DysenVDM#</p>
+
+ 
+
+\[ p_{\theta,\phi}(Z_{0:T}\mid Y,G) =p(Z_T)\prod_{t=1}^T p_{\theta,\phi}(Z_{t-1}\mid Z_t,Y,H^G). \]
+
+ 
+
+<p>所以，它的核心创新位于<strong>语义规划、条件表示和条件注入</strong>，不是重新设计 DDPM 的前向分布，也不是提出一种新的快速采样器。原文报告去噪步数为 1000，未充分说明可直接复现的具体调度器与各项采样配置，不应擅自写成某个确定版本的 DDIM 或 PNDM 实现。 #Fei-2023-DysenVDM#</p>
+<p>实现中生成 16 个关键帧，分辨率 256×256、潜变量空间为 32×32×4，再进行两次插帧。RGTrm 使用 12 层、8 个注意力头、特征维度 768，训练使用 16 张 A100。主文以两秒片段描述关键帧采样，附录评估又指定 16 帧、30 FPS；这两处时间设置不能直接当成同一个输出时长，读表时应保留其协议边界。 #Fei-2023-DysenVDM#</p>
+<h3 class="section-title" id="实验动态规划带来了什么">实验与边界</h3>
+<p>先看原论文 Table 1 的零样本结果。这里“零样本”指<strong>不在目标评测数据集上微调</strong>，不意味着没有用 WebVid 训练，也不意味着没有使用预训练语言模型。 #Fei-2023-DysenVDM#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>UCF-101 IS ↑</th>
+<th>UCF-101 FVD ↓</th>
+<th>MSR-VTT FID ↓</th>
+<th>MSR-VTT CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CogVideo</td>
+<td>25.27</td>
+<td>701.59</td>
+<td>23.59</td>
+<td>0.2631</td>
+</tr>
+<tr>
+<td>MagicVideo</td>
+<td>—</td>
+<td>699.00</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>MakeVideo</td>
+<td>33.00</td>
+<td>367.23</td>
+<td>13.17</td>
+<td>0.3049</td>
+</tr>
+<tr>
+<td>AlignLatent</td>
+<td>33.45</td>
+<td>550.61</td>
+<td>—</td>
+<td>0.2929</td>
+</tr>
+<tr>
+<td>Latent-VDM</td>
+<td>—</td>
+<td>—</td>
+<td>14.25</td>
+<td>0.2756</td>
+</tr>
+<tr>
+<td>Latent-Shift</td>
+<td>—</td>
+<td>—</td>
+<td>15.23</td>
+<td>0.2773</td>
+</tr>
+<tr>
+<td>VideoFactory</td>
+<td>—</td>
+<td>410.00</td>
+<td>—</td>
+<td>0.3005</td>
+</tr>
+<tr>
+<td>InternVid</td>
+<td>21.04</td>
+<td>616.51</td>
+<td>—</td>
+<td>0.2951</td>
+</tr>
+<tr>
+<td>Dysen-VDM</td>
+<td>35.57</td>
+<td>325.42</td>
+<td>12.64</td>
+<td>0.3204</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 1 完整整理，保留原表方法名；“—”表示未报告。结果支持其在该表所列设置下取得更好的总体分数。但基线主要转录自各自论文，不是统一训练、统一采样成本的受控比较；“InternVid”一行也沿用原表命名，不能把表中分数理解为对比学习编码器本身直接生成视频。 #Fei-2023-DysenVDM#</p>
+<p>附录给出：IS 使用 UCF-101 上训练的 C3D 与 10,000 个样本；FVD 使用 I3D 视频特征；MSR-VTT 的 CLIPSIM 使用 ViT-B/32，对 2,990 个视频的 47,840 帧平均。后者是<strong>逐帧文本相似度</strong>，不足以直接证明事件先后正确。另一个目标数据训练设置中，Table 2 报告 Dysen-VDM 的 IS 为 95.23、FVD 为 255.42。该表标题注明不采用大规模预训练，正文称为按需训练或微调；它不应与上表零样本结果混用。 #Fei-2023-DysenVDM#</p>
+<p>为了更直接评价动态过程，原论文 Table 3 对 ActivityNet 进行人工评分：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>动作忠实度 ↑</th>
+<th>场景丰富度 ↑</th>
+<th>运动流畅度 ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CogVideo</td>
+<td>67.5</td>
+<td>75.0</td>
+<td>81.5</td>
+</tr>
+<tr>
+<td>VDM</td>
+<td>62.4</td>
+<td>58.8</td>
+<td>46.8</td>
+</tr>
+<tr>
+<td>Latent-VDM</td>
+<td>70.7</td>
+<td>66.7</td>
+<td>60.1</td>
+</tr>
+<tr>
+<td>Dysen-VDM</td>
+<td>86.6</td>
+<td>92.4</td>
+<td>87.3</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 3 完整整理。附录说明从 ActivityNet 选取 50 组文本—视频案例，由 10 名接受评分说明的英语母语参与者按十级尺度评价，再换算为百分制平均分。这些是评分，<strong>不是赢过基线的百分比</strong>；论文没有提供置信区间。 #Fei-2023-DysenVDM#</p>
+<p>各模块是否确有贡献，可以看 Table 4 的消融：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>设置</th>
+<th>UCF-101 FVD ↓</th>
+<th>ActivityNet FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>完整 Dysen-VDM</td>
+<td>255.42</td>
+<td>485.48</td>
+</tr>
+<tr>
+<td>移除 Dysen</td>
+<td>346.40</td>
+<td>627.30</td>
+</tr>
+<tr>
+<td>移除场景想象</td>
+<td>332.92</td>
+<td>597.83</td>
+</tr>
+<tr>
+<td>场景想象移除滑动窗口上下文</td>
+<td>292.16</td>
+<td>533.22</td>
+</tr>
+<tr>
+<td>移除 RL-based ICL</td>
+<td>319.01</td>
+<td>520.76</td>
+</tr>
+<tr>
+<td>RGTrm 换成循环图神经网络 RGNN</td>
+<td>299.44</td>
+<td>564.16</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 4 完整整理，仅省略括号内与完整模型的差值。移除场景想象后，两组结果明显变差；只取消相邻上下文也会退步。这支持“细化动态状态”和“使相邻场景互相衔接”都有作用，而不只是增加文字数量。RL-based ICL 一行沿用原表名称，具体优化机制的披露不足如前述。原表把“移除 Dysen”称为退化到 Latent-VDM，但其 UCF-101 FVD 346.40 与 Table 2 中 Latent-VDM 的 358.34 不同，不能将两处数值当成同一次受控实验。 #Fei-2023-DysenVDM#</p>
+<h3 class="section-title" id="小结让条件成为有时间结构的计划">小结与局限</h3>
+<p>Dysen-VDM 把文本条件进一步拆成<strong>事件、时间区间、对象属性和关系变化</strong>，并训练图编码器与视频去噪网络把这些安排落实到生成过程。相较于仅给每帧一段文字，它提供了更明确的结构；相较于只设计时序注意力，它同时处理了“应该发生什么”的规划问题。 #Fei-2023-DysenVDM#</p>
+<p>它也有明确边界。场景图能表达“人走向椅子”，却没有直接确定每个像素怎样运动；语言模型可能添加不符合原意的细节，图解析与事件定位工具也可能产生错误。更丰富的条件不是物理正确性或身份一致性的保证。图条件还需要额外训练和调用成本，1000 步去噪并未解决生成速度问题。 #Fei-2023-DysenVDM#</p>
+<p>因此，这一节的关键启发是：<strong>提升动态表现，可以从扩散网络之外的条件组织入手，再通过训练建立语义计划与视觉过程的接口。</strong> 后续方法仍会在规划粒度、是否需要视频训练，以及如何保持跨帧一致性之间作不同取舍。 #Fei-2023-DysenVDM#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="free-bloom">Free-Bloom</div>
+
+<h3 class="section-title" id="问题让画面相似还要让事件继续发生">问题与思路</h3>
+<p>“花朵逐渐绽放”需要呈现花苞、花瓣展开、完全开放的变化。如果每帧都是一朵已经盛开的花，只是位置有所移动，画面可能很连续，却没有完成这句话描述的事件。 #Huang-2023-FreeBloom#</p>
+<p>Free-Bloom（2023） #Huang-2023-FreeBloom# 要解决的是：<strong>不额外训练视频模型，能否借助语言模型的事件知识，让图像扩散模型生成有状态变化的视频？</strong> 它区分三个要求：</p>
+<ul>
+<li><strong>语义连贯</strong>：各帧共同表达一个事件的进展，而不只是重复同一场景。</li>
+<li><strong>身份一致</strong>：变化过程中，主体和背景仍有可辨认的一致性。</li>
+<li><strong>时间连续</strong>：相邻画面能自然衔接，减少闪烁与突变。</li>
+</ul>
+<p>这三个要求并不自动兼容。每帧独立生成，容易换主体和背景；强行让每帧都参照同一画面，又可能把花朵固定在一个状态。Free-Bloom 的思路是：<strong>先规划状态变化，再在去噪过程中控制各帧共享多少信息，最后补出中间帧。</strong> #Huang-2023-FreeBloom#</p>
+<p>它与前两节有共同的问题意识，但不是同一种实现。DirecT2V 也使用逐帧语言规划，重点是轮换参照与匹配过滤；Dysen-VDM 构造动态场景图并训练图条件接口；Free-Bloom 不训练新的图条件或视频去噪模块，而是修改预训练图像模型的推理流程。 #Huang-2023-FreeBloom#</p>
+<div class="photo"><img alt="图 8：Free-Bloom 的三阶段流程。先由 LLM 生成逐帧提示，再通过联合噪声与按去噪步切换的注意力生成关键帧，最后用双路径插值补帧。取自原论文 Figure 2。" loading="lazy" src="media/images/video-models-05-storyboard-planning/free-bloom-pipeline.webp"/><div class="cap">图 8：Free-Bloom 的三阶段流程。先由 LLM 生成逐帧提示，再通过联合噪声与按去噪步切换的注意力生成关键帧，最后用双路径插值补帧。取自原论文 Figure 2。 #Huang-2023-FreeBloom#</div></div>
+<h3 class="section-title" id="逐帧提示把一句事件拆成可独立理解的画面">逐帧提示</h3>
+<p>以“泰迪熊跳入水中”为例，语言模型可以把它拆成蹲下、跃起、在空中、落水等状态。这里使用的是 LLM 从文本中学到的常识，不是读取一个参考视频后提取运动。 #Huang-2023-FreeBloom#</p>
+<p>论文采用两轮提示：</p>
+<ol>
+<li>让 ChatGPT 扮演逐帧描述者，用一句话分别写出每帧主体的外观、动作及动作程度。</li>
+<li>对第一轮结果做<strong>指代消解</strong>：用主体名称替换代词，消除依赖上下文才能理解的省略，使每句都有完整视觉信息，并保持简单、相近的句式。</li>
+</ol>
+<p>第二轮很重要。对人来说，“它随后落入水中”能接上前文；对单独处理当前提示的图像生成器来说，“它”却没有明确外观。因此不能只把一段故事机械切成若干句。 #Huang-2023-FreeBloom#</p>
+<p>记总提示为 \(\mathcal T\)，得到的提示序列为</p>
+
+ 
+
+\[ \mathcal T\longrightarrow(c_1,c_2,\ldots,c_F). \]
+
+ 
+
+<p>其中 \(F\) 是视频关键帧数，\(c_i\) 描述第 \(i\) 帧。后文用 \(i\) 表示<strong>视频帧位置</strong>，用 \(t\) 表示<strong>扩散噪声时刻</strong>：同一帧要经历多个去噪步，二者不能混为一条时间轴。 #Huang-2023-FreeBloom#</p>
+<p>逐帧提示只给出“每幅画应该是什么”，并没有给出“这些画怎样保持同一个主体”。后两个模块负责补这个缺口。</p>
+<h3 class="section-title" id="联合噪声共享起点但不让所有帧完全相同">联合噪声</h3>
+<p>如果各帧从独立噪声出发，即使提示相近，生成的熊、环境和构图也可能不同。如果所有帧使用同一份噪声，一致性会改善，却可能抑制自然变化。 #Huang-2023-FreeBloom#</p>
+<p>论文 Equations 3–5 采用共享噪声与独立噪声的组合。改用潜变量记号 \(z\) 表示，每帧初始化为 #Huang-2023-FreeBloom#</p>
+
+ 
+
+\[ u,\epsilon_1,\ldots,\epsilon_F\overset{\mathrm{i.i.d.}}{\sim}\mathcal N(0,I),\qquad z_T^i=a u+b\epsilon_i, \]
+
+ 
+
+
+ 
+
+\[ a=\cos\!\left(\frac{\pi\lambda}{2}\right),\qquad b=\sin\!\left(\frac{\pi\lambda}{2}\right),\qquad 0\leq\lambda\leq1. \]
+
+ 
+
+<p>\(u\) 是整个视频共享的一份噪声，\(\epsilon_i\) 是当前帧独有的扰动。为什么系数不能随便取？因为预训练图像扩散模型期待每帧的初始噪声服从标准正态分布。独立高斯变量线性组合仍为高斯，并且 #Huang-2023-FreeBloom#</p>
+
+ 
+
+\[ \operatorname{Var}(z_T^i)=(a^2+b^2)I=I,\qquad \operatorname{Cov}(z_T^i,z_T^j)=a^2I\quad(i\ne j). \]
+
+ 
+
+<p>于是，<strong>单帧边际仍为 \(\mathcal N(0,I)\)，跨帧联合分布却具有可控相关性</strong>。把所有帧堆起来，原文的联合协方差可写成 #Huang-2023-FreeBloom#</p>
+
+ 
+
+\[ (z_T^1,\ldots,z_T^F)\sim\mathcal N\!\left(0, \left[b^2 I_F+a^2J_F\right]\otimes I\right), \]
+
+ 
+
+<p>其中 \(J_F\) 是全 1 矩阵，\(\otimes\) 是 Kronecker 积，用于把帧间协方差扩展到每帧的所有潜变量坐标。 #Huang-2023-FreeBloom#</p>
+<ul>
+<li>\(\lambda=0\)：所有帧用同一噪声，帧间协方差为 \(I\)。</li>
+<li>\(\lambda=1\)：各帧独立采样，帧间协方差为 0。</li>
+<li>中间取值：共享部分初始结构，同时保留帧间差异。</li>
+</ul>
+<p>如果直接使用 \((1-\lambda)u+\lambda\epsilon_i\)，单帧方差会变成 \([(1-\lambda)^2+\lambda^2]I\)，通常小于 \(I\)。论文附录 D.3 对此做了对照，显示不匹配的初始化会破坏生成质量。但三角函数不是唯一选择：任何满足 \(a^2+b^2=1\) 的系数，都能满足这里的方差条件。 #Huang-2023-FreeBloom#</p>
+<p>这一构造与前文 PYoCo 的共享项加独立项在协方差形式上相近。区别在于：Free-Bloom 将它用于<strong>预训练图像模型的多帧推理初始化</strong>，不是据此重新训练一个视频扩散模型。保持单帧边际正确，也不等于已经学到了正确的视频联合分布；相关噪声提供的是一种一致性偏置，而不是运动模型。 #Huang-2023-FreeBloom#</p>
+<h3 class="section-title" id="注意力切换先保持一致再允许改变">注意力切换</h3>
+<p>初始噪声相关仍不足以保证视频连贯。因此，Free-Bloom 还修改 U-Net 的空间自注意力，让当前帧在部分去噪阶段读取其他帧。 #Huang-2023-FreeBloom#</p>
+<p>统一用从 1 开始的帧编号，论文 Equation 6 可改写为</p>
+
+ 
+
+\[ A_t^i= \begin{cases} \operatorname{Attn}\!\left(Q_t^i,[K_t^1;K_t^{i-1};K_t^i],[V_t^1;V_t^{i-1};V_t^i]\right),&t\geq\tau,\\ \operatorname{Attn}(Q_t^i,K_t^i,V_t^i),&t\lt \tau. \end{cases} \]
+
+ 
+
+<p>其中 \([\,;\,]\) 表示沿 token 维拼接；\(Q,K,V\) 是查询、键和值，\(\tau\) 是切换阈值。该式表示具有前帧的当前帧的通用情形，首帧没有额外的“前一帧”。注意力计算仍为 #Huang-2023-FreeBloom#</p>
+
+ 
+
+\[ \operatorname{Attn}(Q,K,V)=\operatorname{softmax}\!\left(\frac{QK^\top}{\sqrt d}\right)V. \]
+
+ 
+
+<p>反向生成从大 \(t\) 走向小 \(t\)，所以实际顺序是： #Huang-2023-FreeBloom#</p>
+<ol>
+<li><strong>去噪早期，\(t\geq\tau\)</strong>：读取首帧、前一帧和当前帧。首帧提供外观参照，前帧提供局部连续性，帮助建立相近的粗轮廓与布局。</li>
+<li><strong>去噪后期，\(t\lt \tau\)</strong>：仅保留当前帧自注意力，让当前帧更充分地落实自己的文本条件，形成不同的动作与细节。</li>
+</ol>
+<p>这里切换的是图像特征之间的<strong>自注意力信息源</strong>，不是删除文本 cross-attention。每帧仍以自己的 \(c_i\) 为条件。 #Huang-2023-FreeBloom#</p>
+<p>这也解释了为什么不从头到尾都参照首帧。过强的跨帧约束会把“保持同一只熊”变成“每帧都保持同一个姿势”。该方法通过阶段切换在一致性和变化之间取舍，并没有从视频数据中学出连续运动的物理规律。 #Huang-2023-FreeBloom#</p>
+<div class="photo"><img alt="图 9：Free-Bloom 的模块消融。A 去除联合噪声，B 不修改原始自注意力，C 只给 Text2Video-Zero 增加逐帧提示，D 不读取当前帧自身，E 始终读取跨帧上下文而不按去噪步切换。比较各行能看到：同一主体、动作变化与单帧质量需要共同兼顾。取自原论文 Figure 4。" loading="lazy" src="media/images/video-models-05-storyboard-planning/free-bloom-analyze.webp"/><div class="cap">图 9：Free-Bloom 的模块消融。A 去除联合噪声，B 不修改原始自注意力，C 只给 Text2Video-Zero 增加逐帧提示，D 不读取当前帧自身，E 始终读取跨帧上下文而不按去噪步切换。比较各行能看到：同一主体、动作变化与单帧质量需要共同兼顾。取自原论文 Figure 4。 #Huang-2023-FreeBloom#</div></div>
+<h3 class="section-title" id="双路径补帧邻帧提供结构去噪器生成细节">双路径补帧</h3>
+<p>LLM 规划的是少量关键状态，直接播放仍可能跳变。Free-Bloom 因此在相邻关键帧之间生成中间帧，而不是只对最终 RGB 图片取平均。 #Huang-2023-FreeBloom#</p>
+<p>设待插入帧位于左帧 \(L\) 和右帧 \(R\) 之间。以下统一把 \(k\) 定义为<strong>左帧权重</strong>，中点为 \(k=0.5\)。先线性插值相邻提示的文本嵌入，得到中间条件 \(e_*\)；中间帧初始噪声也按上述联合噪声方案构造。然后在每个去噪时刻组合两条路径。 #Huang-2023-FreeBloom#</p>
+<p><strong>路径一：上下文路径。</strong> 在相同噪声时刻混合左右帧潜变量，对应原论文 Equation 7：</p>
+
+ 
+
+\[ \widetilde z_t^*=kz_t^L+(1-k)z_t^R. \]
+
+ 
+
+<p>它提供一个贴近邻帧的结构参照。但线性混合不理解动作：两种姿势混合可能出现重影，而不是一个合理的中间姿势。</p>
+<p><strong>路径二：自身去噪路径。</strong> 中间帧以插值后的文本嵌入为条件，由预训练去噪器计算一次 DDIM 更新。为避免原文简写的累计系数与单步系数混淆，这里统一用 \(\bar\alpha\) 表示累计信号保留率。以下采用确定性 DDIM 写法解释： #Huang-2023-FreeBloom#</p>
+
+ 
+
+\[ \widehat z_0^*=\frac{z_{t+1}^*-\sqrt{1-\bar\alpha_{t+1}}\, \epsilon_\theta(z_{t+1}^*,t+1,e_*)}{\sqrt{\bar\alpha_{t+1}}}, \]
+
+ 
+
+
+ 
+
+\[ y_t^*=\sqrt{\bar\alpha_t}\,\widehat z_0^* +\sqrt{1-\bar\alpha_t}\, \epsilon_\theta(z_{t+1}^*,t+1,e_*). \]
+
+ 
+
+<p>这两式是对 DDIM 路径的教学展开；原文 Equation 8 还保留了含 \(\sigma_t\) 的一般随机采样项。最后按原文的双路径思想组合： #Huang-2023-FreeBloom#</p>
+
+ 
+
+\[ z_t^*=(1-m_t)\widetilde z_t^*+m_t y_t^*. \]
+
+ 
+
+<p>\(m_t\) 是自身去噪路径的权重。<strong>它是一个更新结果的混合系数，不是多训练一个网络，也不是在这里重新定义训练 loss。</strong> 论文实验使用分段设置：去噪早期 \(t\geq\tau^*\) 时取 \(m_t=0.1\)，后期 \(t\lt \tau^*\) 时取 \(m_t=1\)。早期主要靠邻帧约束布局，后期让自身去噪路径生成清晰、符合中间条件的内容。 #Huang-2023-FreeBloom#</p>
+<p>其中 \(\tau^*\) 控制补帧路径切换，与上一节注意力切换的 \(\tau\) 是两个概念。若一直依赖邻帧线性混合，容易重影；若过早依赖中间帧自身生成，又容易偏离左右帧。即便单次 DDIM 更新采用确定性形式，<strong>再混合邻帧状态后的整个补帧流程，也不能直接当作未经修改的 DDIM 轨迹</strong>。 #Huang-2023-FreeBloom#</p>
+<div class="photo"><img alt="图 10：双路径补帧的权衡。比较不同切换设置下的中间帧：上下文路径过强会模糊或重影，自身去噪路径过强可能偏离邻帧。取自原论文 Figure 5。" loading="lazy" src="media/images/video-models-05-storyboard-planning/free-bloom-analyze-interpolation.webp"/><div class="cap">图 10：双路径补帧的权衡。比较不同切换设置下的中间帧：上下文路径过强会模糊或重影，自身去噪路径过强可能偏离邻帧。取自原论文 Figure 5。 #Huang-2023-FreeBloom#</div></div>
+<h3 class="section-title" id="训练与生成改的是推理接口">训练与生成</h3>
+<p>Free-Bloom 使用 ChatGPT 与预训练 Stable Diffusion v1.5，无需为该方法额外训练视频模型，也不需要视频训练集。这不表示基础模型没有训练过，而是<strong>新增的视频生成流程不更新这些模型的参数</strong>。 #Huang-2023-FreeBloom#</p>
+<p>其推理过程可以概括为：</p>
+<ol>
+<li>用两轮语言提示生成 \(F\) 条自足的关键帧描述。</li>
+<li>一次构造具有共享成分的多帧初始潜噪声。</li>
+<li>以逐帧文本为条件去噪，早期读取跨帧上下文，后期转回当前帧。</li>
+<li>在关键帧之间按双路径策略补帧，最后解码输出。</li>
+</ol>
+<p>论文实验先生成 <strong>6 帧、512×512</strong> 的关键帧序列，再迭代选择差异最大的帧之间插值，中点使用 \(k=0.5\)；附录 Figure 9 另展示了在相邻关键帧间插入 4 帧的结果。实验还使用固定负面提示及 ESRGAN 图像超分，在单张 RTX 3090 Ti 上完成。因此展示质量应结合这些后处理理解，不能把它全部归因于联合噪声或注意力切换。 #Huang-2023-FreeBloom#</p>
+<p>正文与附录没有给出一套包含去噪步数、所有阈值和引导尺度的完整固定配置，本节不据此推测统一默认值，也不把无需训练等同于推理成本低。 #Huang-2023-FreeBloom#</p>
+<p>论文还展示两种扩展：结合 DreamBooth 个性化模型生成特定概念的视频；用 DDIM inversion 从给定图像得到潜噪声，再生成延续画面。反演在这里提供图像起点，并不意味着后续帧能严格保留原图全部细节。 #Huang-2023-FreeBloom#</p>
+<div class="photo"><img alt="图 11：关键帧生成与补帧比较。A 比较事件变化和主体一致性，B 在选定关键帧之间插入中间画面；应同时观察事件有没有推进，以及中间姿势是否合理。取自原论文 Figure 3。" loading="lazy" src="media/images/video-models-05-storyboard-planning/free-bloom-qualitative-result.webp"/><div class="cap">图 11：关键帧生成与补帧比较。A 比较事件变化和主体一致性，B 在选定关键帧之间插入中间画面；应同时观察事件有没有推进，以及中间姿势是否合理。取自原论文 Figure 3。 #Huang-2023-FreeBloom#</div></div>
+<h3 class="section-title" id="实验更会表达事件不代表时间连续性最强">实验与边界</h3>
+<p>论文 Table 1 的完整方法结果如下。CLIP 越高越好；人评前三项采用 1–5 分，越高越好；总体名次越低越好。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>免额外训练</th>
+<th>CLIP ↑</th>
+<th>单帧保真 ↑</th>
+<th>时间连贯 ↑</th>
+<th>语义连贯 ↑</th>
+<th>总体名次 ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VideoFusion</td>
+<td>否</td>
+<td>0.483</td>
+<td>3.436</td>
+<td>3.889</td>
+<td>3.267</td>
+<td>2.317</td>
+</tr>
+<tr>
+<td>LVDM</td>
+<td>否</td>
+<td>0.480</td>
+<td>3.289</td>
+<td>3.650</td>
+<td>3.242</td>
+<td>2.567</td>
+</tr>
+<tr>
+<td>Text2Video-Zero</td>
+<td>是</td>
+<td>0.479</td>
+<td>3.486</td>
+<td>2.783</td>
+<td>3.025</td>
+<td>3.033</td>
+</tr>
+<tr>
+<td>Free-Bloom</td>
+<td>是</td>
+<td>0.477 / 0.482*</td>
+<td>4.133</td>
+<td>3.267</td>
+<td>3.867</td>
+<td>2.083</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 1 整理，保留全部方法与指标。 #Huang-2023-FreeBloom# 星号 \(0.482^*\) 使用 LLM 生成的逐帧提示计算，其他普通 CLIP 值使用原始输入提示；<strong>两个条件下的数值不能混作同一个评估协议来排名</strong>。按原始总提示计算时，Free-Bloom 的 CLIP 为 0.477，并非表中最高。</p>
+<p>用户研究使用 20 条提示，每条比较四种方法的视频，收到 80 名来自学术界和产业界参与者的有效回答。附录 C.2 列出花开、冰融化、火山喷发等测试提示，包含作者自拟的复杂事件，不能把这组小规模评价解释为覆盖全部视频生成任务的结论。 #Huang-2023-FreeBloom#</p>
+<p>附录 Table 4 给出同一用户研究的两两偏好比例：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>对比对象</th>
+<th>总体偏好 Free-Bloom</th>
+<th>单帧保真偏好</th>
+<th>时间连贯偏好</th>
+<th>语义连贯偏好</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LVDM</td>
+<td>55.00%</td>
+<td>85.28%</td>
+<td>53.33%</td>
+<td>82.27%</td>
+</tr>
+<tr>
+<td>VideoFusion</td>
+<td>63.06%</td>
+<td>82.50%</td>
+<td>44.44%</td>
+<td>78.33%</td>
+</tr>
+<tr>
+<td>Text2Video-Zero</td>
+<td>73.61%</td>
+<td>87.78%</td>
+<td>80.00%</td>
+<td>85.28%</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 4 完整整理；这些百分比是偏好比例，不是生成准确率。 #Huang-2023-FreeBloom# 尤其值得保留的是：与 VideoFusion 比较时，时间连贯偏好仅为 <strong>44.44%</strong>。这与 Table 1 中 VideoFusion 的时间连贯评分更高相符。Free-Bloom 的优势主要体现为这组实验中的单帧质量、事件表达与总体偏好，不能概括为全面超过视频训练模型。</p>
+<p>模块消融则提供了机制上的支持：独立噪声容易使内容不一致；只给 Text2Video-Zero 换上逐帧提示仍难表达状态变化；始终强制跨帧注意力会抑制语义推进。Figures 4/5 主要提供定性证据，不能当作对每个模块收益大小的严格量化排序。 #Huang-2023-FreeBloom#</p>
+<h3 class="section-title" id="小结规划变化再控制共享">小结与局限</h3>
+<p>Free-Bloom 的启发是：<strong>视频不仅需要“帧与帧像”，还需要“帧与帧有合理的不同”。</strong> 语言模型规划状态变化，相关噪声提供相近起点，早期跨帧注意力稳定主体，后期单帧注意力释放变化，双路径插值再补齐关键状态之间的空隙。 #Huang-2023-FreeBloom#</p>
+<p>但这仍是一种借用图像先验的推理方案。它没有通过视频训练直接学到运动规律，时间连续性仍是短板；第一帧质量和初始种子会影响整段结果；人脸、肢体、多物体交互及文字等困难也继承自图像基础模型。LLM 给出的事件顺序和线性文本嵌入插值，更不构成真实动力学保证。 #Huang-2023-FreeBloom#</p>
+<p>因此，Free-Bloom 把规划与生成的接口从“给每帧一句话”推进到“控制各帧怎样共享信息”。它展示了免额外训练方案的潜力，也说明语言计划、视觉一致性与连续运动仍是需要分别解决的问题。 #Huang-2023-FreeBloom#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="videodirectorgpt">VideoDirectorGPT</div>
+
+<h3 class="section-title" id="问题故事有多个场景角色却不能每次换一个">问题与思路</h3>
+<p>前面的逐帧提示主要描述一个事件如何展开。如果要生成“一个厨师准备食材、搅拌面糊、把烤盘放入烤箱”，困难又多了一层：不仅要安排步骤，还要让不同场景中的厨师、厨房和器具保持一致。把同一句“厨师”分别交给视频模型，并不能保证得到同一个人。 #Lin-2023-VideoDirectorGPT#</p>
+<p>VideoDirectorGPT  #Lin-2023-VideoDirectorGPT# 将任务拆为<strong>视频规划</strong>和<strong>受布局控制的视频生成</strong>。GPT-4 先写出跨场景计划；Layout2Vid 再把计划转化为视频。它首次公开于 2023-09-26，本节依据 2024-07-12 的 arXiv v2，包含后续补充的消融与比较，不把这些实验全部视为首发版内容。</p>
+<p>核心问题可以分成三项：</p>
+<ol>
+<li><strong>步骤</strong>：每个场景应该发生什么，怎样共同完成用户描述的事件？</li>
+<li><strong>布局与运动</strong>：对象在哪，边界框怎样随视频帧变化？</li>
+<li><strong>身份</strong>：哪些场景出现的是同一个对象，应该复用什么外观信息？</li>
+</ol>
+<p>它的回答不是让 LLM 输出像素，而是让 LLM 输出生成器能使用的结构化条件。这里的“多场景”也不等于一段无切换的连续长镜头：方法以场景片段为生成单元，通过共享实体表示保持跨场景关联。 #Lin-2023-VideoDirectorGPT#</p>
+<div class="photo"><img alt="图 12：VideoDirectorGPT 的详细流程。第一阶段生成场景、实体与背景、逐帧布局和一致性分组；第二阶段由 Layout2Vid 按计划生成场景片段。取自原论文 Figure 2。" loading="lazy" src="media/images/video-models-05-storyboard-planning/videodirectorgpt-plan.webp"/><div class="cap">图 12：VideoDirectorGPT 的详细流程。第一阶段生成场景、实体与背景、逐帧布局和一致性分组；第二阶段由 Layout2Vid 按计划生成场景片段。取自原论文 Figure 2。 #Lin-2023-VideoDirectorGPT#</div></div>
+<h3 class="section-title" id="视频计划把事件位置和身份分别写清楚">视频计划</h3>
+<p>论文的 video plan 包含四类信息：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>组成</th>
+<th>回答的问题</th>
+<th>生成器如何使用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>场景描述</td>
+<td>当前步骤发生什么？</td>
+<td>提供当前场景的文本条件</td>
+</tr>
+<tr>
+<td>实体及逐帧边界框</td>
+<td>哪个对象出现，位于哪里，如何移动？</td>
+<td>为每帧提供对象布局条件</td>
+</tr>
+<tr>
+<td>背景</td>
+<td>场景发生在什么环境？</td>
+<td>指定环境，并记录跨场景对应关系</td>
+</tr>
+<tr>
+<td>一致性分组</td>
+<td>哪些出现属于同一个实体或背景？</td>
+<td>协调跨场景复用的表示</td>
+</tr>
+</tbody>
+</table></div>
+<p>GPT-4 分两轮生成计划。第一轮扩写多场景描述，补充实体的颜色、衣着等特征，并建立跨场景对应关系；第二轮根据场景与实体，生成每个实体的逐帧边界框。附录使用 gpt-4-0613，两轮分别提供 1 个和 5 个上下文示例。 #Lin-2023-VideoDirectorGPT#</p>
+<p>例如，厨师出现于场景 1–4，烤箱只出现于场景 1，可形成</p>
+<pre class="example"><code>chef: [1, 2, 3, 4]
+oven: [1]
+</code></pre>
+<p>这不是说四个场景中的厨师应站在同一位置，而是说它们属于<strong>同一个身份组</strong>。原文通过生成的名称进行精确匹配，因此规范命名也是接口的一部分；“厨师”和“这个女人”若没有被正确统一，后面的视觉模块并不会自动知道二者相同。 #Lin-2023-VideoDirectorGPT#</p>
+<p>布局采用归一化边界框</p>
+
+ 
+
+\[ b_{s,f,j}=[x_{\min},y_{\min},x_{\max},y_{\max}]\in[0,1]^4, \]
+
+ 
+
+<p>其中 \(s\) 为场景，\(f\) 为视频帧，\(j\) 为实体。LLM 先为每个场景输出 9 帧布局，再线性插值到更密集的帧序列，例如 16 帧。提示示例以 0.05 为坐标最小单位，相当于把归一化区间划成 20 格。 #Lin-2023-VideoDirectorGPT#</p>
+<p>为理解这个插值，可以把两帧之间的布局写成</p>
+
+ 
+
+\[ b(\rho)=(1-\rho)b_{\mathrm{left}}+\rho b_{\mathrm{right}},\qquad0\leq\rho\leq1. \]
+
+ 
+
+<p>这是对坐标插值的教学表示。<strong>被插值的是边界框，不是 RGB 图像，也不是去噪潜变量。</strong> 框的位置变化告诉模型对象应怎样移动；框的大小变化可以表达靠近或远离，但没有直接规定对象的姿态、关节动作或遮挡关系。 #Lin-2023-VideoDirectorGPT#</p>
+<h3 class="section-title" id="layout2vid让边界框进入视频去噪器">Layout2Vid</h3>
+<p>有了坐标，还需要一个能理解它的生成器。Layout2Vid 建立在已经训练好的 ModelScopeT2V 上，继承其空间卷积、时间卷积、空间注意力和时间注意力。新增的重点是空间注意力中的<strong>布局条件接口</strong>。 #Lin-2023-VideoDirectorGPT#</p>
+<p>它采用 GLIGEN 式门控自注意力，把对象表示作为 grounding tokens 注入视觉特征。grounding 在这里指“把某个实体落实到指定区域”，不只是给整幅画一句文本。 #Lin-2023-VideoDirectorGPT#</p>
+<p>每个实体 token 综合三项内容：</p>
+<ul>
+<li>CLIP 文本特征：对象是什么，例如“穿绿色围裙的女人”。</li>
+<li>CLIP 图像特征：提供更具体的视觉外观表示。</li>
+<li>边界框的 Fourier 特征：编码对象应位于哪里、占多大区域。</li>
+</ul>
+<p>统一上述场景与帧下标后，原文的实体编码式可写为</p>
+
+ 
+
+\[ h_{s,f,j}=\operatorname{MLP}\!\left( P_{\mathrm{img}}v_j,\ P_{\mathrm{text}}u_j,\ \operatorname{Fourier}(b_{s,f,j}) \right). \]
+
+ 
+
+<p>\(v_j\) 和 \(u_j\) 分别为图像与文本嵌入，\(P_{\mathrm{img/text}}\) 为可学习投影，MLP 为两层多层感知机。Fourier 编码把坐标转换为一组不同频率的正弦、余弦特征，使网络更容易利用连续位置。 #Lin-2023-VideoDirectorGPT#</p>
+<p>Guided 2D Attention 中，门控自注意力让视觉 token 与实体 token 交换信息，场景文本则继续通过 cross-attention 起作用。可以把新增通路的作用<strong>示意</strong>为 #Lin-2023-VideoDirectorGPT#</p>
+
+ 
+
+\[ V'=V+g\,\mathcal A_\phi(V,H),\qquad H=\{h_{s,f,j}\}_j. \]
+
+ 
+
+<p>这里 \(\mathcal A_\phi\) 表示实体条件参与的注意力更新，\(g\) 表示门控；这只是帮助理解信息流的简写，不是论文额外提出的一条扩散方程。实体 token 使视觉特征能读取“什么对象应该落在哪个框里”，门控调节新增条件的影响。 #Lin-2023-VideoDirectorGPT#</p>
+<p>因此，边界框不是在采样后把对象剪贴到指定位置，也不保证对象像素严格落在框内；它通过学到的条件接口影响每一步噪声预测。</p>
+<div class="photo"><img alt="图 13：Layout2Vid 的实体编码及训练、推理接口。训练时从图像对象裁剪得到 CLIP 图像嵌入，纯文本推理时用 unCLIP prior 产生对应表示；布局 token 与场景文本分别进入门控自注意力和交叉注意力。取自原论文 Figure 3。" loading="lazy" src="media/images/video-models-05-storyboard-planning/videodirectorgpt-grounding.webp"/><div class="cap">图 13：Layout2Vid 的实体编码及训练、推理接口。训练时从图像对象裁剪得到 CLIP 图像嵌入，纯文本推理时用 unCLIP prior 产生对应表示；布局 token 与场景文本分别进入门控自注意力和交叉注意力。取自原论文 Figure 3。 #Lin-2023-VideoDirectorGPT#</div></div>
+<h3 class="section-title" id="跨场景一致性共享外观表示位置仍然可以改变">跨场景一致性</h3>
+<p>训练时有带框图像，可以从对象裁剪直接提取 CLIP 图像嵌入。推理时若只有文字，没有对象图片，图像嵌入从哪里来？</p>
+<p>论文采用 Karlo 的 <strong>unCLIP prior</strong>，由文本条件生成对应的 CLIP 图像嵌入。这个 prior 产生的是<strong>图像语义空间中的向量</strong>，不是先生成整段视频，也不是必须先渲染一张参考图再编码。用户也可以直接提供参考图，用 CLIP 图像编码器得到 \(v_j\)。 #Lin-2023-VideoDirectorGPT#</p>
+<p>对于同一一致性组，复用对应实体的图像表示及文本描述，使不同场景持续收到相同的外观条件。例如同一位厨师的 \(v_j\) 保持不变，而 \(b_{s,f,j}\) 随场景和帧变化。 #Lin-2023-VideoDirectorGPT#</p>
+<p>一个容易混淆的细节是：<strong>共享身份表示，不等于完整 grounding token 恒定</strong>。由于边界框不同，经过 MLP 的 \(h_{s,f,j}\) 也可以不同。稳定的是“谁”，可变的是“在哪里”。 #Lin-2023-VideoDirectorGPT#</p>
+<p>这与 Free-Bloom 通过相关初始噪声及跨帧注意力建立联系的办法不同。VideoDirectorGPT 显式提供可跨场景复用的实体条件，并借助已有视频骨干生成每个片段的时间变化。不过，CLIP 嵌入不是精确的三维身份模型，共享它也不保证人脸、服饰纹理或所有细节严格一致。 #Lin-2023-VideoDirectorGPT#</p>
+<h3 class="section-title" id="图像训练学习条件接口继承视频运动能力">图像训练</h3>
+<p>Layout2Vid 的新训练只使用 <strong>带边界框的图像</strong> ，并不额外训练视频时间模块。视频生成能力来自已经训练好的 ModelScopeT2V；图像数据负责教新增接口理解“实体表示加边界框”。 #Lin-2023-VideoDirectorGPT#</p>
+<p>其目标仍是噪声预测均方误差。为了把冻结与更新的参数区分清楚，可将原文目标展开为</p>
+
+ 
+
+\[ z_t=\sqrt{\bar\alpha_t}\,z_0+\sqrt{1-\bar\alpha_t}\,\epsilon, \qquad\epsilon\sim\mathcal N(0,I), \]
+
+ 
+
+
+ 
+
+\[ \mathcal L(\phi)=\mathbb E_{z_0,t,\epsilon,C,H} \left\|\epsilon-\epsilon_{\theta_{\mathrm{frozen}},\phi}(z_t,t,C,H)\right\|_2^2. \]
+
+ 
+
+<p>其中 \(z_0\) 为图像编码后的干净潜变量，\(C\) 为场景文本条件，\(H\) 为图像的实体与布局条件；\(\phi\) 表示新增条件接口的可训练参数。<strong>训练标签仍然是已知加入的噪声，边界框是输入条件，不是另一个噪声标签。</strong> 这里没有专门用跨场景视频对训练一个身份一致性 loss。 #Lin-2023-VideoDirectorGPT#</p>
+<p>附录 D/H 将实际训练范围明确为 grounding token 的 MLP 与门控自注意力，约占总参数的 <strong>13%</strong>；原有视频骨干保持冻结。图像训练时，时间卷积和时间注意力不参与时间建模；视频推理时再使用这些已训练好的时间模块，处理具有逐帧布局条件的视频序列。 #Lin-2023-VideoDirectorGPT#</p>
+<p>论文使用与 GLIGEN 相同的约 <strong>64 万张带框图像</strong>，训练 50k 步，学习率 \(5\times10^{-5}\)，每 GPU batch size 为 32，使用 8 张 48GB A6000，约两天。实体图文编码使用与 Karlo 对齐的 CLIP ViT-L/14；它与视频骨干场景文本编码所用的 CLIP ViT-H/14 是不同接口，不能混作同一个编码器。 #Lin-2023-VideoDirectorGPT#</p>
+<p>这种设计的直觉是：先保留骨干已经学到的空间—时间配合，再增加可控条件。附录 Table 12 对扩大训练范围的结果如下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>训练方案</th>
+<th>FVD ↓</th>
+<th>FID ↓</th>
+<th>CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>解冻整个 Guided 2D Attention，含原有自注意力及交叉注意力</td>
+<td>1626</td>
+<td>70.47</td>
+<td>0.2231</td>
+</tr>
+<tr>
+<td>仅训练新增门控接口的默认方案</td>
+<td>550</td>
+<td>12.22</td>
+<td>0.2860</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 12 完整整理。 #Lin-2023-VideoDirectorGPT# 扩大训练范围的版本是<strong>从默认模型继续训练 50k 步</strong>，可训练比例增至约 27%，不是两个方案相同步数从头训练的比较。作者将退化解释为空间层在图像数据上变化，而冻结的时间层无法同步适应；这支持保留骨干配合的重要性，不能推成“更新更多参数必然更差”的一般定理。</p>
+<h3 class="section-title" id="采样先强调布局再让骨干完善画面">布局引导调度</h3>
+<p>推理时，先生成计划与实体表示，再按每个场景的逐帧布局生成片段。默认采用 <strong>PLMS、50 个去噪步</strong>。它没有改变 DDPM 的噪声训练目标，也不是让 GPT-4 逐步预测噪声。 #Lin-2023-VideoDirectorGPT#</p>
+<p>布局约束并非始终同样强。论文先在前 \(\alpha N\) 个反向去噪步使用布局引导，再在剩余步骤关闭新增布局引导，继续利用视频骨干与文本条件生成细节，其中 #Lin-2023-VideoDirectorGPT#</p>
+
+ 
+
+\[ \alpha=\frac{\text{使用布局引导的去噪步数}}{N}. \]
+
+ 
+
+<p>这里 \(\alpha\) 是<strong>采样流程的比例</strong>，不是加噪公式中的信号系数。默认 \(N=50\)、\(\alpha=0.1\)，即早期 5 步使用布局引导。也可以让 LLM 根据提示决定引导步数。 #Lin-2023-VideoDirectorGPT#</p>
+<p>为什么不全程强制布局？更多引导通常能让对象更贴近框轨迹，却也可能损害画面质量。Table 4 展示了这个取舍：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>布局引导比例/步数</th>
+<th>MSR-VTT FVD ↓</th>
+<th>FID ↓</th>
+<th>CLIPSIM ↑</th>
+<th>运动方向准确率 ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.1 / 5 步</td>
+<td>550</td>
+<td>12.22</td>
+<td>0.2860</td>
+<td>46.5%</td>
+</tr>
+<tr>
+<td>0.2 / 10 步</td>
+<td>588</td>
+<td>17.25</td>
+<td>0.2700</td>
+<td>59.8%</td>
+</tr>
+<tr>
+<td>0.3 / 15 步</td>
+<td>593</td>
+<td>17.17</td>
+<td>0.2702</td>
+<td>57.8%</td>
+</tr>
+<tr>
+<td>LLM 动态选择 / 5–15 步</td>
+<td>523</td>
+<td>13.75</td>
+<td>0.2790</td>
+<td>56.8%</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 4 完整整理。 #Lin-2023-VideoDirectorGPT# 方向准确率在 0.2 时优于 0.1，但继续加到 0.3 并没有进一步提高；动态方案也不是所有指标都最好。方法提供的是<strong>质量与可控性的调节手段</strong>，而不是一个越大越好的引导强度。</p>
+<div class="photo"><img alt="图 14：不同布局引导比例下，对象遵循边界框轨迹的程度。结合表格观察控制强度与视觉质量的取舍。取自原论文 Figure 11。" loading="lazy" src="media/images/video-models-05-storyboard-planning/videodirectorgpt-layout-strength.webp"/><div class="cap">图 14：不同布局引导比例下，对象遵循边界框轨迹的程度。结合表格观察控制强度与视觉质量的取舍。取自原论文 Figure 11。 #Lin-2023-VideoDirectorGPT#</div></div>
+<h3 class="section-title" id="实验计划是否真正落实到画面">实验与边界</h3>
+<p>论文分别考察单场景布局控制、运动方向与跨场景一致性，而不只报告一个文本相似度。</p>
+<p><strong>单场景控制。</strong> Table 1 保留全部方法及指标如下，均为准确率百分比，越高越好。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>对象</th>
+<th>数量</th>
+<th>空间关系</th>
+<th>相对大小</th>
+<th>布局综合</th>
+<th>运动方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelScopeT2V</td>
+<td>89.8</td>
+<td>38.8</td>
+<td>18.0</td>
+<td>15.8</td>
+<td>40.8</td>
+<td>30.5</td>
+</tr>
+<tr>
+<td>AnimateDiff</td>
+<td>96.7</td>
+<td>52.7</td>
+<td>22.5</td>
+<td>15.5</td>
+<td>46.8</td>
+<td>29.0</td>
+</tr>
+<tr>
+<td>I2VGen-XL</td>
+<td>96.5</td>
+<td>62.0</td>
+<td>35.2</td>
+<td>23.7</td>
+<td>54.3</td>
+<td>35.2</td>
+</tr>
+<tr>
+<td>SVD</td>
+<td>93.1</td>
+<td>46.7</td>
+<td>29.2</td>
+<td>15.0</td>
+<td>45.7</td>
+<td>30.7</td>
+</tr>
+<tr>
+<td>VideoDirectorGPT</td>
+<td>97.1</td>
+<td>77.4</td>
+<td>61.1</td>
+<td>47.0</td>
+<td>70.6</td>
+<td>46.5</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 1 整理。 #Lin-2023-VideoDirectorGPT# 布局评估从 VPEval 的四类技能各抽取 100 条提示。方向指标用 GroundingDINO 检测首尾帧对象，检查位置变化是否符合文本方向；附录 F 描述四方向共 400 条提示。它检查的是位置变化，不能据此证明动作姿态或整个运动过程都正确。</p>
+<p><strong>跨场景生成。</strong> Table 3 的结果为：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>ActivityNet FVD ↓</th>
+<th>FID ↓</th>
+<th>一致性 ↑</th>
+<th>Coref-SV 一致性 ↑</th>
+<th>HiREST FVD ↓</th>
+<th>FID ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelScopeT2V</td>
+<td>980</td>
+<td>18.12</td>
+<td>46.0</td>
+<td>16.3</td>
+<td>1322</td>
+<td>23.79</td>
+</tr>
+<tr>
+<td>ModelScopeT2V，人工提供正确指代替换</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>37.9</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>ModelScopeT2V，使用本方法生成的场景提示</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>918</td>
+<td>18.96</td>
+</tr>
+<tr>
+<td>VideoDirectorGPT</td>
+<td>805</td>
+<td>16.50</td>
+<td>64.8</td>
+<td>42.8</td>
+<td>733</td>
+<td>18.54</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 3 完整整理。 #Lin-2023-VideoDirectorGPT# ActivityNet 使用 165 个样本的事件描述；Coref-SV 包含 100 组多场景文本，平均约 6.2 个场景，通过代词考察跨场景指代；HiREST 使用 175 条单句教程提示，让模型自行拆分步骤。</p>
+<p>一致性指标先检测各场景中间帧的目标对象，再比较对象裁剪的 CLIP 图像嵌入。表中数值是论文的相似度指标尺度，<strong>不是身份识别准确率</strong>。它依赖检测器与语义嵌入，也无法检验所有外观细节。Coref-SV 没有对应真实视频，因此此处只报告一致性，不报告该数据集的 FVD。 #Lin-2023-VideoDirectorGPT#</p>
+<p>最有解释力的是两条增强基线：把代词正确替换成对象名，一致性从 16.3 提升到 37.9，说明解决语言指代确实重要；但还低于完整方案的 42.8。把详细场景提示交给原始 ModelScope，HiREST 的 FVD 从 1322 降到 918，再加入完整布局与实体接口则为 733。这说明<strong>更好的文字计划与能够执行计划的视觉接口都在起作用</strong>，不只是提示变长。 #Lin-2023-VideoDirectorGPT#</p>
+<div class="photo"><img alt="图 15：多场景生成示例。左侧考察同一只老鼠在不同场景中的一致性；右侧从制作蛋糕的总任务展开多个步骤，并比较人物与物体的生成。取自原论文 Figure 5。" loading="lazy" src="media/images/video-models-05-storyboard-planning/videodirectorgpt-multiscene.webp"/><div class="cap">图 15：多场景生成示例。左侧考察同一只老鼠在不同场景中的一致性；右侧从制作蛋糕的总任务展开多个步骤，并比较人物与物体的生成。取自原论文 Figure 5。 #Lin-2023-VideoDirectorGPT#</div></div>
+<p><strong>实体表示消融。</strong> 附录 Table 10 比较图像、文本与联合表示：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>实体条件</th>
+<th>MSR-VTT FVD ↓</th>
+<th>FID ↓</th>
+<th>CLIPSIM ↑</th>
+<th>Coref-SV 一致性 ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仅图像嵌入</td>
+<td>737</td>
+<td>18.38</td>
+<td>0.2834</td>
+<td>42.6</td>
+</tr>
+<tr>
+<td>仅文本嵌入</td>
+<td>875</td>
+<td>23.18</td>
+<td>0.2534</td>
+<td>36.9</td>
+</tr>
+<tr>
+<td>图像与文本联合</td>
+<td>606</td>
+<td>14.60</td>
+<td>0.2842</td>
+<td>42.8</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 10 完整整理，其 MSR-VTT 评估使用随机抽取的 1000 条测试提示。 #Lin-2023-VideoDirectorGPT# 联合表示的视觉质量指标更好，但一致性相对仅图像嵌入只提高 0.2，不能夸大为巨幅提升。</p>
+<p>作为开放域质量检查，Table 2 中同骨干、同 2990 条 MSR-VTT 提示的比较为：FVD 从 683 降到 550，FID 从 12.32 降到 12.22，CLIPSIM 则从 0.2909 降到 0.2860。因此控制能力增强不代表每个质量指标都同步提高，也不要把该完整测试集与上面 1000 条的消融直接横向排名。 #Lin-2023-VideoDirectorGPT#</p>
+<p>人评 Table 6 中，质量、文本对齐、对象一致性三个维度偏好本方法的比例分别为 50%、58%、62%；偏好 ModelScope 的比例为 34%、36%、28%，其余为持平。原文说明每个比较由 10 名标注者评价，但正文与附录对独立标注者总数记为 56 与 28，存在不一致，不据此确定唯一总人数。Table 5 的方向消融又使用 600 个样本，与附录 F 的 400 条设定不同；它适合在该表内部比较，不能直接当作 Table 1 的同一协议。 #Lin-2023-VideoDirectorGPT#</p>
+<h3 class="section-title" id="小结把计划变成可执行的条件">小结与局限</h3>
+<p>VideoDirectorGPT 的贡献可以概括为：<strong>用场景描述安排事件，用框轨迹安排位置，用共享实体表示联系身份，再训练一个能接收这些条件的视频接口。</strong> 它没有提出新的扩散路径或预测目标；数学上的噪声损失仍然熟悉，变化主要发生在条件表示、参数更新范围和采样时的控制调度。 #Lin-2023-VideoDirectorGPT#</p>
+<p>它也揭示了计划与执行之间的差距。论文对 50 条 HiREST 提示进行分步人工分析，在 1–5 分尺度上，场景描述、布局、一致性分组分别为 4.92、4.69、4.52，最终视频为 3.61（Table 9）。这是单名专家的诊断性评分，不能解释成逐阶段成功率，却说明<strong>计划合理并不意味着生成器就能准确执行</strong>。 #Lin-2023-VideoDirectorGPT#</p>
+<p>限制包括小对象和重叠框不易控制，边界框无法完整表达姿态与交互；对象的画面位移可能由镜头运动而非自身运动实现；共享 CLIP 表示无法保证精确身份，也不保证跨场景的三维空间或动作连续。方法还依赖 LLM 的规划质量与调用成本，并继承 ModelScope 骨干的生成能力边界。 #Lin-2023-VideoDirectorGPT#</p>
+<p>因此，多场景一致性与连续长镜头仍是不同目标。VideoDirectorGPT 提供了可读、可编辑的计划接口，使“哪个角色在哪个步骤做什么”更明确，但仍需要更强的视觉生成器，把这些安排可靠地落实为画面。 #Lin-2023-VideoDirectorGPT#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="llm-grounded-vdm">LLM-Grounded VDM</div>
+
+<h3 class="section-title" id="问题能描述运动却不能可靠地生成运动">问题与思路</h3>
+<p>“汽车先从左下移动到左上，再向右上移动”，同时包含对象、位置、方向和先后顺序。把整句话编码成一个文本条件，视频扩散模型可能只生成一辆车，或者让它向某个方向移动，却遗漏后半段动作。 #Lian-2023-LVD#</p>
+<p>LLM-grounded Video Diffusion Models（LVD） #Lian-2023-LVD# 的思路是：<strong>先用语言模型把运动要求写成逐帧布局，再利用布局检查并引导视频生成。</strong> 论文首次公开于 2023-09-29，本节依据 2024-05-04 的 arXiv v3（ICLR 2024）。</p>
+<p>它与 VideoDirectorGPT 都使用语言模型生成布局，但视觉接口不同：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>VideoDirectorGPT</th>
+<th>LVD</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>重点</td>
+<td>多场景计划与跨场景实体一致性</td>
+<td>复杂提示中的时空布局与动作顺序</td>
+</tr>
+<tr>
+<td>布局进入生成器的方式</td>
+<td>训练实体 token 与门控注意力接口</td>
+<td>采样时计算布局能量，调整当前潜变量</td>
+</tr>
+<tr>
+<td>新增训练</td>
+<td>使用带框图像训练条件接口</td>
+<td>不更新 LLM 或视频模型参数</td>
+</tr>
+<tr>
+<td>身份联系</td>
+<td>跨场景共享实体外观表示</td>
+<td>用对象 ID 对齐布局，不等于保证视觉身份</td>
+</tr>
+</tbody>
+</table></div>
+<p>LVD 不是重新训练一个更会运动的视频模型，而是给现有模型增加一个<strong>推理时的纠偏过程</strong>。</p>
+<div class="photo"><img alt="图 16：LVD 的两阶段流程。LLM 生成动态场景布局，冻结的视频扩散模型再通过布局引导生成视频。取自原论文 Figure 2。" loading="lazy" src="media/images/video-models-05-storyboard-planning/lvd-overall.webp"/><div class="cap">图 16：LVD 的两阶段流程。LLM 生成动态场景布局，冻结的视频扩散模型再通过布局引导生成视频。取自原论文 Figure 2。 #Lian-2023-LVD#</div></div>
+<h3 class="section-title" id="动态布局把运动写成带身份的框序列">动态布局</h3>
+<p>Dynamic Scene Layout（DSL，动态场景布局）记录每帧可见对象的名称、位置、大小与对象 ID。同一对象即使暂时消失，重新出现后也使用同一个 ID，不需要再调用追踪器为生成的布局匹配身份。 #Lian-2023-LVD#</p>
+<p>原论文提示使用 512×512 画布、左上角为原点，边界框格式为</p>
+
+ 
+
+\[ b_{f,j}=[x_{f,j},y_{f,j},w_{f,j},h_{f,j}]. \]
+
+ 
+
+<p>\(f\) 表示视频帧，\(j\) 表示对象；这里后两项是<strong>宽和高</strong>，与前一节的右下角坐标格式不同。框映射到注意力特征图时，要按其分辨率缩放。 #Lian-2023-LVD#</p>
+<p>附录提示让 LLM 为一个六帧、每秒两帧的描述输出布局及背景关键词，并提供三个上下文示例，分别强调重力、弹性和透视投影。它还要求输出简短解释，帮助查看模型对场景作了什么假设。<strong>六帧是语言规划的描述粒度，不能直接当作所有最终视频的输出帧数</strong>；主要视频实验使用 ModelScope 的 16 帧生成设置。 #Lian-2023-LVD#</p>
+<p>例如，同样是“从右边抛出”，球和石头不应采用完全相同的后续轨迹：球可以落地反弹，石头通常停止弹跳；从后方看远去的汽车，框应逐渐缩小，侧面经过的汽车则未必需要缩小。论文用这些例子说明，文本 LLM 可以把常识转为数值布局，并迁移到未直接给过的对象或视角。 #Lian-2023-LVD#</p>
+<p>但合理的示意轨迹不等于经过验证的物理模拟。框没有质量、材质或三维碰撞状态；LLM 的文字解释也不是物理正确性的证明。它提供的是一种可检查、可修改的运动计划。 #Lian-2023-LVD#</p>
+<div class="photo"><img alt="图 17：LLM 生成的动态布局。比较球、石头、纸飞机及不同视角的汽车，观察框的位置和大小如何变化。取自原论文 Figure 4。" loading="lazy" src="media/images/video-models-05-storyboard-planning/lvd-layouts.webp"/><div class="cap">图 17：LLM 生成的动态布局。比较球、石头、纸飞机及不同视角的汽车，观察框的位置和大小如何变化。取自原论文 Figure 4。 #Lian-2023-LVD#</div></div>
+<h3 class="section-title" id="布局能量让对象注意力落进目标框">布局能量</h3>
+<p>现有视频去噪器已经通过 cross-attention 读取文本。对于对象词，例如“a raccoon”，可以提取每帧空间位置对该词的注意力图 #Lian-2023-LVD#</p>
+
+ 
+
+\[ A_{t,f,j}(u,v). \]
+
+ 
+
+<p>这里 \(t\) 是<strong>扩散噪声时刻</strong>，\(f\) 才是视频帧位置，\((u,v)\) 为特征图坐标。为便于阅读，下面暂时省略下标。注意力图往往能提示对象在哪里，但它不是精确的分割掩码。 #Lian-2023-LVD#</p>
+<p>把目标框转成二值掩码 \(M\)：框内为 1，框外为 0。论文定义</p>
+
+ 
+
+\[ E_{\mathrm{topk}}=-\operatorname{TopK}(A\odot M) +\operatorname{TopK}(A\odot(1-M)). \]
+
+ 
+
+<p>\(\odot\) 为逐元素乘法，\(\operatorname{TopK}\) 表示最大若干值的平均。最小化这一能量有两个方向：<strong>提高框内的强响应，压低框外的强响应</strong>。它不是要求每个框内位置都生成同一种纹理，而是让对象词对应的注意力集中到指定区域。 #Lian-2023-LVD#</p>
+<p>具体实现中，前景和背景分别根据区域大小选择最高 75% 的位置，权重分别为 1 和 4。因此两个 TopK 的选取数量随区域大小变化，不能把公式里的简写误解为前景、背景始终取同一个固定整数。 #Lian-2023-LVD#</p>
+<p>这个设计仍有一个漏洞。假设汽车缓慢右移，前后两帧目标框大部分重叠。如果汽车一直留在两个框的交集里，两帧的框内注意力都能很高。<strong>“一直在框内”不等于“真的按计划移动”。</strong> #Lian-2023-LVD#</p>
+<h3 class="section-title" id="质心约束既对齐位置也对齐位移">质心约束</h3>
+<p>为减少上述静止解，论文增加 Center-of-Mass（CoM，质心）能量。把注意力看作空间权重，其质心可教学性地写为</p>
+
+ 
+
+\[ p^A_f=\frac{\sum_{u,v}(u,v)A_f(u,v)}{\sum_{u,v}A_f(u,v)},\qquad p^M_f=\frac{\sum_{u,v}(u,v)M_f(u,v)}{\sum_{u,v}M_f(u,v)}. \]
+
+ 
+
+<p>对于当前存在的目标框，\(p^M_f\) 就是框的中心。原文的质心能量为</p>
+
+ 
+
+\[ E_{\mathrm{CoM},f} =\|p^A_f-p^M_f\|_2^2 +\|(p^A_{f+1}-p^A_f)-(p^M_{f+1}-p^M_f)\|_2^2. \]
+
+ 
+
+<p>第一项要求对象注意力中心靠近目标中心，第二项要求<strong>相邻帧位移</strong>接近计划位移。等间隔视频帧下，位移与平均速度只差一个固定时间间隔。这里约束的是注意力质心的变化，不是 Flow Matching 网络预测的速度场，也不是精确光流。 #Lian-2023-LVD#</p>
+<p>总体能量是两者的加权组合，附录使用 \(E_{\mathrm{CoM}}\) 权重 0.03，并对对象、帧和所选 cross-attention 层聚合。对于暂时不可见对象，不能直接用一个空掩码套用上面的质心式；上述解释针对存在目标框的情形，具体可见性处理需结合布局与实现。 #Lian-2023-LVD#</p>
+<h3 class="section-title" id="梯度引导更新潜变量不更新模型">潜变量梯度引导</h3>
+<p>能量算出来以后，怎样让生成服从它？关键是：注意力图依赖当前视频潜变量 \(z_t\)，因此可以沿冻结 U-Net 反向传播，计算 #Lian-2023-LVD#</p>
+
+ 
+
+\[ \nabla_{z_t}E =\left(\frac{\partial A}{\partial z_t}\right)^\top\nabla_AE. \]
+
+ 
+
+<p>随后执行布局引导更新</p>
+
+ 
+
+\[ z_t\leftarrow z_t-\eta_t\nabla_{z_t}E. \]
+
+ 
+
+<p>这是对论文梯度下降过程的显式展开。<strong>被优化的是本次生成的带噪潜变量，而不是 U-Net 权重。</strong> 需要计算梯度并不意味着进行了模型训练，也不是先生成完整视频，再把对象剪贴到框内。 #Lian-2023-LVD#</p>
+<p>这种方法与 classifier guidance 共享“为采样增加条件梯度”的思想，但这里没有另训一个分类器。若为了理解而定义一个偏好低能量状态的代理密度 #Lian-2023-LVD#</p>
+
+ 
+
+\[ \widetilde p_t(z\mid c,B)\propto p_t(z\mid c)\exp[-\gamma E_t(z;B)], \]
+
+ 
+
+<p>便有</p>
+
+ 
+
+\[ \nabla_z\log\widetilde p_t =\nabla_z\log p_t(z\mid c)-\gamma\nabla_zE_t. \]
+
+ 
+
+<p>这说明为什么能量负梯度可以起到条件引导作用。<strong>这是解释性的能量重加权视角</strong>，并不证明人工注意力能量等于真实布局似然，也不保证有限步采样精确服从该代理分布。 #Lian-2023-LVD#</p>
+<p>每个受控去噪步的流程是：读取当前潜变量的注意力，计算 DSL 能量，做若干次梯度更新，再调用原有采样器向下一噪声时刻推进。反向扩散提供图像与视频先验，布局梯度提供当前生成应满足的额外方向。 #Lian-2023-LVD#</p>
+<div class="photo"><img alt="图 18：DSL 引导与去噪交替进行。下方虚线显示能量通过冻结 U-Net 对当前生成状态求梯度，模型权重不参与更新。取自原论文 Figure 6。" loading="lazy" src="media/images/video-models-05-storyboard-planning/lvd-guidance.webp"/><div class="cap">图 18：DSL 引导与去噪交替进行。下方虚线显示能量通过冻结 U-Net 对当前生成状态求梯度，模型权重不参与更新。取自原论文 Figure 6。 #Lian-2023-LVD#</div></div>
+<h3 class="section-title" id="采样设置免训练仍然有计算开销">采样设置与成本</h3>
+<p>论文主要在 ModelScope 上使用 DPMSolverMultistep 采样器，总计 <strong>40 个去噪步、16 帧输出</strong>。布局引导只放在<strong>前 10 个去噪步</strong>，每步进行 5 次梯度更新，后期让模型自由完善细节。能量整体乘以 5，梯度步长随噪声尺度变化；附录写为 \(\sqrt{1-\hat\alpha_t}\)。这属于采样时的优化步长，不是训练学习率。 #Lian-2023-LVD#</p>
+<p>因此，40 个去噪步并不等于只做 40 次同成本的模型调用：早期有反复计算注意力和输入梯度的额外开销。论文的“training-free”指无需新增参数训练，不是无需反向传播，也不是生成时间不变。 #Lian-2023-LVD#</p>
+<p>质量评估主要使用 256×256；另一组布局与视频结果使用 512×512。人评采用 512×512 且仅使用 \(E_{\mathrm{topk}}\)，不能把该人评直接归因于完整质心约束。论文还展示了 Zeroscope 的 24 帧、576×320 示例，说明流程可以迁移，但主要定量结论仍来自 ModelScope。 #Lian-2023-LVD#</p>
+<h3 class="section-title" id="实验计划正确与视频正确是两回事">实验与边界</h3>
+<p>论文设计五类任务：数量、属性绑定、出现时段、空间运动和动作顺序，每类 100 条提示，共 500 条；每个布局用两个种子生成视频，共 1000 个视频。它分别检查布局是否满足规则，以及视频中的检测框是否满足规则。 #Lian-2023-LVD#</p>
+<p><strong>第一阶段：布局。</strong> 原论文 Table 1 如下，均为百分比。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>数量</th>
+<th>属性</th>
+<th>出现时段</th>
+<th>空间运动</th>
+<th>动作顺序</th>
+<th>平均</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>检索视频得到布局</td>
+<td>20</td>
+<td>12</td>
+<td>28</td>
+<td>8</td>
+<td>0</td>
+<td>14</td>
+</tr>
+<tr>
+<td>LVD，GPT-3.5</td>
+<td>100</td>
+<td>100</td>
+<td>100</td>
+<td>71</td>
+<td>16</td>
+<td>77</td>
+</tr>
+<tr>
+<td>LVD，GPT-4</td>
+<td>100</td>
+<td>100</td>
+<td>100</td>
+<td>100</td>
+<td>88</td>
+<td>98</td>
+</tr>
+<tr>
+<td>GPT-4 再加检索示例</td>
+<td>98</td>
+<td>100</td>
+<td>100</td>
+<td>96</td>
+<td>85</td>
+<td>96</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 1 完整整理，平均值保留原表舍入精度。 #Lian-2023-LVD# 检索基线从 WebVid-2M 找语义相近视频，再检测并追踪对象。它不如直接生成布局，说明“找到语义相似视频”并不能保证找到符合指定时空要求的轨迹。</p>
+<p><strong>第二阶段：视频。</strong> 原论文 Table 2 的 256×256 结果为：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>数量</th>
+<th>属性</th>
+<th>出现时段</th>
+<th>空间运动</th>
+<th>动作顺序</th>
+<th>平均</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelScope</td>
+<td>32</td>
+<td>54</td>
+<td>8</td>
+<td>21</td>
+<td>0</td>
+<td>23.0</td>
+</tr>
+<tr>
+<td>检索布局引导</td>
+<td>15</td>
+<td>15</td>
+<td>11</td>
+<td>9</td>
+<td>0</td>
+<td>9.7</td>
+</tr>
+<tr>
+<td>LVD，GPT-3.5</td>
+<td>52</td>
+<td>79</td>
+<td>64</td>
+<td>37</td>
+<td>2</td>
+<td>46.4</td>
+</tr>
+<tr>
+<td>LVD，GPT-4</td>
+<td>41</td>
+<td>64</td>
+<td>55</td>
+<td>51</td>
+<td>38</td>
+<td>49.4</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 2 整理，保留全部方法及成功率，省略原表“LLM-grounded”标识列；该列对检索布局行也打勾，不能据此认为其布局来自 LLM。 #Lian-2023-LVD# 视频评估使用 OWL-ViT 检测框再做规则判断，反映的是这组任务及检测器下的表现，不是对所有视频内容的通用准确率。</p>
+<p>最值得注意的落差是：GPT-4 的布局平均约 98%，视频平均却只有 49.4%。<strong>生成正确的轨迹计划，远比让视觉模型可靠执行它容易。</strong> GPT-3.5 在部分视频任务上反而更好，作者解释其布局运动较少、更容易生成；所以规划指标更高，也不保证每类视频指标更高。 #Lian-2023-LVD#</p>
+<p><strong>质心项是否有用？</strong> 原论文 Table 3 使用同一组 GPT-4 布局：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>能量组合</th>
+<th>数量</th>
+<th>属性</th>
+<th>出现时段</th>
+<th>空间运动</th>
+<th>动作顺序</th>
+<th>平均</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仅比例能量 \(E_{\mathrm{ratio}}\)</td>
+<td>44</td>
+<td>53</td>
+<td>11</td>
+<td>54</td>
+<td>21</td>
+<td>36.4</td>
+</tr>
+<tr>
+<td>TopK + 边角约束</td>
+<td>38</td>
+<td>60</td>
+<td>53</td>
+<td>48</td>
+<td>31</td>
+<td>45.6</td>
+</tr>
+<tr>
+<td>仅 TopK</td>
+<td>39</td>
+<td>65</td>
+<td>54</td>
+<td>52</td>
+<td>23</td>
+<td>46.3</td>
+</tr>
+<tr>
+<td>TopK + CoM</td>
+<td>41</td>
+<td>64</td>
+<td>55</td>
+<td>51</td>
+<td>38</td>
+<td>49.4</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 3 完整整理，将能量开关四列合并为组合名称。 #Lian-2023-LVD# 加入 CoM 后顺序任务从 23% 提升到 38%，支持它能缓解停在重叠区的静止解；但空间运动一列从 52% 略降到 51%，并不是每项都提升。比例能量与边角约束是借用既有图像布局控制方法的消融，不应与新增的质心约束混为一项贡献。</p>
+<p>附录 Table 9 还比较每个去噪步的引导次数：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>引导次数</th>
+<th>1</th>
+<th>3</th>
+<th>5</th>
+<th>7</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>视频检测规则平均成功率</td>
+<td>35.3%</td>
+<td>46.9%</td>
+<td>49.4%</td>
+<td>49.4%</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 9 整理。 #Lian-2023-LVD# 从 5 次增加到 7 次收益已饱和，因此更多优化步也不必然更好。</p>
+<p><strong>开放域质量。</strong> Table 4 中最可比的是作者复现的同骨干基线：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>UCF-101 FVD ↓</th>
+<th>MSR-VTT FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelScope，同文复现</td>
+<td>984</td>
+<td>590</td>
+</tr>
+<tr>
+<td>同骨干加 LVD</td>
+<td>828</td>
+<td>565</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 4 选取同骨干两行。 #Lian-2023-LVD# UCF-101 使用 10000 个生成视频，MSR-VTT 随机选取 2048 个布局生成视频，分辨率均为 256×256。原表另引用 ModelScope 的 MSR-VTT 数值 550，不能拿它替代同文复现的 590 来计算本方法增益，也不能与前一节不同样本协议直接比较。</p>
+<p>人评 Table 5 中，文本对齐偏好本方法/基线/相似的比例为 85.8%/3.2%/12.6%，视觉质量为 66.0%/14.5%/19.5%；研究规模为 20 对视频、10 名参与者。原表对齐行相加不是 100%，正文“优于或持平”汇总也与该行不一致，因此这些数值按原文保留，不自行修正或扩大解释。 #Lian-2023-LVD#</p>
+<h3 class="section-title" id="失败案例满足注意力目标不一定真的完成动作">失败案例</h3>
+<p>LVD 的一个失败案例很能说明控制信号的边界。“木桶顺河漂流”本应让同一个桶向右移动；模型却可能让左边的桶被树叶遮住，再从右边水中出现一个桶。对象词注意力可以跟上框，物体却没有沿河连续移动。 #Lian-2023-LVD#</p>
+<div class="photo"><img alt="图 19：布局能量的替代解。模型通过遮挡与重新出现满足注意力位置要求，而不是连续搬运同一个木桶。取自原论文 Figure 11。" loading="lazy" src="media/images/video-models-05-storyboard-planning/lvd-failure.webp"/><div class="cap">图 19：布局能量的替代解。模型通过遮挡与重新出现满足注意力位置要求，而不是连续搬运同一个木桶。取自原论文 Figure 11。 #Lian-2023-LVD#</div></div>
+<p>这说明<strong>注意力质心位移不等于物体身份连续</strong>，注意力能量也不是视频真实性的完整约束。类似地，LLM 可能给错长序列的拐点，基础模型可能不擅长某种对象或画风；布局引导不能自动补上这些能力。 #Lian-2023-LVD#</p>
+<p>LVD 的主要贡献是把“文字—运动计划—视觉执行”拆开，并给出无需新增训练的接口。它沿用原有视频模型及噪声预测目标，通过推理时潜变量优化使生成靠近 DSL。与前一节的可训练接口相比，它更便于挂接现有模型，但要支付额外输入梯度开销，并承担注意力代理目标可能被“取巧满足”的问题。 #Lian-2023-LVD#</p>
+<p>至此，本章几种规划方法的共同点也更清楚了：语言模型帮助明确<strong>应该发生什么</strong>，而生成器如何落实这些安排，可以是逐帧提示、图条件、共享实体 token，或采样时的布局梯度。规划与执行的接口不同，决定了训练需求、可控程度和一致性边界；语言计划本身并不等于已经学会了视频运动。 #Lian-2023-LVD#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="visorgpt相关视觉先验">VisorGPT（相关视觉先验）</div>
+
+<h3 class="section-title" id="问题布局条件本身从哪里来">问题与思路</h3>
+<p>本章前几篇由语言模型安排事件和空间布局，但还有一个更基础的问题：<strong>如果条件本身不自然，图像生成器即使努力遵循它，也可能画出不自然的结果。</strong> 例如，人体姿态不合理，或者同一场景里人物与餐桌的相对尺度严重失衡，问题就不只是去噪器有没有听懂文字。 #Xie-2023-VisorGPT#</p>
+<p>VisorGPT（2023） #Xie-2023-VisorGPT# 研究的是如何从视觉标注中<strong>显式学习空间先验</strong>，再按用户要求采样新的边界框、人体关键点或实例轮廓。本节依据 2023-05-30 的 arXiv v4。</p>
+<p>它使用 GPT 式自回归序列建模，但<strong>不是直接调用通用聊天 LLM</strong>，也没有研究视频时间规划。将它放在这里，是为了补充“布局也可以由一个专门的概率模型生成”这条相关路线。 #Xie-2023-VisorGPT#</p>
+<div class="photo"><img alt="图 20：VisorGPT 的动机与流程。把视觉标注序列化，学习空间先验，再按前缀条件采样新的空间条件，用于下游图像生成。取自原论文 Figure 1。" loading="lazy" src="media/images/video-models-05-storyboard-planning/visorgpt-overview.webp"/><div class="cap">图 20：VisorGPT 的动机与流程。把视觉标注序列化，学习空间先验，再按前缀条件采样新的空间条件，用于下游图像生成。取自原论文 Figure 1。 #Xie-2023-VisorGPT#</div></div>
+<h3 class="section-title" id="序列表示把类别与坐标变成-token">标注序列</h3>
+<p>VisorGPT 不预测 RGB 像素。它把连续坐标离散化，再与类别名称及控制字段排列为文本式序列。</p>
+<p>论文先将图像长边缩放到 512，再补齐短边到 512，使用 512 个坐标量化 bin。边界框可用左上角、右下角坐标表示；人体姿态使用带关键点名称的坐标；实例掩码则用沿对象轮廓采样的点表示。<strong>掩码在这里采用轮廓点序列，不是逐个输出整张图片的每个像素。</strong> #Xie-2023-VisorGPT#</p>
+<p>其模板包含以下信息：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>指定的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>标注类型</td>
+<td>边界框、关键点或实例掩码</td>
+</tr>
+<tr>
+<td>场景类型</td>
+<td>单对象或多实例场景</td>
+</tr>
+<tr>
+<td>平均尺寸</td>
+<td>small、medium、large</td>
+</tr>
+<tr>
+<td>实例数与关键点数</td>
+<td>场景中对象数量及人体关键点规格</td>
+</tr>
+<tr>
+<td>类别与坐标</td>
+<td>每个对象是什么，以及位于哪里、形状怎样</td>
+</tr>
+</tbody>
+</table></div>
+<p>例如，原论文的前缀</p>
+<pre class="example"><code>box; multiple instances; small; 16; 0; kite, kite, person,
+</code></pre>
+<p>要求生成包含 16 个小尺寸实例的边界框序列，并已指定部分对象类别。这里的 small 指<strong>场景内实例的平均面积档位</strong>，不是输出图片的分辨率。 #Xie-2023-VisorGPT#</p>
+<p>论文提供两种排列：先列完类别再列坐标，或将每个对象的类别与坐标交错排列。后一种允许把已有对象作为前缀，继续生成其他对象。多实例训练时也会打乱实例顺序，避免把某一种标注顺序当成场景的唯一排列。 #Xie-2023-VisorGPT#</p>
+<h3 class="section-title" id="训练与采样学习空间标注的联合分布">训练与采样</h3>
+<p>设序列化并分词后的标注为 \(u_1,\ldots,u_n\)，自回归分解为</p>
+
+ 
+
+\[ p_\Theta(u_{1:n})=\prod_{i=1}^n p_\Theta(u_i\mid u_{\lt i}). \]
+
+ 
+
+<p>实际模型只使用有限上下文窗口。原文 Equation 1 最大化 token 对数似然，等价的最小化形式为</p>
+
+ 
+
+\[ \mathcal L_{\mathrm{NLL}}(\Theta) =-\mathbb E_{u\sim\mathcal D}\sum_{i=1}^n \log p_\Theta(u_i\mid u_{\lt i}). \]
+
+ 
+
+<p>因此，模型学到的是类别、位置、形状及共现之间的统计关联。例如给定“person”和部分已有布局，其他对象应在哪里出现、应有多大，并不是分别独立采样。 #Xie-2023-VisorGPT#</p>
+<p>默认模型采用 <strong>GPT-2 base 架构、117M 参数，从头训练</strong>，并非在通用 GPT-2 语言权重上直接推理。训练语料主要来自 COCO、Objects365、Open Images、CrowdPose 等的标注，约 400 万条序列。论文给出 batch size 128、200K 次迭代、学习率 \(5\times10^{-5}\)、训练序列长度 1024，并对不同数据来源重采样。 #Xie-2023-VisorGPT#</p>
+<p>推理时固定用户前缀 \(c\)，逐 token 采样剩余部分，可写成</p>
+
+ 
+
+\[ u_{r+1:n}\sim p_\Theta(u_{r+1:n}\mid u_{1:r}=c). \]
+
+ 
+
+<p>这没有扩散加噪或反向去噪，也不把 score、速度或噪声作为预测目标。它先生成<strong>空间条件</strong>，后续图像生成器才负责把条件落实为像素。名称中的 GPT 描述的是自回归模型形式，不能把它等同于本章前面使用的通用 LLM。 #Xie-2023-VisorGPT#</p>
+<h3 class="section-title" id="接入图像生成先采样条件再渲染画面">条件图像生成接口</h3>
+<p>生成序列解码后，边界框可以交给 GLIGEN，人体关键点可以绘制为姿态条件交给 ControlNet。因而整体过程是</p>
+
+ 
+
+\[ \text{用户前缀}\longrightarrow\text{标注序列}\longrightarrow \text{空间条件}\longrightarrow\text{条件图像生成器}. \]
+
+ 
+
+<p>VisorGPT 学习“条件怎样才常见、合理”，GLIGEN 或 ControlNet 负责“在给定条件下怎样生成图像”。二者分工不同，不能把下游扩散模型的成像能力算作 VisorGPT 自身的像素生成能力。 #Xie-2023-VisorGPT#</p>
+<div class="photo"><img alt="图 21：从人数和关键点规格等前缀生成姿态序列，解码后作为 ControlNet 的空间条件。取自原论文 Figure 6。" loading="lazy" src="media/images/video-models-05-storyboard-planning/visorgpt-pose-application.webp"/><div class="cap">图 21：从人数和关键点规格等前缀生成姿态序列，解码后作为 ControlNet 的空间条件。取自原论文 Figure 6。 #Xie-2023-VisorGPT#</div></div>
+<p>论文所谓 continuous generation（连续生成）也需要这样理解：给定同一画布中已经出现的对象，继续补充更多对象及其位置。<strong>这不是让人物在下一帧运动，也没有由此建立跨帧身份或动作约束。</strong> #Xie-2023-VisorGPT#</p>
+<h3 class="section-title" id="实验与边界格式正确不等于场景都真实">实验与边界</h3>
+<p>原论文 Table 5 检查序列能否解码、类别与位置能否一一匹配，以及是否满足尺寸和数量条件，结果如下，均为百分比，越高越好。 #Xie-2023-VisorGPT#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>格式可解码</th>
+<th>类别—位置匹配</th>
+<th>平均尺寸符合要求</th>
+<th>实例数符合要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>COCO</td>
+<td>100.0</td>
+<td>100.0</td>
+<td>92.02</td>
+<td>100.0</td>
+</tr>
+<tr>
+<td>Open Images</td>
+<td>99.97</td>
+<td>99.40</td>
+<td>89.35</td>
+<td>98.71</td>
+</tr>
+<tr>
+<td>Objects365</td>
+<td>99.99</td>
+<td>99.94</td>
+<td>91.52</td>
+<td>99.78</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 5 完整整理。 #Xie-2023-VisorGPT# 这些结果说明它能稳定输出可用的结构化条件，但不意味着生成场景在语义、物理或最终画面上都达到相同准确率。</p>
+<p>论文还把生成布局与验证集标注分别统计成三类分布：对象在画布上的位置、框的宽高比，以及类别共现，再用 KL 散度比较。若两组离散分布为 \(P\) 和 \(Q\)，规范的离散写法为 #Xie-2023-VisorGPT#</p>
+
+ 
+
+\[ D_{\mathrm{KL}}(P\|Q)=\sum_kP_k\log\frac{P_k}{Q_k}. \]
+
+ 
+
+<p>这些统计接近，支持模型学到了部分数据集空间先验；<strong>它们并不足以证明整个高维联合分布已经被精确学习</strong>。类别共现也不是对象之间完整的几何关系或交互动力学。 #Xie-2023-VisorGPT#</p>
+<p>它的限制包括约千类的闭集类别范围、有限上下文长度，以及轮廓点对复杂掩码的表达限制。模型学习的是标注数据里的常见模式，稀有但合理的布局未必有高概率；空间条件合理，也不能保证下游生成器严格遵循或渲染正确。 #Xie-2023-VisorGPT#</p>
+<p>因此，VisorGPT 对本章的补充在于：<strong>规划用的中间表示，本身也可以作为生成目标来学习。</strong> 但从空间先验走向视频，还需要加入帧间关联、对象持续性与运动规律。它不能直接替代 VideoDirectorGPT 的跨场景身份接口，也不能替代 LVD 的逐帧运动引导。 #Xie-2023-VisorGPT#</p>
+
+</div>
+<div class="ch fade-in"><div class="ch-title" id="summary">总结</div>
+<p>本篇的共同问题是：一句话压缩了事件、位置和身份等多种要求，而视觉生成器未必能自己把它们逐项落实。中间计划让这些要求变得可读、可修改；不同方法的主要区别，是计划采用什么表示，以及如何进入生成过程。</p>
+<div class="table-wrap"><table><thead><tr><th>方法</th><th>中间表示</th><th>视觉接口与新增训练</th><th>主要边界</th></tr></thead><tbody>
+<tr><td>DirecT2V</td><td>逐帧文字</td><td>轮换参照、匹配过滤；无需新增视频训练</td><td>没有精确对象轨迹或身份约束</td></tr>
+<tr><td>Dysen-VDM</td><td>事件时间表与动态场景图</td><td>训练图编码器及图条件视频网络</td><td>关系语义尚需转化为具体运动，部分训练细节披露不足</td></tr>
+<tr><td>Free-Bloom</td><td>逐帧事件状态</td><td>相关初始噪声、注意力切换、双路径补帧；免额外视频训练</td><td>事件表达改善不等于时间连续性全面领先</td></tr>
+<tr><td>VideoDirectorGPT</td><td>多场景、框轨迹与身份组</td><td>图像训练门控条件接口，复用视频骨干</td><td>共享外观表示不保证精确身份或长镜头连续性</td></tr>
+<tr><td>LVD</td><td>带对象 ID 的逐帧布局</td><td>冻结网络，采样时对潜变量求布局能量梯度</td><td>有额外反向计算；注意力目标可能被替代解满足</td></tr>
+<tr><td>VisorGPT</td><td>边界框、姿态、轮廓标注序列</td><td>自回归训练空间先验，再调用条件图像模型</td><td>同场景对象补全不是视频帧生成，缺少时间约束</td></tr>
+</tbody></table></div>
+<p>前五项方法的创新主要位于条件组织、特征共享或采样引导，并没有因此统一改成一种新的扩散预测目标。VisorGPT 则在生成器之前学习空间条件自身的概率分布。阅读它们时，应分别问：谁来提出计划，谁来执行计划，新增参数训练在哪里发生，推理时又要支付什么成本。 #Hong-2023-DirecT2V# #Fei-2023-DysenVDM# #Huang-2023-FreeBloom# #Lin-2023-VideoDirectorGPT# #Lian-2023-LVD# #Xie-2023-VisorGPT#</p>
+<p>更细的计划仍不能替代视觉模型的运动能力。框移动可能由镜头移动实现，注意力追上了框也可能没有同一对象的连续运动；更高的文本相似度也不足以证明事件顺序、身份和物理关系都正确。评价应同时区分计划质量、执行质量，以及各实验使用的采样与数据协议。</p>
+<p>下一章转向长视频生成：当生成窗口变长，如何控制计算量、组织局部片段与全局结构，并减少跨窗口误差累积？跨场景复用身份与生成一个持续很久的连续镜头，也将在那里继续区分。</p></div>
+<div class="chapter-nav"><a class="nav-card nav-prev" href="video-models-04-efficient-training.html"><span class="nav-label">上一篇</span><span class="nav-title">视频生成的训练高效方法</span></a><a class="nav-card nav-hub" href="categories/ai/video-generation/index.html"><span class="nav-label">系列目录</span><span class="nav-title">视频生成</span></a><a class="nav-card nav-next" href="video-models-06-long-video.html"><span class="nav-label">下一篇</span><span class="nav-title">长视频生成基模</span></a></div>
+<div class="sources"><h3>参考文献</h3><ul>
+<li data-cite-key="Hong-2023-DirecT2V">Hong, S., Seo, J., Shin, H., Hong, S. & Kim, S. <a href="https://arxiv.org/abs/2305.14330" target="_blank" rel="noopener">DirecT2V: Large Language Models are Frame-Level Directors for Zero-Shot Text-to-Video Generation</a>. 2023-05-23 首发；本节依据 <a href="https://arxiv.org/abs/2305.14330v3" target="_blank" rel="noopener">2024-02-06 的 v3 原文</a>。逐帧语言规划、RVM/DSF、PNDM 推理配置、Figures 1/3/4/8、Tables 1/2 与补充材料用户研究协议来源。</li>
+<li data-cite-key="Fei-2023-DysenVDM">Fei, H., Wu, S., Ji, W., Zhang, H. & Chua, T.-S. <a href="https://arxiv.org/abs/2308.13812" target="_blank" rel="noopener">Dysen-VDM: Empowering Dynamics-aware Text-to-Video Diffusion with LLMs</a>. 2023-08-26 首发；本节依据 <a href="https://arxiv.org/abs/2308.13812v2" target="_blank" rel="noopener">2024-03-19 的 v2 原文</a>。动作计划、动态场景图、场景补充、RGTrm、条件注入、Figures 2/3/4 与 Tables 1/3/4、附录评估协议来源。</li>
+<li data-cite-key="Huang-2023-FreeBloom">Huang, H., Feng, Y., Shi, C., Xu, L., Yu, J. & Yang, S. <a href="https://arxiv.org/abs/2309.14494v1" target="_blank" rel="noopener">Free-Bloom: Zero-Shot Text-to-Video Generator with LLM Director and LDM Animator</a>. 2023-09-25，v1。逐帧提示、联合噪声、按去噪步切换注意力、双路径插值、Figures 2/3/4/5、Tables 1/4 及附录实验协议来源。<a href="https://github.com/SooLab/Free-Bloom" target="_blank" rel="noopener">官方代码</a>。</li>
+<li data-cite-key="Lin-2023-VideoDirectorGPT">Lin, H., Zala, A., Cho, J. & Bansal, M. <a href="https://arxiv.org/abs/2309.15091" target="_blank" rel="noopener">VideoDirectorGPT: Consistent Multi-Scene Video Generation via LLM-Guided Planning</a>. 2023-09-26 首发；本节依据 <a href="https://arxiv.org/abs/2309.15091v2" target="_blank" rel="noopener">2024-07-12 的 v2 原文</a>（COLM 2024）。视频计划、Layout2Vid、实体图文表示、图像训练、布局引导调度、Figures 2/3/5/11、Tables 1/3/4/10/12 与附录协议来源。<a href="https://videodirectorgpt.github.io/" target="_blank" rel="noopener">官方项目页</a>。</li>
+<li data-cite-key="Lian-2023-LVD">Lian, L., Shi, B., Yala, A., Darrell, T. & Li, B. <a href="https://arxiv.org/abs/2309.17444" target="_blank" rel="noopener">LLM-grounded Video Diffusion Models</a>. 2023-09-29 首发；本节依据 <a href="https://arxiv.org/abs/2309.17444v3" target="_blank" rel="noopener">2024-05-04 的 v3 原文</a>（ICLR 2024）。动态场景布局、注意力 TopK 与质心能量、输入梯度引导、Figures 2/4/6/11、Tables 1/2/3/4/9 与附录采样协议来源。</li>
+<li data-cite-key="Xie-2023-VisorGPT">Xie, J., Ye, K., Li, Y., Li, Y., Lin, K. Q., Zheng, Y., Shen, L. & Shou, M. Z. <a href="https://arxiv.org/abs/2305.13777" target="_blank" rel="noopener">VisorGPT: Learning Visual Prior via Generative Pre-Training</a>. 2023-05-23 首发；本节依据 <a href="https://arxiv.org/abs/2305.13777v4" target="_blank" rel="noopener">2023-05-30 的 v4 原文</a>。视觉标注序列化、GPT-2 从头训练、条件前缀采样、Figures 1/6、Table 5 与先验分布评估来源。<a href="https://github.com/Sierkinhane/VisorGPT" target="_blank" rel="noopener">官方代码</a>。</li>
+</ul></div>

@@ -3,7 +3,7 @@
 **当前设计状态（2026-10-15）**：EDM 九章正文已完成。最新规划新增图像基模篇，接在条件扩散后、视频任务前；完整 Stable Diffusion/VAE/LDM 内容移入图像基模篇，条件扩散扩展控制、适配与编辑。图像基模十章草稿及现代基模增补均已获写作授权，正文已生成（八/80）；条件扩散十章及 prior 增补均已审阅通过，用户已授权正文写作，正文已依据草稿完成。
 
 用户强调正文引用必须位于文末参考来源；首篇保留已插入笔记的原论文图 4（Algorithms 1–2）和图 5（Figure 6），并列入用户给出的 AIDIY Wiki、抖音视频和 3Blue1Brown 客座视频。
-见 `proposal.md`。旧的 `drafts/video-generation.org` 已按用户要求删除，不再作为素材来源。系列规划为 12 篇正文和 1 个 Hub，按本轮确认的阅读顺序组织；EDM 保留为前述方法的总结与设计空间分析。
+见 `proposal.md`。旧的 `drafts/video-generation.org` 已按用户要求删除，不再作为素材来源。系列规划为 17 篇正文和 1 个 Hub，按本轮确认的阅读顺序组织；EDM 保留为前述方法的总结与设计空间分析。
 
 主要素材入口：
 - **内部素材使用规则**：下列 Org 路径仅供作者查找和核对素材，不在面向读者的文章中提及，也不作为正文引用；正文引用应指向原始论文、官方文档或可核验的一手来源。
@@ -71,7 +71,7 @@
 
 ## 文章内容大纲
 
-系列共 12 篇正文和 1 个 Hub。阅读顺序：DDPM → Score/DSM/SDE → DDIM → Flow Matching → x-prediction → EDM → 条件图像扩散 → 图像基模 → 视频任务 → 视频架构 → 数据评测 → 长视频。各篇仍须以实质草稿为依据，分别确认大纲后写作。
+系列规划共 17 篇正文和 1 个 Hub。阅读顺序：DDPM → Score/DSM/SDE → DDIM → Flow Matching → x-prediction → EDM → 条件图像扩散 → 图像基模 → 视频任务与开创性工作 → 开放视频基模 → 其他早期研究 → 训练高效方法 → 分镜与生成规划 → 长视频基模 → 多模态引导生成 → 数据评测 → 长视频与流式专题。各篇仍须以实质草稿为依据，分别确认大纲后写作。
 
 ### `video-generation-hub`｜视频生成系列总览
 
@@ -85,7 +85,7 @@
 
 #### 1 系列范围与阅读路线
 - **写什么**：说明系列从 DDPM、Score/DSM/SDE、DDIM、Flow Matching 进入 x-prediction，再由 EDM 总结并进入条件图像，再转入视频生成的组织逻辑，列出先修路线及各篇解决的问题。
-- **素材来源**：本设计文档的 12 篇章节规划及各篇已核验的 sources。
+- **素材来源**：本设计文档的 17 篇章节规划及各篇已核验的 sources。
 - **必备元素**：系列目录、先修关系图、阅读建议和术语约定。
 
 #### 2 主题地图与延伸资源
@@ -646,45 +646,16 @@
 
 **共同写作要求**：各章按问题→直觉→公式推导→原文结构图→证据和局限展开。现有内部图片清单 `drafts/assets/conditional-image-diffusion/org-materials-manifest.json` 只作候选索引；核验公开来源后再插图。原文已有归档优先复用，新论文先走 read-article 提取流程；本次不将素材盘点标作精读完成。
 
-### `video-generation-tasks-spacetime`｜视频生成系列（九）：视频生成任务与时空建模基础
+### 视频任务基础并入开创性工作（2026-10-21）
+
+原 `video-generation-tasks-spacetime` 为占位规划；其视频任务、张量与时空建模内容已在用户审阅的第一章实质草稿中完成，统一纳入 `video-models-01-pioneering`，不再单独生成重复正文。原占位草稿保留作历史材料。
+
+### 视频生成基模七篇规划（由七个章节草稿分别转正文）
 
 | 栏位 | 内容 |
 |------|------|
-| 原始草稿 | [video-generation-tasks-spacetime.org](../../../drafts/video-generation/video-generation-tasks-spacetime.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `90`；Hub `video-generation-hub` |
-| 服务对象 | 读者能区分主要视频生成任务，并理解时空表示对生成模型的约束。 |
-
-**章节骨架**
-
-#### 1 视频生成任务地图
-- **写什么**：定义 text-to-video、image-to-video、视频续写/延长、编辑等输入输出和条件差异。
-- **素材来源**：CVPR 2024 教程 PDF（任务章节页码待记录）；本设计文档的系列范围说明。
-- **必备元素**：任务—条件—输出—主要难点对照表。
-
-#### 2 视频表示与时空依赖
-- **写什么**：从帧序列、时空张量和潜变量解释空间与时间信息的耦合。
-- **素材来源**：CVPR 2024 教程 PDF；`src/pages/slowfast-paper.html` 的视频表示部分。
-- **必备元素**：视频张量示意和时间依赖图。
-
-#### 3 3D convolution 与 R(2+1)D
-- **写什么**：说明时空卷积及分解卷积的直觉，明确 R(2+1)D 原始语境是动作识别而非视频生成。
-- **素材来源**：`src/pages/slowfast-paper.html`；R(2+1)D 原论文，待收集到 raw sources。
-- **必备元素**：2D/3D/(2+1)D 运算示意及任务边界提示。
-
-#### 4 生成问题中的架构约束
-- **写什么**：归纳分辨率、帧数、时间一致性和计算成本如何影响后续视频扩散设计。
-- **素材来源**：CVPR 2024 教程 PDF；Video Diffusion Models 原论文（后续篇共用来源文件）。
-- **必备元素**：空间/时间计算维度对照图。
-
-**关键数据点**：帧率、帧数、分辨率等定义各异，引用时同时记录采样策略和视频长度口径。
-**配图计划**：视频任务地图、时空张量、R(2+1)D 分解示意。
-
-### `video-diffusion-architectures`｜视频生成系列（十）：视频生成基模与技术路线
-
-| 栏位 | 内容 |
-|------|------|
-| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；用户提出七类实质选题并逐篇共写；第一章及 Show-1、LaVie、VideoCrafter1 已审阅，VideoCrafter2 已审阅，ModelScope T2V 已补写、编解码器已核验为 KL VAE，Stable Video Diffusion 已审阅通过，第三章 VideoFusion 已审阅并补回实验表，Latent-Shift 已审阅，PYoCo 已审阅，VideoFactory 已审阅，第四章 MagicVideo 已审阅通过，Text2Video-Zero 已审阅通过，AnimateDiff 已审阅通过，DSDN 已审阅通过，SimDA 已审阅通过，第五章 DirecT2V 已审阅通过，Dysen-VDM 已写待审，其余待展开 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `100`；Hub `video-generation-hub` |
+| 原始草稿 | [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)；用户提出七类实质选题并逐篇共写；第一章及 Show-1、LaVie、VideoCrafter1 已审阅，VideoCrafter2 已审阅，ModelScope T2V 已补写、编解码器已核验为 KL VAE，Stable Video Diffusion 已审阅通过，第三章 VideoFusion 已审阅并补回实验表，Latent-Shift 已审阅，PYoCo 已审阅，VideoFactory 已审阅，第四章 MagicVideo 已审阅通过，Text2Video-Zero 已审阅通过，AnimateDiff 已审阅通过，DSDN 已审阅通过，SimDA 已审阅通过，第五章 DirecT2V 已审阅通过，Dysen-VDM 后继续完成 Free-Bloom 草稿，Free-Bloom 已审阅通过，VideoDirectorGPT 已审阅通过，LLM-Grounded VDM 已审阅通过，VisorGPT 已审阅通过；第五章正文已生成并构建预览 |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；各篇 sub_id `90–150`，见文末七篇映射；总览草稿不单独生成同名正文 |
 | 服务对象 | 读者能理解各论文要解决的问题、训练与采样机制及前作依赖，而非只记模型名称。 |
 
 **排序决策（2026-10-16）**：保留用户七类路线，各类内部按论文首次公开时间组织。日期采用 arXiv v1，不以会议年份或最新修订年份排序；先行模型发布另注。已完成前两章重排；后五章占位选题正式展开前须核验时间并排序。技术借用需交代来源，不把时间先后自动写成继承关系。
@@ -695,22 +666,22 @@
 2. **开放视频基模**：对应草稿第二章。ModelScope T2V（2023-08-12）→ LaVie（2023-09-26）→ Show-1（2023-09-27）→ VideoCrafter1（2023-10-30）→ Stable Video Diffusion（2023-11-25）→ VideoCrafter2（2024-01-17）。ModelScope 模型于 2023 年 3 月先行公开，须区别论文日期。后续先补 ModelScope 的时间卷积等机制，再推进未写论文；VideoCrafter2 显式回链前置机制。
 3. **其他早期研究**：对应草稿第三章，按 arXiv v1 日期排列 VideoFusion（2023-03-15）→ Latent-Shift（2023-04-17）→ PYoCo（2023-05-17）→ VideoFactory（2023-05-18）；“闭源”为历史课件口径，逐篇核验。VideoFusion 的噪声分解与双去噪器训练已通过审阅，Tables 1/4/6 已回补。Latent-Shift 同名三级小节已补时间移位公式、训练/采样、四处原图及 Tables 1/2/4/5 整理，已审阅通过。PYoCo 同名三级小节补 mixed/progressive 协方差、EDM 训练与相关噪声概率流推导、四级级联与 Figures 2/3/7、Tables 1/2/3/5 整理，已审阅通过，并保留用户提出的可学习噪声搬运猜想。VideoFactory 同名三级小节按首发 v1 完成 Swap-CA/窗口数学解释、训练采样披露边界、四处原图及 Tables 2–7 的精选结果，已审阅通过；第四章转入 MagicVideo。
 4. **训练高效方法**：对应草稿第四章，类内按首次公开时间排序为 MagicVideo（2022-11-20）→ Text2Video-Zero（2023-03-23）→ AnimateDiff（2023-07-10）→ DSDN（2023-08-16）→ SimDA（2023-08-18）。日期依据 `raw/video-foundation-models-collection/efficient-video-order.md`。MagicVideo 依据已提取的 arXiv v2（2023-05-11），同名三级小节已补潜空间/图像权重复用、逐帧适配器、定向时间注意力、重建目标推导、无文本预训练与配对微调、FPS、插帧/VideoVAE/超分、Figures 2/3/7 与 Tables 1–3 及原图消融整理，已审阅通过。Text2Video-Zero 同名三级小节已按“问题 → 潜变量运动 → 首帧跨帧注意力 → DDIM 生成及条件模型复用 → 可选背景平滑 → 实验 → 局限”展开，包含运动/前向转移/注意力/采样公式、Algorithm 1 与 Figures 2/10、原文 25 视频 CLIP 比较整理；已审阅通过。AnimateDiff 同名三级小节依据 arXiv v2（2024-02-08）展开问题、逐帧图像层/时间 Transformer、域适配、噪声训练目标、MotionLoRA、采样、完整实验表与局限，明确 v1/v2 边界；插入 Figures 2/3/6，保留 Table 1 六项指标，已审阅通过。DSDN 同名三级小节依据 arXiv v3（2023-12-30）展开内容/运动双流动机、特征差分分解与合成、共用日程的双流加噪、交叉注意力、双噪声损失、采样、实验与局限；插入 Figures 2/3/4/7，保留 Table 1，明确原文参数更新图文不一致及编码器兼容披露缺口，已审阅通过。SimDA 同名三级小节依据 arXiv v1（2023-08-18）展开参数高效适配动机、空间/时间适配器、LSA 邻帧 patch 拼图与复杂度、噪声训练/DDIM 采样、超分与编辑扩展、参数速度/两数据集质量/模块消融与局限；插入 Figures 2/3/4/7，整理 Tables 1/2/3/5/6，明确更新比例与完整模型成本、不同评测/显存配置及原文初始化记号边界，已审阅通过。第四章逐篇内容已审阅。
-5. **分镜与生成规划**：对应草稿第五章；类内按 arXiv v1 顺序为 DirecT2V（2023-05-23）→ Dysen-VDM（2023-08-26）→ Free-Bloom（2023-09-25）→ VideoDirectorGPT（2023-09-26）→ LLM-grounded VDM（2023-09-29），日期证据 `raw/video-foundation-models-collection/storyboard-order.md`。VisorGPT（2023-05-23）保留为相关视觉先验补充，不作为视频规划方法并列。DirecT2V 同名三级小节依据 arXiv v3（2024-02-06）按问题、逐帧文本规划、RVM、DSF、推理/帧率、实验、局限展开；Figures 1/3/4/8、Table 1 逐帧 CLIP 与 Table 2 用户研究入稿，双 softmax 反向匹配显式对齐索引，并区分原文 PNDM 配置与其他采样公式；DirecT2V 已审阅通过。Dysen-VDM 对应同一草稿三级标题，依据 arXiv v2（2024-03-19）展开：问题、事件时间计划、动态场景图骨架、滑动窗口与全局场景补充、RGTrm/图与文本双交叉注意力、训练和生成、实验与局限；插入 Figures 2/3/4，整理 Tables 1/3/4，区分目标数据零样本与不采用大规模预训练的目标数据训练，注明 RL-based ICL 及跨图对齐披露不足。本节已写待审，Free-Bloom 及其余未展开。
-6. **长视频生成**：对应草稿第六章，与独立长视频篇确定分工，不重复全文。
+5. **分镜与生成规划**：对应草稿第五章；类内按 arXiv v1 顺序为 DirecT2V（2023-05-23）→ Dysen-VDM（2023-08-26）→ Free-Bloom（2023-09-25）→ VideoDirectorGPT（2023-09-26）→ LLM-grounded VDM（2023-09-29），日期证据 `raw/video-foundation-models-collection/storyboard-order.md`。VisorGPT（2023-05-23）保留为相关视觉先验补充，不作为视频规划方法并列。DirecT2V 同名三级小节依据 arXiv v3（2024-02-06）按问题、逐帧文本规划、RVM、DSF、推理/帧率、实验、局限展开；Figures 1/3/4/8、Table 1 逐帧 CLIP 与 Table 2 用户研究入稿，双 softmax 反向匹配显式对齐索引，并区分原文 PNDM 配置与其他采样公式；DirecT2V 已审阅通过。Dysen-VDM 对应同一草稿三级标题，依据 arXiv v2（2024-03-19）展开：问题、事件时间计划、动态场景图骨架、滑动窗口与全局场景补充、RGTrm/图与文本双交叉注意力、训练和生成、实验与局限；插入 Figures 2/3/4，整理 Tables 1/3/4，区分目标数据零样本与不采用大规模预训练的目标数据训练，注明 RL-based ICL 及跨图对齐披露不足。Dysen-VDM 之后按继续指令完成 Free-Bloom 草稿，依据 arXiv v1（2023-09-25）展开事件表达问题、两轮逐帧提示、联合高斯噪声及边际/协方差推导、按去噪步切换自注意力、双路径补帧、免额外训练接口、实验与局限；插入 Figures 2/4/5/3，完整整理 Tables 1/4，区分总提示与逐帧提示 CLIP 协议，并保留时间连贯性弱于 VideoFusion 的结果。Free-Bloom 已审阅通过，VideoDirectorGPT 已审阅通过；LLM-Grounded VDM 已审阅通过。VideoDirectorGPT 对应 [第五章草稿](../../../drafts/video-generation/video-models-05-storyboard-planning.org) 同名三级标题，依据 arXiv v2（2024-07-12）：多场景任务、两轮视频计划、逐帧框轨迹与一致性分组、实体图文/位置 token、unCLIP prior、门控布局接口、冻结视频骨干的图像训练、PLMS 与布局引导调度、实验及局限。插入 Figures 2/3/11/5，整理完整 Tables 1/3/4/10/12，补训练范围消融的继续训练边界、不同评估规模及人评人数披露冲突；强调共享外观不等于完整 token 固定、多场景不等于无切换长镜头。LLM-grounded VDM 对应同一 [第五章草稿](../../../drafts/video-generation/video-models-05-storyboard-planning.org) 的同名三级标题，依据 arXiv v3（2024-05-04）：复杂时空提示、DSL/xywh/对象ID、TopK能量、质心位置和位移、冻结模型的输入梯度、代理能量密度解释、40步采样与早期引导、实验和失败案例。保留 Figures 2/4/6/11、完整 Tables 1/2/3/9 及 Table 4 同骨干两行，说明人评数据汇总冲突与注意力目标可能被遮挡/重现取巧满足。LVD、VisorGPT 均已审阅通过。VisorGPT 依据 arXiv v4（2023-05-30）在同一草稿的相关视觉先验小节补充：空间条件来源、标注量化与模板、自回归似然/GPT-2从头训练、前缀采样、GLIGEN/ControlNet应用、Table 5 与先验KL评估边界，插入 Figures 1/6。明确连续生成指同一场景实例补全，不是视频时间生成；该补充不计作视频规划方法。第五章草稿已整体审阅通过；正文已生成并完成构建预览。
+6. **长视频生成**：对应[第六章草稿](../../../drafts/video-generation/video-models-06-long-video.org)，已开始LVDM v2：视频压缩、噪声目标、掩码条件、层次预测/插值、条件扰动与引导、采样和实验局限。Figures2/7/6与完整Tables1/2入稿；保留Figure7(b)图文冲突。LVDM已审阅通过；VideoGen v2草稿已审阅通过，明确它属于参考引导与潜空间补帧的相关方法，不具备已验证的长程续写机制。Figures2/6/7/5与完整Tables1/2/3入稿；暂保留于本章并明确范围，不把时间增密写成长时生成。随后完成VidRD（Gu等，2023-09-07）草稿：原占位VidRF按作者、年份与主题线索暂采用原文正式缩写VidRD，原始截图尚未直接核对；FNR初始噪声复用、PNS方差/相关性、DSG阈值与数值例子、联合视频DDIM上下文、时间解码、训练数据和实验边界。插入Figures2/3/5/6/9/10、Algorithm1原版面裁图及完整Tables1/2/3。VidRD已审阅通过；NUWA-XL v1草稿已审阅通过：T-KLVAE恒等初始化、MTD条件与噪声目标、多尺度调制、全局/局部生成、16→226→3376计数、训练与采样、同层并行、完整主表和四组消融及长程评估局限。Figures1–4与Tables1/2全部入稿。第六章按首发日期整理为LVDM（2022-11-23）→NUWA-XL（2023-03-22）→VideoGen（2023-09-01）→VidRD（2023-09-07）；图号83–100依阅读顺序同步。与独立长视频专题分工，不重复全文。
 7. **多模态引导生成**：对应草稿第七章，保留用户选题，逐篇核验输入输出和方法边界。
 
 每篇方法占三级标题，内部机制占四级标题；依次解释问题、核心思路、数学机制、训练、采样、实验与局限。原文整理与原图准备由 Luna 承担，主 agent 核验推理并写作；一次完成一篇后交用户审阅。具体写作仍同时对照完整草稿与原论文，不能只依据本骨架重写。
 
 **素材与配图**：使用各论文已提取的 `raw/<paper-slug>/` 原文与 `drafts/assets/video-diffusion-architectures/` 资产。既有论文原图随所属小节移动，图号及正文引用按新顺序同步；未展开小节的图在核读后选择，不预设不存在的架构图。
 
-**当前边界**：本轮只重排草稿及同步规划，不生成 HTML；后五章的具体章节内容与全篇发布仍按逐篇审阅推进。现代 Flow Matching 视频模型不替代用户已确定的早期七类论文主线，后续纳入须另据实质草稿更新。
+**当前边界（2026-10-21）**：用户明确授权“一章占一篇正文”，本轮仅将已审阅第一章转成 `video-models-01-pioneering.html`，完成后构建本地预览并交审阅；其余各篇继续独立共写与审阅，未写小节不得作为正文占位发布。现代 Flow Matching 视频模型不替代用户已确定的早期七类论文主线，后续纳入须另据实质草稿更新。
 
-### `video-generation-data-evaluation`｜视频生成系列（十一）：训练数据、评测基准与评价指标
+### `video-generation-data-evaluation`｜视频生成系列（十六）：训练数据、评测基准与评价指标
 
 | 栏位 | 内容 |
 |------|------|
 | 原始草稿 | [video-generation-data-evaluation.org](../../../drafts/video-generation/video-generation-data-evaluation.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `110`；Hub `video-generation-hub` |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `160`；Hub `video-generation-hub` |
 | 服务对象 | 读者能判断视频生成论文中的数据来源、评测设置和数字是否可横向比较。 |
 
 **章节骨架**
@@ -738,12 +709,12 @@
 **关键数据点**：WebVid-10M 的规模、视频/文本字段和许可状态以数据集原始说明为准；指标结果必须同时写明 benchmark 版本、提示词和生成配置。
 **配图计划**：训练/验证/测试数据流程图；评测维度矩阵；不同口径不可比示意。
 
-### `long-video-temporal-consistency`｜视频生成系列（十二）：时间一致性、长视频与流式生成
+### `long-video-temporal-consistency`｜视频生成系列（十七）：时间一致性、长视频与流式生成
 
 | 栏位 | 内容 |
 |------|------|
 | 原始草稿 | [long-video-temporal-consistency.org](../../../drafts/video-generation/long-video-temporal-consistency.org)；现为占位草稿；不能作为后续新增或重写大纲的实质依据 |
-| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `120`；Hub `video-generation-hub` |
+| 类型与目标位置 | 系列章节；alias `categories/AI/视频生成`；规划 sub_id `170`；Hub `video-generation-hub` |
 | 服务对象 | 读者能把身份漂移、长程依赖和在线生成放入统一的时间建模问题中理解。 |
 
 **章节骨架**
@@ -779,7 +750,7 @@
 ## Decisions
 
 - 合并扩散模型入门与 DDPM 为一篇完整基础章：先建立直觉，再推导前向链、噪声预测目标和反向采样；Score/DSM/SDE、EDM 与 DDIM 各自独立成篇，避免入门篇只铺垫却不落到具体模型，也避免 EDM 的训练/采样设计挤在连续时间理论章节中。
-- 系列共 12 篇正文；阅读顺序：DDPM → Score/DSM/SDE → DDIM → Flow Matching → x-prediction → EDM → 条件图像扩散 → 图像基模 → 视频任务 → 视频架构 → 数据评测 → 长视频。Flow Matching 复用既有页面，不另建重复文章。
+- 系列规划共 17 篇正文；前八篇保持既有编号，七个视频基模章节分别成为第九至十五篇，数据评测与长视频专题顺延第十六、十七篇。Flow Matching 复用既有页面，不另建重复文章。
 - 在 `categories/AI` 下新建独立二级 subcategory `categories/AI/视频生成`。视频生成会涵盖扩散、Flow Matching、自回归和其他范式，不应嵌套在 `categories/AI/扩散模型` 下。Hub aliases 使用 `视频生成系列`、该路径及其 `/index` 形式；若缺失则在 `data/category-names.json` 增加 `视频生成: video-generation` 映射。
 - Hub 使用 `sub_id: 0`，正文规划按 10–120 排序。前六篇依次为 DDPM（10）、Score（20）、DDIM（30）、Flow Matching（40）、x-prediction（50）、EDM（60）；条件扩散 70、图像基模 80、视频任务 90、视频架构 100、数据评测 110、长视频 120。新增篇及后续顺延尚未实施，须审核结构后核验编号、同步页面与导航。
 - 系列标题固定使用中文序号格式“视频生成系列（五）：……”，避免阿拉伯数字与中文数字混用；按阅读顺序检查正文、文章清单和章节计划的序号与 `sub_id` 一致。
@@ -828,7 +799,7 @@ DDIM 正文对照部分、EDM 正文 PFODE 部分及 EDM 草稿第二章同步�
 
 ### 视频生成基模草稿文件拆分
 
-按用户要求，原始长草稿拆为七个独立章节文件。总览与共写记录保留于 [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)。下表是后续写作与审校实际读取的草稿；以上章节规划与审阅状态分别对应这些文件，不能只读总览代替各章内容。此次仅调整草稿组织，不自动将七章改成七篇发布文章。
+按用户要求，原始长草稿拆为七个独立章节文件。总览与共写记录保留于 [video-diffusion-architectures.org](../../../drafts/video-generation/video-diffusion-architectures.org)。下表是后续写作与审校实际读取的草稿；以上章节规划与审阅状态分别对应这些文件，不能只读总览代替各章内容。2026-10-21 用户进一步明确“一章占一篇正文”，本节映射现作为正式正文划分依据。
 
 | 章节 | 原始草稿文件 | 当前状态 |
 |---|---|---|
@@ -836,8 +807,140 @@ DDIM 正文对照部分、EDM 正文 PFODE 部分及 EDM 草稿第二章同步�
 | 第二章：开放视频基模 | [video-models-02-open-models.org](../../../drafts/video-generation/video-models-02-open-models.org) | 已逐篇审阅，保留编解码器核验结果 |
 | 第三章：其他早期研究 | [video-models-03-historical-methods.org](../../../drafts/video-generation/video-models-03-historical-methods.org) | 已逐篇审阅 |
 | 第四章：训练高效方法 | [video-models-04-efficient-training.org](../../../drafts/video-generation/video-models-04-efficient-training.org) | 已逐篇审阅 |
-| 第五章：分镜与生成规划 | [video-models-05-storyboard-planning.org](../../../drafts/video-generation/video-models-05-storyboard-planning.org) | DirecT2V 已通过，Dysen-VDM 待审，Free-Bloom 起未展开 |
-| 第六章：长视频生成 | [video-models-06-long-video.org](../../../drafts/video-generation/video-models-06-long-video.org) | 选题与来源占位 |
-| 第七章：多模态引导生成 | [video-models-07-multimodal-guidance.org](../../../drafts/video-generation/video-models-07-multimodal-guidance.org) | 选题与来源占位 |
+| 第五章：分镜与生成规划 | [video-models-05-storyboard-planning.org](../../../drafts/video-generation/video-models-05-storyboard-planning.org) | DirecT2V 已通过，Dysen-VDM 后继续补写 Free-Bloom；Free-Bloom 已审阅通过，VideoDirectorGPT 已审阅通过；LLM-Grounded VDM 已审阅通过，VisorGPT 已审阅通过；第五章正文已生成并构建预览 |
+| 第六章：长视频生成 | [video-models-06-long-video.org](../../../drafts/video-generation/video-models-06-long-video.org) | 四篇全部审阅通过；已转成系列第十四篇正文，sub_id 140 |
+| 第七章：多模态引导生成 | [video-models-07-multimodal-guidance.org](../../../drafts/video-generation/video-models-07-multimodal-guidance.org) | MM-Diffusion已通过；LFDM v1草稿待审；其余保留占位 |
 
 各章保留原正文、公式、表格、图号与引用编号，并在末尾附所属章节的参考文献；共用 `drafts/assets/video-diffusion-architectures/`。后续内容更新直接落入各章文件，总览维护入口和状态。
+
+### 七章与正文一一对应（2026-10-21 用户授权）
+
+| 篇序 / sub_id | 正文 slug | 原始实质草稿 | 正文标题与状态 |
+|---|---|---|---|
+| 九 / 90 | `video-models-01-pioneering` | [第一章](../../../drafts/video-generation/video-models-01-pioneering.org) | 视频生成系列（九）：视频生成任务与开创性工作；正文已生成，十图/六项引用/完整推导，构建预览完成，用户审阅通过 |
+| 十 / 100 | `video-models-02-open-models` | [第二章](../../../drafts/video-generation/video-models-02-open-models.org) | 视频生成系列（十）：开放视频基模；正文已生成，用户同意继续下一篇 |
+| 十一 / 110 | `video-models-03-historical-methods` | [第三章](../../../drafts/video-generation/video-models-03-historical-methods.org) | 视频生成系列（十一）：其他早期视频生成研究；正文已生成，用户同意继续下一篇 |
+| 十二 / 120 | `video-models-04-efficient-training` | [第四章](../../../drafts/video-generation/video-models-04-efficient-training.org) | 视频生成系列（十二）：视频生成的训练高效方法；正文已生成，构建预览完成，待用户审阅 |
+| 十三 / 130 | `video-models-05-storyboard-planning` | [第五章](../../../drafts/video-generation/video-models-05-storyboard-planning.org) | 视频生成系列（十三）：分镜与生成规划；整体草稿通过，正文已生成并构建预览 |
+| 十四 / 140 | `video-models-06-long-video` | [第六章](../../../drafts/video-generation/video-models-06-long-video.org) | 视频生成系列（十四）：长视频生成基模；四篇全部审阅通过，已生成正文并构建 |
+| 十五 / 150 | `video-models-07-multimodal-guidance` | [第七章](../../../drafts/video-generation/video-models-07-multimodal-guidance.org) | 视频生成系列（十五）：多模态引导的视频生成；MM-Diffusion已通过，LFDM草稿待审，其余未展开，不发布 |
+
+第十四篇按重要原论文组织长视频基模；第十七篇保留时间一致性、长程误差和流式推理的专题分析职责，后续须根据实质草稿去重。
+
+#### 第九篇落实骨架
+
+完整依据第一章草稿「文章草稿／第一章」，保留五个三级节，每篇方法内部使用四级标题；不从仅有标题的旧占位草稿重写。
+
+1. **视频生成与时空建模基础**：任务、帧时间与扩散时间、联合分布、2D/3D/(2+1)D 卷积及参数量；图1 R(2+1)D 原图与运算比较表。
+2. **VDM**：前向与联合网络、重建目标到噪声目标推导、联合训练、祖先采样、已知帧替换及 Bayes/Tweedie 重建引导全推导、实验局限；图2 VDM 网络，保留已知帧条件解释与两组消融表。
+3. **Make-A-Video**：无字幕视频的数据分工、unCLIP prior、伪3D初始化、训练目标、补帧与外推、实验局限；图3–5 架构/时间卷积/时间注意力原图。
+4. **Imagen Video**：类比 Imagen 图像级联、七级时空分工、训练标签/条件噪声、v-prediction和蒸馏、采样与实验边界；图6–8 Imagen/视频级联/时空模块原图。
+5. **Align Your Latents**：潜空间、冻结边界、时间模块与解码器、训练采样、已知帧和时间掩码条件训练、补帧/超分和实验局限；图9–10 时间模块与完整流程原图。明确驾驶任务与文生视频的能力差异。
+
+十张已有配图随解释位置进入正文；参考文献集中在末尾，删去 raw 内部整理说明。新增结尾总结与比较表仅归纳这五节已有结论。首篇使用 sub_id 90，承接图像基模80；下一篇尚未生成时以文字说明后续阅读，不添加无效链接。先构建本地预览，不推送远端。
+
+**第一篇实施记录（2026-10-21）**：`src/pages/video-models-01-pioneering.html` 已依据对应完整草稿生成，五个方法/基础节和结尾综合比较均已落实，保留69处展示公式、十张配图、六项参考文献，使用系列九/sub_id90。已修正草稿两处缺失反斜杠，并将正文行内不等式写成 `\lt` 防止 HTML 误解析；图像基模80增加下一篇导航。完成源语法检查和构建，本地4000端口可预览；未推送远端。其余六篇正文未生成。
+
+**首篇正文标题层级修订（2026-10-21）**：按用户反馈删除正文重复的“视频生成任务与开创性工作”总标题；时空基础、VDM、Make-A-Video、Imagen Video、Align Your Latents 与总结各为独立二级章（`ch-title`），其内部原四级标题提升为三级节（`h3.section-title`）。此决定替代首篇原“方法三级／机制四级”的呈现要求。
+
+### 第十篇落实骨架（2026-10-21）
+
+用户通过首篇后授权继续第二篇。正文依据 [开放视频基模完整草稿](../../../drafts/video-generation/video-models-02-open-models.org)，仅实施本篇；每个模型独立二级章，机制为三级节，不重复正文总标题。
+
+| 二级章 | 解释主线与图表位置 |
+|---|---|
+| ModelScope T2V | 潜变量与 AutoencoderKL 实现核验、时空模块、混训目标、DDIM 采样、实验局限；图1整体架构、图2时空块、图3时间卷积、图4时间注意力，训练来源及指标表 |
+| LaVie | 三级潜扩散、知识保持、混训损失、61帧插值、超分与采样；图5级联、图6时空Transformer，阶段与实验表 |
+| Show-1 | 文本对齐动机、像素/潜空间分工、补帧与超分损失、专家翻译起点和训练区间；图7用户参考图、图8架构、图9输入构造，关键帧与专家消融表 |
+| VideoCrafter1 | 潜空间和fps、渐进分辨率、双交叉注意力、I2V训练采样；图10架构、图11图像分支、图12视觉token对照，训练阶段与路线比较表 |
+| Stable Video Diffusion | 数据筛选、三阶段训练、EDM目标、双路图像条件、ODE采样和逐帧CFG、补帧/相机适配；图13筛选、图14初始化、图15预训练保留效应、图16生成样例、图17相机LoRA，数据与阶段表 |
+| VideoCrafter2 | F/P底模定义、空间时间耦合、联合视频训练后空间图像微调、采样与局限；图18生成样例、图19微调对照，保留原论文Table4/3两张表格图片并独立以表1/2编号 |
+
+上述21张资产全部沿用草稿，原图号保留在图注出处；不新增Mermaid，避免重复原文架构图。结尾归纳表示、条件、训练、推理差别，七项参考来源集中末尾，导航衔接前篇与系列分类页。执行单页lint与构建后交用户审阅，不继续第三篇。
+
+**第十篇实施记录（2026-10-21）**：六模型正文已依据完整草稿生成，保留50处展示公式、115处行内公式、19张插图和2张原论文表格图片、七项参考来源；补充综合比较和前后导航。修复两处缺失反斜杠、LaVie前后文次序与Org代码转写问题。单页lint和构建通过，浏览器确认165处公式渲染且无MathJax错误；本地4000端口预览，等待用户审阅。未继续第三篇，未推送远端。
+
+### 第十一篇落实骨架（2026-10-21）
+
+依据[第三章完整实质草稿](../../../drafts/video-generation/video-models-03-historical-methods.org)，用户已逐篇审阅并授权继续正文。正文按首次公开时间保留四个模型，二级章为模型名，内部使用简短三级标题，不重复总标题。系列十一/sub_id110。
+
+| 章节 | 核心解释与图表位置 |
+|---|---|
+| VideoFusion | 问题、相关噪声的边际/协方差、中央帧、双网络、停止梯度损失、DDIM/DDPM采样、实验局限；图1共享噪声直觉（原Fig2）、图2前向过程（Fig3）、图3去噪（Fig4）、图4生成样例（Fig7），保留五组实验表 |
+| Latent-Shift | 潜空间骨干、通道时间移位/零边界/感受野、训练权重与100步DDPM、性能与评测局限；图5框架（Fig3）、图6移位（Fig2）、图7消融（Fig7）、图8失败案例（Fig8），保留四组结果表 |
+| PYoCo | 反演动机、混合/渐进噪声协方差、EDM回归、相关噪声PF ODE推导、四级采样、消融与研究猜想；图9反演噪声（Fig2a）、图10相关先验（Fig2b）、图11级联（Fig3）、图12强度消融（Fig7），保留五张表（含级联表） |
+| VideoFactory | 交叉注意力方向、Swap-CA与残差/归一化、3D移动窗口复杂度、潜空间训练、RCAN超分与采样缺口、实验边界；图13注意力对照（v1 Fig1）、图14架构（Fig3）、图15数据消融（Fig4）、图16样例比较（Fig5），保留五组实验表 |
+
+16张原图全部沿草稿解释位置插入，图号从1连续编号，原论文定位保留在图注；已有图足以说明结构，不另增Mermaid。四项一手参考文献集中末尾，VideoFactory明确v1边界。猜想与原论文结论分开，不把猜想归引PYoCo。补结尾路线对照表，承接上一篇并文字引出训练高效方法。完成单页lint、构建与浏览器预览，停下来供审阅，不继续第四章。
+
+**第十一篇实施记录（2026-10-21）**：已生成 `src/pages/video-models-03-historical-methods.html`，保留四模型全部小节、60处展示公式及131处行内公式、16张原图、19张草稿表（83行，含表头），新增综合比较表，四项参考来源集中末尾。小节标题简化，保留PYoCo噪声搬运研究猜想和VideoFactory v1边界。单页lint、构建与浏览器渲染检查通过（191处公式，无MathJax错误，引用均有目标）。arXiv提交历史确认PYoCo于5月17日、VideoFactory于5月18日首发，草稿日期正确，已修复raw的两处错误日期记录。等待用户审阅，不继续第四篇、不推送远端。
+
+### 第十二篇落实骨架（2026-10-21）
+
+依据[第四章完整草稿](../../../drafts/video-generation/video-models-04-efficient-training.org)，用户已逐篇审阅并授权正文。系列十二/sub_id120，每模型二级章，机制为简洁三级标题，不重复总标题。
+
+| 章 | 写作主线与图片位置 |
+|---|---|
+| MagicVideo | 潜空间成本、逐帧适配器、定向注意力掩码冲突、重建与噪声loss权重换算、两阶段训练、插帧/VideoVAE/超分、实验局限；图1框架（Fig2）、图2解码（Fig3）、图3消融（Fig7），保留四张实验表 |
+| Text2Video-Zero | 免视频训练、短程去噪→搬移→回加噪、首帧注意力、DDIM、背景平滑、条件扩展和局限；图4方法（Fig2）、图5原文Algorithm1局部截图、图6消融（Fig10），保留CLIP比较表 |
+| AnimateDiff | 可复用时间先验、帧/空间reshape、时间注意力、域LoRA、冻结范围及噪声loss、MotionLoRA、采样与实验；图7组合（Fig2）、图8三阶段（Fig3）、图9域适配消融（Fig6），保留阶段/方法比较/六指标表 |
+| DSDN | 双流内容/变化表示、差分与合成、共用日程、交叉注意力、双loss、训练披露缺口、同步采样与局限；图10总览（Fig2）、图11分解合成（Fig4）、图12交互（Fig3）、图13消融（Fig7），保留配置和指标表 |
+| SimDA | 空间/时间瓶颈、LSA拼图和复杂度、冻结参数与噪声训练、DDIM、超分与编辑、规模速度/质量/消融边界；图14架构（Fig2）、图15LSA（Fig3）、图16编辑（Fig4）、图17消融（Fig7），保留复杂度/参数速度/两组质量/模块消融表 |
+
+保留17张既有原图（含算法局部）及15张原表；图号1–17，原图定位保留在图注；无需新增Mermaid。按草稿明确MagicVideo v2、AnimateDiff v2、DSDN v3、SimDA v1的版本边界。结尾增加“降低哪种成本／仍需什么训练”的总结表，五项参考来源集中末尾。与上一篇衔接，下一篇未完成则不加入失效链接。单页lint、构建、浏览器预览后停止供用户审阅，不发布未完成第五章。
+
+**第十二篇实施记录（2026-10-21）**：`video-models-04-efficient-training.html` 已依据完整草稿生成五方法正文，保留17张原图/算法局部、15张原表（78行含表头）、61处展示公式及135处行内公式，新增总结表和前后导航，五项一手来源集中末尾。标题统一简化为模型二级/机制三级；保留MagicVideo输出/掩码冲突、AnimateDiff v2、DSDN训练披露、SimDA成本与评测边界。单页lint、构建、浏览器检查通过（196处公式、无MathJax错误，引用目标齐全），本地4000端口可预览。等待用户审阅，未发布第五章。
+
+**第十二篇公式排版修订**：预览发现相邻多行展示公式经段落处理后混入标签；已将展示公式改为独占逻辑行并分隔，块内不等号用 `\lt`。重新构建后确认61个展示公式均无字面段落标签，源语法检查通过。
+
+### 第十三篇落实骨架（2026-10-21）
+
+用户已审阅通过 VisorGPT，并授权第五章输出正文、随后开始第六章。完整写作依据为 [第五章原始草稿](../../../drafts/video-generation/video-models-05-storyboard-planning.org)。系列十三/sub_id130，各模型独立二级章、机制为简洁三级标题，不重复总章标题。
+
+| 二级章 | 解释与图表位置 |
+|---|---|
+| DirecT2V | 逐帧规划、RVM轮换参照、DSF双向匹配、PNDM推理与帧率、实验局限；Figures 1/3/4/8，保留两张实验表 |
+| Dysen-VDM | 事件时间、动态图、局部与全局补充、RGTrm、图文双条件、训练采样与披露边界；Figures 2/3/4，保留三张实验表 |
+| Free-Bloom | 两轮提示、联合噪声的边际与协方差、注意力切换、双路径补帧、免额外训练与评估边界；Figures 2/4/5/3，保留两张实验表 |
+| VideoDirectorGPT | 视频计划、框插值、实体表示、unCLIP prior、身份共享、冻结骨干图像训练、PLMS与控制调度；Figures 2/3/11/5，保留五张表 |
+| LLM-Grounded VDM | DSL、TopK/质心能量、输入梯度、免训练成本、计划/执行落差与失败案例；Figures 2/4/6/11，保留比较表及五张原实验表 |
+| VisorGPT（相关视觉先验） | 标注序列、NLL、GPT-2从头训练、前缀采样、条件图像接口及空间先验边界；Figures 1/6，保留字段表和Table5 |
+
+共21张论文原图，正文图号1–21，原文图号保留在图注；不额外增加重复架构示意。保留51处展示公式、全部原有表格及版本/协议边界；新增结尾路线对照总结，六项参考来源集中末尾。双向连接第四章与本篇，后续第六章仅写草稿，不添加未存在的正文链接。单页lint、构建并检查公式与图片呈现。
+
+第六章先从用户指定的 LVDM（arXiv:2211.13221）逐篇共写；先整理原文、核对长视频扩展机制与实验，再填草稿。完成一篇即停供审阅，不生成第六章正文。
+
+**第十三篇实施记录（2026-10-21）**：已生成 `src/pages/video-models-05-storyboard-planning.html`，完整覆盖45个机制小节，保留21张原图、51处展示公式、128处行内公式、21张草稿表格，另补路线总结表，六项来源集中末尾，双向导航接第四章。单页lint与构建通过；浏览器确认179处公式无MathJax错误或段落标签污染、21张图片均加载，223处引用均有来源。代码审查逐项核对了草稿标题、公式、图表和导航，无实际问题。本地4000端口已更新；未推送远端。
+
+**第六章首节草稿记录**：已整理原文 `raw/lvdm-2022/` 并核读v2正文与TeX，LVDM同名节已写入第六章草稿；明确潜帧与RGB帧、视频时间与扩散时间、条件训练与推理、层次窗口数与采样步数的区别，保留三张原图及两张完整实验表。Figure7(b)引导消融的图文矛盾如实标注，避免将其写成稳定提升。LVDM已审阅通过；后续进展见VideoGen草稿记录。
+
+**第六章VideoGen草稿记录（2026-10-21）**：LVDM通过后，核读 `raw/videogen-2023/` 的arXiv v2正文、HTML与TeX，确认正式标题、9月1日首发/9月7日修订及来源。依据[第六章草稿](../../../drafts/video-generation/video-models-06-long-video.org)同名节补充问题、参考空间潜变量与首帧通道拼接、三级空间扩散、运动warp/去噪与低高频分工、视频解码、训练数据/冻结边界、采样和实验局限。保留原Figures2/6/7/5与Tables1/2/3全部数据；标准LDM目标与warp/频率式明确为教学展开，不冒充原文公式，不引用源码注释旧稿的参数为正式披露。强调补帧不等于长时续写、IS与FVD结论不同、评测16帧256²与结构高清尺寸分开。VideoGen待审；VidRF、NUWA-XL未展开，本轮不写HTML。
+
+
+**第六章VidRD草稿记录（2026-10-21）**：VideoGen已审阅通过；依据 `raw/reuse-and-diffuse-2023/` 的原始TeX、PDF与原图，在[第六章草稿](../../../drafts/video-generation/video-models-06-long-video.org)的“VidRD：复用轨迹续写视频”补写八节：问题与短片模型、FNR、PNS、DSG、解码/数据、训练采样、实验、局限。VidRF按高置信度候选VidRD展开（原截图未直接核对）；保留初始噪声与中间轨迹复用的区别、噪声方差与相关性教学推导、DSG数值阈值与50步时间表解释、确定性DDIM与上下文变化、提示帧并非硬约束重叠帧。插入Figures2/3/5/6/9/10与仅Algorithm1区域的PDF裁图，Tables1/2/3按原生Org完整整理。原文正则权重排版歧义不擅改为确定数值；16帧指标不外推长程质量。VidRD待审，NUWA-XL未展开；本轮仅Org草稿，无HTML或构建。
+
+
+**第六章NUWA-XL草稿记录（2026-10-21）**：VidRD通过后，按read-article提取脚本整理 `raw/nuwa-xl-2023/`，核读arXiv v1（2023-03-22）TeX、PDF及四张原图。在[第六章草稿](../../../drafts/video-generation/video-models-06-long-video.org)“NUWA-XL：先生成全局，再填局部”下写九节：问题、T-KLVAE、MTD、条件接口、层次展开、训练采样、并行、实验、局限；补标准DDPM路径、原Equation4/16的方差与标准差瑕疵、F_m=(L−1)^m+1及16→226→3376教学推导、真实条件与生成条件的差别。完整保留Figures1–4、Table1及Table2(a–d)，没有原算法框则不伪造截图。说明未知权重共享/冻结/CFG/设备和采样配置，26秒仅对应128分辨率下原表比较，B-FVD-16不证明全局叙事。按v1时间排序LVDM→NUWA-XL→VideoGen→VidRD，图83–100顺排，末尾加本章方法对照。NUWA-XL待审；本轮无HTML或构建，未推进第七章。
+
+
+**VidRD可读性修订（2026-10-21，用户要求）**：依据用户认可的问答解释重组[VidRD草稿](../../../drafts/video-generation/video-models-06-long-video.org)：先提出“接得上但不重播”的矛盾，再讲首段保存初始噪声/中间状态，依次回答FNR从哪里开始、PNS怎样产生新内容、DSG怎样稳定连接。加入A–H倒序例子、位置分工表和三机制总结表；先直觉与例子，后公式。基础网络/损失移到续写机制之后，保留全部原图、算法截图、数学推导、三张原表和局限。强调没有显式学习未来事件、基础模型仍需训练；图94–100按新阅读顺序重编号。仅修订Org草稿，不生成HTML。
+
+
+### 第六章正文发布（2026-10-21，最新状态）
+
+用户确认整章审阅通过，依据[完整原始草稿](../../../drafts/video-generation/video-models-06-long-video.org)，生成[系列第十四篇正文](../../../src/pages/video-models-06-long-video.html)，sub_id 140，分类为视频生成。正文按首发时间组织 LVDM → NUWA-XL → VideoGen → VidRD，保留全部解释、40组独立公式、18张原图（含原始算法裁图）与21张可编辑表格；图片按篇内顺序编号1–18。VidRD保持问题、轨迹保存、FNR/PNS/DSG、网络训练、实验局限的讲解顺序；保留原论文排版冲突与未披露配置的证据边界。同步前篇导航、草稿发布元数据及本change状态。本轮仅发表第六章，第七章仍未展开；历史记录中的待审状态以本条为准。
+
+
+**第七章首篇草稿记录（2026-10-21）**：使用现有change `video-generation`，依据用户授权回到[第七章草稿](../../../drafts/video-generation/video-models-07-multimodal-guidance.org)，先完成当前已识别最早的MM-Diffusion（2022-12-19首发，阅读2023-03-24 v2）。按read-article脚本提取source/HTML/PDF及12个图文件至 `raw/mm-diffusion-2022/`，主agent核读原始TeX、主表与补充配置；Luna整理来源与核查官方条件采样代码。草稿从任务与海浪例子走通联合去噪，再解释独立前向与联合分布、双分支噪声loss/score关系、耦合U-Net与RS-MMA、DDPM教学采样、条件替换和误差梯度、训练配置、实验与局限。插入原Figures2/3/5/4，保留完整Tables1–6与补充Table A.1配置整理；明确默认与完整DDPM的指标差异、人评“无法判断”计通过、原文梯度式与公开代码缩放差异，不将条件引导称CFG或精确后验。图101–104延续草稿编号。仅此篇完成待审，不写后续论文、不生成HTML。其余论文首发日期清点见 `raw/video-foundation-models-collection/multimodal-first-release-order.md`；MinD-Video旧arXiv链接为数学论文，已撤除，身份未核前不补写。
+
+
+**第七章LFDM草稿记录（2026-10-21，最新状态）**：用户审阅通过MM-Diffusion及MM-Block/cross-attention答疑；已将两者的包含关系、模态内部处理/信息交换分工、全局与窗口交互成本和证据边界融入[原草稿](../../../drafts/video-generation/video-models-07-multimodal-guidance.org)。随后按已确认首发日期继续LFDM（2023-03-24，arXiv v1）。Luna运行read-article原文提取脚本，整理 `raw/lfdm-2023/`；主agent核读TeX、原表及补充材料，完成任务→完整推理→后向采样/遮挡→LFAE重建→扩散噪声训练→表示分工→采样/CFG→配置→实验/适配/消融→局限。保留全部六张论文原图（Figure1–5及补充A1），草稿图号105–110；九张原实验表完整整理，主Table1按数据集拆三表。明确图像flow不等于Flow Matching、两通道形变加一通道可见性、重建监督不等于光流真值、类别BERT条件不等于自由文本控制、40帧与扩散步数分开；如实说明相应LDM更快、少步DDIM与质量取舍、分辨率/采样预算差异。LFDM待审；仅草稿，无HTML，不推进后续论文。
+
+
+### 第七章Generative Disco草稿记录（2026-10-21，最新状态）
+
+用户审阅通过LFDM并授权继续；沿用[第七章原始草稿](../../../drafts/video-generation/video-models-07-multimodal-guidance.org)，按首发时间接续Generative Disco（2023-04-17首发；阅读2023-09-28 v2）。Luna运行read-article提取脚本，整理原始TeX、HTML、PDF、15个图文件及证据至 `raw/generative-disco-2023/`；主agent核读设计研究、系统实现、用户研究、结果和讨论。
+
+草稿同名节按问题→完整流程→保持/过渡→音频累计强度控制进度→提示与人的分工→复用模型/成本→用户研究→局限展开。Figures3/8/7/5/4/9分别放在流程、保持、过渡、音乐区间、问卷和伪影解释处，草稿图号111–116；原图足以支持解释，无需另加重复Mermaid。保留50部MV的六类观察数、完整Table1参与者资料、原文报告的全部问卷中位数/人数及提示分析比例。累计进度和生成算子为标明来源边界的教学公式，不虚构新训练目标或底层库的精确插值核。
+
+明确它是复用SD v1.4、Stable Diffusion Videos和GPT-4的交互式音乐可视化系统；人工选择语义与区间，音频打击成分影响插值推进，不写成新训练的联合音视频基模。24fps与去噪步数分开，V100的延迟不称实时；12人/10秒用户研究不能外推FVD优势、效率提升或任意长一致性。LFDM已通过，Generative Disco待审，LaMD等未展开；本轮仅Org草稿，不生成HTML。

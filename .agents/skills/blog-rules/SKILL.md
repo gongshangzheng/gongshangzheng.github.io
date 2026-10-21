@@ -14,6 +14,7 @@ description: |
 
 | 文件 | 内容 | 被谁引用 |
 |------|------|---------|
+| `references/method-explanation.md` | 方法类草稿与正文：任务→流程→机制直觉/例子→公式，以及可理解性审校 | read-article, blog-drafts |
 | `references/series-rules.md` | 系列文章 sub_id、Hub 页、编号、跨篇连续性 | read-article, academic-research, deep-research, content-creator |
 | `references/image-priority.md` | 配图来源优先级、arXiv 图片提取、HTML 格式 | read-article, academic-research, deep-research |
 | `references/publishing.md` | build.js + git push 发布流程、邮件通知、发布前验证 | read-article, academic-research, deep-research |

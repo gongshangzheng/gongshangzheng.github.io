@@ -1,0 +1,1230 @@
+---
+title: "视频生成系列（十一）：其他早期视频生成研究"
+description: "对照 VideoFusion、Latent-Shift、PYoCo 与 VideoFactory，推导跨帧噪声相关性、特征移位和交换式时空注意力，解释训练、采样与实验局限。"
+created_at: 2026-10-21T15:15:16
+updated_at: 2026-10-21T15:23:41
+tags: [视频生成, 扩散模型, 时空建模, 相关噪声]
+aliases: ["categories/AI/视频生成", "早期视频生成研究"]
+sub_id: 110
+papers: ["https://arxiv.org/abs/2303.08320", "https://arxiv.org/abs/2304.08477", "https://arxiv.org/abs/2305.10474", "https://arxiv.org/abs/2305.10874v1"]
+repos: []
+mathjax: true
+hero_title: "其他早期视频生成研究"
+hero_sub: "视频生成系列 · 11"
+hero_tagline: "从共享噪声、时间移位，到相关先验与交换式时空注意力"
+---
+<style>.ch .math-block {max-width:100%;overflow-x:auto;overflow-y:hidden;}</style>
+<div class="callout"><strong>本篇主线：</strong>在<a href="video-models-02-open-models.html">开放视频基模</a>之后，回看2023年的四项早期探索：它们怎样让视频帧彼此联系？下面按论文首次公开时间依次介绍 VideoFusion、Latent-Shift、PYoCo 和 VideoFactory；时间顺序不表示直接继承关系。相关噪声改变联合分布，时间移位与交叉注意力改变网络信息流，二者需要分开理解。</div>
+<div class="ch fade-in">
+<div class="ch-title" id="videofusion">VideoFusion</div>
+
+<h3 class="section-title" id="问题与思路">问题与思路</h3>
+<p>Luo 等人在 VideoFusion: Decomposed Diffusion Models for High-Quality Video Generation 中提出一个与前面时空网络不同的切入点：<strong>视频帧之间本来就共享许多内容，能否让它们在加噪后也保留一部分共同结构？</strong> #Luo-2023-VideoFusion#</p>
+<p>标准视频扩散可以给每帧加入独立高斯噪声，再由视频网络学习恢复跨帧关系。这是一种有效的方法，并非数学上不可行；但网络需要从越来越独立的噪声状态中重建连贯内容。VideoFusion 希望通过设计相关噪声，减轻这部分学习负担。 #Luo-2023-VideoFusion#</p>
+<p>它把每帧噪声分为两部分：所有帧共享的 base noise（基础噪声），以及各帧不同的 residual noise（残差噪声）。随后用基础生成器预测共享部分，再用较小的残差生成器补上逐帧变化。这里的“生成器”是扩散去噪网络，不是 GAN 的生成器。 #Luo-2023-VideoFusion#</p>
+<div class="photo"><img alt="图 1：相同条件下，独立噪声与共享基础噪声的生成对比，取自原论文 Figure 2。左右分别为独立噪声和含共享部分的噪声，使用 DALL·E 2 风格图像解码器展示直觉；这不是完整视频模型的定量消融。" loading="lazy" src="media/images/video-models-03-historical-methods/videofusion-shared-noise.webp"/><div class="cap">图 1：相同条件下，独立噪声与共享基础噪声的生成对比，取自原论文 Figure 2。左右分别为独立噪声和含共享部分的噪声，使用 DALL·E 2 风格图像解码器展示直觉；这不是完整视频模型的定量消融。 #Luo-2023-VideoFusion#</div></div>
+<p>共享噪声首先是一种<strong>跨帧统计联系</strong>。它不是“把同一张干净图复制到所有帧”，也不保证自然得到严格分离的内容与运动变量。</p>
+<h3 class="section-title" id="怎样构造相关噪声">怎样构造相关噪声</h3>
+<p>本节用 \(x_0^i\) 表示第 \(i\) 帧，用 \(x_t^i\) 表示它在扩散时刻 \(t\) 的带噪状态。论文先在 \(64\times64\) 的视频帧上训练，再用扩散超分辨率模型放大；原文把带噪状态叫 latent variable，但没有在这里引入 VAE 编码压缩，不能因此把它等同于前面 Stable Diffusion 的压缩潜空间。 #Luo-2023-VideoFusion#</p>
+<p>沿用 DDPM 的信号与噪声系数，记</p>
+
+\[
+a_t=\sqrt{\bar\alpha_t},\qquad
+b_t=\sqrt{1-\bar\alpha_t}.
+\]
+
+<p>普通加噪为 \(x_t^i=a_tx_0^i+b_t\epsilon^i\)。VideoFusion 改变的是各帧噪声的联合构造：</p>
+
+\[
+u\sim\mathcal N(0,I),\qquad
+v^i\overset{\mathrm{iid}}\sim\mathcal N(0,I),
+\] \[
+\epsilon^i=\sqrt{\lambda_i}\,u
++\sqrt{1-\lambda_i}\,v^i,
+\qquad 0\leq\lambda_i\leq1,
+\] \[
+x_t^i=a_tx_0^i+b_t
+\left(\sqrt{\lambda_i}\,u+
+\sqrt{1-\lambda_i}\,v^i\right).
+\]
+
+<p>\(u\) 是所有帧共享的基础噪声，\(v^i\) 是相互独立且与 \(u\) 独立的逐帧残差噪声。为避免与噪声幅度 \(b_t\) 混淆，这里把原文的基础噪声 \(b\) 改记为 \(u\)。\(\lambda_i\) 控制共享比例。 #Luo-2023-VideoFusion#</p>
+<p><strong>为什么每帧仍是标准高斯？</strong> 独立高斯的线性组合仍是高斯，且</p>
+
+\[
+\operatorname{Var}(\epsilon^i)
+=\lambda_iI+(1-\lambda_i)I=I.
+\]
+
+<p>所以单帧边际没有改变：</p>
+
+\[
+q(x_t^i\mid x_0^i)
+=\mathcal N(a_tx_0^i,b_t^2I).
+\]
+
+<p>改变的是不同帧之间的噪声协方差。对 \(i\ne j\)，只有共享项对协方差有贡献：</p>
+
+\[
+\operatorname{Cov}(\epsilon^i,\epsilon^j)
+=\sqrt{\lambda_i\lambda_j}\,I.
+\]
+
+<p>这些方差与协方差公式是对原文噪声分解的展开。若所有非特殊帧的 \(\lambda_i=0\)，它们重新变成独立噪声；若 \(\lambda_i\) 接近 1，它们共享的随机变化更多。<strong>单帧加噪边际相同，不代表整段视频的联合加噪分布相同。</strong> #Luo-2023-VideoFusion#</p>
+<div class="photo"><img alt="图 2：VideoFusion 的前向扩散，取自原论文 Figure 3。每一步的基础噪声跨帧共享，残差噪声逐帧不同；图中省略各分量系数。" loading="lazy" src="media/images/video-models-03-historical-methods/videofusion-forward.webp"/><div class="cap">图 2：VideoFusion 的前向扩散，取自原论文 Figure 3。每一步的基础噪声跨帧共享，残差噪声逐帧不同；图中省略各分量系数。 #Luo-2023-VideoFusion#</div></div>
+<p>共享的是 <strong>同一步中不同帧</strong> 的基础噪声，并不是所有扩散步骤一直使用同一份新增噪声。原文也给出相邻时刻的马尔可夫加噪形式，每一步重新抽取共享项与残差项。 #Luo-2023-VideoFusion#</p>
+<h3 class="section-title" id="为什么选择中央帧">为什么选择中央帧</h3>
+<p>作者把视频内容写成共享基础帧与逐帧残差的组合：</p>
+
+\[
+x_0^i=\sqrt{\lambda_i}\,x_0^m
++\sqrt{1-\lambda_i}\,\Delta x_0^i,
+\]
+
+<p>其中 \(m\) 表示选定的中央帧。对于 \(\lambda_i\lt 1\)，可以把这个式子理解为对残差的定义，而不是已经通过标注找出了“背景”和“运动”。残差可能同时包含位移、遮挡、外观改变和新增内容。 #Luo-2023-VideoFusion#</p>
+<p>关键设计是令中央帧 \(\lambda_m=1\)，于是</p>
+
+\[
+x_t^m=a_tx_0^m+b_tu.
+\]
+
+<p>这恰好是标准图像扩散的加噪形式。因此，一个预训练图像去噪网络可以读取<strong>当前带噪中央帧</strong>，预测基础噪声：</p>
+
+\[
+\widehat u=B_\phi(x_t^m,t,c).
+\]
+
+<p>\(B_\phi\) 为基础生成器，\(c\) 为条件。每个去噪时刻只需运行一次这个较大的图像网络，预测结果就能被所有帧复用。这里中央帧在训练中是真实视频的一帧；<strong>生成时它也从噪声中生成，不是额外提供的一张已知图像</strong>。 #Luo-2023-VideoFusion#</p>
+<p>这正是选择中央帧的用途：让共享噪声的预测问题落到一个可以继承图像预训练能力的接口上，而不是要求图像模型一次处理整段视频。</p>
+<h3 class="section-title" id="两个网络怎样去噪">两个网络怎样去噪</h3>
+<p>得到 \(\widehat u\) 后，先从其他帧减去估计的共享噪声贡献：</p>
+
+\[
+x_t^{\prime i}
+=x_t^i-b_t\sqrt{\lambda_i}\,\widehat u,
+\qquad i\ne m.
+\]
+
+<p>若共享噪声预测准确，剩余随机扰动主要是残差噪声；但 \(x_t^{\prime i}\) 仍包含完整的信号项，并不是已经得到纯粹的运动残差。随后由残差生成器估计 #Luo-2023-VideoFusion#</p>
+
+\[
+\widehat v^i=R_\psi(x_t^{\prime i},t,i,c).
+\]
+
+<p>帧索引 \(i\) 告诉网络当前处于视频的哪个位置。论文把残差生成器描述为随机初始化的 2D U 形去噪网络，因此不能把本方法泛写成“给图像网络增加 3D 卷积”。它的重要联系来自共享噪声、共享基础预测、条件与帧位置。 #Luo-2023-VideoFusion#</p>
+<p>两个预测重新组合成每帧完整的噪声预测：</p>
+
+\[
+\widehat\epsilon^m=\widehat u,
+\] \[
+\widehat\epsilon^i
+=\sqrt{\lambda_i}\,\widehat u
++\sqrt{1-\lambda_i}\,\widehat v^i,
+\qquad i\ne m.
+\]
+
+<div class="photo"><img alt="图 3：VideoFusion 的 DDIM 去噪流程，取自原论文 Figure 4。每个时刻先由中央帧估计基础噪声，再估计其他帧的残差噪声，合成为完整预测后更新状态；图中省略条件与系数。" loading="lazy" src="media/images/video-models-03-historical-methods/videofusion-denoising.webp"/><div class="cap">图 3：VideoFusion 的 DDIM 去噪流程，取自原论文 Figure 4。每个时刻先由中央帧估计基础噪声，再估计其他帧的残差噪声，合成为完整预测后更新状态；图中省略条件与系数。 #Luo-2023-VideoFusion#</div></div>
+<p>在 WebVid-10M 的较大配置中，基础生成器约有 20 亿参数，残差生成器约有 5.9 亿参数。大网络每步只处理一帧，较小网络承担其他帧的残差预测；它不是为每帧都训练一个独立的模型。 #Luo-2023-VideoFusion#</p>
+<h3 class="section-title" id="训练损失与条件">训练损失与条件</h3>
+<p>作者使用在 LAION-5B 上训练的 DALL·E 2 风格图像解码器作为基础生成器。这里的 decoder 指图像扩散生成器，不是 VAE 的重建解码器；论文没有提供足以将它认定为 OpenAI 官方检查点的权重信息。 #Luo-2023-VideoFusion#</p>
+<p>视频训练时，从中央干净帧提取 CLIP 图像表示，作为两个去噪网络的条件。另训一个 prior（先验模型），学习从文本、类别或空文本生成图像表示；生成时不再需要真实中央帧提供 CLIP 条件。这一点与前面介绍的 unCLIP/Make-A-Video 的条件接口相似，但不能据此把它们的所有训练设置等同。 #Luo-2023-VideoFusion#</p>
+<p><strong>基础网络要不要冻结？</strong> 作者发现完全冻结会受到图像与视频数据域差异的影响，因此基础网络也参与微调。不过，刚初始化的残差网络预测不稳定，若让所有帧的损失都反传到基础网络，会扰乱原有图像能力。方案是让基础生成器只接受中央帧损失： #Luo-2023-VideoFusion#</p>
+
+\[
+\mathcal L_{\mathrm{base}}
+=\mathbb E\left[\|u-B_\phi(x_t^m,t,c)\|_2^2\right].
+\]
+
+<p>对其他帧，记 \(\bar u=\operatorname{sg}(\widehat u)\)，其中 \(\operatorname{sg}\) 为 stop-gradient（停止梯度传播）： #Luo-2023-VideoFusion#</p>
+
+\[
+x_t^{\prime i}=x_t^i-b_t\sqrt{\lambda_i}\,\bar u,
+\] \[
+\mathcal L_{\mathrm{other}}
+=\mathbb E\left[
+\sum_{i\ne m}
+\left\|\epsilon^i-
+\sqrt{\lambda_i}\,\bar u-
+\sqrt{1-\lambda_i}\,R_\psi(x_t^{\prime i},t,i,c)
+\right\|_2^2
+\right].
+\]
+
+<p>这是按原文“非中央帧不向基础生成器反传”的说明整理的计算图：停止梯度也覆盖经过残差输入的那条路径。基础网络由 \(\mathcal L_{\mathrm{base}}\) 更新，残差网络由其他帧的误差更新，而非两个网络完全独立训练。 #Luo-2023-VideoFusion#</p>
+<p>还需注意，<strong>残差网络的实际损失监督是组合后的完整噪声误差</strong>。只有当 \(\widehat u=u\) 时，单帧误差才简化为 #Luo-2023-VideoFusion#</p>
+
+\[
+\left\|\epsilon^i-\sqrt{\lambda_i}\widehat u
+-\sqrt{1-\lambda_i}\widehat v^i\right\|^2
+=(1-\lambda_i)\|v^i-\widehat v^i\|^2.
+\]
+
+<p>当基础预测不准确时，残差分支也要应对这部分剩余误差。因此，不能把它理解为两个天然纯净、互不影响的“内容网络”和“运动网络”。 #Luo-2023-VideoFusion#</p>
+<h3 class="section-title" id="怎样采样">怎样采样</h3>
+<p>首先抽取共享初始噪声 \(u_T\) 与各帧残差噪声 \(v_T^i\)： #Luo-2023-VideoFusion#</p>
+
+\[
+x_T^m=u_T,\qquad
+x_T^i=\sqrt{\lambda_i}\,u_T
++\sqrt{1-\lambda_i}\,v_T^i\quad(i\ne m).
+\]
+
+<p>然后在每个采样时刻，依次运行基础预测、残差预测和噪声组合，再交给 DDIM 或 DDPM 更新。以确定性 DDIM 从 \(t\) 跨到 \(s\lt t\) 为例： #Luo-2023-VideoFusion#</p>
+
+\[
+\widehat x_0^i
+=\frac{x_t^i-b_t\widehat\epsilon^i}{a_t},
+\qquad
+x_s^i=a_s\widehat x_0^i+b_s\widehat\epsilon^i.
+\]
+
+<p>这里各帧的更新式仍可沿用 DDIM，但输入噪声和网络预测已经按 VideoFusion 相关结构构造。它不是给一个按独立噪声训练的模型临时换一份噪声，就自然获得论文效果。 #Luo-2023-VideoFusion#</p>
+<p>如果使用随机 DDPM，反向每一步新注入的噪声也要保持同样的跨帧结构：</p>
+
+\[
+x_{t-1}^i=\mu_\theta^i(x_t,t,c)
++\sqrt{\widetilde\beta_t}
+\left(\sqrt{\lambda_i}\,\zeta_t
++\sqrt{1-\lambda_i}\,\zeta_t^i\right),
+\]
+
+<p>其中 \(\zeta_t\) 在各帧间共享，\(\zeta_t^i\) 逐帧独立，二者均为标准高斯，且各步重新抽取。采用 DDPM 后验方差约定时， #Luo-2023-VideoFusion#</p>
+
+\[
+\widetilde\beta_t
+=\frac{1-\bar\alpha_{t-1}}{1-\bar\alpha_t}\beta_t.
+\]
+
+<p>这个写法保留原文附录的相关噪声采样机制，并明确区分方差与标准差；中央帧取 \(\lambda_m=1\)。WebVid 配置在附录报告 1000 个训练时刻、50 步 DDIM 和 CFG 引导系数 3。基础模型先生成 16 帧低分辨率视频，再由扩散超分辨率模型放大。 #Luo-2023-VideoFusion#</p>
+<div class="photo"><img alt="图 4：VideoFusion 在 WebVid-10M 上训练后的文本到视频样例，取自原论文 Figure 7。每组展示提示词与若干生成帧；它们是定性结果，不代表所有提示词都能达到同等质量。" loading="lazy" src="media/images/video-models-03-historical-methods/videofusion-text-video.webp"/><div class="cap">图 4：VideoFusion 在 WebVid-10M 上训练后的文本到视频样例，取自原论文 Figure 7。每组展示提示词与若干生成帧；它们是定性结果，不代表所有提示词都能达到同等质量。 #Luo-2023-VideoFusion#</div></div>
+<h3 class="section-title" id="实验证据与局限">实验证据与局限</h3>
+<p>先看相对于已有方法的提升。IS 为 Inception Score（越高越好），FVD 为 Fréchet Video Distance（越低越好）。原论文 Table 1 的 UCF101 无条件生成结果中，同为 16 帧、\(64\times64\) 输出的比较为： #Luo-2023-VideoFusion#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>IS ↑</th>
+<th>FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VDM</td>
+<td>57.00</td>
+<td>295</td>
+</tr>
+<tr>
+<td>VideoFusion</td>
+<td>71.67</td>
+<td>139</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 1 筛选同输出规格的两行。FVD 下降约 53%，说明论文报告的指标改善明显，但不等于视觉质量提高了 53%。这也不是只改变噪声的受控实验：VideoFusion 同时使用图像预训练、双网络分工和不同的训练策略。 #Luo-2023-VideoFusion#</p>
+<p>原论文 Table 6 进一步比较图像预训练的作用：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>IS ↑</th>
+<th>FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VDM（论文列出的基线）</td>
+<td>57.00</td>
+<td>295</td>
+</tr>
+<tr>
+<td>VideoFusion，无图像预训练</td>
+<td>65.29</td>
+<td>183</td>
+</tr>
+<tr>
+<td>VideoFusion，有图像预训练</td>
+<td>71.67</td>
+<td>139</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 6 整理，保留全部三行。没有图像预训练的 VideoFusion 仍有优势，加入预训练后又进一步改善；这支持完整方案及图像先验的价值，却没有把共享噪声的独立贡献与双网络等其他因素完全分开。 #Luo-2023-VideoFusion#</p>
+<p>效率方面，作者以同一基础图像生成器重实现 VDM，记作 VDM*，报告如下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模型</th>
+<th>显存占用（GB）↓</th>
+<th>延迟（秒）↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VDM*</td>
+<td>63.82</td>
+<td>0.40</td>
+</tr>
+<tr>
+<td>VideoFusion</td>
+<td>49.85</td>
+<td>0.17</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 4 整理。该设置下显存减少 21.8%，延迟减少 57.5%；原文未在此完整交代计时粒度，不能将 0.17 秒解释为生成整段视频的端到端耗时，也不能直接外推到其他模型和硬件。基础大网络每步只处理中央帧，是其节省计算的重要设计。 #Luo-2023-VideoFusion#</p>
+<p>两个消融能进一步检验方法是否符合直觉。首先是共享比例 \(\lambda_i\)：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>非中央帧共享比例</th>
+<th>IS ↑</th>
+<th>FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.10</td>
+<td>67.23</td>
+<td>149</td>
+</tr>
+<tr>
+<td>0.25</td>
+<td>69.16</td>
+<td>122</td>
+</tr>
+<tr>
+<td>0.50</td>
+<td>71.67</td>
+<td>139</td>
+</tr>
+<tr>
+<td>0.75</td>
+<td>69.56</td>
+<td>181</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 5（共享比例消融）整理，UCF101 无条件生成。IS 为 Inception Score，FVD 为 Fréchet Video Distance；它们分别越高、越低越好。0.50 的 IS 最高，0.25 的 FVD 更低，并没有一个比例在所有指标上最优。共享过少可能无法充分利用帧间联系，共享过多又可能限制变化，作者也将固定比例难以适配所有视频列为局限。 #Luo-2023-VideoFusion#</p>
+<p>其次是基础生成器的更新策略：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>训练方式</th>
+<th>IS ↑</th>
+<th>FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>冻结基础生成器</td>
+<td>65.06</td>
+<td>187</td>
+</tr>
+<tr>
+<td>联合训练、不停止梯度</td>
+<td>67.86</td>
+<td>168</td>
+</tr>
+<tr>
+<td>联合训练、使用停止梯度</td>
+<td>71.67</td>
+<td>139</td>
+</tr>
+</tbody>
+</table></div>
+<p>根据原论文 Table 7（联合训练消融）整理，同为 UCF101 无条件设置。结果支持在该实验中微调基础网络并限制梯度来源，而不是“预训练模型始终冻结最好”。 #Luo-2023-VideoFusion#</p>
+<p>内容与运动的控制也有边界。论文在 Weizmann Action 的专门实验中，对相同人物共享基础噪声、对相同动作共享残差噪声，加入额外训练约束后展示了相应控制效果。<strong>这不能证明普通训练已经自动、严格地解耦内容与运动</strong>。固定基础噪声也被用于分段扩展到 512 帧，但这属于受限数据上的续写演示，不是开放域长叙事一致性的保证。 #Luo-2023-VideoFusion#</p>
+<p>文本方面，图像表征 prior 对较短描述比较方便，但长文本包含时间顺序和多阶段事件，未必能被一个图像表示完整承载。再加上固定共享比例对大幅动作的限制，相关噪声本身并没有解决复杂运动与长期控制。 #Luo-2023-VideoFusion#</p>
+<p>概括来说，VideoFusion 改变的是<strong>视频噪声的联合分布与相应去噪分工</strong>：单帧仍使用熟悉的高斯加噪，跨帧则通过共享随机量相互联系。它与单纯增加时间卷积/注意力不同；下一篇 Latent-Shift 将回到网络特征，讨论怎样用低开销的时间交换连接帧。 #Luo-2023-VideoFusion#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="latent-shift">Latent-Shift</div>
+
+<h3 class="section-title" id="问题不增加时间层能学会运动吗">问题与思路</h3>
+<p>前面的工作通常在图像网络中加入时间卷积或时间注意力。An 等人于 2023 年提出 Latent-Shift，追问一个更节省参数的问题：<strong>能否保留预训练图像 U-Net 的可训练参数规模，仅通过重新组织特征，让它学习视频？</strong> #An-2023-LatentShift#</p>
+<p>一段视频逐帧送入图像模型，各帧之间没有通信，模型便难以协调动作。Latent-Shift 的核心办法是 temporal shift（时间移位）：把部分特征通道移动到相邻帧的位置，再交给原有的二维卷积处理。卷积看到的输入于是同时包含前一帧、当前帧和后一帧的信息。 #An-2023-LatentShift#</p>
+<p>这里移动的是<strong>网络中间特征的帧位置</strong>，不是让视频画面整体平移，也不是沿扩散时间移动噪声。它没有新增可学习的时间层，但仍需要用视频微调 U-Net。 #An-2023-LatentShift#</p>
+<h3 class="section-title" id="框架复用图像潜空间">潜空间框架</h3>
+<p>论文使用预训练图像 VAE，将每一帧独立编码成连续潜变量。对于视频 \(V\)，记其潜变量为 #An-2023-LatentShift#</p>
+
+\[
+U_0=\mathcal E(V)\in\mathbb R^{F\times h\times w\times c}.
+\]
+
+<p>其中 \(F\) 是帧数，\(h,w,c\) 是单帧潜变量的尺寸。论文设置为 16 帧、\(256\times256\) 图像，对应每帧 \(32\times32\times4\) 潜变量。视频来自 2 秒片段，训练数据是 WebVid 的约 1000 万组文本—视频对。 #An-2023-LatentShift#</p>
+<p>U-Net 由预训练文本到图像模型初始化：保留二维 ResNet、空间注意力和文本 cross-attention，在每个二维 ResNet 的残差支路内加入时间移位。VAE 与文本编码器冻结，U-Net 原有参数参与视频微调。 #An-2023-LatentShift#</p>
+<div class="photo"><img alt="图 5：Latent-Shift 整体框架，取自原论文 Figure 3。视频逐帧编码；潜空间 U-Net 在残差支路中交换时间特征，文本通过 cross-attention 注入。" loading="lazy" src="media/images/video-models-03-historical-methods/latent-shift-framework.webp"/><div class="cap">图 5：Latent-Shift 整体框架，取自原论文 Figure 3。视频逐帧编码；潜空间 U-Net 在残差支路中交换时间特征，文本通过 cross-attention 注入。 #An-2023-LatentShift#</div></div>
+<h3 class="section-title" id="时间移位让二维卷积看到相邻帧">时间移位</h3>
+<p>考虑某层的特征 \(Z\in\mathbb R^{C\times F\times H\times W}\)。用 \(i\) 表示视频帧，用 \(t\) 表示扩散时刻，两者必须区分。将第 \(i\) 帧的通道分为三等份： #An-2023-LatentShift#</p>
+
+\[
+Z_i=[Z_i^1,Z_i^2,Z_i^3].
+\]
+
+<p>每份有 \(C/3\) 个通道。时间移位后的中间帧为</p>
+
+\[
+Z'_i=[Z_{i-1}^1,Z_i^2,Z_{i+1}^3],\qquad 0<i<F-1.
+\]
+
+<p>也就是说，当前帧保留三分之一特征，另外两份分别来自前后相邻帧。首尾没有的邻帧用零填充：</p>
+
+\[
+\begin{aligned}
+Z'_0&=[0,Z_0^2,Z_1^3],\\
+Z'_{F-1}&=[Z_{F-2}^1,Z_{F-1}^2,0].
+\end{aligned}
+\]
+
+<p>这里没有把末帧绕回首帧。该操作同时读取过去和未来的邻帧，因此也不是只能从过去预测未来的因果结构。</p>
+<div class="photo"><img alt="图 6：时间移位的通道交换，取自原论文 Figure 2。橙色、绿色和蓝色分别表示三组通道；部分通道沿帧轴移动，随后重新拼成每帧特征。" loading="lazy" src="media/images/video-models-03-historical-methods/latent-shift-shift.webp"/><div class="cap">图 6：时间移位的通道交换，取自原论文 Figure 2。橙色、绿色和蓝色分别表示三组通道；部分通道沿帧轴移动，随后重新拼成每帧特征。 #An-2023-LatentShift#</div></div>
+<p><strong>为什么只交换位置，就能学习时间关系？</strong> 二维卷积虽然只在单帧空间网格上滑动，却会混合输入通道。忽略归一化与非线性后，可以把它简写为 #An-2023-LatentShift#</p>
+
+\[
+Y_i=K_1*Z_{i-1}^1+K_2*Z_i^2+K_3*Z_{i+1}^3,
+\]
+
+<p>其中 \(*\) 是空间二维卷积，\(K_1,K_2,K_3\) 是原卷积核对应的通道权重。输出已经依赖三帧：例如上一帧物体在左侧、当前帧在中间、下一帧在右侧的特征，可以在同一次通道混合中相互作用。微调让原来的空间权重适应这些新输入。 #An-2023-LatentShift#</p>
+<p>堆叠多个移位模块后，信息可以继续传播。在不考虑边界、且每层只移动一帧的简化情形，经过 \(L\) 层，潜在时间感受野可达到 \(1+2L\) 帧。不过，这种固定通道路由并不等价于任意三维卷积或内容自适应的全局时间注意力。 #An-2023-LatentShift#</p>
+<h3 class="section-title" id="训练参数不增加权重仍要更新">训练与参数更新</h3>
+<p>训练沿用潜空间噪声预测。随机抽取扩散时刻 \(t\)，向完整视频潜变量加入高斯噪声：</p>
+
+\[
+U_t=a_tU_0+b_t\epsilon,\qquad
+\epsilon\sim\mathcal N(0,I).
+\]
+
+<p>这里的 \(I\) 覆盖整个视频张量；没有采用 VideoFusion 那种共享基础噪声加逐帧残差噪声的分解。训练目标为 #An-2023-LatentShift#</p>
+
+\[
+\mathcal L_{\mathrm{vid}}=
+\mathbb E_{V,y,t,\epsilon}
+\left[\|\epsilon-\epsilon_\theta(U_t,t,\mathcal C(y))\|_2^2\right].
+\]
+
+<p>\(\mathcal C(y)\) 是冻结文本编码器给出的条件，\(\theta\) 是参与微调的 U-Net 参数。损失覆盖视频噪声张量；论文这里没有再加入单独的时间一致性损失。时间学习来自视频样本、跨帧特征交换以及联合去噪任务。 #An-2023-LatentShift#</p>
+<p>因此，“不增加参数”只表示移位算子没有可学习权重，不表示不用训练，也不表示完全没有数据搬运和运行开销。训练时还会随机丢弃文本，使同一网络支持 classifier-free guidance（CFG）。 #An-2023-LatentShift#</p>
+<h3 class="section-title" id="生成从视频潜噪声反向采样">采样流程</h3>
+<p>推理先抽取完整视频潜噪声，再反复调用带时间移位的 U-Net。用条件与无条件预测构造</p>
+
+\[
+\epsilon_{\mathrm{cfg}}=
+\epsilon_\theta(U_t,t,\varnothing)
++w\left[\epsilon_\theta(U_t,t,\mathcal C(y))-
+\epsilon_\theta(U_t,t,\varnothing)\right].
+\]
+
+<p>由此可以估计干净潜视频</p>
+
+\[
+\widehat U_0=\frac{U_t-b_t\epsilon_{\mathrm{cfg}}}{a_t},
+\]
+
+<p>再用 DDPM 反向高斯转移的均值和方差采样下一状态。与前面 DDPM 的解释一致，这不是把 \(\widehat U_0\) 单独按前向边际重新加一份独立噪声；反向均值还依赖当前状态 \(U_t\)。时间移位发生在每次网络预测内部，采样器本身没有因此变成一种新算法。 #An-2023-LatentShift#</p>
+<p>原文采用训练 1000 个扩散时刻、推理重采样为 100 步的 DDPM sampler，CFG 系数为 7.5。这里也说明 DDPM 可以重新安排推理步长，不能把它描述成数学上只能执行全部训练步。最后，VAE 解码器将生成的潜视频逐帧解码为像素视频。 #An-2023-LatentShift#</p>
+<h3 class="section-title" id="实验省了多少付出了什么">性能与开销</h3>
+<p>先看原论文 Table 1 的 MSR-VTT 零样本结果。下表选出两种外部方法和作者自己训练的时间注意力基线 Latent-VDM，便于区分跨论文比较与同设置比较。 #An-2023-LatentShift#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>FID ↓</th>
+<th>CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CogVideo</td>
+<td>23.59</td>
+<td>0.2631</td>
+</tr>
+<tr>
+<td>Make-A-Video</td>
+<td>13.17</td>
+<td>0.3049</td>
+</tr>
+<tr>
+<td>Latent-VDM（时间注意力基线）</td>
+<td>14.25</td>
+<td>0.2756</td>
+</tr>
+<tr>
+<td>Latent-Shift</td>
+<td>15.23</td>
+<td>0.2773</td>
+</tr>
+</tbody>
+</table></div>
+<p>Latent-Shift 相比作者的时间注意力基线，文本相似度略高，FID 略差；相比 Make-A-Video，两项都落后。它的主要价值是<strong>以更简单、参数更少的时间建模方式，取得接近该受控基线的结果</strong>，而不是所有质量指标全面提升。 #An-2023-LatentShift#</p>
+<p>原论文 Table 4 的同组比较如下，时间在单张 A100 80GB 上测量。保留组件拆分，避免把 U-Net 参数量误当作整个系统参数量。 #An-2023-LatentShift#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>扩散主干（B）</th>
+<th>自编码器（B）</th>
+<th>文本编码器（B）</th>
+<th>总计（B）</th>
+<th>生成时间（秒）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Latent-VDM</td>
+<td>0.92</td>
+<td>0.08</td>
+<td>0.58</td>
+<td>1.58</td>
+<td>28.62</td>
+</tr>
+<tr>
+<td>Latent-Shift</td>
+<td>0.87</td>
+<td>0.08</td>
+<td>0.58</td>
+<td>1.53</td>
+<td>23.40</td>
+</tr>
+</tbody>
+</table></div>
+<p>B 表示十亿参数。相较这个时间注意力基线，Latent-Shift 的生成时间减少约 18.2%；这不表示相较所有视频模型都有同样收益。 #An-2023-LatentShift#</p>
+<p>再看原论文 Table 2 中的同组 UCF-101 结果：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>IS ↑</th>
+<th>FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Latent-VDM</td>
+<td>90.74</td>
+<td>358.34</td>
+</tr>
+<tr>
+<td>Latent-Shift</td>
+<td>92.72</td>
+<td>360.04</td>
+</tr>
+</tbody>
+</table></div>
+<p>这里是<strong>在 UCF-101 上微调后的文本条件生成</strong>，不是上表的零样本评估。作者使用全部 13,320 个视频（包含 train/test）训练、在 train split 上评估，因此不能把这些 FVD 与 VideoFusion 的无条件生成结果直接排名。这个比较仍是 IS 略好、FVD 略差。 #An-2023-LatentShift#</p>
+<p>还有一项结构消融很重要：推理时移除时间移位，已微调模型无法正常生成视频。没有参数的操作仍然改变了网络的信息流，不能在训练后随意关闭。 #An-2023-LatentShift#</p>
+<div class="photo"><img alt="图 7：推理保留与移除时间移位的对照，取自原论文 Figure 7。上排保留移位，下排禁用；训练后的网络已依赖这种通道组织。" loading="lazy" src="media/images/video-models-03-historical-methods/latent-shift-t2v2.webp"/><div class="cap">图 7：推理保留与移除时间移位的对照，取自原论文 Figure 7。上排保留移位，下排禁用；训练后的网络已依赖这种通道组织。 #An-2023-LatentShift#</div></div>
+<h3 class="section-title" id="局限与小结">局限与小结</h3>
+<p>这种低成本时间建模仍会出现复杂物体与动作组合失真、提示内容遗漏，以及运动幅度不足。图像 VAE 逐帧编码，未必能充分保留视频需要的时间结构；移位提供邻帧通信，也不能自动解决长距离动作规划。 #An-2023-LatentShift#</p>
+<div class="photo"><img alt="图 8：Latent-Shift 的失败案例，取自原论文 Figure 8。依次展示形体失真、提示内容未完整实现与运动不足。" loading="lazy" src="media/images/video-models-03-historical-methods/latent-shift-failure.webp"/><div class="cap">图 8：Latent-Shift 的失败案例，取自原论文 Figure 8。依次展示形体失真、提示内容未完整实现与运动不足。 #An-2023-LatentShift#</div></div>
+<p>评估也有局限：MSR-VTT 的逐帧 FID 与 CLIPSIM 不直接衡量动作。原论文 Table 5 把生成图像当作不动的视频，得到如下结果（保留全部三行）： #An-2023-LatentShift#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>生成方式</th>
+<th>FID ↓</th>
+<th>CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始图像 LDM，静止视频</td>
+<td>15.36</td>
+<td>0.2910</td>
+</tr>
+<tr>
+<td>Latent-Shift，单帧生成后视为静止视频</td>
+<td>15.64</td>
+<td>0.2737</td>
+</tr>
+<tr>
+<td>Latent-Shift，视频生成</td>
+<td>15.23</td>
+<td>0.2773</td>
+</tr>
+</tbody>
+</table></div>
+<p>静止图像也能获得接近、甚至部分更好的指标，因此这些分数不能单独证明运动质量。Latent-Shift 的贡献应当理解为一种<strong>复用图像网络的时间通信结构</strong>：VideoFusion 通过噪声联合分布联系视频帧，Latent-Shift 通过中间特征的通道交换联系视频帧；训练目标仍是熟悉的噪声预测。 #An-2023-LatentShift#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="pyoco">PYoCo</div>
+
+<h3 class="section-title" id="问题怎样保留图像模型的能力">问题与思路</h3>
+<p>Ge 等人在 2023 年提出 Preserve Your Own Correlation: A Noise Prior for Video Diffusion Models，简称 PYoCo，意为“保留自身的相关性”。它研究的不是怎样从头训练视频模型，而是：<strong>将预训练图像扩散模型微调成视频模型时，怎样保留已有的画面生成能力，同时学会时间关系？</strong> #Ge-2023-PYoCo#</p>
+<p>前面的 Latent-Shift 调整中间特征的信息流；PYoCo 回到输入分布：图像模型每次处理一张图像，噪声可以独立抽取；但视频帧彼此相关，把图像噪声简单扩展成每帧完全独立的视频噪声，是否是最适合微调的选择？ #Ge-2023-PYoCo#</p>
+<p>作者先做了一个反演实验。把真实视频逐帧送入预训练图像模型，沿扩散 ODE 的反方向，从图像映射到高噪声状态。他们发现，同一视频各帧对应的噪声比不同视频之间更相似。这里的“噪声”是模型反演得到的潜在起点，不是从视频里测量出来的传感器噪声，也不是事先给视频加入的一组已知随机数。 #Ge-2023-PYoCo#</p>
+<p>根据原论文 Table 1 整理，保留两组比较：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>反演噪声的帧来源</th>
+<th>平均余弦相似度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>同一视频</td>
+<td>0.206 ± 0.156</td>
+</tr>
+<tr>
+<td>不同视频</td>
+<td>0.001 ± 0.009</td>
+</tr>
+</tbody>
+</table></div>
+<p>这为相关噪声提供了经验动机：相似画面在同一个图像模型下可以对应相近的噪声起点。但它不意味着独立噪声无法生成视频，也不证明所有图像反演器都具有完全相同的相关结构。是否有助于视频微调，还要看后面的受控实验。 #Ge-2023-PYoCo#</p>
+<div class="photo"><img alt="图 9：真实视频帧反演噪声的相关性，取自原论文 Figure 2(a)。同一视频各帧的反演噪声在 t-SNE 可视化中形成聚集；降维图用于展示观察，不直接给出高维相关系数。" loading="lazy" src="media/images/video-models-03-historical-methods/pyoco-tsne-real.webp"/><div class="cap">图 9：真实视频帧反演噪声的相关性，取自原论文 Figure 2(a)。同一视频各帧的反演噪声在 t-SNE 可视化中形成聚集；降维图用于展示观察，不直接给出高维相关系数。 #Ge-2023-PYoCo#</div></div>
+<h3 class="section-title" id="混合噪声保留共同成分">混合噪声</h3>
+<p>用 \(i\) 表示视频帧，\(\sigma\) 表示扩散噪声强度。先抽取一张所有帧共享的标准高斯噪声 \(z_s\)，以及逐帧独立的标准高斯噪声 \(z_i\)。PYoCo 的 mixed noise（混合噪声）可等价写成 #Ge-2023-PYoCo#</p>
+
+\[
+\epsilon^i=\frac{\alpha}{\sqrt{1+\alpha^2}}z_s
++\frac{1}{\sqrt{1+\alpha^2}}z_i,
+\qquad z_s,z_i\sim\mathcal N(0,I).
+\]
+
+<p>\(\alpha\ge0\) 控制共享程度。由于两个分量独立，每一帧的噪声方差仍为</p>
+
+\[
+\operatorname{Var}(\epsilon^i)=
+\frac{\alpha^2}{1+\alpha^2}I+
+\frac{1}{1+\alpha^2}I=I.
+\]
+
+<p>因此单帧仍服从标准高斯，但不同帧的联合分布改变了。对于 \(i\ne j\)，</p>
+
+\[
+\operatorname{Cov}(\epsilon^i,\epsilon^j)
+=\frac{\alpha^2}{1+\alpha^2}I.
+\]
+
+<p>无论相隔一帧还是十帧，共享噪声带来的相关性都相同。这与 VideoFusion 的“共享基础噪声＋独立残差噪声”在噪声构造上属于同一种形式；若共享比例记为 \(\lambda\)，则对应 \(\lambda=\alpha^2/(1+\alpha^2)\)。但 PYoCo 不沿用 VideoFusion 的基础/残差双去噪器分工，而是微调一个完整视频去噪器。 #Ge-2023-PYoCo#</p>
+<h3 class="section-title" id="渐进噪声让相关性随帧距衰减">渐进噪声</h3>
+<p>相邻帧通常比相距很远的帧更相似。PYoCo 因而进一步提出 progressive noise（渐进噪声）。令</p>
+
+\[
+\rho=\frac{\alpha}{\sqrt{1+\alpha^2}},
+\qquad \epsilon^0\sim\mathcal N(0,I),
+\]
+
+<p>随后沿 <strong>视频帧轴</strong> 递推：</p>
+
+\[
+\epsilon^i=\rho\epsilon^{i-1}
++\sqrt{1-\rho^2}\,z_i,
+\qquad z_i\sim\mathcal N(0,I).
+\]
+
+<p>这正是原论文公式的等价写法，因为 \(1-\rho^2=1/(1+\alpha^2)\)。假设前一帧噪声方差为 \(I\)，当前帧方差就是 #Ge-2023-PYoCo#</p>
+
+\[
+\operatorname{Var}(\epsilon^i)
+=\rho^2I+(1-\rho^2)I=I.
+\]
+
+<p>继续展开 \(k\) 次，可得</p>
+
+\[
+\epsilon^i=\rho^k\epsilon^{i-k}
++\sqrt{1-\rho^2}\sum_{r=0}^{k-1}\rho^r z_{i-r}.
+\]
+
+<p>右边的新噪声都与 \(\epsilon^{i-k}\) 独立，所以</p>
+
+\[
+\boxed{\operatorname{Cov}(\epsilon^i,\epsilon^{i-k})=\rho^kI.}
+\]
+
+<p>这就是它与混合噪声的关键区别：<strong>单帧分布相同，跨帧相关性却随帧距衰减</strong>。例如 \(\alpha=2\) 时，\(\rho\approx0.894\)，相邻帧相关性较高，相隔十帧则约为 \(0.328\)。 #Ge-2023-PYoCo#</p>
+<p>注意，“渐进”是在构造同一份视频噪声时沿帧轴递推，不是每去噪一步就增加 \(\alpha\)，也不是先生成一帧清晰视频，再生成下一帧。噪声构造完成后，去噪网络仍联合处理整段视频。 #Ge-2023-PYoCo#</p>
+<div class="photo"><img alt="图 10：渐进噪声与独立噪声的可视化比较，取自原论文 Figure 2(b)。渐进噪声在帧间建立联系，以近似前述反演噪声的聚集现象。" loading="lazy" src="media/images/video-models-03-historical-methods/pyoco-tsne-prior.webp"/><div class="cap">图 10：渐进噪声与独立噪声的可视化比较，取自原论文 Figure 2(b)。渐进噪声在帧间建立联系，以近似前述反演噪声的聚集现象。 #Ge-2023-PYoCo#</div></div>
+<h3 class="section-title" id="训练相关加噪与图像视频联合微调">相关噪声训练</h3>
+<p>PYoCo 采用 EDM 的加性噪声记号。对干净视频 \(X_0\)，按上面的策略生成完整噪声张量 \(\epsilon\)，再构造 #Ge-2023-PYoCo#</p>
+
+\[
+X_\sigma=X_0+\sigma\epsilon.
+\]
+
+<p>去噪器 \(D_\theta\) 预测干净视频，训练目标为</p>
+
+\[
+\mathcal L=
+\mathbb E\left[
+\lambda(\sigma)\|D_\theta(X_\sigma;e,\sigma)-X_0\|_2^2
+\right],
+\qquad
+\lambda(\sigma)=\frac{\sigma^2+\sigma_{\mathrm{data}}^2}
+{\sigma^2\sigma_{\mathrm{data}}^2}.
+\]
+
+<p>其中 \(e\) 是文本条件，\(\sigma_{\mathrm{data}}=0.5\)，训练噪声强度满足 \(\ln\sigma\sim\mathcal N(-1.2,1.2^2)\)。损失形式仍是去噪回归，变化在于期望里的<strong>视频噪声联合分布</strong>。 #Ge-2023-PYoCo#</p>
+<p>与前面的 EDM 一样，\(D_\theta\) 还包含预条件：</p>
+
+\[
+D_\theta(X;e,\sigma)=c_{\mathrm{skip}}X+
+ c_{\mathrm{out}}F_\theta(c_{\mathrm{in}}X;e,c_{\mathrm{noise}}),
+\]
+
+
+\[
+\begin{aligned}
+c_{\mathrm{skip}}&=\frac{\sigma_{\mathrm{data}}^2}{\sigma^2+\sigma_{\mathrm{data}}^2},&
+c_{\mathrm{out}}&=\frac{\sigma\sigma_{\mathrm{data}}}{\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}},\\
+c_{\mathrm{in}}&=\frac1{\sqrt{\sigma^2+\sigma_{\mathrm{data}}^2}},&
+c_{\mathrm{noise}}&=\frac{\ln\sigma}{4}.
+\end{aligned}
+\]
+
+<p>因此，“预测干净视频”描述的是整个去噪器的输出，不意味着内部网络 \(F_\theta\) 的裸输出就是干净视频。 #Ge-2023-PYoCo#</p>
+<p>大规模模型由 eDiff-I 图像模型初始化，加入时间注意力，并联合使用图像和视频微调。图像部分不经过时间模块，以继续训练画面生成；视频部分经过时间模块，以学习动态。空间卷积扩为 \(1\times3\times3\) 只是适配视频张量，本身不混合邻帧；基础与插帧网络通过新增的时间注意力交换时间信息，空间超分网络还加入 \(3\times1\times1\) 时间卷积。 #Ge-2023-PYoCo#</p>
+<p>T5 与 CLIP 文本编码提供条件，通过空间注意力块中的 cross-attention 注入；训练时分别随机丢弃文本嵌入以支持 CFG。这是有文本—视频配对数据的微调，不是 Make-A-Video 那种不依赖视频描述的数据分工。大规模数据包含约 12 亿文本—图像对和 2250 万文本—视频对，其中包括私有数据。 #Ge-2023-PYoCo#</p>
+<h3 class="section-title" id="生成相关噪声与四级级联">采样与级联</h3>
+<p>PYoCo 在像素空间使用四级生成，不通过 VAE 压缩视频：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>级别</th>
+<th>输出（帧数 × 高 × 宽）</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>基础模型</td>
+<td>16 × 64 × 64</td>
+<td>生成稀疏视频帧</td>
+</tr>
+<tr>
+<td>时间插帧</td>
+<td>76 × 64 × 64</td>
+<td>在稀疏帧间补出中间帧</td>
+</tr>
+<tr>
+<td>空间超分一</td>
+<td>76 × 256 × 256</td>
+<td>恢复空间细节</td>
+</tr>
+<tr>
+<td>空间超分二</td>
+<td>76 × 1024 × 1024</td>
+<td>进一步提高分辨率</td>
+</tr>
+</tbody>
+</table></div>
+<p>基础帧对应原时间轴上的 \(1,6,11,\ldots,76\)，故 15 个间隔各补 4 帧后，总帧数为 \(16+15\times4=76\)。插帧模型是另行训练的条件网络：将已知帧放回对应位置，其余位置填零，沿通道维与带噪输入拼接。它不是无需训练就自动完成插帧。 #Ge-2023-PYoCo#</p>
+<div class="photo"><img alt="图 11：PYoCo 的四级生成架构，取自原论文 Figure 3。先生成稀疏低分辨率视频，再增加帧数与空间分辨率，各级使用文本条件。" loading="lazy" src="media/images/video-models-03-historical-methods/pyoco-architecture.webp"/><div class="cap">图 11：PYoCo 的四级生成架构，取自原论文 Figure 3。先生成稀疏低分辨率视频，再增加帧数与空间分辨率，各级使用文本条件。 #Ge-2023-PYoCo#</div></div>
+<p>反向生成的初始视频噪声必须与训练的相关构造一致：令 \(Z\sim\mathcal N(0,\Sigma)\)，从 \(X_{\sigma_{\max}}=\sigma_{\max}Z\) 开始，逐步降低 \(\sigma\)。这里 \(\Sigma\) 表示前面推导的帧间协方差；大规模实验选择渐进噪声、\(\alpha=2\)。只在推理时给独立噪声模型换一份相关噪声，并不等于论文方案。 #Ge-2023-PYoCo#</p>
+<p>论文在预备知识中给出 EDM 的去噪 ODE：</p>
+
+\[
+\frac{dX}{d\sigma}=\frac{X-D_\theta(X;e,\sigma)}{\sigma}.
+\]
+
+<p>一个自然疑问是：加噪相关了，这个公式还能用吗？下面补充其数学解释，而不是把独立噪声的 score 关系直接照搬。对于固定且正定的 \(\Sigma\)，相关高斯扰动满足 #Ge-2023-PYoCo#</p>
+
+\[
+s_\sigma(X)=\nabla_X\log p_\sigma(X\mid e)
+=\frac1{\sigma^2}\Sigma^{-1}
+\bigl(\mathbb E[X_0\mid X,e]-X\bigr).
+\]
+
+<p>相应前向 SDE 的扩散协方差为 \(2\sigma\Sigma\)，其概率流 ODE 是</p>
+
+\[
+\frac{dX}{d\sigma}=-\sigma\Sigma s_\sigma(X)
+=\frac{X-\mathbb E[X_0\mid X,e]}{\sigma}.
+\]
+
+<p>所以，以训练好的去噪器近似条件均值后，更新形式仍然相同；改变的是所学习的分布、去噪器和初始噪声。尤其不能把相关情形的 score 仍写成 \((D-X)/\sigma^2\)，遗漏 \(\Sigma^{-1}\)。上述推导针对有限 \(\alpha\) 的非退化协方差。 #Ge-2023-PYoCo#</p>
+<p>实现使用 DEIS 及其随机变体采样。DEIS 是 Diffusion Exponential Integrator Sampler（扩散指数积分采样器）；论文大规模配置表给出基础模型 60 步随机 DEIS、超分模型 20 步 DEIS，小规模 UCF 实验另用 25 步设置。因此，不能把整套系统概括成固定 25 步，也不能因为预备知识写了 ODE，就说所有推理都不注入随机性。 #Ge-2023-PYoCo#</p>
+<h3 class="section-title" id="实验相关噪声是否真的有用">噪声消融与结果</h3>
+<p>最能回答方法贡献的是原论文 Table 5：在小规模 UCF-101 上比较训练策略。下表保留全部五行；FID 衡量单帧，FVD 衡量视频，IS 衡量生成样本的类别可识别性与多样性。 #Ge-2023-PYoCo#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>训练策略</th>
+<th>IS ↑</th>
+<th>FVD ↓</th>
+<th>单帧 FID ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>图像扩散模型，仅生成图像</td>
+<td>—</td>
+<td>—</td>
+<td>30.05</td>
+</tr>
+<tr>
+<td>视频模型从头训练</td>
+<td>28.25</td>
+<td>903.37</td>
+<td>124.75</td>
+</tr>
+<tr>
+<td>图像模型微调，独立噪声</td>
+<td>41.25</td>
+<td>566.67</td>
+<td>56.43</td>
+</tr>
+<tr>
+<td>图像模型微调，混合噪声</td>
+<td>52.71</td>
+<td>337.40</td>
+<td>31.57</td>
+</tr>
+<tr>
+<td>图像模型微调，渐进噪声</td>
+<td>53.52</td>
+<td>339.67</td>
+<td>31.88</td>
+</tr>
+</tbody>
+</table></div>
+<p>从头训练换成图像预训练，已经有明显改善；在微调设置下再换成相关噪声，FVD 又从 566.67 降到约 338，单帧 FID 也接近原始图像模型。这支持作者的核心主张：相关噪声不仅改善时间结果，也有助于保留图像生成质量。它不是单纯增加了一个更大网络的比较。 #Ge-2023-PYoCo#</p>
+<p>混合与渐进的表现接近：混合噪声的 FVD 略低，渐进噪声的 IS 略高，不能据此声称渐进全面优于混合。作者在大规模系统里选择渐进噪声，是考虑其沿帧轴的递推结构。 #Ge-2023-PYoCo#</p>
+<p>相关性也不是越强越好。\(\alpha=0\) 时，两种构造都变回独立噪声；\(\alpha\to\infty\) 时，各帧共享同一噪声，丢失时间变化的随机来源。作者的实验出现冻结视频。强相关限制了模型表达运动，弱相关则不能充分利用共享结构。 #Ge-2023-PYoCo#</p>
+<div class="photo"><img alt="图 12：噪声相关强度的消融，取自原论文 Figure 7。小规模模型中，混合噪声在 α 1、渐进噪声在 α 2 附近取得较好结果；过大或过小均会退化。" loading="lazy" src="media/images/video-models-03-historical-methods/pyoco-alpha-ablation.webp"/><div class="cap">图 12：噪声相关强度的消融，取自原论文 Figure 7。小规模模型中，混合噪声在 α 1、渐进噪声在 α 2 附近取得较好结果；过大或过小均会退化。 #Ge-2023-PYoCo#</div></div>
+<p>再看大规模系统。原论文 Table 2 的零样本文本到视频比较，下面选取三项已有方法与 PYoCo；这些不是前面在 UCF 上训练的小模型结果。 #Ge-2023-PYoCo#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>UCF-101 IS ↑</th>
+<th>UCF-101 FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Make-A-Video</td>
+<td>33.00</td>
+<td>367.23</td>
+</tr>
+<tr>
+<td>Video LDM</td>
+<td>33.45</td>
+<td>550.61</td>
+</tr>
+<tr>
+<td>CogVideo（英文）</td>
+<td>25.27</td>
+<td>701.59</td>
+</tr>
+<tr>
+<td>PYoCo</td>
+<td>47.76</td>
+<td>355.19</td>
+</tr>
+</tbody>
+</table></div>
+<p>PYoCo 的 FVD 相比 Make-A-Video 改善约 3.3%，不是数量级变化；IS 改善更明显。完整系统同时用了图像预训练、相关噪声、级联与图像—视频联合训练，跨论文结果不能全部归因于噪声设计。 #Ge-2023-PYoCo#</p>
+<p>原论文 Table 3 的 MSR-VTT 结果还区分两种图像特征度量。下面保留 PYoCo 全部四种配置：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>PYoCo 配置</th>
+<th>CLIP-FID ↓</th>
+<th>Inception FID ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A：基础配置</td>
+<td>10.21</td>
+<td>25.39</td>
+</tr>
+<tr>
+<td>B：加入超分专家集成</td>
+<td>9.95</td>
+<td>24.28</td>
+</tr>
+<tr>
+<td>C：再加入时间插帧专家集成</td>
+<td>9.91</td>
+<td>24.54</td>
+</tr>
+<tr>
+<td>D：再加入基础模型专家集成</td>
+<td>9.73</td>
+<td>22.14</td>
+</tr>
+</tbody>
+</table></div>
+<p>CLIP-FID 使用 CLIP ViT-B/32 特征，另一列使用 Inception-V3 特征；二者数值不应混用。每条测试描述生成 76 帧、\(256\times256\) 视频，表中改善还涉及按噪声区间使用专家去噪器，而不只是更换噪声。配置 C 的 Inception FID 比 B 略差，也提醒我们不同指标不总是同步改善。 #Ge-2023-PYoCo#</p>
+<h3 class="section-title" id="研究猜想让噪声沿运动对应关系传播">研究猜想：沿运动传播噪声</h3>
+<p>前面的消融没有证明渐进噪声显著优于混合噪声：两者各有略好的指标，整体表现接近。一个值得进一步检验的问题是：<strong>渐进噪声目前只控制相关性的强弱，如果还能控制相关信息向哪里传播，是否会更有效？</strong> 下面是本文讨论提出的研究设想，不是 PYoCo 已实现或验证的结论。</p>
+<p>原来的递推为</p>
+
+\[
+\epsilon^i=\rho\epsilon^{i-1}+\sqrt{1-\rho^2}\,z_i.
+\]
+
+<p>它让同一空间位置的噪声跨帧相关，却不显式描述物体运动。例如，一只老虎从画面左侧走向右侧，对应物体的共享信息也许应沿这个位移传播，而不是总在固定像素位置继承。这里所谓“方向”，是<strong>视频帧之间的空间对应关系</strong>，不是扩散去噪向量场的方向，也不是调整噪声均值。</p>
+<p>可以设想由一个小模型根据文本、参考图像或已有帧预测搬运算子 \(W_i\)，把递推改为</p>
+
+\[
+\epsilon^i=\rho W_i\epsilon^{i-1}+\eta_i.
+\]
+
+<p>\(W_i\) 表示平移、变形或特征位置之间的对应，\(\eta_i\) 提供新出现区域及运动变化所需的随机性。这个设想把固定位置的相关噪声，扩展成沿运动对应关系传播的相关噪声；它不预先保证效果优于混合噪声。</p>
+<p>首先要解决<strong>噪声分布是否仍然合适</strong>。对于固定的 \(W_i\)，若上一帧噪声的协方差为 \(I\)，且新扰动与其独立，则</p>
+
+\[
+\operatorname{Cov}(\epsilon^i)
+=\rho^2W_iW_i^{\mathsf T}+\operatorname{Cov}(\eta_i).
+\]
+
+<p>若希望单帧仍为标准高斯，可以在矩阵正半定的条件下选择</p>
+
+\[
+\eta_i\sim\mathcal N\!\left(0,I-\rho^2W_iW_i^{\mathsf T}\right).
+\]
+
+<p>当 \(W_i\) 是正交的位置置换时，原来的扰动方差就足够；普通的插值或形变不一定满足这个性质，不能直接套用原公式。如果 \(W_i\) 还依赖当前噪声，上述固定算子的计算也不再足以保证高斯边际，需要另行分析。</p>
+<p>第二个问题是<strong>推理时从哪里获得运动</strong>。纯文本生成尚没有真实视频，小模型需要根据可用条件预测或采样运动；如果训练依赖真实光流、推理却拿不到，会形成条件不一致。遮挡和新内容出现也意味着不能只搬运已有噪声，必须保留生成新信息的能力。</p>
+<p>验证时应在相同主模型、数据和训练预算下，比较独立噪声、混合噪声、固定渐进噪声，以及可学习搬运噪声，并计入小模型的额外成本。除了 FVD、画面质量和文本对齐，还应检查运动幅度、跨帧对应、拖影与冻结，防止把“不动”误判为“一致”。还可加入使用真实运动的参考实验，区分搬运思路本身的潜力与小模型预测误差的影响，但不能把这种参考设置当作实际文本生成效果。</p>
+<p>因此，目前能够提出的猜想是：<strong>显式建模运动对应关系，可能比只规定相关性衰减更适合部分视频生成任务。</strong> 现有实验还不能把渐进噪声的表现归因于“方向选错”，更不能断言选对以后一定优于混合噪声。</p>
+<h3 class="section-title" id="小结与局限">小结与局限</h3>
+<p>PYoCo 的贡献，是把<strong>视频加噪的联合分布</strong>作为图像模型视频微调中的一个独立设计维度：单帧仍是标准高斯，跨帧可以共享随机性，也可以让相关性随距离衰减。它与 VideoFusion 有共同的相关噪声思路，但没有采用同样的双网络分解；与 Latent-Shift 相比，它既改变噪声，也加入可学习的时间模块。 #Ge-2023-PYoCo#</p>
+<p>它的限制同样清楚：相关性只规定随机起点的统计联系，不提供物体轨迹、遮挡或物理规律；过强相关还会损害运动。固定长度加上插帧不等于解决长视频生成。完整系统仍要训练多个级联网络，使用大量图像、视频及私有数据；小模型上的效率优势不能直接当作整个高清系统的训练成本。最后，逐帧 FID 与少数视频分数仍不足以证明复杂动作、长时间一致性及提示遵循都已解决。 #Ge-2023-PYoCo#</p>
+
+</div>
+<div class="ch fade-in">
+<div class="ch-title" id="videofactory">VideoFactory</div>
+
+<h3 class="section-title" id="问题空间与时间特征怎样配合">问题与思路</h3>
+<p>Wang 等人在 2023 年提出 VideoFactory，首发论文题名为 VideoFactory: Swap Attention in Spatiotemporal Diffusions for Text-to-Video Generation。本节以首发版（v1）为依据。它回到网络内部，讨论一个与 PYoCo 不同的问题：<strong>已经有了空间模块和时间模块，应该怎样让它们交换信息？</strong> #Wang-2023-VideoFactory#</p>
+<p>空间模块擅长处理每帧的外观、布局和文本条件，时间模块负责跨帧关系。把二者串联或相加可以完成信息融合，但融合规则比较固定。作者提出 Swapped spatiotemporal Cross-Attention（交换式时空交叉注意力，Swap-CA），让一类特征根据内容读取另一类特征，再在相邻块中交换读取方向。 #Wang-2023-VideoFactory#</p>
+<p>这里不能说此前的分解式网络完全没有时间与空间交互：串联、卷积及残差本来就在传递信息。VideoFactory 具体增加的是<strong>空间特征与时间特征之间显式、依赖内容的交叉注意力</strong>。它也不同于文本 cross-attention：文本条件仍另行注入，Swap-CA 的两端都是视频特征。 #Wang-2023-VideoFactory#</p>
+<div class="photo"><img alt="图 13：交换式时空交叉注意力与已有注意力结构的对照，取自首发原论文 Figure 1。Swap-CA 显式让空间与时间特征互相读取。" loading="lazy" src="media/images/video-models-03-historical-methods/videofactory-attention.webp"/><div class="cap">图 13：交换式时空交叉注意力与已有注意力结构的对照，取自首发原论文 Figure 1。Swap-CA 显式让空间与时间特征互相读取。 #Wang-2023-VideoFactory#</div></div>
+<h3 class="section-title" id="交叉注意力谁提问谁提供信息">交叉注意力</h3>
+<p>先把同一窗口中的空间特征写成 \(S\in\mathbb R^{N\times C}\)，时间特征写成 \(T\in\mathbb R^{N\times C}\)。这里 \(N\) 是窗口内的时空位置数，\(C\) 是通道数，两组特征分别来自空间与时间模块。 #Wang-2023-VideoFactory#</p>
+<p>以空间特征为 Query（查询）、时间特征为 Key/Value（键/值）时，使用行向量记号可写为</p>
+
+\[
+Q=SW_Q,\qquad K=TW_K,\qquad V=TW_V,
+\]
+
+
+\[
+\operatorname{CA}(S,T)=
+\operatorname{softmax}\!\left(\frac{QK^{\mathsf T}}{\sqrt d}\right)V.
+\]
+
+<p>其中 \(d\) 是每个注意力头的查询维数，softmax 对每个查询对应的键位置归一化。对空间查询位置 \(p\)，有 #Wang-2023-VideoFactory#</p>
+
+\[
+\operatorname{CA}(S,T)_p
+=\sum_q A_{pq}V_q,
+\qquad
+A_{pq}=\frac{\exp(Q_p\cdot K_q/\sqrt d)}
+{\sum_r\exp(Q_p\cdot K_r/\sqrt d)}.
+\]
+
+<p>这意味着，空间位置不是机械地加上同位置的时间特征，而是根据匹配程度，从窗口内多个时间特征位置读取信息。Query 决定“哪些位置在提问”，Value 决定“读回来的是什么”。因此，\(\operatorname{CA}(S,T)\) 和 \(\operatorname{CA}(T,S)\) 一般不同；交换 Query 的来源既不只是转置注意力矩阵，也不是把同一个输出换个名字。 #Wang-2023-VideoFactory#</p>
+<p>当 \(S\) 查询 \(T\)，空间特征可以读取运动和跨帧上下文；当 \(T\) 查询 \(S\)，时间特征可以读取外观与已经融入空间模块的文本语义。作者希望借助两个方向，兼顾画面/运动质量和文本对齐。 #Wang-2023-VideoFactory#</p>
+<h3 class="section-title" id="swap-ca相邻块交换查询方向">交换查询方向</h3>
+<p>论文不是在一次注意力计算里交换两帧图像，也不是在不同扩散时刻切换去噪方向。“交换”发生在<strong>网络相邻块</strong>：第一个块采用空间 Query、时间 Key/Value，下一个块采用时间 Query、空间 Key/Value。 #Wang-2023-VideoFactory#</p>
+<p>为说明计算过程，把归一化与输入投影后的两组特征记为 \(\widetilde S^l,\widetilde T^l\)。第一个块的主要步骤是</p>
+
+\[
+H^l=\operatorname{MCA}_{\mathrm{3DW}}
+\bigl(\operatorname{LN}(\widetilde S^l),
+\operatorname{LN}(\widetilde T^l)\bigr)+\widetilde S^l,
+\]
+
+
+\[
+\overline H^l=H^l+
+\operatorname{FFN}\bigl(\operatorname{LN}(H^l)\bigr),
+\qquad
+Z^l=S^l+T^l+\operatorname{Proj}_{\mathrm{out}}^l(\overline H^l).
+\]
+
+<p>MCA 是多头交叉注意力，LN 是 Layer Normalization（层归一化），FFN 是逐位置前馈网络。输入准备还包含 Group Normalization（组归一化）及投影。残差项保留两路特征，注意力分支负责学习额外的融合修正。 #Wang-2023-VideoFactory#</p>
+<p>下一个块将查询方向反过来：</p>
+
+\[
+H^{l+1}=\operatorname{MCA}_{\mathrm{3DSW}}
+\bigl(\operatorname{LN}(\widetilde T^{l+1}),
+\operatorname{LN}(\widetilde S^{l+1})\bigr)
++\widetilde T^{l+1}.
+\]
+
+<p>注意上标从 \(l\) 变为 \(l+1\)：下一块读取的是经过网络更新后的特征，并非将前一块那一对输入原样反算一次。 #Wang-2023-VideoFactory#</p>
+<p>输出投影可以零初始化，使新增分支开始时不影响原来的加法融合。它帮助网络从已有融合方式平稳过渡到可学习交互，不意味着训练完成后注意力仍然为零。 #Wang-2023-VideoFactory#</p>
+<div class="photo"><img alt="图 14：VideoFactory 的时空 U-Net 与 Swap-CA，取自首发原论文 Figure 3。相邻块交换 Query 来源，并沿时间轴移动窗口边界。" loading="lazy" src="media/images/video-models-03-historical-methods/videofactory-architecture.webp"/><div class="cap">图 14：VideoFactory 的时空 U-Net 与 Swap-CA，取自首发原论文 Figure 3。相邻块交换 Query 来源，并沿时间轴移动窗口边界。 #Wang-2023-VideoFactory#</div></div>
+<h3 class="section-title" id="三维窗口控制计算量并连通邻域">三维窗口</h3>
+<p>完整视频有 \(N=FHW\) 个位置，全局注意力需要约 \(N^2\) 个位置对。VideoFactory 将视频特征划分成 \(F_w\times H_w\times W_w\) 的三维窗口。若每个窗口有 \(M=F_wH_wW_w\) 个位置，忽略边界和投影成本，注意力位置对数由 #Wang-2023-VideoFactory#</p>
+
+\[
+N^2\quad\longrightarrow\quad\frac NM\,M^2=NM.
+\]
+
+<p>降低成本的代价是单层不能直接读取所有位置。为使相邻时间窗口能够通信，下一个块沿帧轴移动窗口边界，移动量为 \(\lceil F_w/2\rceil\)。空间方向则利用 U-Net 的下采样、上采样建立跨窗口联系。 #Wang-2023-VideoFactory#</p>
+<p>这里还要区分两种操作：Latent-Shift 移动的是特征通道在帧轴上的位置；VideoFactory 的 shifted window 改变的是哪些位置被分到同一个注意力窗口。它们都能帮助时间通信，但计算方式不同。 #Wang-2023-VideoFactory#</p>
+<h3 class="section-title" id="训练潜空间去噪与高清视频数据">训练与数据</h3>
+<p>VideoFactory 采用 LDM 图像模型作为骨干，通过自编码器得到视频潜变量，在潜空间内用时空分解 U-Net 做去噪。CLIP 提供文本嵌入，经空间模块的文本 cross-attention 注入。Swap-CA 只放在 U-Net 编码、解码各块的末端，其他位置通过 \(1\times1\times1\) 卷积融合两路特征，并以额外跳连连接被空间上/下采样隔开的时间模块。 #Wang-2023-VideoFactory#</p>
+<p>为与前面的 DDPM/LDM 建立联系，可以把这种潜空间去噪任务写成以下通用形式：</p>
+
+\[
+U_0=\mathcal E(V),\qquad
+U_t=a_tU_0+b_t\epsilon,
+\qquad\epsilon\sim\mathcal N(0,I),
+\]
+
+
+\[
+\mathcal L_{\mathrm{noise}}=
+\mathbb E\left[
+\|\epsilon-\epsilon_\theta(U_t,t,\mathcal C(y))\|_2^2
+\right].
+\]
+
+<p>这是帮助理解 LDM 骨干的标准噪声预测写法，<strong>不是首发原文单独列出的一套训练公式</strong>。首发论文没有完整披露噪声日程、损失权重和参数冻结范围，因此这里不补造具体设置。论文的重点是怎样构造 \(\epsilon_\theta\) 内部的时空交互，而非提出新的噪声分布或新的扩散目标。 #Wang-2023-VideoFactory#</p>
+<p>它的另一项重要贡献是训练数据 HD-VG-130M：约 1.3 亿组高清视频—文本对。处理流程包括收集高清 YouTube 视频、检测并切分场景，再用 BLIP-2 为每个片段的中央帧生成描述。场景切分减少跨镜头跳变，让模型更容易学习同一场景中的连续变化。 #Wang-2023-VideoFactory#</p>
+<p>但中央帧描述不能完整概括动作的时间顺序。例如，一张拿着杯子的画面，未必能区分“正在拿起”和“刚刚放下”。所以这些是由图像描述器生成的片段标签，不能等同于人工标注的完整动态描述。 #Wang-2023-VideoFactory#</p>
+<p>训练同时使用 HD-VG-130M 与 WebVid-10M：前者提供更多高清、宽屏样本，后者有助于保留对人类文本表达的适应能力。首发文报告使用 32 张 V100 训练，但没有给出可据此复现的总训练时长、优化器和学习率等完整配置。 #Wang-2023-VideoFactory#</p>
+<h3 class="section-title" id="生成潜视频去噪再做四倍超分">采样与超分</h3>
+<p>生成流程可以概括为：文本编码 → 潜空间反向去噪 → 自编码器解码 → 四倍超分。每次去噪调用同一个时空 U-Net，在网络深度方向交替执行两个交叉注意力方向；它不是一次先用空间网络生成全部图像，再用时间网络事后修复。 #Wang-2023-VideoFactory#</p>
+<p>例如，标准噪声预测接口可以先给出</p>
+
+\[
+\widehat U_0=\frac{U_t-b_t\epsilon_\theta(U_t,t,\mathcal C(y))}{a_t},
+\]
+
+<p>再由选定的反向采样器计算下一状态。这个式子说明网络输出与去噪的接口，不指定 VideoFactory 使用了哪一种采样器。<strong>首发文没有明确提供 DDIM/DDPM 选择、采样步数和引导系数</strong>，也没有完整公开帧数/FPS 配置，不能由它沿用 LDM 就推断具体数值。 #Wang-2023-VideoFactory#</p>
+<p>基础生成分辨率为 \(344\times192\)（宽×高），对应潜空间 \(43\times24\)，空间边长压缩约八倍。解码后的帧再经过四倍超分，得到 \(1376\times768\) 输出；不能把最终分辨率理解成扩散主干直接在这个尺寸上运行。 #Wang-2023-VideoFactory#</p>
+<p>超分模块也不是又一套视频扩散级联：作者采用带 8 个残差块的 RCAN（Residual Channel Attention Network，残差通道注意力网络），用 Real-ESRGAN 的混合退化方法构造低清输入，并以对抗训练改善视觉效果。训练时需要有高质量帧及其退化版本，推理时则增强模型生成的帧。逐帧增强空间细节不等于自动改善运动一致性。 #Wang-2023-VideoFactory#</p>
+<h3 class="section-title" id="实验交换方向有用吗">结构与数据消融</h3>
+<p>先看首发原论文 Table 2 的受控消融。质量指标来自 WebVid 验证集的 1000 个样本；计算开销使用形状为 \(4\times16\times32\times32\) 的输入测量。下表保留全部七行，Query 方向按正文语义写成中文，以避免符号混淆。 #Wang-2023-VideoFactory#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>交互方式</th>
+<th>Query 来源</th>
+<th>参数（十亿）</th>
+<th>显存（GB）</th>
+<th>耗时（ms）</th>
+<th>FVD ↓</th>
+<th>CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无新增交叉注意力</td>
+<td>—</td>
+<td>1.480</td>
+<td>9.37</td>
+<td>135.35</td>
+<td>566.16</td>
+<td>0.3070</td>
+</tr>
+<tr>
+<td>全局交叉注意力</td>
+<td>时间</td>
+<td>1.601</td>
+<td>22.96</td>
+<td>202.12</td>
+<td>555.35</td>
+<td>0.3091</td>
+</tr>
+<tr>
+<td>全局交叉注意力</td>
+<td>空间</td>
+<td>1.601</td>
+<td>22.96</td>
+<td>205.00</td>
+<td>496.25</td>
+<td>0.3073</td>
+</tr>
+<tr>
+<td>全局交叉注意力</td>
+<td>交替</td>
+<td>1.601</td>
+<td>22.96</td>
+<td>201.51</td>
+<td>485.86</td>
+<td>0.3092</td>
+</tr>
+<tr>
+<td>三维窗口交叉注意力</td>
+<td>时间</td>
+<td>1.601</td>
+<td>9.83</td>
+<td>150.49</td>
+<td>563.12</td>
+<td>0.3086</td>
+</tr>
+<tr>
+<td>三维窗口交叉注意力</td>
+<td>空间</td>
+<td>1.601</td>
+<td>9.83</td>
+<td>149.93</td>
+<td>490.60</td>
+<td>0.3076</td>
+</tr>
+<tr>
+<td>三维窗口交叉注意力</td>
+<td>交替</td>
+<td>1.601</td>
+<td>9.83</td>
+<td>148.24</td>
+<td>475.09</td>
+<td>0.3107</td>
+</tr>
+</tbody>
+</table></div>
+<p>这张表支持三个相对具体的结论：</p>
+<ol>
+<li>固定空间 Query 的 FVD 更好，固定时间 Query 的文本相似度较高；这是作者对两个方向作用的经验观察，不是注意力公式保证的定理。</li>
+<li>在参数规模相同的交叉注意力模型中，交替方向同时改善这两项指标，支持双向交互设计。</li>
+<li>三维窗口相比全局交替方案，将显存从 22.96 GB 降到 9.83 GB，耗时从 201.51 ms 降到 148.24 ms，并有更好的 FVD。</li>
+</ol>
+<p>与没有新增交叉注意力的基线相比，最佳方案仍增加了约 1.21 亿参数，耗时约增加 9.5%。因此，整体提升不应全部归因于“交换”二字；同参数下的固定方向与交替方向比较，才更直接检验交换的价值。这里的毫秒耗时也是表中指定输入的计算测量，不能当作完整高清视频的生成时间。 #Wang-2023-VideoFactory#</p>
+<p>再看数据。根据首发 Table 6 整理，保留全部两种设置：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>训练数据</th>
+<th>FVD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WebVid-10M</td>
+<td>475.09</td>
+</tr>
+<tr>
+<td>WebVid-10M + HD-VG-130M</td>
+<td>429.75</td>
+</tr>
+</tbody>
+</table></div>
+<p>增加高清数据后，FVD 降低 45.34。它说明完整系统的收益还来自数据，而不只是架构；这个数据消融也不应与后面 5000 个样本的最终评估直接混为一组。 #Wang-2023-VideoFactory#</p>
+<div class="photo"><img alt="图 15：加入 HD-VG-130M 前后的生成对照，取自首发原论文 Figure 4。原图展示高清数据对细节与水印等外观问题的影响。" loading="lazy" src="media/images/video-models-03-historical-methods/videofactory-data-ablation.webp"/><div class="cap">图 15：加入 HD-VG-130M 前后的生成对照，取自首发原论文 Figure 4。原图展示高清数据对细节与水印等外观问题的影响。 #Wang-2023-VideoFactory#</div></div>
+<h3 class="section-title" id="结果与边界不能只看胜出的指标">结果与评估边界</h3>
+<p>首发 Table 5 的 WebVid 验证结果如下，保留全部三行。作者抽取不与训练样本重叠的 5000 组文本—视频对评估。 #Wang-2023-VideoFactory#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>FVD ↓</th>
+<th>CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelScope</td>
+<td>414.11</td>
+<td>0.3000</td>
+</tr>
+<tr>
+<td>LVDM</td>
+<td>455.53</td>
+<td>0.2751</td>
+</tr>
+<tr>
+<td>VideoFactory</td>
+<td>292.35</td>
+<td>0.3070</td>
+</tr>
+</tbody>
+</table></div>
+<p>这支持该版本在同域验证集上的优势，但不能据此认为它对所有视频任务都更好。零样本结果中，首发 Table 3 报告 UCF101 FVD 为 410.0，每个动作类别转成描述后生成 100 个样本；该结果不优于前面 PYoCo 报告的 355.19，而不同生成数量和评估协议也限制了直接排名。 #Wang-2023-VideoFactory#</p>
+<p>根据首发 Table 4 筛选四项零样本方法，MSR-VTT 的文本对齐结果为：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>CLIPSIM ↑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CogVideo</td>
+<td>0.2631</td>
+</tr>
+<tr>
+<td>ModelScope</td>
+<td>0.2795</td>
+</tr>
+<tr>
+<td>Video LDM</td>
+<td>0.2929</td>
+</tr>
+<tr>
+<td>VideoFactory</td>
+<td>0.3005</td>
+</tr>
+</tbody>
+</table></div>
+<p>这项实验每个测试视频随机选一条提示，共生成 2990 个视频。CLIPSIM 衡量文本与画面的语义相关性，不足以单独证明动作正确、时间顺序准确或物理合理。 #Wang-2023-VideoFactory#</p>
+<div class="photo"><img alt="图 16：VideoFactory 与 Imagen Video、Make-A-Video、Video LDM 的定性比较，取自首发原论文 Figure 5。对比方样例来自各项目公开网站，不能视为统一采样条件下的大规模受控实验。" loading="lazy" src="media/images/video-models-03-historical-methods/videofactory-comparison.webp"/><div class="cap">图 16：VideoFactory 与 Imagen Video、Make-A-Video、Video LDM 的定性比较，取自首发原论文 Figure 5。对比方样例来自各项目公开网站，不能视为统一采样条件下的大规模受控实验。 #Wang-2023-VideoFactory#</div></div>
+<p>人评尤其值得完整保留。首发 Table 7 的数字表示“更偏好 VideoFactory”的比例，下面将原表小数统一换为百分比，保留全部四个对比对象；大于 50% 才表示该项偏好倾向 VideoFactory。 #Wang-2023-VideoFactory#</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>对比对象</th>
+<th>对比样本来源</th>
+<th>画面/视频质量</th>
+<th>文本—视频相关</th>
+<th>总体偏好</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ModelScope</td>
+<td>公开预训练模型</td>
+<td>88.75%</td>
+<td>85.75%</td>
+<td>93.00%</td>
+</tr>
+<tr>
+<td>LVDM</td>
+<td>公开预训练模型</td>
+<td>91.55%</td>
+<td>85.55%</td>
+<td>93.70%</td>
+</tr>
+<tr>
+<td>Make-A-Video</td>
+<td>项目网站样例</td>
+<td>54.17%</td>
+<td>49.58%</td>
+<td>54.17%</td>
+</tr>
+<tr>
+<td>Imagen Video</td>
+<td>项目网站样例</td>
+<td>42.91%</td>
+<td>25.82%</td>
+<td>38.18%</td>
+</tr>
+</tbody>
+</table></div>
+<p>因此，原文的人评并不是 VideoFactory 全面领先：相对 Make-A-Video 表现接近，相对网站展示的 Imagen Video 样例则更多偏好后者。网站样例可能经过筛选，来源也与直接调用模型不同，不能把这四行视作完全同条件排行榜；但同样不能只保留有利的两行。 #Wang-2023-VideoFactory#</p>
+<h3 class="section-title" id="小结与局限-1">小结与局限</h3>
+<p>VideoFactory 的贡献可以拆成两条：<strong>用交换式交叉注意力增强空间与时间特征的内容相关交互；用 HD-VG-130M 扩充高清训练数据</strong>。三维窗口则让这种交互的计算成本可控。与 PYoCo 的区别在于，它主要修改去噪网络及训练数据，没有提出新的帧间噪声先验。 #Wang-2023-VideoFactory#</p>
+<p>局限也来自这些选择：局部窗口需要多层传播才能沟通远距离信息，交换 Query 不等于显式追踪物体，也不解决遮挡和长期动作规划；中央帧生成的描述容易遗漏动态信息；逐帧超分不能保证时间一致性。首发版本还缺少足够完整的训练、采样配置，不宜用常见 LDM 默认值填补。这里按 2023 年首发版讲解，后续修订版增加的数据筛选与实验不混入上述首发结果。 #Wang-2023-VideoFactory#</p>
+
+</div>
+<div class="ch fade-in"><div class="ch-title" id="总结">总结</div>
+<p>四篇论文把视频一致性问题拆成了不同的设计选择。可以先问“联系建在哪里”，再判断训练与采样怎样配合这个选择。</p>
+<div class="table-wrap"><table><thead><tr><th>方法</th><th>帧间联系</th><th>训练与生成的配合</th></tr></thead><tbody>
+<tr><td>VideoFusion</td><td>共享基础噪声与逐帧残差噪声</td><td>双网络组合噪声预测；初始与新增随机噪声保持相关结构</td></tr>
+<tr><td>Latent-Shift</td><td>相邻帧的特征通道交换</td><td>视频微调已有U-Net；每次预测保留移位操作</td></tr>
+<tr><td>PYoCo</td><td>混合或随帧距衰减的噪声相关性</td><td>按相关噪声训练并初始化生成，配合时间模块与级联</td></tr>
+<tr><td>VideoFactory</td><td>空间、时间特征交替作为交叉注意力查询</td><td>在潜空间U-Net中学习交互，结合高清视频数据和逐帧超分</td></tr>
+</tbody></table></div>
+<p>VideoFusion 与 PYoCo 都保留单帧高斯边际，却改变整段噪声的联合分布；这与只修改采样器不同。Latent-Shift 没有新增可学习的移位参数，但仍依赖视频训练；VideoFactory 的交替查询有同参数消融支持，完整系统的收益还包括高清视频数据。 #Luo-2023-VideoFusion# #An-2023-LatentShift# #Ge-2023-PYoCo# #Wang-2023-VideoFactory#</p>
+<p>这些工作仍未解决复杂动作、遮挡、长期身份与物理一致性。共享得太多可能让视频趋于静止；局部特征通信不等于物体跟踪；更好的单帧质量也不能代替运动评价。比较时应保留实验协议和不利指标，并把本文提出的噪声搬运猜想与论文已验证的结论分开。下一篇将讨论视频训练成本，以及怎样复用图像模型、减少可训练参数或避免额外视频训练。</p></div>
+<div class="chapter-nav"><a class="nav-card nav-prev" href="video-models-02-open-models.html"><span class="nav-label">上一篇</span><span class="nav-title">开放视频基模</span></a><a class="nav-card nav-hub" href="categories/ai/video-generation/index.html"><span class="nav-label">系列目录</span><span class="nav-title">视频生成</span></a><a class="nav-card nav-next" href="video-models-04-efficient-training.html"><span class="nav-label">下一篇</span><span class="nav-title">视频生成的训练高效方法</span></a></div>
+<div class="sources"><h3>参考文献</h3><ul>
+<li data-cite-key="Luo-2023-VideoFusion">Luo, Z. et al. <a href="https://arxiv.org/abs/2303.08320" target="_blank" rel="noopener">VideoFusion: Decomposed Diffusion Models for High-Quality Video Generation</a>. 2023。共享基础噪声与逐帧残差噪声、双生成器联合训练、停止梯度、相关噪声 DDIM/DDPM 采样与消融实验来源。</li>
+<li data-cite-key="An-2023-LatentShift">An, J. et al. <a href="https://arxiv.org/abs/2304.08477" target="_blank" rel="noopener">Latent-Shift: Latent Diffusion with Temporal Shift for Efficient Text-to-Video Generation</a>. 2023。时间移位、潜空间视频训练与采样、实验 Tables 1/2/4/5 及 Figures 2/3/7/8 来源。</li>
+<li data-cite-key="Ge-2023-PYoCo">Ge, S. et al. <a href="https://arxiv.org/abs/2305.10474" target="_blank" rel="noopener">Preserve Your Own Correlation: A Noise Prior for Video Diffusion Models</a>. 2023。PYoCo 混合/渐进噪声、EDM 视频微调、四级级联、Figures 2/3/7 与 Tables 1/2/3/5 来源。</li>
+<li data-cite-key="Wang-2023-VideoFactory">Wang, W. et al. <a href="https://arxiv.org/abs/2305.10874v1" target="_blank" rel="noopener">VideoFactory: Swap Attention in Spatiotemporal Diffusions for Text-to-Video Generation</a>. 2023，首发版 v1。Swap-CA、HD-VG-130M、潜空间 U-Net/超分、Figures 1/3/4/5 与 Tables 2–7 来源；首发配置缺失与后续修订结果区分。</li>
+</ul></div>
