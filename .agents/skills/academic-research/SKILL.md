@@ -2,7 +2,7 @@
 name: academic-research
 description: |
   学术领域深度调研与 survey 撰写。分阶段执行：
-  ① Web 浅扫 → ② arXiv 分层检索 → ③ 调用 read-article 深读每篇论文 →
+  ① 领域浅扫 → ② 多数据库分层检索 → ③ 调用 read-article 深读每篇论文 →
   ④ 领域重组 → ⑤ 报告生成 → ⑥ Review。
   不罗列论文，按主题/时间/分类重构信息。最终交付：HTML 博客 + 邮件。
   触发词：调研 XX 领域、文献综述、学术调研、survey、academic research、学术综述。
@@ -33,6 +33,10 @@ metadata:
 > 系列文章规则见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/series-rules.md`。
 
 > **前置 · 库内检索（必做）**：开始生成前，先按 [`blog-rules/references/pre-generation-search.md`](../blog-rules/references/pre-generation-search.md) 做库内检索——判断是新建、扩充已有文章、还是接力草稿，并收集关联文章供正文交叉引用。跳过此步导致重复创作是典型错误。
+
+## 学术检索入口
+
+所有论文发现、引用追踪与文献核验，先读取 [学术检索与证据记录](references/scholarly-search.md)。网络与通道由 web-search 管理；数据库方法按 scientific-agent-skills 选择 paper-lookup、citation-management 或 literature-review。优先复用已有脚本，记录实际查询与版本，取得原文后交回 read-article；不能以搜索摘要代替深读。纯检索不自动触发本文的 HTML 发布阶段。
 
 ## 共享引用
 
@@ -277,13 +281,9 @@ ls -la "$IMG_DIR/"
 - 图片文件名要有语义（如 `igmn-overview.webp` 而非 `fig1.webp`）
 - **Phase 4 完成后必须 `grep '<img' <html-file>` 确认至少有 3 张图片**
 
-### Web 搜索（DDGS 回退）
+### Web 与学术补充检索
 
-```bash
-~/.venv/bin/python \
-  ~/.agents/skills/web-search/scripts/ddgs_search.py "研究主题" \
-  --max_results 20 --timelimit m --region zh-cn --output web_search_result.md
-```
+按 [学术检索与证据记录](references/scholarly-search.md) 选择渠道；通用网页遵循 web-search 当前引擎规则。搜狗与 DuckDuckGo 不进入自动回退，不能调用旧 ddgs_search.py 示例。
 
 ---
 

@@ -336,6 +336,10 @@ css_modules: ["course"]
 
 ---
 
+
+
+正文写作与交稿审校必须读取并落实 [阅读层次与组件安排](../blog-syntax/references/component-selection-guide.md)：主动安排结论、易错点、定义与例子；quote 仅用于真实且有出处的引文。保留必要解释与推导，不凑组件数量。
+
 ## 2. 正文写作
 
 ### 2.0.1 数学公式与高亮语法

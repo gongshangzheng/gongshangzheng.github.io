@@ -1,4 +1,6 @@
 Phase 0-1
+
+先读取 [学术检索与证据记录](../references/scholarly-search.md)，建立检索日志和候选论文账本。
 ## Phase 0 · Web 浅扫
 
 在对领域一无所知时，先通过 Web 搜索建立"领域地图"。
@@ -19,9 +21,9 @@ Phase 0-1
 
 ---
 
-## Phase 1 · arXiv 分层检索
+## Phase 1 · 多数据库分层检索
 
-基于 Phase 0 的领域地图，设计检索策略。**严禁使用 Bing/Google 搜索 arXiv 论文**，统一使用 `arxiv-paper-digest` 内置检索能力。
+基于领域地图优先使用 arXiv 和 OpenAlex 等结构化检索；按任务补查引用图、DOI 和会议官方来源。网页搜索用于补缺，不能替代数据库记录核验。以下 arxiv-paper-digest 是可选的现有实现，不是唯一通道。
 
 > **查询构建参考**：`~/gongshangzheng.github.io/.agents/skills/arxiv-paper-digest/SKILL.md`
 
@@ -57,7 +59,7 @@ PYEOF
 
 | 层级 | 策略 | 数量 | 深度 |
 |------|------|------|------|
-| **Survey** | `arxiv-paper-digest` + `web-search` / `web-research` 检索 survey/review/tutorial/systematic review | 5~10 篇，精选 3~5 篇核心 survey | 必须获取全文并完整深读；不得只读 abstract |
+| **Survey** | `arxiv-paper-digest` + `web-search` / `scientific-agent-skills` 检索 survey/review/tutorial/systematic review | 5~10 篇，精选 3~5 篇核心 survey | 必须获取全文并完整深读；不得只读 abstract |
 | **Landmark** | Phase 0 landmark 列表 + 高引 | 5~10 篇 | read-article 全流程 |
 | **Recent** | 最近 3~6 月，按时间倒序 | 15~30 → 筛选 5~10 篇 | read-article 全流程 |
 
@@ -73,7 +75,7 @@ PYEOF
 | **Introduction** | 前 2-3 段 | 问题动机、为什么重要、论文定位的技术路线 |
 | **Related Works** | 扫小节标题 | 是否覆盖我们关注的子方向？有没有我们不知道的分支？ |
 | **Conclusion** | 最后 1-2 段 | 作者自我评估的局限性是否诚实？Future Work 是否与我们的方向相关？ |
-| **References** | 最新几条 | 文献覆盖是否够新？（最新引用不到 2 年前 → 可能过时） |
+| **References** | 最新几条 | 文献覆盖是否够新？（检查实际截止日期及是否遗漏相关近期工作，不能仅按引用年龄判定过时） |
 
 筛选步骤：
 
@@ -88,6 +90,7 @@ PYEOF
 
 本阶段结束时，主 agent 必须整理出以下内容，供后续直接消费：
 
+- 检索日志、原始结果、去重与版本关联记录，以及未获取全文和覆盖缺口
 - 领域地图
 - Survey / Landmark / Recent 三层论文池
 - 最终入选的 Phase 2 深读名单
@@ -130,7 +133,7 @@ def is_survey(paper) -> bool:
 
 ## 依赖
 
-统一使用 `arxiv-paper-digest` 自带虚拟环境，不再单独安装旧的 `arxivql-guide` 相关依赖。
+选择上述 arxiv-paper-digest 实现时使用其自带虚拟环境；其他检索脚本默认使用 ~/.venv/bin/python，按各工具文档检查依赖与鉴权。
 
 如需验证环境：
 

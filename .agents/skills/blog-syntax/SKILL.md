@@ -48,6 +48,10 @@ tags: [blog, syntax, html, components, reference]
 - 裸文本段落**不要**手动加 `</p>`——构建系统会自动补 `<p>` 标签
 - `<div>` 必须用 `</div>` 闭合，**禁止**用 `</p>` 闭合 `<div>`
 
+
+
+正文写作与交稿审校必须读取并落实 [阅读层次与组件安排](../blog-syntax/references/component-selection-guide.md)：主动安排结论、易错点、定义与例子；quote 仅用于真实且有出处的引文。保留必要解释与推导，不凑组件数量。
+
 ### 知识框选择
 
 - **定义新概念** → `def-box`（不是 info-box）
