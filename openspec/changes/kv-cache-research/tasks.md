@@ -147,7 +147,7 @@
 - [x] 10.6 正式HTML已同步全部改动；updated_at已更新；图号重排为图1—图7（GQA原图移至1.2为图3，后续顺延，第三章原图8/原图9不变）；未新增SVG。
 - [x] 10.7 三路审查通过：原文保真（复杂度表标为教学推导并回源MQA/PagedAttention，共享比例与容量式沿用已核验内容）；内容完整性（2.7.1删除项均已前移，LMCache双入口合并为一，边界条件保留）；HTML/图表（图号连续、h4用ch-section、display math未被p包裹、引用键1:1）。
 - [x] 10.8 lint-html通过；openspec validate kv-cache-research --strict通过；node build.js完成，public产物含全部新增小节，图号连续。
-- [ ] 10.9 获用户发布授权后仅提交本任务文件并推送，核验部署；不夹带工作区其他任务修改。
+- [x] 10.9 用户23:41授权发布：两次提交已推送（5f855d646结构修订、7ddc7944e结构图）；Build and Deploy因GitHub Actions/Pages侧故障停留在Deploy步骤（run 40718808186被用户取消，40720056171与nightly 40721883409进行中），线上核验待部署恢复后补。
 
 ## 11. 计算量前移与结构地图（2026-10-28 23:26用户追加，同日执行）
 
@@ -155,12 +155,12 @@
 - [x] 11.2 草稿正文落地：1.1结构地图+单头两种情况计算量；1.2乘Q头数、容量数KV头/计算量数Q头、投影常数成本；1.3乘L、FFN逐位置常数；1.6新增1.6.1两种情况单步对比（复杂度表自2.3前移）与1.6.2累计成本（求和自2.3前移）；1.7收拢两笔账；2.3保留12对5计数并回指1.6；2.7.3回指1.6。
 - [x] 11.3 正式HTML同步全部改动；补上23:17轮HTML遗漏的1.7改写（草稿与HTML现已一致）；updated_at更新。
 - [x] 11.4 审查与验证：复杂度计数口径复核（单步/累计、O(NP²+PN²+N³)阶、容量数KV头与计算量数Q头区分）；lint、OpenSpec strict、build通过；图号不变，未新增图片。
-- [ ] 11.5 获用户发布授权后随10.9一并提交推送。
+- [x] 11.5 随10.9推送完成；部署核验同上。
 
 ## 12. Transformer结构图（2026-10-28 23:41用户指定，随发布授权执行）
 
 - [x] 12.1 发布23:17与23:26两轮结构修订：提交5f855d646已推送main，Build and Deploy运行40718808186。
 - [x] 12.2 按用户指示从Attention Is All You Need（arXiv:1706.03762）源码包取Fig. 1（Figures/ModalNet-21.png，1520×2239），原件保留raw/transformer-2017/；cwebp转WebP入media/images/kv-cache-fundamentals/transformer-fig1-architecture.webp。
 - [x] 12.3 插入1.1结构地图段落之后为图2，图注映射decoder-only对应右半、说明Masked与cross-attention省略；许可如实标注arXiv非独家分发许可（非CC BY，已向用户报告）；sources条目同步。
-- [x] 12.4 图号重排：原图2—图9顺延为图3—图10（草稿与HTML同步），2.3的图6回指改为图7。
-- [ ] 12.5 lint、build、OpenSpec通过后随11.5/10.9提交推送并核验部署。
+- [x] 12.4 图号重排：全文按出现顺序图1—图13（草稿图1—图8），Transformer图为图1、因果矩阵为图2；2.3的图6回指改为图7；顺带发现并纳入3.6视频三图（CausVid图11、Self Forcing图12—13，此前编号与正文遗漏在此一并理顺）。
+- [x] 12.5 lint、build、OpenSpec通过；已提交推送7ddc7944e；部署核验待GitHub侧故障恢复（两个run同卡在Deploy to gh-pages，status API超时，线上仍为旧版）。
