@@ -72,6 +72,22 @@
 
 候选系列 SHALL 以用户口述为依据，先说明文本LLM生成场景，再按注意力、多头注意力、多层Decoder、自回归文本例子的顺序建立基础，之后才引入Prefill与Decode两个阶段，并继续解释重复计算、KV Cache流程、容量与带宽问题。后续专题 MUST 覆盖架构、量化、选择性保留/读取、显存管理、跨请求复用与多机，以及视频Rolling和蒸馏协作。
 
+#### Scenario: Build capacity understanding through the model
+- **WHEN** 修订基础篇的导读及1.1、1.2、1.3
+- **THEN** 开篇先定义KV Cache为空间换计算，并以容量问题贯穿单头K/V、多KV头与多层；逐项解释2d_hb、2SH_kv d_hb及2LSH_kv d_hb，区分Q头与KV头，说明复用条件随后证明，不把attention权重矩阵计为KV有效载荷
+
+#### Scenario: Close the capacity calculation without duplication
+- **WHEN** 读者到达2.7.1容量节
+- **THEN** 该节回指前面推导，简要汇总公式、保留128KiB每token及32K对应4GiB算例、并发数据与工具入口，并解释同构/等宽/完整历史、非等长batch和显存开销边界，不再次展开头共享定义
+
+#### Scenario: State computational savings with explicit scope
+- **WHEN** 2.3比较无缓存整前缀重算与增量decode
+- **THEN** 固定模型尺寸，明确单步attention为O(n²)到O(n)、逐步处理至长度N的累计attention为O(N³)到O(N²)，位置级投影/FFN另计；prefill、首输出时序和墙钟时间分别限定，不用单步结论泛指全部生成成本
+
+#### Scenario: Confirm the revised structure before implementation
+- **WHEN** 本轮容量主线及复杂度结构已写入草稿和Design
+- **THEN** 细化大纲待审阅时不改正式HTML；用户确认后才同步草稿正文和HTML，保留既有图片及SVG预览审批门槛
+
 #### Scenario: Explain video acceleration
 - **WHEN** 规划视频KV Cache专题
 - **THEN** 分别说明蒸馏减少去噪调用、缓存复用历史状态及其共同使用条件，区分视频时间与去噪时间，不直接相乘跨论文加速倍数
