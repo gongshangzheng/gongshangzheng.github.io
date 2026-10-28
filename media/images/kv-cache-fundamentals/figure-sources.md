@@ -53,7 +53,7 @@
 - 来源：https://arxiv.org/abs/2412.07772v4；Yin et al., CausVid, Fig. 5（v4，CC BY 4.0）。
 - 原件：`originals/causvid-fig5-causal-architecture.pdf`；发布：`causvid-fig5-causal-architecture.webp`。
 - 用途：自回归视频Transformer对当前及历史帧的因果访问结构。
-- 变更：仅按原始图边界栅格化并转WebP，不裁内容、不修改图内文字。保留作者署名，按本条列出的原许可提供；未修改原图内容。
+- 变更：由归档的论文原始PDF以180 DPI栅格化，自动裁去底部留白并转WebP；图内内容不变。2026-10-28复查发现此前发布图底部约32%为空白，现修复。
 
 ### self-forcing-attention-masks
 
