@@ -14,11 +14,11 @@ The series MUST have an OpenSpec change before article writing. Each article MUS
 
 ### Requirement: Modern foundations determine content scope
 
-The series SHALL present six articles in this order: machine-learning introduction, mathematical foundations, neural-network training, CNN, attention and Transformer, and pre-training/fine-tuning/distillation. The mathematical article MUST include probability, Bayes' theorem, Markov chains, sampling, and Monte Carlo estimation. Training MUST explain loss functions and backpropagation. The machine-learning introduction MUST cover history, learning paradigms and task types, linear and kernel methods, ensembles and random forests, and clustering. CNN MUST include activation functions and mathematical principles within a complete model introduction.
+The series SHALL present eight articles in this order: machine-learning introduction, mathematical foundations, neural-network training, CNN, attention and Transformer, pre-training/fine-tuning/distillation, reinforcement learning, and large language models. The mathematical article MUST include probability, Bayes' theorem, Markov chains, sampling, and Monte Carlo estimation. Training MUST explain loss functions and backpropagation. The machine-learning introduction MUST cover history, learning paradigms and task types, linear and kernel methods, ensembles and random forests, and clustering. CNN MUST include activation functions and mathematical principles within a complete model introduction.
 
 #### Scenario: User reviews series coverage
 - **WHEN** the candidate series and later drafts are presented
-- **THEN** the six-article order, dedicated machine-learning introduction, CNN activation/mathematics coverage, and combined attention/Transformer article are identifiable
+- **THEN** the eight-article order, dedicated machine-learning introduction, CNN activation/mathematics coverage, and combined attention/Transformer article are identifiable
 
 ### Requirement: Mathematical explanations remain traceable and understandable
 
@@ -59,3 +59,11 @@ Drafts MUST record candidate figure sources and their teaching purpose. Later ch
 #### Scenario: A tutorial supplies a candidate figure
 - **WHEN** the series reuses a tutorial diagram or animation
 - **THEN** its provenance and explanatory role are recorded without claiming that it is an original paper architecture diagram
+
+### Requirement: LLM article integrates preceding foundations
+
+The large-language-model article SHALL connect token prediction, tokenization and embeddings, training and alignment stages, autoregressive decoding, KV caching, capabilities and limitations, and retrieval/tool use. It MUST link preceding explanations instead of duplicating their complete derivations. Its scope approval MUST NOT substitute for source-draft and chapter-design approval.
+
+#### Scenario: Reader completes the foundations series
+- **WHEN** the reader reaches the eighth article
+- **THEN** it explains the end-to-end language-model workflow and distinguishes architectural computation, training objectives, decoding, and external tools
