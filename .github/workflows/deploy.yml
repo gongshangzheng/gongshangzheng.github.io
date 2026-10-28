@@ -6,17 +6,26 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+# 新 push 会取消还在跑的旧部署，避免排队叠加
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -28,16 +37,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Setup Python for figure checks
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Check new figure margins
+      # 只在本次 push 实际改动了图片素材时才安装依赖并检查；其余 push 直接跳过
+      - name: Check new figure margins (only when figures changed)
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
-          python3 -m pip install Pillow numpy PyMuPDF
+          if [ "$GITHUB_EVENT_NAME" != "push" ] || [ -z "$GITHUB_EVENT_BEFORE" ]; then
+            echo "非 push 或无基线提交，跳过图边距检查"
+            exit 0
+          fi
+          git fetch --depth=1 origin "$GITHUB_EVENT_BEFORE" 2>/dev/null || true
+          CHANGED=$(git diff --name-only "$GITHUB_EVENT_BEFORE" "$GITHUB_SHA" -- media drafts/assets 2>/dev/null || true)
+          if [ -z "$CHANGED" ]; then
+            echo "无图片改动，跳过图边距检查"
+            exit 0
+          fi
+          echo "图片有改动，运行图边距检查："
+          echo "$CHANGED"
+          python3 -m pip install --quiet Pillow numpy PyMuPDF
           python3 scripts/check-figure-whitespace.py --changed
 
       - name: Test
@@ -46,12 +65,13 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Deploy to gh-pages
-        run: |
-          cd public
-          git init
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add .
-          git diff --cached --quiet || git commit -m "Deploy to GitHub Pages"
-          git push -f -q https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/gongshangzheng/gongshangzheng.github.io.git HEAD:gh-pages
+      # 直接以 artifact 部署 Pages：不再维护 gh-pages 分支，
+      # 也不再触发单独的 pages-build-deployment 第二次构建
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

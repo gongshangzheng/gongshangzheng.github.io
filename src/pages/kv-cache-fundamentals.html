@@ -2,7 +2,7 @@
 title: "KV Cache 从哪里来：推理基础、工作过程与问题地图"
 description: "从注意力、多层Decoder与自回归生成出发，用矩阵和状态图讲清KV Cache如何建立与复用，推导显存容量，区分带宽与计算成本，并梳理优化路线及视频Rolling KV。"
 created_at: 2026-10-28T17:33:53
-updated_at: 2026-10-28T23:48:00
+updated_at: 2026-10-29T00:12:00
 aliases: ["categories/AI/KV Cache"]
 sub_id: 10
 tags: ["KV Cache", "推理加速", "注意力", "LLM", "视频生成"]
@@ -27,7 +27,7 @@ hero_tagline: "省掉历史重算，仍要面对容量与读取成本"
 
 <p>先给一张结构地图。常见的文本LLM由三部分组成：输入token先映射为向量；主体是\(L\)个结构相同的块堆叠，每块包含一个注意力子层和一个逐位置的前馈子层（FFN），并用残差连接和归一化组织这两部分；最后由输出层把末位置的表示映射成词表概率。1.2和1.3分别展开其中的多头与多层；后面要数计算量，也需要先知道每个部件在哪些位置上运算。#transformer-2017#</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/transformer-fig1-architecture.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/transformer-fig1-architecture.webp" alt="Transformer整体结构：编码器与解码器各由N个注意力加FFN的块堆叠" loading="lazy"></a><div class="cap">图 1：Transformer整体结构：左半为编码器，右半为解码器，均由N个相同的块堆叠；每块包含Multi-Head Attention与Feed Forward子层，由Add &amp; Norm组织残差与归一化，顶部经Linear与Softmax给出词表概率。本文讨论的decoder-only文本LLM对应右半：解码器的Multi-Head Attention带因果掩码（图中Masked），省去读取编码器的cross-attention支路，即得常见文本模型的块组成。（来源：<a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener noreferrer">Vaswani et al., Attention Is All You Need, Fig. 1</a>（v7，arXiv非独家分发许可）。 #transformer-2017#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/transformer-fig1-architecture.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/transformer-fig1-architecture.webp" alt="Transformer整体结构：编码器与解码器各由N个注意力加FFN的块堆叠" loading="lazy"></a><div class="cap">图 1：Transformer整体结构：左半为编码器，右半为解码器，均由N个相同的块堆叠；每块包含Multi-Head Attention与Feed Forward子层，由Add &amp; Norm组织残差与归一化，顶部经Linear与Softmax给出词表概率。本文讨论的decoder-only文本LLM对应右半：解码器的Multi-Head Attention带因果掩码（图中Masked），省去读取编码器的cross-attention支路，即得常见文本模型的块组成。</div></div>
 
 <p>模型先把输入文本拆成token，再把每个token映射为向量。一个token可能是一个字、一个词的一部分或其他文本片段；后续各层会不断更新这些向量。在Transformer中，self-attention（自注意力）让每个位置按相关程度汇总可见位置的信息。 #transformer-2017#</p>
 
@@ -54,7 +54,7 @@ hero_tagline: "省掉历史重算，仍要面对容量与读取成本"
 
 <p>在用于文本生成的因果注意力中，位置之间的可见关系受到限制：A只能读取自己，B可以读取A、B，C可以读取A、B、C。通过因果掩码，系统可以在同一层并行计算这些位置，同时屏蔽对后续位置的读取。并行发生在各层内部的序列位置维度，各层之间仍然按网络顺序执行。</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/causal-attention-matrix.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/causal-attention-matrix.webp" alt="因果注意力的可见性矩阵" loading="lazy"></a><div class="cap">图 2：因果注意力的可见性矩阵。行是query所在位置，列是可读取的K/V位置；×表示被因果掩码屏蔽。追加D后，过去A、B、C各行的依赖不变，只有新行D可以读取所有已有位置。自绘，依据PagedAttention Background；不是实测attention权重热力图。 #mqa-2019# #pagedattention-2023#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/causal-attention-matrix.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/causal-attention-matrix.webp" alt="因果注意力的可见性矩阵" loading="lazy"></a><div class="cap">图 2：因果注意力的可见性矩阵。行是query所在位置，列是可读取的K/V位置；×表示被因果掩码屏蔽。追加D后，过去A、B、C各行的依赖不变，只有新行D可以读取所有已有位置。不是实测attention权重热力图。</div></div>
 
 <p>读图时，先固定一行看它能读取哪些列，再比较两张矩阵的左上角。比较两段序列A/B/C与A/B/C/D时，旧位置都不能读取新增的D。后面解释自回归生成与缓存复用时，我们会继续使用这一性质。</p>
 
@@ -79,14 +79,14 @@ hero_tagline: "省掉历史重算，仍要面对容量与读取成本"
 
 <p>以常见的等宽MHA为例，模型隐藏维度为\(d_{\mathrm{model}}\)，每头维度取\(d_h=d_{\mathrm{model}}/H_q\)，所以拼接后回到模型宽度；这是常见配置，不是所有注意力变体的硬性要求。这样，头数与每头维度就是两个不同的量。</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/multihead-kv.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/multihead-kv.webp" alt="四个注意力头各自计算QK转置与V汇总，再拼接并经输出投影" loading="lazy"></a><div class="cap">图 3：四头MHA的矩阵形状：每头Q、K、V为4×2，四个4×2输出拼成4×8，再乘8×8输出投影。虚线框标出需跨步保留的K/V。方块表示单个分量，输出投影会混合各头特征。自绘教学示意。 #transformer-2017#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/multihead-kv.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/multihead-kv.webp" alt="四个注意力头各自计算QK转置与V汇总，再拼接并经输出投影" loading="lazy"></a><div class="cap">图 3：四头MHA的矩阵形状：每头Q、K、V为4×2，四个4×2输出拼成4×8，再乘8×8输出投影。虚线框标出需跨步保留的K/V。方块表示单个分量，输出投影会混合各头特征。教学示意。</div></div>
 <p>这就是一层中“多头计算，再合并”的过程。实现通常会把多个头的投影合成一次矩阵运算，不一定真的逐头调用。不同头可以学到不同的匹配方式，但不能预先断言某个头固定负责语法、另一个固定负责语义。#mqa-2019#</p>
 
 <p>按1.1节的计数，MHA中每个Q头都有自己的一组K/V，各自需要保存：一层里\(H_q\)个头、\(S\)个位置，K/V有效载荷就是\(2SH_qd_hb\)字节。为了减少这份开销，模型可以改变头的组织方式，让多个Q头共享同一组K/V。这里把独立的一组K/V称为一个KV头，个数记作\(H_{\mathrm{kv}}\)：分组查询注意力（Grouped-Query Attention，GQA）让Q头分组共享KV头，多查询注意力（Multi-Query Attention，MQA）则让所有Q头共享同一组K/V。每个Q头仍能算出自己的注意力权重，但共享者读取相同的K/V。#gqa-2023# #mqa-2019#</p>
 
 <p>对照下图，固定8个Q头：MHA有8个KV头，GQA示例有4个KV头（每2个Q头共享一组K/V），MQA只有1个KV头。在层数、长度、每头维度和精度都相同时，三者每层需要保存的K/V依次为MHA的1、1/2和1/8。因此，后面数容量时数的是KV头\(H_{\mathrm{kv}}\)，不能直接填入Q头数。这种共享怎样训练、实现和影响质量，下一篇再讨论。#gqa-2023# #mqa-2019#</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/gqa-fig1-gmq-architecture.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/gqa-fig1-gmq-architecture.webp" alt="MHA、GQA与MQA的Q头及KV头对应关系" loading="lazy"></a><div class="cap">图 4：先看MHA：每个query头有独立K/V；再看GQA，多个query头分组共享；MQA则让所有query头使用同一组K/V。各头的Q仍然独立。（来源：<a href="https://arxiv.org/abs/2305.13245v3" target="_blank" rel="noopener noreferrer">Ainslie et al., GQA, Fig. 1（v3，CC BY 4.0）</a>）。 #gqa-2023#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/gqa-fig1-gmq-architecture.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/gqa-fig1-gmq-architecture.webp" alt="MHA、GQA与MQA的Q头及KV头对应关系" loading="lazy"></a><div class="cap">图 4：先看MHA：每个query头有独立K/V；再看GQA，多个query头分组共享；MQA则让所有query头使用同一组K/V。各头的Q仍然独立。</div></div>
 
 <p>于是“若保存”的计数在多头下成为：一层为\(2SH_{\mathrm{kv}}d_hb\)字节，MHA中\(H_{\mathrm{kv}}=H_q\)。</p>
 
@@ -97,7 +97,7 @@ hero_tagline: "省掉历史重算，仍要面对容量与读取成本"
 <p>注意力只是Decoder块的一部分。1.1的结构地图里，每块除注意力子层外，还有逐位置的FFN子层，并用残差连接和归一化组织。原始Transformer的Decoder还包含读取Encoder输出的cross-attention；这里讨论没有独立Encoder memory的文本模型，所以图中省去该支路。图中沿用原始Transformer的Post-LN顺序作示意，现代LLM也常用Pre-LN，具体应以模型实现为准。 #transformer-2017#</p>
 <p>为什么要堆叠多层？在同一层里，每个位置的注意力读取上一层提供的表示，不能读取其他位置刚算出的本层输出。进入下一层后，模型就能基于已经结合上下文的表示，再进行一轮匹配、汇总和非线性变换。这样可以形成多轮信息组合；这不意味着单层必然只能理解“表面概念”，也不会让任何位置越过因果掩码读取未来。 #transformer-2017#</p>
 <p>最后一层的隐藏表示还会送进输出层，得到词表中下一个token的概率。下图用D到E标记一次预测；接下来再看模型怎样连续执行这样的预测，生成一段文本。</p>
-<div class="photo"><a href="media/images/kv-cache-fundamentals/decoder-stack.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/decoder-stack.webp" alt="三层Decoder各有独立注意力与FFN，并分别读取和追加本层K/V缓存" loading="lazy"></a><div class="cap">图 5：当前输入D依次经过三层Decoder，每层各自保存历史A/B/C并追加D的K/V。各层输入表示与投影参数不同，不能共用一份缓存；图中每层仅画一个KV头。顶部预测E时，E尚未作为输入处理，因此不在缓存中。紫色残差支路从子层输入分叉，在主干加号处与子层输出相加，再进入LayerNorm。Decoder-only结构示意；Post-LN仅为所选变体。 #transformer-2017# #mqa-2019#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/decoder-stack.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/decoder-stack.webp" alt="三层Decoder各有独立注意力与FFN，并分别读取和追加本层K/V缓存" loading="lazy"></a><div class="cap">图 5：当前输入D依次经过三层Decoder，每层各自保存历史A/B/C并追加D的K/V。各层输入表示与投影参数不同，不能共用一份缓存；图中每层仅画一个KV头。顶部预测E时，E尚未作为输入处理，因此不在缓存中。紫色残差支路从子层输入分叉，在主干加号处与子层输出相加，再进入LayerNorm。Decoder-only结构示意；Post-LN仅为所选变体。</div></div>
 
 <p>容量计数也随层数增加。上图各层保存的是各自的K/V；假设各层形状相同、K/V等宽、使用完整历史，一个请求缓存\(S\)个位置时，单请求的K/V有效载荷为：</p>
 
@@ -142,7 +142,7 @@ flowchart LR
 <p>prefill和decode的区别也会影响GPU利用方式。prefill在一层内有多个已知位置可以一起计算；单请求的decode每轮只有一个新位置，跨轮又存在数据依赖。实际服务可以把多个请求放在同一个batch中处理，所以“每个请求新增一个token”不等于“整张GPU只处理一个token”。是否受算力、权重读取还是历史状态读取限制，还要看模型、输入长度、batch和硬件，不能仅凭阶段名称判断。#pagedattention-2023#</p>
 
 <p>把向量按位置逐行放在矩阵里，就能看清运算的形状。现在用矩阵对照这两个阶段。下图另取4个输入位置、每头3维的教学例子：prefill有4行Q，新增第5个位置E时，decode只有1行query。图中的方块表示单个向量分量，与2.5节“一个格子表示一整条向量”的状态图粒度不同。#mqa-2019#</p>
-<div class="photo"><a href="media/images/kv-cache-fundamentals/attention-matrix-shapes.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/attention-matrix-shapes.webp" alt="Prefill与decode中Q、K转置、分数、权重、V及输出矩阵的行列形状" loading="lazy"></a><div class="cap">图 6：单层单头的张量形状。上方用4个位置、每头3维展示prefill；下方新增第5个位置E，decode只使用一行query。方块表示向量分量，颜色表示张量类型，不表示状态新旧。自绘，依据MQA与PagedAttention；尺寸为教学假设。 #mqa-2019# #pagedattention-2023#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/attention-matrix-shapes.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/attention-matrix-shapes.webp" alt="Prefill与decode中Q、K转置、分数、权重、V及输出矩阵的行列形状" loading="lazy"></a><div class="cap">图 6：单层单头的张量形状。上方用4个位置、每头3维展示prefill；下方新增第5个位置E，decode只使用一行query。方块表示向量分量，颜色表示张量类型，不表示状态新旧；尺寸为教学假设。</div></div>
 <p>这里画出完整分数和权重矩阵，是为了说明数学关系；高效attention kernel可以分块计算，不一定把整张矩阵同时写入显存。跨步缓存也只需要保存历史K/V，不需要保存这张权重矩阵。#pagedattention-2023#</p>
 
 <p>在线服务还要处理多个长度不同、结束时间不同的请求。Continuous batching（动态批处理）允许系统在生成迭代之间调整批次：已结束的请求退出，等待中的请求在资源允许时加入，不必等整批回答全部生成完。调度器还要决定何时处理prompt、何时继续decode，以及怎样分配和回收KV缓存。因此，批次大小、首token延迟和吞吐需要一起权衡，不能只看单请求的decode速度。#pagedattention-2023#</p>
@@ -195,7 +195,7 @@ flowchart LR
 
 <p>图中的每个格子只标出一个位置的K/V相关状态，帮助定位这些重复区域。它不表示整个网络只做K/V投影，也不表示每个格子的计算成本相等。</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/kv-cache-recompute-comparison.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/kv-cache-recompute-comparison.webp" alt="相同上下文下，无缓存与有缓存的K/V相关状态计算对照" loading="lazy"></a><div class="cap">图 7：相同上下文下，无缓存与有缓存的K/V相关状态计算对照。橙色为本轮新算，蓝色为复用。缓存减少重复状态计算，仍须读取历史并计算attention；不是加速倍数或完整算量统计。自绘，依据MQA incremental attention及PagedAttention生成流程。 #mqa-2019# #pagedattention-2023#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/kv-cache-recompute-comparison.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/kv-cache-recompute-comparison.webp" alt="相同上下文下，无缓存与有缓存的K/V相关状态计算对照" loading="lazy"></a><div class="cap">图 7：相同上下文下，无缓存与有缓存的K/V相关状态计算对照。橙色为本轮新算，蓝色为复用。缓存减少重复状态计算，仍须读取历史并计算attention；不是加速倍数或完整算量统计。</div></div>
 
 <p>左侧三行使用了不同长度的上下文，却都从A开始重新处理；右侧第一次处理A、B、C，后续只对D、E这样的新位置执行新增状态计算。</p>
 
@@ -278,7 +278,7 @@ flowchart LR
 
 <p>等D走完全部层，输出层才计算E的概率分布。选出E时，每层缓存已经包含A、B、C、D，但仍不包含E。再处理E，才会追加E的K/V并预测F。下面的状态图将这几轮放在一起，读图时可以先看K/V格子的颜色，再看面板底部留下哪些缓存。</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/kv-cache-state-steps.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/kv-cache-state-steps.webp" alt="Prefill与两步decode的KV状态，示意一层、一个头" loading="lazy"></a><div class="cap">图 8：Prefill与两步decode的KV状态，示意一层、一个头。蓝色为复用历史，橙色为本轮新计算，紫色为本轮query。箭头分别表示Q/K匹配及权重对V的汇总；面板底部说明缓存内容与尚未处理的下一token。自绘，依据MQA与PagedAttention；不代表实际内存布局。 #mqa-2019# #pagedattention-2023#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/kv-cache-state-steps.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/kv-cache-state-steps.webp" alt="Prefill与两步decode的KV状态，示意一层、一个头" loading="lazy"></a><div class="cap">图 8：Prefill与两步decode的KV状态，示意一层、一个头。蓝色为复用历史，橙色为本轮新计算，紫色为本轮query。箭头分别表示Q/K匹配及权重对V的汇总；面板底部说明缓存内容与尚未处理的下一token；不代表实际内存布局。</div></div>
 
 <p>Prefill面板只展开末尾C用于预测D的路径；实际prefill也计算A、B位置的Q/K/V与相应输出。Decode面板则只新增当前输入位置的状态，同时读取历史。三个面板中的K/V都包含各自本轮的当前位置，而不是只画此前留下的历史。</p>
 
@@ -408,7 +408,7 @@ board.create('text', [9, 33.5, 'B=8: 32 Ki tokens each, 32 GiB'], {fontSize: 12,
 
 <p>低位宽数字之外，系统还要保存缩放参数等信息，并可能保留一段高精度状态。读出缓存时也需要相应计算。因此，后文既要计算实际占用，也要核对质量和kernel成本，不能把“2bit”直接解释成整台系统显存缩小八倍或推理快八倍。</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/kivi-fig3-algorithm-overview.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/kivi-fig3-algorithm-overview.webp" alt="KIVI在prefill和decode阶段管理低精度缓存的算法图" loading="lazy"></a><div class="cap">图 9：图中将低精度历史与高精度近期状态分开处理，并在矩阵乘法中融合反量化。作者为简化示意省略了value缓存及attention输出路径，所以不能把图中只展开key的部分当成完整K/V流程。（来源：<a href="https://arxiv.org/abs/2402.02750v2" target="_blank" rel="noopener noreferrer">Liu et al., KIVI, Fig. 3（v2，CC BY 4.0）</a>）。 #kivi-2024#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/kivi-fig3-algorithm-overview.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/kivi-fig3-algorithm-overview.webp" alt="KIVI在prefill和decode阶段管理低精度缓存的算法图" loading="lazy"></a><div class="cap">图 9：图中将低精度历史与高精度近期状态分开处理，并在矩阵乘法中融合反量化。作者为简化示意省略了value缓存及attention输出路径，所以不能把图中只展开key的部分当成完整K/V流程。</div></div>
 
 <h3 class="section-title">3.3 选择性保留与读取</h3>
 
@@ -426,7 +426,7 @@ board.create('text', [9, 33.5, 'B=8: 32 Ki tokens each, 32 GiB'], {fontSize: 12,
 
 <p>在系统篇中，我们将把SGLang等框架放到具体执行过程里，分别讨论前缀组织、调度和缓存生命周期。框架可能同时实现多种策略，所以不宜把一个框架名直接当成一种缓存压缩算法。</p>
 
-<div class="photo"><a href="media/images/kv-cache-fundamentals/pagedattention-logical-physical-blocks.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/pagedattention-logical-physical-blocks.webp" alt="逻辑KV块通过block table映射到不连续的物理显存块" loading="lazy"></a><div class="cap">图 10：沿同一条请求的逻辑块向右看block table：token的顺序连续，实际存储的物理块可以分散。分页改变的是地址管理，不是token的因果顺序，也没有缩短每条K/V向量。（来源：<a href="https://arxiv.org/abs/2309.06180v1" target="_blank" rel="noopener noreferrer">Kwon et al., PagedAttention, Fig. 4（v1，CC BY 4.0）</a>）。 #pagedattention-2023#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/pagedattention-logical-physical-blocks.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/pagedattention-logical-physical-blocks.webp" alt="逻辑KV块通过block table映射到不连续的物理显存块" loading="lazy"></a><div class="cap">图 10：沿同一条请求的逻辑块向右看block table：token的顺序连续，实际存储的物理块可以分散。分页改变的是地址管理，不是token的因果顺序，也没有缩短每条K/V向量。</div></div>
 
 <h3 class="section-title">3.5 存储与多机协作</h3>
 
@@ -439,13 +439,13 @@ board.create('text', [9, 33.5, 'B=8: 32 Ki tokens each, 32 GiB'], {fontSize: 12,
 <p>视频模型还多了一条需要分清的计算顺序：一方面，模型沿视频时间生成新的帧或chunk；另一方面，当前chunk可能要执行多次去噪。只有弄清哪些状态在这些步骤之间保持不变，才能判断哪些K/V可以复用。</p>
 
 <p>以已读的CausVid为例，模型在chunk之间采用因果依赖，当前chunk可以访问已完成的历史。历史完成后，系统建立相应的clean K/V供后续使用；当前chunk在去噪过程中仍在改变，不能直接把某个中间噪声步的K/V当成永久不变的历史。#causvid-2024#</p>
-<div class="photo"><a href="media/images/kv-cache-fundamentals/causvid-fig5-causal-architecture.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/causvid-fig5-causal-architecture.webp" alt="自回归视频Transformer对当前及历史帧的因果访问结构" loading="lazy"></a><div class="cap">图 11：观察当前帧与历史帧之间的可见关系：当前chunk内部可以双向交互，未来chunk不能改变已完成历史。图解释因果结构；少步蒸馏与写回clean K/V仍是另外需要执行的步骤。（来源：<a href="https://arxiv.org/abs/2412.07772v4" target="_blank" rel="noopener noreferrer">Yin et al., CausVid, Fig. 5（v4，CC BY 4.0）</a>）。 #causvid-2024#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/causvid-fig5-causal-architecture.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/causvid-fig5-causal-architecture.webp" alt="自回归视频Transformer对当前及历史帧的因果访问结构" loading="lazy"></a><div class="cap">图 11：观察当前帧与历史帧之间的可见关系：当前chunk内部可以双向交互，未来chunk不能改变已完成历史。图解释因果结构；少步蒸馏与写回clean K/V仍是另外需要执行的步骤。</div></div>
 
 <p>这也解释了蒸馏与缓存怎样协作：少步蒸馏让当前chunk需要的去噪调用更少，KV复用则减少这些调用中的历史重复处理。两者作用于不同部分，可以共同降低成本；但端到端加速还受写回缓存、VAE和其他运算影响，不能直接把两篇论文的加速倍数相乘。</p>
 
 <p>训练时的历史来源同样重要。Self Forcing在训练期间执行带缓存的自回归展开，让当前chunk读取此前由模型自身生成的上下文，而不是始终依赖真实视频历史。下图把这种训练过程与Teacher Forcing、Diffusion Forcing区分开来。#self-forcing-2025#</p>
-<div class="photo"><a href="media/images/kv-cache-fundamentals/self-forcing-attention-masks.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/self-forcing-attention-masks.webp" alt="Teacher Forcing、Diffusion Forcing与Self Forcing的训练依赖和缓存比较" loading="lazy"></a><div class="cap">图 12：前两种训练方式以掩码约束整段视频的可见关系；Self Forcing则顺序生成并复用历史KV，使训练使用的上下文来自自身输出。它改变的是训练所见的历史，不能仅靠推理时加缓存来替代。（来源：<a href="https://arxiv.org/abs/2506.08009v2" target="_blank" rel="noopener noreferrer">Huang et al., Self Forcing, Fig. 2（v2，CC BY-NC-SA 4.0）</a>）。 #self-forcing-2025#</div></div><p>长视频还会让历史不断增长。Self Forcing讨论rolling KV，只维护有界的近期历史，并通过相应训练适应窗口变化。这里要保留一个关键区别：留下的深层K/V仍可能含有更早历史的影响，所以rolling缓存不是“每次截断输入，再重新计算窗口”所得状态的严格等价替换；质量需要实验验证。#self-forcing-2025#</p>
-<div class="photo"><a href="media/images/kv-cache-fundamentals/self-forcing-rolling-kv.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/self-forcing-rolling-kv.webp" alt="滑窗重算与rolling KV的历史状态维护对照" loading="lazy"></a><div class="cap">图 13：对照三种窗口策略，注意最旧条目是否被淘汰、保留条目是否重算。图中的复杂度使用论文的固定模型与每帧token数假设，不能直接当作真实系统的延迟公式。（来源：<a href="https://arxiv.org/abs/2506.08009v2" target="_blank" rel="noopener noreferrer">Huang et al., Self Forcing, Fig. 3（v2，CC BY-NC-SA 4.0）</a>）。 #self-forcing-2025#</div></div>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/self-forcing-attention-masks.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/self-forcing-attention-masks.webp" alt="Teacher Forcing、Diffusion Forcing与Self Forcing的训练依赖和缓存比较" loading="lazy"></a><div class="cap">图 12：前两种训练方式以掩码约束整段视频的可见关系；Self Forcing则顺序生成并复用历史KV，使训练使用的上下文来自自身输出。它改变的是训练所见的历史，不能仅靠推理时加缓存来替代。</div></div><p>长视频还会让历史不断增长。Self Forcing讨论rolling KV，只维护有界的近期历史，并通过相应训练适应窗口变化。这里要保留一个关键区别：留下的深层K/V仍可能含有更早历史的影响，所以rolling缓存不是“每次截断输入，再重新计算窗口”所得状态的严格等价替换；质量需要实验验证。#self-forcing-2025#</p>
+<div class="photo"><a href="media/images/kv-cache-fundamentals/self-forcing-rolling-kv.webp" target="_blank" rel="noopener noreferrer"><img src="media/images/kv-cache-fundamentals/self-forcing-rolling-kv.webp" alt="滑窗重算与rolling KV的历史状态维护对照" loading="lazy"></a><div class="cap">图 13：对照三种窗口策略，注意最旧条目是否被淘汰、保留条目是否重算。图中的复杂度使用论文的固定模型与每帧token数假设，不能直接当作真实系统的延迟公式。</div></div>
 
 <p>因此，视频篇会分别讲因果结构、少步蒸馏、训练与推理上下文差异，以及rolling缓存。扩散特征复用虽然也叫缓存，但若保存的不是这里讨论的历史K/V，就应作为相关路线另行说明。</p>
 
@@ -498,4 +498,4 @@ board.create('text', [9, 33.5, 'B=8: 32 Ki tokens each, 32 GiB'], {fontSize: 12,
 <a class="nav-card nav-hub" href="categories/ai/kv-cache/index.html"><span class="nav-label">专题目录</span><span class="nav-title">KV Cache</span></a>
 <a class="nav-card nav-next" href="kv-cache-pagedattention-scheduler.html"><span class="nav-label">继续阅读 · 服务系统</span><span class="nav-title">PagedAttention与调度器</span></a>
 </div>
-<div class="sources"><h3>参考来源与配图</h3><ul><li data-cite-key="transformer-2017">Vaswani et al. (2017). Attention Is All You Need. <a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener noreferrer">原文（§3.1–3.3、Fig. 1）</a>；1.1节结构图取自Fig. 1（v7，arXiv非独家分发许可）。</li><li data-cite-key="lmcache-docs">LMCache官方文档：<a href="https://docs.lmcache.ai/" target="_blank" rel="noopener noreferrer">文档首页</a>。作为缓存复用、存储及系统集成专题的工程参考。</li><li data-cite-key="lmcache-calculator">LMCache官方工具：<a href="https://docs.lmcache.ai/getting_started/kv_cache_calculator.html" target="_blank" rel="noopener noreferrer">KV Cache Size Calculator</a>。</li><li data-cite-key="mqa-2019">Shazeer (2019). Fast Transformer Decoding: One Write-Head is All You Need. <a href="https://arxiv.org/abs/1911.02150v1" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="gqa-2023">Ainslie et al. (2023). GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints. <a href="https://arxiv.org/abs/2305.13245v3" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="pagedattention-2023">Kwon et al. (2023). Efficient Memory Management for Large Language Model Serving with PagedAttention. <a href="https://arxiv.org/abs/2309.06180v1" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="kivi-2024">Liu et al. (2024). KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache. <a href="https://arxiv.org/abs/2402.02750v2" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="quest-2024">Tang et al. (2024). Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference. <a href="https://arxiv.org/abs/2406.10774v2" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="causvid-2024">Yin et al. CausVid. 首次公开2024年，本文机制说明依据v4（2025）。 <a href="https://arxiv.org/html/2412.07772v4" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="self-forcing-2025">Huang et al. Self Forcing: Bridging the Train-Test Gap in Autoregressive Video Diffusion. 首次公开2025年，本文依据v2。 <a href="https://arxiv.org/html/2506.08009v2" target="_blank" rel="noopener noreferrer">原文</a></li></ul></div>
+<div class="sources"><h3>参考来源与配图</h3><ul><li data-cite-key="transformer-2017">Vaswani et al. (2017). Attention Is All You Need. <a href="https://arxiv.org/abs/1706.03762" target="_blank" rel="noopener noreferrer">原文（§3.1–3.3、Fig. 1）</a>。配图：图1取自Fig. 1（v7，arXiv非独家分发许可）。</li><li data-cite-key="lmcache-docs">LMCache官方文档：<a href="https://docs.lmcache.ai/" target="_blank" rel="noopener noreferrer">文档首页</a>。作为缓存复用、存储及系统集成专题的工程参考。</li><li data-cite-key="lmcache-calculator">LMCache官方工具：<a href="https://docs.lmcache.ai/getting_started/kv_cache_calculator.html" target="_blank" rel="noopener noreferrer">KV Cache Size Calculator</a>。</li><li data-cite-key="mqa-2019">Shazeer (2019). Fast Transformer Decoding: One Write-Head is All You Need. <a href="https://arxiv.org/abs/1911.02150v1" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="gqa-2023">Ainslie et al. (2023). GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints. <a href="https://arxiv.org/abs/2305.13245v3" target="_blank" rel="noopener noreferrer">原文</a>。配图：图4取自Fig. 1（v3，CC BY 4.0）。</li><li data-cite-key="pagedattention-2023">Kwon et al. (2023). Efficient Memory Management for Large Language Model Serving with PagedAttention. <a href="https://arxiv.org/abs/2309.06180v1" target="_blank" rel="noopener noreferrer">原文</a>。配图：图10取自Fig. 4（v1，CC BY 4.0）。</li><li data-cite-key="kivi-2024">Liu et al. (2024). KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache. <a href="https://arxiv.org/abs/2402.02750v2" target="_blank" rel="noopener noreferrer">原文</a>。配图：图9取自Fig. 3（v2，CC BY 4.0）。</li><li data-cite-key="quest-2024">Tang et al. (2024). Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference. <a href="https://arxiv.org/abs/2406.10774v2" target="_blank" rel="noopener noreferrer">原文</a></li><li data-cite-key="causvid-2024">Yin et al. CausVid. 首次公开2024年，本文机制说明依据v4（2025）。 <a href="https://arxiv.org/html/2412.07772v4" target="_blank" rel="noopener noreferrer">原文</a>。配图：图11取自Fig. 5（v4，CC BY 4.0）。</li><li data-cite-key="self-forcing-2025">Huang et al. Self Forcing: Bridging the Train-Test Gap in Autoregressive Video Diffusion. 首次公开2025年，本文依据v2。 <a href="https://arxiv.org/html/2506.08009v2" target="_blank" rel="noopener noreferrer">原文</a>。配图：图12取自Fig. 2、图13取自Fig. 3（v2，CC BY-NC-SA 4.0）。</li></ul></div>

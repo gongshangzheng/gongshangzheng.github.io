@@ -164,3 +164,10 @@
 - [x] 12.3 插入1.1结构地图段落之后为图2，图注映射decoder-only对应右半、说明Masked与cross-attention省略；许可如实标注arXiv非独家分发许可（非CC BY，已向用户报告）；sources条目同步。
 - [x] 12.4 图号重排：全文按出现顺序图1—图13（草稿图1—图8），Transformer图为图1、因果矩阵为图2；2.3的图6回指改为图7；顺带发现并纳入3.6视频三图（CausVid图11、Self Forcing图12—13，此前编号与正文遗漏在此一并理顺）。
 - [x] 12.5 lint、build、OpenSpec通过；已提交推送7ddc7944e；部署核验待GitHub侧故障恢复（两个run同卡在Deploy to gh-pages，status API超时，线上仍为旧版）。
+
+## 13. 图注规则修订与部署提速（2026-10-29 00:09用户指示）
+
+- [x] 13.1 blog-images skill图注规则改写：图注只描述图片内容与科学含义限制；来源、作者、图号、版本、许可、改编说明移入.sources与内部来源清单；版权合规条目同步。
+- [x] 13.2 第一篇13个图注按新规则清理（草稿与HTML同步），论文图来源/许可并入.sources对应条目（图1/4/9/10/11/12/13）；自绘说明保留"教学示意"等内容级表述。
+- [x] 13.3 部署工作流迁移：gh-pages分支增量推送改为官方upload-pages-artifact+deploy-pages直部署；checkout改fetch-depth 1；图边距检查仅图片素材变更时运行；Pages build_type已切workflow（API确认）。
+- [x] 13.4 lint/build通过；推送后以新流水线部署并核验线上。
