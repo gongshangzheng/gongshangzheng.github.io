@@ -321,3 +321,17 @@ Hub 页（`image-compression-hub.html`）使用 `sub_id: 0`。
 - 合并到 `aliases` 数组
 - 从 frontmatter 中移除旧字段
 - 保留 `sub_id`
+
+
+## KV Cache
+
+路径：`categories/AI/KV Cache`，英文slug为`kv-cache`。先保持单层，不按LLM、视频或优化路线建立下级分类。以KV状态为主的文章可保留AI Infra或视频生成的原分类；普通扩散特征缓存不自动纳入。使用自动分类索引，基础总览不覆盖index。
+
+### 编号与文章
+
+本系列正文使用10到70、步长10；基础篇10，架构20，量化30，历史保留与读取40，分页调度50，复用与多机60，视频70。现有分页文章保留原slug与AI Infra入口。后续同级论文精读从100起。
+
+- `10`：`kv-cache-fundamentals.html`，KV Cache 从哪里来：推理基础、工作过程与问题地图。
+- `50`：`kv-cache-pagedattention-scheduler.html`，KV Cache、PagedAttention 与调度器：现代推理引擎到底在优化什么。
+
+20、30、40、60、70为已规划位置，尚未生成对应HTML。

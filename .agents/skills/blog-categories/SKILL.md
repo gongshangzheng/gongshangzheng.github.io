@@ -118,6 +118,7 @@ sub_id: 0
 | 大语言模型 | llm |
 | Agent | agent |
 | AI Infra | ai-infra |
+| KV Cache | kv-cache |
 | 多模态 | multimodal |
 | 架构 | architecture |
 | 论文每日摘要 | arxiv-daily |
@@ -239,6 +240,7 @@ sub_id: 0
 | | `大语言模型` | LLM、上下文学习、越狱等 |
 | | `Agent` | AI Agent、LLM Agent、Tool Use、MCP |
 | | `AI Infra` | AI 基础设施、LLMOps、推理系统 |
+| | `KV Cache` | KV缓存原理、架构、压缩、历史选择、服务管理、多机复用及视频Rolling KV；扩散特征缓存仅作关联 |
 | | `多模态` | 多模态大模型、VLM、视觉语言模型 |
 | | `数字人` | 数字人、Talking Head、Lip Sync、Avatar（主系列） |
 | | `数字人/数字人论文精读` | 单篇论文深度解读 |
