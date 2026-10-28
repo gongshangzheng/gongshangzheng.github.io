@@ -41,3 +41,5 @@ attention-matrix-shapes、causal-attention-matrix、kv-cache-recompute-compariso
 ## Decoder第二版已确认
 
 用户明确同意更新正文配图。已安装decoder-stack-v2到正文与草稿资产，其他候选图仍待确认。
+
+图2多头注意力、图6缓存步骤已按用户本轮明确要求安装修订版，带宽新增图仍待确认。
