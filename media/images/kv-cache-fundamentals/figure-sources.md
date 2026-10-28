@@ -46,7 +46,7 @@
 - 来源：https://arxiv.org/abs/2309.06180v1；Kwon et al., PagedAttention, Fig. 4（v1，CC BY 4.0）。
 - 原件：`originals/pagedattention-logical-physical-blocks.pdf`；发布：`pagedattention-logical-physical-blocks.webp`。
 - 用途：逻辑KV块通过block table映射到不连续的物理显存块。
-- 变更：仅按原始图边界栅格化并转WebP，不裁内容、不修改图内文字。保留作者署名，按本条列出的原许可提供；未修改原图内容。
+- 变更：由归档的论文原始PDF以300 DPI栅格化，自动裁去四周空白并转WebP；图内文字、线条和内容未改动。修复2026-10-28发布时误用含大面积留白的截图（2880×1620），现发布尺寸2762×1315。
 
 ### causvid-fig5-causal-architecture
 
