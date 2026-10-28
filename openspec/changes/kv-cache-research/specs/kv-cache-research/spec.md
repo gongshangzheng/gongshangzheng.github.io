@@ -64,9 +64,13 @@
 - **WHEN** 文章准备发布
 - **THEN** 检查论文原图占比、来源标注、图例与单位、移动端可读性及图片路径；发布栅格图使用WebP，研究原件保持可追溯
 
+#### Scenario: Review SVG candidates before installation
+- **WHEN** 新增或修订博客SVG教学图
+- **THEN** 先向用户展示经过实际渲染与主agent亲自视觉复核的候选图，经明确确认后才能插入正文或替换既有SVG/WebP；制作过程保留在skill和内部记录，不混入正文图注
+
 ### Requirement: User-grounded article sequence
 
-候选系列 SHALL 以用户口述为依据，先简述prefill、decode和必要注意力，再解释重复计算、KV Cache流程、容量与带宽问题。后续专题 MUST 覆盖架构、量化、选择性保留/读取、显存管理、跨请求复用与多机，以及视频Rolling和蒸馏协作。
+候选系列 SHALL 以用户口述为依据，先说明文本LLM生成场景，再按注意力、多头注意力、多层Decoder、自回归文本例子的顺序建立基础，之后才引入Prefill与Decode两个阶段，并继续解释重复计算、KV Cache流程、容量与带宽问题。后续专题 MUST 覆盖架构、量化、选择性保留/读取、显存管理、跨请求复用与多机，以及视频Rolling和蒸馏协作。
 
 #### Scenario: Explain video acceleration
 - **WHEN** 规划视频KV Cache专题

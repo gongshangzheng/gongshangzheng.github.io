@@ -83,3 +83,5 @@ Quest候选图仅有arXiv分发许可，未将该许可解释为公开转载许�
 - `multihead-kv.svg/.webp`：原创矩阵教学图，4头、4位置、每头2维；拼接后4×8，输出投影8×8。依据Transformer与MQA。
 - `decoder-stack.svg/.webp`：复用用户本地`transformer-svg/architecture.svg`与`draw_transformer.py`的模块视觉元素，改编为三层decoder-only Post-LN示意，去除cross-attention；每层独立K/V，当前D预测E。保留绘图源`draw_decoder.py`于草稿资产。
 - 以上均为教学假设，不是模型实测数据。
+
+- 2026-10-28：用户确认Decoder第二版；替换为`review-2026-10-28/revisions/decoder-stack-v2.svg`。层间留白70px，两条残差支路分别在主干加号汇合，再进入LayerNorm；主agent已检查完整图与局部预览。

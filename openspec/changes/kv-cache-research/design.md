@@ -5,7 +5,7 @@
 库内已检查 `src/pages/` 与 `drafts/`：
 
 - [现有 KV Cache 专题](../../../src/pages/kv-cache-pagedattention-scheduler.html)：可承接 serving 主线，但现有数值需要回原论文核对硬件、基线与负载，不能直接移植为普遍结论。
-- [LLM 推理基础设施入门](../../../src/pages/llm-inference-infra-intro.html)：基础概念参考。
+- [LLM 推理基础设施入门](../../../drafts/archive/llm-inference-infra-intro-source.html.txt)：基础概念参考。
 - [视频生成推理加速草稿](../../../drafts/video-gen-acceleration.org)与[已发布页](../../../src/pages/video-gen-acceleration.html)：提供缓存与系统优化线索，不视为本次专门 KV Cache 文章的用户草稿。
 - [AvatarForcing](../../../src/pages/avatar-forcing-2026.html)与[Wan-Streamer](../../../src/pages/wan-streamer-2026.html)：后续视频路线的库内交叉核验入口，不能替代原始来源。
 
@@ -164,11 +164,39 @@ CacheGen的官方HTML/PDF身份一致，但所取源码包是另一篇文章，�
 
 第一篇已生成正式HTML、理论容量曲线、历史时间线和路线导航，采用6张论文原图及6张原创教学图。三路审查已完成并修正图号、许可记录及引用版本；新增内容复核、窄屏验证和正式发布按任务清单推进。第一篇是基础入口，完整2025—2026综述与其他六篇仍待后续执行，不视为整个Change完成。
 
-#### 必要基础：生成、prefill、decode与注意力
+#### 必要基础：先理解模型与自回归，再划分执行阶段
 
-先走通输入prompt到首个输出、再逐token继续生成的流程。用同一个小例子介绍prefill与decode、因果掩码、每层Q/K/V、缩放点积注意力；只保留一个attention公式及必要形状，交代不缓存历史Q的原因。引用现有[Infra入门](../../../src/pages/llm-inference-infra-intro.html)，但不要求读者先读旧文，也不复制完整注意力教程。
+先界定本篇场景为“使用因果Decoder的文本LLM处理一次生成请求”，不要把Prefill/Decode当作所有注意力模型的天然分类。按以下顺序组织第一章；完整注意力教程另写，这里只保留理解缓存所需的机制。
 
-必备图：prefill/decode时间轴与简化Q/K/V读取图。素材：用户草稿开头、MQA全文Background及PagedAttention Background。
+##### 1.1 注意力与因果可见性
+
+解释token向量、Q/K/V、点积缩放、softmax与V汇总，用A/B/C/D位置示例和因果可见性图说明历史不能读未来，保留单头公式。
+
+##### 1.2 多头注意力
+
+解释不同投影、每头计算、拼接与输出投影，配四头矩阵图；此时不展开缓存布局或头共享优化。
+
+##### 1.3 多层Decoder
+
+解释注意力、FFN、残差与归一化的组合，各层如何再次组合上下文，以及最终输出层怎样给出词表概率；限定图示Post-LN和decoder-only无cross-attention的结构边界。
+
+##### 1.4 自回归文本续写
+
+以“北京是”依次续写“中国”“的”“首都”的词块示意解释：每次选出的内容会成为下一次预测的条件；明确这不是真实tokenizer切分，再将过程映射到ABC→D→E→F。
+
+##### 1.5 Prefill
+
+在自回归过程建立后，才把处理已知prompt并预测首个输出的阶段命名为Prefill，区分同层位置并行与层间顺序。
+
+##### 1.6 Decode
+
+解释把刚选出的token接回输入、逐步预测后续token的阶段；配时间轴与单头矩阵对照。矩阵图不提前放在阶段定义前。
+
+##### 1.7 引出缓存问题
+
+将各轮需要历史K/V与因果状态不变联系起来，把“是否需要每轮重算历史”交给第二章。缓存逻辑形状移第三章，MQA/GQA及容量比例移第四章公式前。
+
+共同素材：用户原始草稿与本轮实质口述、MQA Background及PagedAttention Background。可关联[Infra入门](../../../drafts/archive/llm-inference-infra-intro-source.html.txt)，但本篇不要求先读其他文章。
 
 #### 原始问题：每一步重新处理前缀的重复计算
 
@@ -340,3 +368,17 @@ CacheGen的官方HTML/PDF身份一致，但所取源码包是另一篇文章，�
 ### 补充工程参考：LMCache
 
 用户指定将 [LMCache官方文档](https://docs.lmcache.ai/) 纳入参考资料，重点供缓存复用、存储层与多机专题回源。第一篇容量推导后指向 [KV Cache Size Calculator](https://docs.lmcache.ai/getting_started/kv_cache_calculator.html)，帮助读者代入配置估算KV容量；同时区分缓存有效载荷与整个推理进程的显存，不以工具输出替代公式解释。
+
+### SVG视觉修订与审阅边界（2026-10-28追加反馈）
+
+用户要求核算单请求decode一步的历史读取与新增KV写入量：32层、8KV头、每头128维、FP16每元素2字节，每个新位置全部层K/V为131072字节（128KiB）；32768个历史位置为4294967296字节（4GiB），比值32768。图应区分当前输入的KV写回与预测下一token，标注逻辑扫描假设及非面积比例。候选图保存到[审阅目录](../../../drafts/assets/kv-cache-fundamentals/review-2026-10-28/)，尚未插入正文。
+
+新增或修订SVG均须先向用户展示渲染预览，经明确确认后才能插入或替换正文图片；已有发布授权不替代该确认。对现有六幅SVG逐张审查并在审阅目录保留问题记录与修订图，重点检查连线穿框、画布越界、文本溢出及端点连续。制作过程从正文图注删除；作者、图号、来源、许可与影响理解的改编说明保留。格式转换规则记录在blog-images skill，具体原件与加工信息保留内部来源清单。
+
+### 第一章依赖顺序修正
+
+按用户追加口述，先界定“使用因果Decoder的LLM处理文本生成请求”场景，再依次讲注意力与因果可见性、多头注意力、多层Decoder、自回归文本续写例子、Prefill、Decode，最后引出重算与缓存。原本提前出现的Prefill/Decode矩阵对照移到两阶段介绍之后；缓存张量形状移至第三章，MQA/GQA共享关系移至容量计算前，避免在讲基础时先堆叠缓存术语。新SVG仍须审阅，已发布旧图仅调整章节位置，不替换候选图。
+
+Decoder候选第二轮修订：按用户反馈明确分叉点与主干上的求和点，Post-LN子层顺序为“子层输出 + 输入残差 → LayerNorm”；每层两次残差求和，三层间设置70px空白，避免层与层相接。主agent亲自生成并查看完整与单层渲染预览，批准门槛不变。
+
+旧Infra入门已完成对照整合：基础与缓存由本篇承接，动态批处理补入1.6；调度细节由系统篇承接。旧页面删除，目录链接更新，旧稿仅内部归档。
