@@ -9,7 +9,7 @@
 #+SOURCE_URL:
 #+TAGS: [KVCache, 推理加速, 注意力]
 #+CREATED_AT: 2026-10-28T14:06:46
-#+UPDATED_AT: 2026-10-28T23:40:00
+#+UPDATED_AT: 2026-10-28T23:48:00
 #+PUBLISHED_AT: 2026-10-28
 #+PUBLISHED_FILE: src/pages/kv-cache-fundamentals.html
 
@@ -108,6 +108,10 @@
 
 先给一张结构地图。常见的文本LLM由三部分组成：输入token先映射为向量；主体是\(L\)个结构相同的块堆叠，每块包含一个注意力子层和一个逐位置的前馈子层（FFN），并用残差连接和归一化组织这两部分；最后由输出层把末位置的表示映射成词表概率。1.2和1.3分别展开其中的多头与多层；后面要数计算量，也需要先知道每个部件在哪些位置上运算。#transformer-2017#
 
+[[file:assets/kv-cache-fundamentals/transformer-fig1-architecture.webp]]
+
+#+CAPTION: 图 1：Transformer整体结构：左半为编码器，右半为解码器，均由N个相同的块堆叠；每块包含Multi-Head Attention与Feed Forward子层，由Add & Norm组织残差与归一化，顶部经Linear与Softmax给出词表概率。本文讨论的decoder-only文本LLM对应右半：解码器的Multi-Head Attention带因果掩码（图中Masked），省去读取编码器的cross-attention支路，即得常见文本模型的块组成。（来源：Vaswani et al., Attention Is All You Need, Fig. 1（arXiv:1706.03762，v7，arXiv非独家分发许可）。） #transformer-2017#
+
 模型先把输入文本拆成token，再把每个token映射为向量。一个token可能是一个字、一个词的一部分或其他文本片段；后续各层会不断更新这些向量。在Transformer中，self-attention（自注意力）让每个位置按相关程度汇总可见位置的信息。 #transformer-2017#
 
 先看某一层中的一个注意力头。每个位置的隐藏表示会通过可学习的投影，产生三个向量：Query（Q，查询）、Key（K，键）和Value（V，值）。当前位置的Q与可见位置的K进行匹配，得到一组权重；模型再按这些权重，对相应的V做加权求和。#mqa-2019# #pagedattention-2023#
@@ -133,7 +137,7 @@
 
 [[file:assets/kv-cache-fundamentals/causal-attention-matrix.webp]]
 
-#+CAPTION: 图 1：因果注意力的可见性矩阵。行是query所在位置，列是可读取的K/V位置；×表示被因果掩码屏蔽。追加D后，过去A、B、C各行的依赖不变，只有新行D可以读取所有已有位置。自绘，依据PagedAttention Background；不是实测attention权重热力图。 #mqa-2019# #pagedattention-2023#
+#+CAPTION: 图 2：因果注意力的可见性矩阵。行是query所在位置，列是可读取的K/V位置；×表示被因果掩码屏蔽。追加D后，过去A、B、C各行的依赖不变，只有新行D可以读取所有已有位置。自绘，依据PagedAttention Background；不是实测attention权重热力图。 #mqa-2019# #pagedattention-2023#
 
 读图时，先固定一行看它能读取哪些列，再比较两张矩阵的左上角。比较两段序列A/B/C与A/B/C/D时，旧位置都不能读取新增的D。后面解释自回归生成与缓存复用时，我们会继续使用这一性质。
 
@@ -160,7 +164,7 @@
 
 [[file:assets/kv-cache-fundamentals/multihead-kv.webp]]
 
-#+CAPTION: 图 2：四头MHA的矩阵形状：每头Q、K、V为4×2，四个4×2输出拼成4×8，再乘8×8输出投影。虚线框标出需跨步保留的K/V。方块表示单个分量，输出投影会混合各头特征。自绘教学示意。 #transformer-2017#
+#+CAPTION: 图 3：四头MHA的矩阵形状：每头Q、K、V为4×2，四个4×2输出拼成4×8，再乘8×8输出投影。虚线框标出需跨步保留的K/V。方块表示单个分量，输出投影会混合各头特征。自绘教学示意。 #transformer-2017#
 
 这就是一层中“多头计算，再合并”的过程。实现通常会把多个头的投影合成一次矩阵运算，不一定真的逐头调用。不同头可以学到不同的匹配方式，但不能预先断言某个头固定负责语法、另一个固定负责语义。#mqa-2019#
 
@@ -170,7 +174,7 @@
 
 [[file:assets/kv-cache-fundamentals/gqa-fig1-gmq-architecture.webp]]
 
-#+CAPTION: 图 3：先看MHA：每个query头有独立K/V；再看GQA，多个query头分组共享；MQA则让所有query头使用同一组K/V。各头的Q仍然独立。（来源：Ainslie et al., GQA, Fig. 1（v3，CC BY 4.0）。） #gqa-2023#
+#+CAPTION: 图 4：先看MHA：每个query头有独立K/V；再看GQA，多个query头分组共享；MQA则让所有query头使用同一组K/V。各头的Q仍然独立。（来源：Ainslie et al., GQA, Fig. 1（v3，CC BY 4.0）。） #gqa-2023#
 
 于是“若保存”的计数在多头下成为：一层为\(2SH_{\mathrm{kv}}d_hb\)字节，MHA中\(H_{\mathrm{kv}}=H_q\)。
 
@@ -186,7 +190,7 @@
 
 [[file:assets/kv-cache-fundamentals/decoder-stack.webp]]
 
-#+CAPTION: 图 4：当前输入D依次经过三层Decoder，每层各自保存历史A/B/C并追加D的K/V。各层输入表示与投影参数不同，不能共用一份缓存；图中每层仅画一个KV头。顶部预测E时，E尚未作为输入处理，因此不在缓存中。紫色残差支路从子层输入分叉，在主干加号处与子层输出相加，再进入LayerNorm。Decoder-only结构示意；Post-LN仅为所选变体。 #transformer-2017# #mqa-2019#
+#+CAPTION: 图 5：当前输入D依次经过三层Decoder，每层各自保存历史A/B/C并追加D的K/V。各层输入表示与投影参数不同，不能共用一份缓存；图中每层仅画一个KV头。顶部预测E时，E尚未作为输入处理，因此不在缓存中。紫色残差支路从子层输入分叉，在主干加号处与子层输出相加，再进入LayerNorm。Decoder-only结构示意；Post-LN仅为所选变体。 #transformer-2017# #mqa-2019#
 
 容量计数也随层数增加。上图各层保存的是各自的K/V；假设各层形状相同、K/V等宽、使用完整历史，一个请求缓存\(S\)个位置时，单请求的K/V有效载荷为：
 
@@ -237,7 +241,7 @@ prefill和decode的区别也会影响GPU利用方式。prefill在一层内有多
 
 [[file:assets/kv-cache-fundamentals/attention-matrix-shapes.webp]]
 
-#+CAPTION: 图 5：单层单头的张量形状。上方用4个位置、每头3维展示prefill；下方新增第5个位置E，decode只使用一行query。方块表示向量分量，颜色表示张量类型，不表示状态新旧。自绘，依据MQA与PagedAttention；尺寸为教学假设。 #mqa-2019# #pagedattention-2023#
+#+CAPTION: 图 6：单层单头的张量形状。上方用4个位置、每头3维展示prefill；下方新增第5个位置E，decode只使用一行query。方块表示向量分量，颜色表示张量类型，不表示状态新旧。自绘，依据MQA与PagedAttention；尺寸为教学假设。 #mqa-2019# #pagedattention-2023#
 
 这里画出完整分数和权重矩阵，是为了说明数学关系；高效attention kernel可以分块计算，不一定把整张矩阵同时写入显存。跨步缓存也只需要保存历史K/V，不需要保存这张权重矩阵。#pagedattention-2023#
 
@@ -288,7 +292,7 @@ prefill和decode的区别也会影响GPU利用方式。prefill在一层内有多
 
 图中的每个格子只标出一个位置的K/V相关状态，帮助定位这些重复区域。它不表示整个网络只做K/V投影，也不表示每个格子的计算成本相等。
 
-#+CAPTION: 图 6：相同上下文下，无缓存与有缓存的K/V相关状态计算对照。橙色为本轮新算，蓝色为复用。缓存减少重复状态计算，仍须读取历史并计算attention；不是加速倍数或完整算量统计。自绘，依据MQA incremental attention及PagedAttention生成流程。
+#+CAPTION: 图 7：相同上下文下，无缓存与有缓存的K/V相关状态计算对照。橙色为本轮新算，蓝色为复用。缓存减少重复状态计算，仍须读取历史并计算attention；不是加速倍数或完整算量统计。自绘，依据MQA incremental attention及PagedAttention生成流程。
 #+ATTR_ORG: :width 1100
 [[file:assets/kv-cache-fundamentals/kv-cache-recompute-comparison.webp]]
 
@@ -312,7 +316,7 @@ prefill和decode的区别也会影响GPU利用方式。prefill在一层内有多
 
 我们可以用一个简单计数观察“避免重复”的含义。在图中的三个预测步骤里，无缓存路径分别处理3、4、5个位置，总计12次位置处理；有缓存路径先处理3个位置，随后每轮只新增1个，总计5次。
 
-这里的12与5只是“哪些位置需要重新产生状态”的示意计数，*不能据此宣称加速12/5倍*。Prefill与decode的并行程度不同，当前query还要读取不断增长的历史K/V，实际延迟也受权重访问、硬件利用率、batch和实现影响。1.6节已经把两种情况的单步与累计算式列成对照表；这里的12与5是同一件事在图6数据上的直观样子。#mqa-2019#
+这里的12与5只是“哪些位置需要重新产生状态”的示意计数，*不能据此宣称加速12/5倍*。Prefill与decode的并行程度不同，当前query还要读取不断增长的历史K/V，实际延迟也受权重访问、硬件利用率、batch和实现影响。1.6节已经把两种情况的单步与累计算式列成对照表；这里的12与5是同一件事在图7数据上的直观样子。#mqa-2019#
 
 因此，KV Cache节省的是已经完成的历史状态计算，并没有把模型的历史依赖删除。下一节将把存储状态展开，逐步解释prefill怎样建立各层缓存，以及decode怎样读取和追加。
 
@@ -372,7 +376,7 @@ prefill和decode的区别也会影响GPU利用方式。prefill在一层内有多
 
 等D走完全部层，输出层才计算E的概率分布。选出E时，每层缓存已经包含A、B、C、D，但仍不包含E。再处理E，才会追加E的K/V并预测F。下面的状态图将这几轮放在一起，读图时可以先看K/V格子的颜色，再看面板底部留下哪些缓存。
 
-#+CAPTION: 图 7：Prefill与两步decode的KV状态，示意一层、一个头。蓝色为复用历史，橙色为本轮新计算，紫色为本轮query。箭头分别表示Q/K匹配及权重对V的汇总；面板底部说明缓存内容与尚未处理的下一token。自绘，依据MQA与PagedAttention；不代表实际内存布局。
+#+CAPTION: 图 8：Prefill与两步decode的KV状态，示意一层、一个头。蓝色为复用历史，橙色为本轮新计算，紫色为本轮query。箭头分别表示Q/K匹配及权重对V的汇总；面板底部说明缓存内容与尚未处理的下一token。自绘，依据MQA与PagedAttention；不代表实际内存布局。
 #+ATTR_ORG: :width 1100
 [[file:assets/kv-cache-fundamentals/kv-cache-state-steps.webp]]
 

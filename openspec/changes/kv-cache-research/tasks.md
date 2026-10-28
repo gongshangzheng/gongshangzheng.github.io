@@ -156,3 +156,11 @@
 - [x] 11.3 正式HTML同步全部改动；补上23:17轮HTML遗漏的1.7改写（草稿与HTML现已一致）；updated_at更新。
 - [x] 11.4 审查与验证：复杂度计数口径复核（单步/累计、O(NP²+PN²+N³)阶、容量数KV头与计算量数Q头区分）；lint、OpenSpec strict、build通过；图号不变，未新增图片。
 - [ ] 11.5 获用户发布授权后随10.9一并提交推送。
+
+## 12. Transformer结构图（2026-10-28 23:41用户指定，随发布授权执行）
+
+- [x] 12.1 发布23:17与23:26两轮结构修订：提交5f855d646已推送main，Build and Deploy运行40718808186。
+- [x] 12.2 按用户指示从Attention Is All You Need（arXiv:1706.03762）源码包取Fig. 1（Figures/ModalNet-21.png，1520×2239），原件保留raw/transformer-2017/；cwebp转WebP入media/images/kv-cache-fundamentals/transformer-fig1-architecture.webp。
+- [x] 12.3 插入1.1结构地图段落之后为图2，图注映射decoder-only对应右半、说明Masked与cross-attention省略；许可如实标注arXiv非独家分发许可（非CC BY，已向用户报告）；sources条目同步。
+- [x] 12.4 图号重排：原图2—图9顺延为图3—图10（草稿与HTML同步），2.3的图6回指改为图7。
+- [ ] 12.5 lint、build、OpenSpec通过后随11.5/10.9提交推送并核验部署。
