@@ -19,6 +19,7 @@
 | 7 | frontmatter 完整 | `updated_at` 已更新 |
 | 8 | 正文无元叙述 | 无"这篇专门讲""按要求生成""旧文"等任务过程表述 |
 | 9 | skill 交叉引用路径可解析 | `~/.venv/bin/python3 scripts/check-skill-paths.py` 退出码 0（死路径 0 处）
+| 10 | 工具 skill 目录是 `.agents/skills` 的镜像软链接 | 同一脚本的「镜像违规 0 处」；`<tool>/skills/<name>` 必须是软链接，不得是同名实体副本 |
 
 ---
 

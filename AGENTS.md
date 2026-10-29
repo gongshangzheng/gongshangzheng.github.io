@@ -4,6 +4,7 @@
 
 - Keep project-specific facts and workflow decisions in this repository's `AGENTS.md`, not the central personal memory store.
 - All agents must use `<repo>/.agents/skills/<name>/SKILL.md` for project skills. Do not create or maintain project skills under `.Codex/` or `.codex/`.
+- `.agents/skills/` is the single source of truth for every tool. Tool-specific skill dirs that a writer insists on (for example `.pi/skills/`) must be symlinks to `../../.agents/skills/<name>`, never real copies. Pi and Codex resolve these symlinks to the same real path, so duplicate-name collisions disappear and the tracked `.agents` edition (including the blog gates) always wins. OpenSpec regenerates `.pi/skills/openspec-*`, so re-check the symlinks after `openspec update`.
 - Write `AGENTS.md` instructions in English. Keep examples in their original language when needed to preserve their meaning.
 
 ## Research delegation
