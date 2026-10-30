@@ -217,24 +217,11 @@ def process_one(rel: str, skip_list: set[str] | None = None) -> dict:
     if frames > 1:
         return {"rel": rel, "status": "skip_animated", "frames": frames}
 
-    width, height = current.size
-    if width < MIN_WIDTH:
-        return {"rel": rel, "status": "skip_icon"}
-
-    # Idempotency is judged on the file that would be delivered, not on the
-    # pristine source (the source never carries our padding).
-    bbox = content_bbox(current.convert("RGBA") if current.mode in {"RGBA", "LA"} else current.convert("RGB"))
-    if bbox is None:
-        return {"rel": rel, "status": "skip_uniform"}
-    margins = current_margins(current, bbox)
-    x0, y0, x1, y1 = bbox
-    borders = (x0, y0, width - x1, height - y1)
-    pad_px = compute_pad((x1 - x0, y1 - y0))
-    tolerance = max(2, round(width * MARGIN_TOLERANCE))
-    if all(abs(border - pad_px) <= tolerance for border in borders):
-        return {"rel": rel, "status": "skip_same", "margin": min(margins)}
-
-    # Rebuild from the pristine original so repeated runs never stack lossy encodes.
+    # Authoritative test: derive the expected geometry from the pristine source
+    # and compare it with what is currently delivered. Border measurement alone
+    # cannot detect a *wrong* crop — an image cropped by an older, flawed
+    # detector still shows "borders equal to the target padding" and would be
+    # skipped forever.
     source = source_path_for(rel)
     img = current
     if source != target:
@@ -243,6 +230,9 @@ def process_one(rel: str, skip_list: set[str] | None = None) -> dict:
             return {"rel": rel, "status": "failed", "error": "backup unreadable"}
         img = reloaded[0]
 
+    if img.size[0] < MIN_WIDTH:
+        return {"rel": rel, "status": "skip_icon"}
+
     has_alpha = img.mode in {"RGBA", "LA"} or (img.mode == "P" and "transparency" in img.info)
     img = img.convert("RGBA") if has_alpha else img.convert("RGB")
 
@@ -250,17 +240,9 @@ def process_one(rel: str, skip_list: set[str] | None = None) -> dict:
     if src_bbox is None:
         return {"rel": rel, "status": "skip_uniform"}
 
-    fill, _ = detect_background(img)
     cropped = img.crop(src_bbox)
     pad = compute_pad(cropped.size)
-    padded = ImageOps.expand(cropped, border=pad, fill=fill)
-
-    # Geometry check: if re-deriving lands on the delivered size, the file is
-    # already normalized (the pixel heuristic can mis-read borders on noisy
-    # re-encodes, so geometry is the authoritative test).
-    if padded.size == current.size:
-        return {"rel": rel, "status": "skip_same", "margin": min(margins)}
-
+    padded = ImageOps.expand(cropped, border=pad, fill=detect_background(img)[0])
     if max(padded.size) > MAX_EDGE:
         scale = MAX_EDGE / max(padded.size)
         padded = padded.resize(
@@ -268,10 +250,16 @@ def process_one(rel: str, skip_list: set[str] | None = None) -> dict:
             Image.LANCZOS,
         )
 
+    # Reported margin: how much of the delivered width is border.
+    delivered = min(1.0, pad / padded.size[0]) if padded.size[0] else 0.0
+
+    if padded.size == current.size:
+        return {"rel": rel, "status": "skip_same", "margin": delivered}
+
     return {
         "rel": rel,
         "status": "pending",
-        "before": (current.size, min(margins)),
+        "before": (current.size, delivered),
         "after": padded.size,
         "image": padded,
         "bytes_before": target.stat().st_size,
