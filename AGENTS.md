@@ -7,6 +7,12 @@
 - `.agents/skills/` is the single source of truth for every tool. Tool-specific skill dirs that a writer insists on (for example `.pi/skills/`) must be symlinks to `../../.agents/skills/<name>`, never real copies. Pi and Codex resolve these symlinks to the same real path, so duplicate-name collisions disappear and the tracked `.agents` edition (including the blog gates) always wins. OpenSpec regenerates `.pi/skills/openspec-*`, so re-check the symlinks after `openspec update`.
 - Write `AGENTS.md` instructions in English. Keep examples in their original language when needed to preserve their meaning.
 
+## Visual changes
+
+- Any change that touches `assets/css/`, page templates, or the visual structure of a page must be re-checked with the impeccable detector before it is committed: `IMPECCABLE_BROWSER="/Applications/ego lite.app/Contents/MacOS/ego lite" ~/.agents/skills/impeccable/scripts/impeccable detect http://localhost:4000/<page>` after `node build.js`.
+- The quantitative floors (contrast, minimum functional font size, line width, heading order, caption spacing) live in `.agents/skills/site-design-language/SKILL.md`. Cite them instead of re-deriving them, and do not go below them.
+- Detector ignores are shared decisions: add them to the tracked `.impeccable/config.json` with a documented reason, never to the gitignored `config.local.json`.
+
 ## Research delegation
 
 - Delegate material collection and other token-intensive preparatory work to subagents using **Luna (`gpt-6-luna`)** by default. This includes literature searches, official model/version checks, downloading and extracting papers, collecting original figures, and inventorying existing notes.
