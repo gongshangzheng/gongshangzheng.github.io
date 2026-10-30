@@ -36,10 +36,10 @@
 
 - [x] 6.1 运行 `node tests/run.js` 通过
 - [x] 6.2 运行 `node build.js` 通过，产物无异常
-- [x] 6.3 复扫 1.1 的 8 个面，逐项对比基线（257 → 59，残余项已逐条定性），写入 `tmp/impeccable-scan/after.md`
+- [x] 6.3 复扫 1.1 的 8 个面，逐项对比基线（257 → 59，残余项已逐条定性），写入 `verification.md`
 - [x] 6.4 深色主题复扫 `/`、`/categories/`、`/digital-human-hub.html`（探针页注入 `localStorage theme=dark`，已确认 `html.dark` 生效）：0 / 0 / 6（仅 cramped-padding×3 + straggler×3）
-- [ ] 6.5 `git status --short` 确认只包含本 change 触及的文件，toc 相关既有改动保持未提交状态
-- [ ] 6.6 按 OpenSpec 交付口径提交并推送，远程显式 checkout 校验 commit
+- [x] 6.5 `git status --short` 确认只包含本 change 触及的文件；工作树里 `deploy.yml` 与 `check-perf-budget.js` 的改动属于并行会话，未纳入本次提交
+- [x] 6.6 已提交 `cc739dd` 并推送；远程 clone 校验：`nav.css` 的 `flex: 0 0 auto`、`.impeccable/config.json`、skill 的「可读性硬性下限」均在 `origin/main` 上
 
 ## 7. 实施期追加：日报标题层级与同类缺陷
 
