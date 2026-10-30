@@ -80,8 +80,10 @@ def crop_whitespace(img, padding_pct=0.02, threshold=None):
         # threshold = 背景色 - 8，确保比背景稍暗的像素被识别为内容
         threshold = max(0, bg_level - 8)
 
-    # 行/列级别的内容检测：每行/列中 < threshold 的像素比例
-    content_mask = gray < threshold
+    # 行/列级别的内容检测：与背景差异明显的像素比例。
+    # 只找"比背景暗"的像素会把深色画面（油画天空、中性灰机身）整片当成留白，
+    # 这里改为双向判定：明显亮于或暗于背景都算内容。
+    content_mask = np.abs(gray.astype(np.int16) - bg_level) > 8
     row_content_pct = content_mask.mean(axis=1)  # 每行的内容像素比例
     col_content_pct = content_mask.mean(axis=0)  # 每列的内容像素比例
 
