@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import multiprocessing as mp
 import os
 import re
@@ -43,6 +44,10 @@ ROOT = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT / "media"
 PAGES_DIR = ROOT / "src" / "pages"
 BACKUP_DIR = ROOT / "raw" / "media-originals"
+# Images whose "background" cannot be separated from content by the border
+# heuristic (dark paintings, skies, gradient canvases). Normalizing them would
+# either cut real pixels or trip the whitespace gate, so they are left untouched.
+SKIP_LIST = ROOT / "data" / "margin-skip.txt"
 
 # Target border as a fraction of the cropped width. `.wrap` is ~752px wide, so
 # 3% lands at ~22px on screen, matching the .photo card's inner rhythm.
@@ -50,6 +55,10 @@ TARGET_MARGIN = 0.03
 # Idempotency tolerance (fraction of width). Second run measures 2.83% and must
 # therefore be treated as already-normalized.
 MARGIN_TOLERANCE = 0.005
+# Ceiling for panorama-shaped figures. Borders land on BOTH sides, so the gate
+# sees 2*pad/(h+2*pad); keeping that under the 20% limit (with room for the
+# gate's own 2% re-add) means pad <= 0.11*h. Only binds above ~3.7:1.
+MAX_MARGIN_OF_HEIGHT = 0.11
 MAX_EDGE = 4000
 # Inline icons (48px logos etc.) are not figures; padding them is meaningless.
 MIN_WIDTH = 400
@@ -150,6 +159,17 @@ def current_margins(img: Image.Image, bbox: tuple[int, int, int, int]) -> tuple[
     return (x0 / w, y0 / h, (w - x1) / w, (h - y1) / h)
 
 
+def load_skip_list() -> set[str]:
+    if not SKIP_LIST.exists():
+        return set()
+    entries = set()
+    for line in SKIP_LIST.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            entries.add(line.removeprefix("./"))
+    return entries
+
+
 def backup_path_for(rel: str) -> Path:
     return BACKUP_DIR / rel
 
@@ -180,8 +200,10 @@ def _load(path: Path) -> tuple[Image.Image, int] | None:
         return None
 
 
-def process_one(rel: str) -> dict:
+def process_one(rel: str, skip_list: set[str] | None = None) -> dict:
     """Normalize a single image. Returns a status record."""
+    if skip_list and rel in skip_list:
+        return {"rel": rel, "status": "skip_listed"}
     target = ROOT / rel
     if not target.exists():
         return {"rel": rel, "status": "missing"}
@@ -207,7 +229,7 @@ def process_one(rel: str) -> dict:
     margins = current_margins(current, bbox)
     x0, y0, x1, y1 = bbox
     borders = (x0, y0, width - x1, height - y1)
-    pad_px = round(TARGET_MARGIN * (x1 - x0))
+    pad_px = compute_pad((x1 - x0, y1 - y0))
     tolerance = max(2, round(width * MARGIN_TOLERANCE))
     if all(abs(border - pad_px) <= tolerance for border in borders):
         return {"rel": rel, "status": "skip_same", "margin": min(margins)}
@@ -230,7 +252,7 @@ def process_one(rel: str) -> dict:
 
     fill, _ = detect_background(img)
     cropped = img.crop(src_bbox)
-    pad = round(TARGET_MARGIN * cropped.size[0])
+    pad = compute_pad(cropped.size)
     padded = ImageOps.expand(cropped, border=pad, fill=fill)
 
     # Geometry check: if re-deriving lands on the delivered size, the file is
@@ -267,6 +289,13 @@ def save_result(record: dict) -> dict:
     return record
 
 
+def compute_pad(size: tuple[int, int]) -> int:
+    """Border in pixels: 3% of width, capped at 15% of height for wide strips."""
+    width, height = size
+    pad = min(round(TARGET_MARGIN * width), round(MAX_MARGIN_OF_HEIGHT * height))
+    return max(1, pad)
+
+
 def bucket(margin: float) -> str:
     if margin < 0.01:
         return "<1%"
@@ -298,6 +327,7 @@ def main() -> int:
         print(f"✓ 已恢复 {restored} 个原图到 media/")
         return 0
 
+    skip_list = load_skip_list()
     refs = scan_references()
     candidates = sorted(
         rel
@@ -316,7 +346,9 @@ def main() -> int:
     results: list[dict] = []
     pending: list[dict] = []
     with mp.Pool(args.jobs) as pool:
-        for index, record in enumerate(pool.imap_unordered(process_one, candidates), 1):
+        for index, record in enumerate(
+            pool.imap_unordered(functools.partial(process_one, skip_list=skip_list), candidates), 1
+        ):
             if record["status"] == "pending":
                 pending.append(record)
             else:
@@ -345,6 +377,7 @@ def main() -> int:
         ("skip_vector", "矢量图，豁免"),
         ("skip_uniform", "整图同色，无法定位内容"),
         ("skip_icon", "小尺寸图标，非配图"),
+        ("skip_listed", "登记在 data/margin-skip.txt，跳过"),
         ("missing", "文件缺失"),
         ("failed", "读取失败"),
     ]:
