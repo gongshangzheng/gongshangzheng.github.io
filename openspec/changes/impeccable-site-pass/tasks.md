@@ -51,3 +51,9 @@
 - [x] 7.6 `assets/css/modules/hero.css`：`.stats .label.g/.b` 回落 `--text-muted`（gold 在浅底只有 2.0:1；强调色已由同级 `.num` 表达）
 - [x] 7.7 `assets/css/modules/article-struct.css`：`cite` 的 `var(--bg-hover)`（未定义）改为 `var(--bg-card-hover)`
 - [x] 7.8 复扫当日与历史各一个日报页：`skipped-heading` 归零，剩余全部为 MathJax 隐藏层与 advisory 噪音
+
+## 8. 文章头部元信息换行
+
+- [x] 8.1 定位缺陷：`.meta-item` 是 `inline-flex` 且不换行，一条 meta 内串十几个 `.meta-tag` 药丸时行宽撑到 1915px（容器 358px），触发整页横向滚动
+- [x] 8.2 `assets/css/modules/article-struct.css`：`.meta-item` 加 `flex-wrap: wrap`、`max-width: 100%`、`min-width: 0`
+- [x] 8.3 390px 实测 `video-models-07-multimodal-guidance`、`video-gen-acceleration`、`digital-human-hand-generation` 三页：`document.scrollWidth` 回到 390，无横向滚动，meta 项全部落在容器内

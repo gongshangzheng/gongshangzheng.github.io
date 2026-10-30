@@ -26,6 +26,7 @@
 
 **基线与门禁（P2 与流程）**
 
+- 文章头部 `.meta-item` 允许换行：一条 meta 里可能串十几个 arXiv / repo 药丸链接，`inline-flex` 默认不换行，实测在 358px 容器里撑到 1915px，把整个页面顶出横向滚动。
 - 实施中发现并一并修掉的三处同类缺陷：`.ch-label` 直接用 `--accent-blue`（亮色下 3.2–3.6:1）、`.stats .label.g/.b` 直接用强调色（gold 亮色下 2.0:1）、`cite` 引用 `--bg-hover`（该变量不存在）。
 
 - `.impeccable/config.json` 纳入版本控制，写入带理由的共享 ignore：`side-tab`（左侧 3–4px 强调边是本站 `quote` / `.ch` / `hub-section` 的既有锚点写法）、`em-dash-overuse`（中文长文的破折号密度，advisory 噪音）。本地 ignore 走 `config.local.json`，仍然 gitignored。
@@ -50,7 +51,8 @@
 - `assets/css/modules/nav.css`：`.post-list .date`。
 - `assets/css/modules/layout.css`：移动端 hero 文本区内边距。
 - `assets/css/modules/article-struct.css`：`.photo` / `.photo .cap` 间距。
-- `assets/css/modules/article-components.css`：`.paper-abstract p` 行宽。
+- `assets/css/modules/article-components.css`：`.paper-abstract p` 行宽、`.paper-card h2` 标题锁定。
+- `assets/css/modules/article-struct.css`：`.meta-item` 换行与 `cite` 变量修正。
 - `assets/css/modules/post-graph.css`：标题选择器 `h3` → `h2`。
 - `lib/generators/post-graph.js`：关系图标题标签。
 - `assets/css/modules/chapter.css`：`.ch-label` 颜色改为与正文色混合。
