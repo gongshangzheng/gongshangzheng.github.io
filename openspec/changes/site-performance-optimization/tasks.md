@@ -88,4 +88,5 @@
 - [x] 11.2 `FORCE_BUILD=1 node build.js` 全量通过，产出 `public/` 495.8MB ≤ 1GB
 - [x] 11.3 复测结果已写入 `docs/PERF-BASELINE.md`「优化后」一节（含前后对比表）
 - [x] 11.4 视觉回归核对：CSS 模块仅 `toc.css` 新增 `.category-browser-note`（新元素专用）；其余样式表逐字节未变；class token 差异仅「分类树类名从静态 HTML 移到 JS 渲染」与陈旧产物清理
-- [ ] 11.5 走 Git 交付到 pet 服务器：commit → `git push pet <branch>` → 远程 checkout 并校验 commit
+- [x] 11.5 交付：本仓库部署链路是 GitHub Actions → Pages，且 pet 上不存在该仓库的副本，故按 origin/main 交付。`9da796aed` 推送后 Actions 构建通过（首个 commit 因存量留白被内容门禁拦下，已在 `d192fae41` 补齐）
+  - 线上校验：首页 gzip 33.3KB → 6.8KB，`paper-oasis.html` 115KB → 23.9KB，`category-tree.json` 28.3KB(gzip) 200 OK，页面内 tailwind / 字体 CDN 引用为 0
