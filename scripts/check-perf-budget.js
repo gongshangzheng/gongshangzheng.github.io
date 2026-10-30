@@ -20,14 +20,33 @@ const ROOT = path.resolve(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
 const BUDGETS = {
+  // Whole-page ceiling. Content-heavy pages (dense multi-paper digests, long
+  // tables) are exempted individually via data/perf-heavy-pages.txt and are
+  // still bound by chromeGzipBytes below.
   pageGzipBytes: 40 * 1024,
   indexGzipBytes: 15 * 1024,
+  // Everything that is not article body: head, nav, sidebar, footer, scripts.
+  // This is the number the performance work actually controls.
+  chromeGzipBytes: 12 * 1024,
   singleImageBytes: 2 * 1024 * 1024,
   totalPublicBytes: 1024 * 1024 * 1024,
-  thirdPartyAllowlist: ['cdn.jsdelivr.net'],
+  // Longest acceptable exemption list; it must shrink, not grow.
+  maxHeavyPages: 60,
+  thirdPartyAllowlist: [
+    // Runtime libraries served by the build
+    'cdn.jsdelivr.net',
+    // Content embeds that pages opt into (video/slides) and author-chosen webfonts
+    'player.bilibili.com',
+    'www.youtube.com',
+    'docs.google.com',
+    'upload.wikimedia.org',
+    'fonts.googleapis.com',
+    'fonts.gstatic.com',
+  ],
 };
 
 const MATHJAX_MARKER = 'mathjax@3/es5/tex-svg';
+const HEAVY_PAGES_FILE = path.join(ROOT, 'data', 'perf-heavy-pages.txt');
 const PRISM_MARKER = 'prismjs@1.29.0';
 
 const KB = 1024;
@@ -46,10 +65,9 @@ function rel(p) {
   return path.relative(PUBLIC_DIR, p).replace(/\\/g, '/');
 }
 
+/** Only the site homepage gets the tighter budget; listing pages are normal pages. */
 function pageTier(relPath) {
-  const base = path.basename(relPath);
-  if (relPath === 'index.html' || base === 'index.html') return 'index';
-  return 'page';
+  return relPath === 'index.html' ? 'index' : 'page';
 }
 
 /**
@@ -80,31 +98,10 @@ function extractExternalDomains(html) {
   return [...domains];
 }
 
-function stripHeadAndScripts(html) {
-  return html
-    .replace(/<head>[\s\S]*?<\/head>/i, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '');
-}
-
-/**
- * Heuristic math detection shared with the build step (lib/asset-detect.js).
- * Kept local so this script has no dependency on build internals.
- */
-function hasMathMarkup(html) {
-  const body = stripHeadAndScripts(html);
-  if (/\$\$[\s\S]{1,4000}?\$\$/.test(body)) return true;
-  if (/\\\([\s\S]{1,2000}?\\\)/.test(body)) return true;
-  if (/\\\[[\s\S]{1,4000}?\\\]/.test(body)) return true;
-  return /\$[^$\s][^$\n]{0,300}?\$/.test(body);
-}
-
-function hasCodeBlock(html) {
-  return /<pre[^>]*>\s*<code[^>]*(?:class="[^"]*language-|language-)/i.test(html);
-}
+const { hasCodeBlock, hasMathMarkup } = require('../lib/asset-detect');
 
 function analyzeImgTags(html) {
-  const stats = { count: 0, withLazy: 0, withWidthHeight: 0, withSrcset: 0, missingDims: [] };
+  const stats = { count: 0, withLazy: 0, withWidthHeight: 0, withSrcset: 0, missingDims: [], unmeasurable: [], largeWithoutSrcset: [] };
   const re = /<img\b[^>]*>/gi;
   let m;
   while ((m = re.exec(html)) !== null) {
@@ -114,11 +111,47 @@ function analyzeImgTags(html) {
     if (/\bwidth="\d+"/i.test(tag) && /\bheight="\d+"/i.test(tag)) stats.withWidthHeight++;
     else {
       const src = (tag.match(/src="([^"]*)"/i) || [])[1] || '(no src)';
-      stats.missingDims.push(src);
+      // External or missing files have no knowable intrinsic size; report them
+      // separately from "local image that should have been annotated".
+      const local = src.startsWith('media/') || src.startsWith('./media/');
+      const localPath = local ? path.join(PUBLIC_DIR, src.replace(/^\.\//, '')) : null;
+      if (!local || !fs.existsSync(localPath)) stats.unmeasurable.push(src);
+      else stats.missingDims.push(src);
     }
-    if (/\bsrcset="/i.test(tag)) stats.withSrcset++;
+    const srcsetMatch = /\bsrcset="([^"]*)"/i.exec(tag);
+    if (srcsetMatch) stats.withSrcset++;
+    const widthMatch = /\bwidth="(\d+)"/i.exec(tag);
+    // Images wider than the largest derivative must ship multiple candidates.
+    if (widthMatch && Number(widthMatch[1]) > 1600) {
+      const candidates = srcsetMatch ? srcsetMatch[1].split(',').filter(Boolean).length : 0;
+      if (candidates < 2) {
+        const src = (tag.match(/src="([^"]*)"/i) || [])[1] || '(no src)';
+        stats.largeWithoutSrcset.push(`${src} (${candidates} candidates)`);
+      }
+    }
   }
   return stats;
+}
+
+/**
+ * Split a page into article content and site chrome.
+ * Content runs from the body container to the site footer; everything else
+ * (head, nav, sidebar, footer, scripts) is chrome.
+ */
+function splitChrome(html) {
+  const start = /<div class="(?:wrap|main-content)"/.exec(html);
+  const end = html.indexOf('<footer class="site-footer">');
+  if (!start || end < 0 || end <= start.index) return null;
+  return { content: html.slice(start.index, end), chrome: html.slice(0, start.index) + html.slice(end) };
+}
+
+function readHeavyPages() {
+  if (!fs.existsSync(HEAVY_PAGES_FILE)) return [];
+  return fs
+    .readFileSync(HEAVY_PAGES_FILE, 'utf8')
+    .split('\n')
+    .map((line) => line.replace(/#.*/, '').trim())
+    .filter(Boolean);
 }
 
 function gzipSize(buf) {
@@ -166,6 +199,7 @@ function collectMetrics() {
     const r = rel(file);
     const domains = extractExternalDomains(html);
     const imgs = analyzeImgTags(html);
+    const split = splitChrome(html);
 
     for (const d of domains) {
       if (!metrics.thirdParty[d]) metrics.thirdParty[d] = { pages: 0 };
@@ -185,6 +219,8 @@ function collectMetrics() {
       hasPrism: html.includes(PRISM_MARKER),
       hasCodeBlock: hasCodeBlock(html),
       hasCategoryBrowser: html.includes('id="category-nav"'),
+      contentGzipBytes: split ? gzipSize(Buffer.from(split.content, 'utf8')) : null,
+      chromeGzipBytes: split ? gzipSize(Buffer.from(split.chrome, 'utf8')) : null,
       imgs,
     });
   }
@@ -280,11 +316,44 @@ function runChecks(metrics, budgets = BUDGETS) {
     skipped.push('public/ 中没有 HTML 页面，跳过页面级断言');
   }
 
-  // 1. 单页 gzip 预算
+  // 1a. 站点模板开销（正文以外的一切）：每一页都必须满足
+  let unmeasured = 0;
+  for (const p of metrics.pages) {
+    if (p.chromeGzipBytes === null) { unmeasured++; continue; }
+    if (p.chromeGzipBytes > budgets.chromeGzipBytes) {
+      errors.push(`页面模板开销超预算：${p.path} ${fmtBytes(p.chromeGzipBytes)} > ${fmtBytes(budgets.chromeGzipBytes)}`);
+    }
+  }
+  if (unmeasured) {
+    // Redirect shells and standalone slide decks have no site chrome. That is only
+    // acceptable while they stay small — otherwise unmeasurable means unchecked.
+    const oversized = metrics.pages.filter((p) => p.chromeGzipBytes === null && p.gzipBytes > budgets.pageGzipBytes);
+    for (const p of oversized) {
+      errors.push(`页面无法切分正文/模板且超过 ${fmtBytes(budgets.pageGzipBytes)}：${p.path} ${fmtBytes(p.gzipBytes)}`);
+    }
+    warnings.push(`${unmeasured} 个页面无站点模板标记（重定向页/独立 slide 页），按体积上限兜底校验`);
+  }
+
+  // 1b. 单页总体积：正文特重的页面走豁免清单
+  const heavyPages = readHeavyPages();
+  const heavySet = new Set(heavyPages);
+  if (heavyPages.length > budgets.maxHeavyPages) {
+    errors.push(`正文特重页面豁免清单过长：${heavyPages.length} 条 > ${budgets.maxHeavyPages}`);
+  }
   for (const p of metrics.pages) {
     const budget = p.tier === 'index' ? budgets.indexGzipBytes : budgets.pageGzipBytes;
-    if (p.gzipBytes > budget) {
-      errors.push(`页面 gzip 超预算：${p.path} ${fmtBytes(p.gzipBytes)} > ${fmtBytes(budget)}`);
+    const overBudget = p.gzipBytes > budget;
+    const exempt = heavySet.has(p.path);
+    if (overBudget && !exempt) {
+      errors.push(`页面 gzip 超预算：${p.path} ${fmtBytes(p.gzipBytes)} > ${fmtBytes(budget)}（如属正文特重页，登记到 data/perf-heavy-pages.txt）`);
+    }
+    if (!overBudget && exempt && p.tier !== 'index') {
+      errors.push(`豁免清单里有已达标页面，请删除：${p.path} ${fmtBytes(p.gzipBytes)}`);
+    }
+  }
+  for (const listed of heavyPages) {
+    if (!metrics.pages.some((p) => p.path === listed)) {
+      errors.push(`豁免清单指向不存在的页面：${listed}`);
     }
   }
 
@@ -314,11 +383,26 @@ function runChecks(metrics, budgets = BUDGETS) {
 
   // 5. 图片属性完整性
   const missingDims = [];
+  const unmeasurable = [];
   for (const p of metrics.pages) {
     for (const src of p.imgs.missingDims) missingDims.push(`${p.path} → ${src}`);
+    for (const src of p.imgs.unmeasurable) unmeasurable.push(src);
+  }
+  const uniqueUnmeasurable = [...new Set(unmeasurable)];
+  if (uniqueUnmeasurable.length) {
+    warnings.push(`${uniqueUnmeasurable.length} 个 <img> 指向外部地址或不存在的文件，无法标注尺寸（内容侧问题）：${uniqueUnmeasurable.slice(0, 5).join('; ')}`);
   }
   if (missingDims.length) {
     errors.push(`${missingDims.length} 个 <img> 缺少 width/height，例：${missingDims.slice(0, 3).join('; ')}`);
+  }
+
+  // 5b. 大图必须有响应式候选源
+  const largeNoSrcset = [];
+  for (const p of metrics.pages) {
+    for (const entry of p.imgs.largeWithoutSrcset) largeNoSrcset.push(`${p.path} → ${entry}`);
+  }
+  if (largeNoSrcset.length) {
+    errors.push(`${largeNoSrcset.length} 个 >1600px 图片缺少多档 srcset，例：${largeNoSrcset.slice(0, 3).join('; ')}`);
   }
 
   // 6. 单图体积

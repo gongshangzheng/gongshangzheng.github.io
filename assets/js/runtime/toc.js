@@ -31,6 +31,8 @@
     var w = savedWidth ? parseInt(savedWidth) : 250;
     setSidebarWidth(w);
     localStorage.setItem('toc-collapsed', 'false');
+    // Category tree is fetched on demand; tell listeners the panel is visible now.
+    sidebar.dispatchEvent(new CustomEvent('toc:expand'));
   }
 
   function collapseSidebar() {
@@ -217,6 +219,63 @@
     return html;
   }
 
+  // Shared category tree — fetched once per session instead of being inlined
+  // into every page (it used to add 25-87KB gzip to each article page).
+  var CATEGORY_TREE_MEMORY = null;
+
+  function markActiveCategoryNodes(nodes) {
+    var currentFile = '';
+    try { currentFile = decodeURIComponent(location.pathname.split('/').pop() || 'index.html'); } catch (e) { currentFile = location.pathname.split('/').pop() || 'index.html'; }
+    (nodes || []).forEach(function(node) {
+      if (node.type === 'post') {
+        var href = String(node.href || '').replace(/^\.\//, '');
+        try { href = decodeURIComponent(href); } catch (e) {}
+        node.active = !!currentFile && href === currentFile;
+      }
+      if (node.children && node.children.length) markActiveCategoryNodes(node.children);
+    });
+    return nodes;
+  }
+
+  function loadCategoryTree(src) {
+    if (CATEGORY_TREE_MEMORY) return Promise.resolve(CATEGORY_TREE_MEMORY);
+    var storageKey = 'toc-cat-tree:' + src;
+    try {
+      var cached = sessionStorage.getItem(storageKey);
+      if (cached) {
+        CATEGORY_TREE_MEMORY = markActiveCategoryNodes(JSON.parse(cached));
+        return Promise.resolve(CATEGORY_TREE_MEMORY);
+      }
+    } catch (e) { /* cache unreadable — fall through to network */ }
+
+    return new Promise(function(resolve, reject) {
+      // XHR rather than fetch: same <base href> compatibility reason as search.js
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', src, true);
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status >= 200 && xhr.status < 400) {
+          try {
+            var parsed = JSON.parse(xhr.responseText);
+            CATEGORY_TREE_MEMORY = markActiveCategoryNodes(parsed);
+            try { sessionStorage.setItem(storageKey, xhr.responseText); } catch (e) {}
+            resolve(CATEGORY_TREE_MEMORY);
+          } catch (e) {
+            reject(e);
+          }
+        } else {
+          reject(new Error('HTTP ' + xhr.status));
+        }
+      };
+      xhr.send();
+    });
+  }
+
+  function renderCategoryBrowserError(list) {
+    list.innerHTML = '<div class="category-browser-note">分类加载失败，' +
+      '<a href="./categories/index.html">查看分类索引</a></div>';
+  }
+
   function initCategoryBrowser() {
     var nav = document.getElementById('category-nav');
     if (!nav || !nav.classList.contains('category-browser')) return;
@@ -225,9 +284,11 @@
     var breadcrumb = nav.querySelector('.category-breadcrumb');
     if (!list || !backBtn || !breadcrumb) return;
 
+    var treeSrc = nav.getAttribute('data-src');
+    if (!treeSrc) return;
+
     var tree = [];
     var initialPath = [];
-    try { tree = JSON.parse(nav.getAttribute('data-tree') || '[]'); } catch (e) { tree = []; }
     try { initialPath = JSON.parse(nav.getAttribute('data-initial-path') || '[]'); } catch (e) { initialPath = []; }
 
     // Restore sidebar navigation from sessionStorage so that refreshing the page
@@ -235,16 +296,7 @@
     // Key by the page's initial path so cross-category navigation doesn't carry over.
     var storageKey = 'toc-cat-path:' + JSON.stringify(initialPath);
     var currentPath = initialPath;
-    try {
-      var saved = sessionStorage.getItem(storageKey);
-      if (saved) {
-        var savedPath = JSON.parse(saved);
-        // Only restore if the saved path is still valid in the current tree
-        if (findCategoryNode(tree, savedPath)) {
-          currentPath = savedPath;
-        }
-      }
-    } catch (e) {}
+    var rendered = false;
 
     function render() {
       var currentNode = findCategoryNode(tree, currentPath);
@@ -254,6 +306,30 @@
       backBtn.disabled = currentPath.length === 0;
       // Persist current navigation path for page refresh
       try { sessionStorage.setItem(storageKey, JSON.stringify(currentPath)); } catch (e) {}
+    }
+
+    function ensureLoaded() {
+      if (rendered) return;
+      rendered = true;
+      list.innerHTML = '<div class="category-browser-note">加载中…</div>';
+      loadCategoryTree(treeSrc).then(function(data) {
+        tree = data || [];
+        try {
+          var saved = sessionStorage.getItem(storageKey);
+          if (saved) {
+            var savedPath = JSON.parse(saved);
+            // Only restore if the saved path is still valid in the current tree
+            if (findCategoryNode(tree, savedPath)) currentPath = savedPath;
+          }
+        } catch (e) {}
+        if (!tree.length) {
+          renderCategoryBrowserError(list);
+          return;
+        }
+        render();
+      }).catch(function() {
+        renderCategoryBrowserError(list);
+      });
     }
 
     backBtn.addEventListener('click', function(e) {
@@ -284,7 +360,13 @@
       render();
     });
 
-    render();
+    var sidebarEl = nav.closest('.toc-sidebar');
+    if (sidebarEl) {
+      if (!sidebarEl.classList.contains('toc-collapsed')) ensureLoaded();
+      sidebarEl.addEventListener('toc:expand', ensureLoaded);
+    } else {
+      ensureLoaded();
+    }
   }
   initCategoryBrowser();
 

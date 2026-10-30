@@ -5,9 +5,10 @@
 | generator | 85 |
 | lint-html | 25 |
 | parser | 28 |
+| perf-budget | 10 |
 | post-graph-db | 4 |
 | replace | 47 |
 | taxonomy-alias-redirect | 1 |
-| toc | 30 |
+| toc | 31 |
 
-**Total:** 220 tests across 7 modules.
+**Total:** 231 tests across 8 modules.

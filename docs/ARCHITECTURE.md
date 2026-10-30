@@ -27,7 +27,7 @@ gongshangzheng.github.io/
 │       └── scripts.js         # inline runtime scripts (PDF.js, slide-state restore)
 ├── src/
 │   ├── templates/
-│   │   ├── _base.html  # Base HTML: <base href>, Tailwind CDN, Prism.js, fonts, hugo-theme.css
+│   │   ├── _base.html  # Base HTML: <base href>, hugo-theme.css, runtime.bundle.js
 │   │   ├── _header.html
 │   │   └── _footer.html
 │   ├── assets/
@@ -39,7 +39,7 @@ gongshangzheng.github.io/
 
 ## Build Pipeline
 
-1. **Copy assets** — copyDir(assets, public/assets); buildCss() merges always-modules into hugo-theme.css and copies optional modules
+1. **Copy assets** — copyDir(assets, public/assets); buildCss() merges always-modules into hugo-theme.css; buildRuntimeBundle() concatenates assets/js/** into runtime.bundle.js; only page-referenced media is copied; ensureVariants() generates .w960/.w1600 WebP derivatives and enhanceImgTags() writes srcset/width/height
 2. **Collect posts** — scan src/pages, parse frontmatter, assign slugs, sort by date
 3. **Build pages** (incremental via per-page sourceHash + global fingerprint)
    - `buildArticles()` — each file → HTML page (lib/generators/articles.js)
@@ -72,7 +72,7 @@ gongshangzheng.github.io/
 | `nav.js` | Responsive nav-brand sizing |
 | `theme.js` | Dark-mode toggle, hamburger, back-to-top, fade-in, Prism highlight |
 | `music.js` | Background music toggle |
-| `toc.js` | TOC sidebar (collapse/resize/split), category browser, scroll-spy |
+| `toc.js` | TOC sidebar (collapse/resize/split), category browser (fetches shared category-tree.json), scroll-spy |
 | `mobile-toc.js` | Mobile TOC drawer |
 | `search.js` | Search dropdown (Ctrl/Cmd+K) |
 

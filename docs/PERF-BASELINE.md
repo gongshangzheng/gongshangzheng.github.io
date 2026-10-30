@@ -73,3 +73,81 @@
 1. `assets/css/modules/*.css` 与合并产物 `hugo-theme.css` 在改动前后逐字节比对（样式表零变化 = 版式零变化）。
 2. 全站 `class` token 清单在改动前后比对，确认没有任何由 Tailwind 生成的 utility class 依赖被删除（当前计数为 0）。
 
+
+---
+
+# 优化后（2026-10-30）
+
+采集命令：`node scripts/check-perf-budget.js --report`（全部任务落地后）
+
+## 前后对比
+
+| 指标 | 优化前 | 优化后 | 变化 |
+|---|---|---|---|
+| 产物总大小 | 2.24 GB | 495.8 MB | **−78%** |
+| 产物文件数 | 10881 | 7058 | −35% |
+| HTML 总量（gzip） | 98.3 MB | 20.5 MB | **−79%** |
+| 单页 gzip 中位数 | 4.0 KB（分类浏览器页 100 KB） | 3.8 KB（同集合 3.8 KB） | 页面间差异消失 |
+| 单页 gzip 最大 | 213.1 KB | 124.1 KB | −42% |
+| 超 40KB gzip 页面 | 895 | 49（全部为正文特重页，已登记） | −95% |
+| 内联分类树页面 | 895 | 0 | 消除 |
+| 加载 Prism 页面 | 3045（2925 无代码块） | 108（0 误加载） | −96% |
+| 加载 MathJax 页面 | 658（171 无数学） | 465（0 误加载） | −29% |
+| 第三方域名 | tailwind CDN + 已停服字体 CDN | 仅 jsdelivr + 内容嵌入 | 阻塞外链归零 |
+| 图片文件数（部署） | 7559 / 1.49 GB | 1740 源 + 2361 派生 / 445 MB | −70% |
+| 单图 >2MB | 111 | 0 | 消除 |
+| `img` 带 width/height | 2 / 1840 | 1791 / 1791（本地图 100%） | 消除 CLS 来源 |
+| `img` 带 srcset | 0 | 1490（全部 >1600px 的图） | 移动端按需取图 |
+| 图片最大像素 | 10627×13443（1.43 亿） | 4000px 长边上限 | 解码开销降一个数量级 |
+
+单页模板开销（正文以外的一切）：中位 2.0KB、p95 4.4KB、最大 10.6KB，预算 12KB。
+
+## 优化后详细指标
+
+| 指标 | 数值 |
+|---|---|
+| 页面数 | 2874 |
+| 产物总大小 | 495.8 MB (7058 文件) |
+| HTML 总量 | 66.8 MB |
+| HTML 总量（gzip） | 20.5 MB |
+| 单页 gzip 中位/最大 | 3.8 KB / 124.1 KB |
+| 超 40KB gzip 的页面 | 49 |
+| 含内联分类树（data-tree）的页面 | 0 |
+| 加载 MathJax 的页面 | 465 / 其中正文无数学 0 |
+| 加载 Prism 的页面 | 108 / 其中无代码块 0 |
+| 分类树共享 JSON | 131.6 KB（gzip 27.6 KB） |
+
+### 图片
+
+| 指标 | 数值 |
+|---|---|
+| 图片文件数 | 4099 |
+| 图片总量 | 403.8 MB |
+| 单图 >2MB | 0 |
+| img 标签 | 1834（lazy 1435，width+height 1800，srcset 1497） |
+
+### 第三方域名
+
+| 域名 | 引用页面数 | 在白名单内 |
+|---|---|---|
+| cdn.jsdelivr.net | 567 | 是 |
+| player.bilibili.com | 6 | 是 |
+| docs.google.com | 2 | 是 |
+| fonts.googleapis.com | 1 | 是 |
+| fonts.gstatic.com | 1 | 是 |
+| www.youtube.com | 1 | 是 |
+
+### gzip 最大的 10 个页面
+
+| 页面 | gzip | 原始 |
+|---|---|---|
+| arxiv-digest-2026-07-01.html | 124.1 KB | 349.5 KB |
+| arxiv-digest-2026-06-17.html | 121.3 KB | 342.4 KB |
+| arxiv-digest-2026-09-02.html | 119.7 KB | 331.5 KB |
+| video-models-07-multimodal-guidance.html | 118.5 KB | 412.5 KB |
+| digital-human-identity-consistency.html | 111.3 KB | 315.4 KB |
+| arxiv-digest-2026-08-19.html | 109.7 KB | 305.0 KB |
+| arxiv-digest-2026-06-10.html | 107.1 KB | 297.8 KB |
+| arxiv-digest-2026-07-08.html | 106.4 KB | 331.9 KB |
+| arxiv-digest-2026-09-24.html | 97.5 KB | 270.5 KB |
+| arxiv-digest-2026-07-02.html | 90.0 KB | 253.7 KB |

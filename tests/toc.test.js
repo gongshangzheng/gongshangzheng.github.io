@@ -279,7 +279,7 @@ const tests = {
     assert(sidebar.includes('</aside>'), 'sidebar should be properly closed');
   },
 
-  'buildTocSidebar: category browser tree uses taxonomy slugs in data tree': () => {
+  'buildTocSidebar: category browser references shared tree instead of inlining it': () => {
     const taxonomy = createTaxonomyResolver({ version: 1, tags: {}, categories: {}, subcategories: {} });
     const posts = [{
       slug: 'demo',
@@ -289,8 +289,31 @@ const tests = {
       created_at: '2026-01-01'
     }];
     const { sidebar } = buildTocSidebar([], posts, posts[0], taxonomy);
-    assert(sidebar.includes('ren-gong-zhi-neng'), sidebar);
-    assert(sidebar.includes('fundamentals'), sidebar);
+    assert(!sidebar.includes('data-tree'), 'sidebar must not inline the category tree');
+    assert(sidebar.includes('data-src="assets/data/category-tree.json'), sidebar);
+    assert(sidebar.includes('data-initial-path='), sidebar);
+    assert(sidebar.includes('<noscript>'), 'no-JS fallback link is required');
+    // Current location is still resolved at build time, so the panel opens on the right level.
+    assert(sidebar.includes('基础'), sidebar);
+  },
+
+  'buildCategoryTree: folder slugs come from the taxonomy registry': () => {
+    const { buildCategoryTree } = require('../lib/toc');
+    const taxonomy = createTaxonomyResolver({ version: 1, tags: {}, categories: {}, subcategories: {} });
+    const posts = [{
+      slug: 'demo',
+      title: 'Demo',
+      url: './demo.html',
+      categoryPath: ['人工智能', '基础'],
+      created_at: '2026-01-01'
+    }];
+    const tree = buildCategoryTree(posts, null, taxonomy);
+    const top = tree.find((n) => n.text === '人工智能');
+    assert.ok(top, 'top-level folder missing');
+    assert.equal(top.slug, 'ren-gong-zhi-neng');
+    const child = (top.children || []).find((n) => n.text === '基础');
+    assert.ok(child, 'child folder missing');
+    assert.equal(child.slug, 'fundamentals');
   },
 
   // ===== tree structure =====
