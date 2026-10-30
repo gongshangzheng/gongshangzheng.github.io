@@ -77,6 +77,7 @@
 
 - [x] 10.1 引入 `sharp@^0.35.5` 依赖并锁定
 - [x] 10.2 实现 `ensureVariants`（`lib/media-images.js` + `--variants` CLI）：为被引用且长边 >1600px 的图生成 `.w960.webp` / `.w1600.webp`，按源 `size:mtime` 增量；并发数 = CPU 数（≤8）
+- [x] 10.3b 修复（上线后用户反馈）：注入 `width`/`height` 后图片被纵向拉伸。根因是主题 CSS 只有 `.photo img { width: 100% }` / `.image img { max-width: 100% }`，没有 `height: auto`，浏览器把属性高度当成固定高度。`base.css` 补上 `img { max-width: 100%; height: auto }`；门禁新增断言（主题 CSS 必须为 `img` 声明 `height: auto`，否则报错），已用「临时移除规则」验证会失败
 - [x] 10.3 构建期图片后处理：`enhanceImgTags` 写 `srcset`/`sizes`/`width`/`height`/`decoding`，首屏首图 `fetchpriority="high"` 且去掉 lazy，并把 `width="18px"` 这类带单位写法规范为整数
 - [x] 10.4 派生档阶段耗时：串行 14 分 52 秒 → 并行后 **65 秒**（2361 个档位），远低于 3 分钟目标；CI 另加 `actions/cache` 按媒体内容哈希复用
 - [x] 10.5 校验：2361 个派生档全部生成；1791 个本地图 100% 带 width/height；1490 个带 srcset（其余为 ≤1600px 无需派生）

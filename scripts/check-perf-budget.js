@@ -308,6 +308,16 @@ function reportMarkdown(metrics) {
   return lines.join('\n');
 }
 
+/** True when some rule whose selector list contains a bare `img` sets height: auto. */
+function imgRuleAllowsAutoHeight(css) {
+  for (const match of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const selectors = match[1].split(',').map((part) => part.trim().toLowerCase());
+    if (!selectors.includes('img')) continue;
+    if (/height:\s*auto/i.test(match[2])) return true;
+  }
+  return false;
+}
+
 function median(nums) {
   if (!nums.length) return 0;
   const s = [...nums].sort((a, b) => a - b);
@@ -415,6 +425,19 @@ function runChecks(metrics, budgets = BUDGETS) {
   }
   if (largeNoSrcset.length) {
     errors.push(`${largeNoSrcset.length} 个 >1600px 图片缺少多档 srcset，例：${largeNoSrcset.slice(0, 3).join('; ')}`);
+  }
+
+  // 5c. 尺寸属性只有在 CSS 允许高度自适应时才是 CLS 提示，否则会固定高度造成拉伸
+  const pagesWithDims = metrics.pages.filter((p) => p.imgs.withWidthHeight > 0);
+  if (pagesWithDims.length) {
+    const cssPath = path.join(PUBLIC_DIR, 'assets', 'css', 'hugo-theme.css');
+    const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '') : '';
+    if (!imgRuleAllowsAutoHeight(css)) {
+      errors.push(
+        `主题 CSS 缺少 img { height: auto }：${pagesWithDims.length} 个页面带固有尺寸属性，` +
+        '缺少该规则时浏览器会把属性高度当成固定高度，图片被纵向拉伸'
+      );
+    }
   }
 
   // 6. 单图体积
