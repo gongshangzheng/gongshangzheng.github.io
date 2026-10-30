@@ -158,10 +158,22 @@ function gzipSize(buf) {
   return zlib.gzipSync(buf, { level: 6 }).length;
 }
 
+/**
+ * A partial public/ (an image-derivative cache restored by CI, say) must never
+ * be mistaken for a build: treat the directory as absent unless the outputs that
+ * only a completed build can produce are present.
+ */
+function isBuilt() {
+  return (
+    fs.existsSync(path.join(PUBLIC_DIR, 'index.html')) &&
+    fs.existsSync(path.join(PUBLIC_DIR, 'assets', 'data', 'category-tree.json'))
+  );
+}
+
 function collectMetrics() {
   const metrics = {
     generatedAt: new Date().toISOString(),
-    publicExists: fs.existsSync(PUBLIC_DIR),
+    publicExists: isBuilt(),
     budgets: BUDGETS,
     totalBytes: 0,
     totalFiles: 0,
@@ -309,7 +321,7 @@ function runChecks(metrics, budgets = BUDGETS) {
   const skipped = [];
 
   if (!metrics.publicExists) {
-    skipped.push('public/ 不存在，跳过全部断言（先运行 node build.js）');
+    skipped.push('public/ 未构建或不完整，跳过全部断言（先运行 node build.js）');
     return { errors, warnings, skipped };
   }
   if (!metrics.pages.length) {
