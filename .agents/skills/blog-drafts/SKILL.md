@@ -29,7 +29,7 @@ tags: [blog, drafts, brainstorming, planning]
 ~/.venv/bin/python3 .agents/skills/blog-drafts/scripts/draft-convert.py <slug> --to md
 ```
 
-> 仓库根 `scripts/` 是站点级脚本（check-sub-id.py、convert-figures.py 等），与草稿管理无关。
+> 仓库根 `scripts/` 是站点级脚本（check-sub-id.py、check-figure-whitespace.py 等），与草稿管理无关。图片转换已收口到全局 `~/.agents/skills/doc-intake/`。
 > 旧的 `scripts/draft-convert.py`（pandoc 版）已删除，由 skill 目录的纯 Python 版取代。
 
 ---
@@ -69,7 +69,7 @@ drafts/
 
 - 草稿正文用相对路径引用：.md 用 `![描述](assets/<slug>/<file>.png)`；.org 用 `[[file:assets/<slug>/<file>.png]]`。
 - 草稿发布（交接给 html-blog）时，资产移到 `media/images/<slug>/` 并转 webp，HTML 用 `<div class="photo">` 包裹。
-- 大图建议先压缩再放（参考 `scripts/convert-figures.py`）。
+- 大图建议先压缩再放（参考全局 doc-intake 的 `doc_intake.py convert-figures`）。
 
 ## 模板
 
@@ -87,6 +87,11 @@ drafts/
 - `.md`：用 YAML `---` frontmatter，正文是 markdown（`#` 标题、`##` 子节），需显式 `--format md`。
 - 脚本自动按扩展名解析对应 frontmatter 格式；`list/show/set/archive` 等都能混合处理 `.org` 和 `.md`。
 - **格式互转**：`draft-convert.py <slug> --to org|md [--replace] [--dry-run]`，纯 Python 无 pandoc 依赖，详见下文「格式互转」。
+
+> **模板占位符约定**：模板必须包含 `__SLUG__`、`__TITLE__`、`__NOW__` 三个占位符，`draft.py new`
+> 只替换这三个标记。缺少任一个会被直接拒绝（不落文件），因为旧版 `paper-reading-deep.org` 用了
+> `<论文标题>` 这种写法，导致 `--title` 被静默忽略、草稿里留下字面量占位符。新增或修改模板后用
+> `draft.py new tmp-check --template <name>` 跑一次再删除，确认 `#+TITLE:` 是真实标题。
 
 > **设计理念**：brainstorm 模板刻意几乎空白——草稿正文由**用户自己写**，模板只提供 frontmatter
 > 骨架，不预设章节结构以免限制思考。需要结构化规划时用 `plan` 模板。
@@ -117,7 +122,7 @@ drafts/
 
 ### 草稿涉及具体论文原文时
 
-当用户要求参考、阅读、核对、下载或依据某篇具体论文原文写草稿时，立即调用 `read-article` skill 的 `draft` 模式；对 arXiv 论文，先运行其 `fetch-arxiv-paper.py` 完成 source、正文和图片整理，再阅读原文并填入草稿。不能因为任务最终产物是 brainstorm 草稿，就跳过论文提取脚本。详见 `../read-article/SKILL.md` 的「强制触发：先整理原文，再执行主任务」。
+当用户要求参考、阅读、核对、下载或依据某篇具体论文原文写草稿时，立即调用 `read-article` skill 的 `draft` 模式；对 arXiv 论文，先走 deepxiv + `doc_intake.py arxiv --assets-only` 双通道完成正文和源码/图片整理（见 `../read-article/SKILL.md` Phase 1），再阅读原文并填入草稿。不能因为任务最终产物是 brainstorm 草稿，就跳过论文提取脚本。详见 `../read-article/SKILL.md` 的「强制触发：先整理原文，再执行主任务」。
 
 ## 管理脚本 `draft.py`
 
@@ -285,10 +290,11 @@ git log -1 --format=%ci src/pages/<slug>.html  # 文章最近改动时间
 详细流程见 `subagents/paper-note.md`。一句话总结：
 
 ```bash
-# 1. 提取论文（tarball + 图片 + TeX→Markdown）
+# 1. 提取论文（deepxiv 正文 + doc-intake 源码/原图）
 cd ~/gongshangzheng.github.io
-PYTHONUTF8=1 .cache/read-article/.venv/bin/python \
-  .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
+deepxiv paper <arxiv-id> --raw > raw/<slug>/sources/<slug>.md
+~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py \
+  arxiv <arxiv-id> --slug <slug> --root ~/gongshangzheng.github.io --assets-only
 
 # 2. 复制图片到草稿 assets
 mkdir -p drafts/assets/<slug>

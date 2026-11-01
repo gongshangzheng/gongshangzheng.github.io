@@ -32,6 +32,10 @@ TEMPLATES_DIR = os.path.join(REPO, '.agents/skills/blog-drafts/templates')
 DEFAULT_FIELDS = ['slug', 'status', 'progress', 'pin', 'title']
 DEFAULT_FMT = 'org'  # default format for new drafts
 EXTS = ('.org', '.md')  # lookup order (default first)
+# cmd_new() only substitutes these tokens. A template that spells its
+# placeholders any other way (e.g. <论文标题>) used to be created "successfully"
+# with the literal placeholder text left in the frontmatter.
+TEMPLATE_TOKENS = ('__SLUG__', '__TITLE__', '__NOW__')
 
 
 def now_iso():
@@ -152,12 +156,28 @@ def cmd_new(args):
         avail = [f for f in os.listdir(TEMPLATES_DIR) if f.endswith(ext)]
         sys.exit(f'❌ template not found: {args.template}.{fmt} (available: {avail})')
     tpl = open(tpl_path, encoding='utf-8').read()
+    missing = [t for t in TEMPLATE_TOKENS if t not in tpl]
+    if missing:
+        sys.exit(
+            f'❌ template {args.template}.{fmt} is missing placeholder(s): {", ".join(missing)}\n'
+            f'   cmd_new() only substitutes {", ".join(TEMPLATE_TOKENS)}; without them the draft\n'
+            f'   keeps the template literal text instead of your --title / slug.'
+        )
     now = now_iso()
     title = args.title or args.slug
     out = (tpl.replace('__SLUG__', args.slug)
               .replace('__TITLE__', title)
               .replace('__NOW__', now))
+    leftover = sorted(set(re.findall(r'__[A-Z_]{3,}__', out)))
+    if leftover:
+        sys.exit(
+            f'❌ template {args.template}.{fmt} still has unsubstituted token(s) after render: '
+            f'{", ".join(leftover)}'
+        )
     fm, body = parse_frontmatter(out, ext)
+    # Authoritative values: never rely on the template having placed them.
+    fm['title'] = title
+    fm['slug'] = args.slug
     if args.type: fm['type'] = args.type
     if args.alias: fm['target_alias'] = args.alias
     if args.pin: fm['pin'] = 'true'
