@@ -447,7 +447,6 @@ async function build() {
     mediaFilter,
     (destPath) => /\.w\d+\.webp$/.test(destPath)
   );
-  const audioStats = copyDir(PATHS.media, path.join(PATHS.public, 'audio'), (srcPath) => /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(srcPath));
   const cssStats = buildCss();
   const bundleStats = buildRuntimeBundle();
   const imagePipeline = await buildImagePipeline(mediaRefs);
@@ -622,7 +621,6 @@ async function build() {
     console.log(`ℹ media: ${skippedMedia.length} 个未引用且 >5MB 的文件未部署（确认是否有外站直链）`);
     for (const m of skippedMedia.slice(0, 10)) console.log(`    ${path.relative(PATHS.root, m)}`);
   }
-  logSummary('audio', audioStats);
   logSummary('css', cssStats);
   logSummary('runtime bundle', bundleStats);
   logSummary('posts', { total: allPosts.length });
