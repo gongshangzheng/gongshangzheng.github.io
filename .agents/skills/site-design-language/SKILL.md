@@ -36,12 +36,19 @@ tags: [design-system, css, static-blog, visual-style]
 
 1. **不要用 `opacity` 压弱化文字。** `--text-muted` 本身在暗色 5.5:1、亮色 6.3:1，已经够弱；再叠 `opacity: .55` 会掉到 2.7:1。要更弱就换变量，不要叠透明度。
 2. **不要给不存在的变量留硬编码兜底。** `var(--bg-alt, #f8f9fa)` 这类写法在暗色主题下会把浅灰面板画在深色页面上，块内文字变成 1.5:1。本仓库的背景变量只有 `--bg-body` / `--bg-card` / `--bg-block` / `--bg-card-hover` / `--bg-menu` / `--bg-code`。
-3. **强调色不要直接当小字颜色。** `--accent-gold`、`--accent-blue` 在浅底上只有 2.0–3.6:1；用在 ≥1.4rem 的大字上，或与 `--text-color` 混合（`color-mix(in srgb, var(--accent-blue) 70%, var(--text-color))`）后再用。
+3. **强调色不要直接当小字颜色。** `--accent-gold`、`--accent-blue` 在浅底上只有 2.0–3.6:1；用在 ≥1.4rem 的大字上，或与 `--text-color` 混合（`color-mix(in srgb, var(--accent-blue) 70%, var(--text-color))`）后再用。内容块组件的标题一律按这条处理：`info-box` 用 45% gold + `--text-heading`，`def-box`/`example-box` 用 60% blue，`callout` 45% gold，`admonition` 各 tone 同理。
+
+组件类三条：
+
+- **卡片里的标题不能只写标签选择器。** `.info-box h3` 这种写法在标题被归一成 `h2` 后失效（见下面的大纲归一），组件标题选择器要同时覆盖 `h2` 与 `h3`。
+- **卡片里不要再放卡片。** 组件内部用 `.table-wrap` 承担横向滚动时不要它再画边框与圆角，否则就是卡片套卡片。
+- **行内公式同受 11px 下限约束。** MathJax `mjx-container` 没有显式字号时渲染出的数字会低于 11px，需要给 `.math-inline mjx-container` 一个略大于 1 的相对字号。
 
 布局类两个已知陷阱：
 
 - **flex 项写 `min-width` 会让它收缩到该值以下**（覆盖 `min-content` 下限）。日期、计数这类 `white-space: nowrap` 的元信息必须同时写 `flex: 0 0 auto`，否则文字溢出行宽。
 - **`h2`/`h3` 会被 TOC 流程改写**（`lib/toc.js` 给 `h2` 加 `.ch-title`、`h3` 加 `.section-title`）。新增生成式标题时，若要保持原有视觉，需要在对应模块里锁回字号、内边距、下划线颜色，不能只改标签名。
+- **正文大纲由构建期归一。** 作者可以继续用 `###` 写节、`####` 写小节：`lib/toc.js` 会按「文档第一个 `h2`–`h6`」算偏移，把整页标题平移到合法层级（首个正文章节落到 `h2`），卡片组件内部的标题也一并平移但不进 TOC。平移只改标签，排版由 `typography.css` 末尾的补偿规则按 `data-outline-from` / `data-outline-in` 记录的原层级还原。新增标题样式时，如果它依赖具体标签（`.foo h3`），必须同时覆盖归一后的标签（`.foo h2`），否则会在归一页面上失效。
 
 ## 色彩规则
 
@@ -101,6 +108,7 @@ IMPECCABLE_BROWSER="/Applications/ego lite.app/Contents/MacOS/ego lite" \
 |---|---|
 | `side-tab` | `quote`、`.ch`、`.hub-section`、`.document-page` 的左侧 3–4px 强调边是本站既有的视觉锚点，不是 AI 生成味 |
 | `em-dash-overuse` | 中文长文的破折号密度属正常书写习惯，且该规则本就是 advisory |
+| `shape-assembled-illustration` | 站内图示是用矩形、箭头、文字拼出的结构图与流程图，规则针对的是用形状拼贴冒充插画 |
 
 已知噪音，不构成缺陷，不用修：
 
