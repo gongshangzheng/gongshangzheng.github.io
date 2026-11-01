@@ -36,7 +36,8 @@ REPO_SKILLS = REPO_ROOT / ".agents" / "skills"
 HOME = Path.home()
 
 TEXT_SUFFIXES = {".md", ".py", ".js", ".ts", ".sh", ".json", ".yaml", ".yml", ".txt", ".html"}
-EXCLUDED_DIRS = {"node_modules", ".git", "raw", "openspec", "public", "media", "__pycache__"}
+EXCLUDED_DIRS = {"node_modules", ".git", "raw", "openspec", "public", "media", "__pycache__",
+                 "artifacts", "missions"}  # 后两类是 pi 运行时产物，非 skill 文档
 # 扫描镜像树时跳过的顶层目录：真源自身不参与自检，其余是扫描时本就排除的目录
 MIRROR_SKIPPED_TOP = {".agents", "node_modules", ".git", "raw", "public", "media", "__pycache__"}
 

@@ -10,7 +10,7 @@ description: |
   publish lecture notes, 批量课件, 整理课件, course notes, 笔记发布到博客
 version: 3.0.0
 category: knowledge-output
-tags: [course, notes, ppt, homework, web-research, html-blog, template, docling, review]
+tags: [course, notes, ppt, homework, web-research, html-blog, template, doc-intake, review]
 ---
 
 # Course Notes Skill
@@ -39,7 +39,7 @@ tags: [course, notes, ppt, homework, web-research, html-blog, template, docling,
 4. 每完成一个阶段：标记 `completed` → 检查该 phase 文件末尾的 **Gate** 条件。
 5. Gate 未通过 → 禁止进入下一阶段，修正后重新检查。
 6. **所有课程笔记必须直接发布到博客（HTML）**，禁止生成中间的 org 或 Markdown 文件。必须调用 `html-blog` 作为唯一发布入口：先读取 `~/gongshangzheng.github.io/.agents/skills/html-blog/SKILL.md`，按其模板、组件、frontmatter、图片和构建规则落盘；course-notes 只负责课程内容组织、质量门和素材合成。
-7. 内容分析调用 `docling` skill 提取文本/公式。纯图片 PDF（docling 无文本输出）需要先把关键页渲染成图片，再用可用的图片理解能力分析截图。
+7. 内容分析经全局 `doc-intake` 管理层提取文本/公式（`doc_intake.py extract`，自动路由后端）。纯图片 PDF（解析器无文本输出）需要先把关键页渲染成图片，再用可用的图片理解能力分析截图。
    - **当前工作机专属**：在 tangwen 的当前工作机上，可以使用 `~/.venv` 安装/调用 `PyMuPDF`，将 PDF 指定页渲染为 PNG，再用 `read_file` 读取图片进行视觉确认。不要把这当作通用环境假设；在其他机器上应先检查工具是否存在。
    - 通用兜底：用 `read` 工具读取图片（内置视觉模型，首选），备选 `pdftoppm` 或 GLM 视觉 MCP，可按可用工具分析关键页截图。
 8. 用户若未明确要求"只做前期分析"，默认执行到 **HTML + 博客发布 + 三路审查完成**。
@@ -205,8 +205,8 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 | "写课程笔记/整理这一章" | 直接调用 html-blog 生成 HTML 博客页面，不生成中间 org/Markdown |
 | "发布到博客/生成 HTML/更新博客" | 调用 html-blog 生成 / 更新 HTML 博客页面 |
 | "补充现有页面" | 读取现有页面后局部重写，保持站点风格 |
-| "PPT/PDF 做笔记 → 引用课件页" | 内容分析走 docling；博客中只是标注出处用 docref，需要展示课件页才用 docpage/docpages（PDF 放 media/） |
-| "批量课件" | 先 docling 逐文件转换（逐个处理避免超时），再按主题并行整理 |
+| "PPT/PDF 做笔记 → 引用课件页" | 内容分析走 doc-intake；博客中只是标注出处用 docref，需要展示课件页才用 docpage/docpages（PDF 放 media/） |
+| "批量课件" | 先经 doc_intake.py extract 逐文件转换（逐个处理避免超时），再按主题并行整理 |
 | "作业/实验融入" | 必须写题目、目标、步骤、结果、易错点 |
 
 ## 按需读取索引
@@ -218,7 +218,7 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 | 笔记写作结构和模板 | `phases/composition.md` |
 | HTML 片段模板（含 h3/h4 层级规范、例题区/admonition/callout 用法示例） | 读取 `html-blog/templates/course-note-section-template.html`，由 html-blog 维护 |
 | 标题层级规范 | `blog-syntax/references/html-components.md` §标题层级规范 |
-| PDF 内容分析 | `docling skill`（`~/.hanako/skills/docling/scripts/convert.py`） |
+| PDF 内容分析 | 全局 `doc-intake`（`~/.agents/skills/doc-intake/scripts/doc_intake.py extract`） |
 | 博客 docref/docpage/docpages 与 functionplot/jsxgraph/mermaid shortcode 语法 | `html-blog/references/syntax.md`（§本地课件引用、§数学/信号函数图、§Mermaid 图表） |
 | 纯图片 PDF 截图分析 | 先渲染关键页为图片；当前工作机专属可用 `~/.venv` + `PyMuPDF` + `read_file` 视觉确认，其他环境再按可用工具选择 `pdftoppm` / 视觉 MCP |
 | 保真度审查 | `subagents/review-fidelity.md` |
@@ -230,7 +230,7 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 
 | 场景 | 技能 |
 |------|------|
-| 所有 PDF/PPTX/扫描件内容解析 | **`docling`**（唯一入口，只做内容理解，不用于博客配图） |
+| 所有 PDF/PPTX/扫描件内容解析 | **doc-intake**（唯一入口：`doc_intake.py extract` 自动路由 MinerU/Office/Docling，只做内容理解，不用于博客配图） |
 | `.pptx` 编辑/创建 | `pptx` |
 | 生成或发布博客 HTML | **`html-blog`**（最终页面生成、模板、组件、frontmatter、图片/课件页引用、构建与发布的唯一入口） |
 | 需要结构图或信号流图 | 优先使用课件 `docpage`/`docref`、Mermaid、JSXGraph、表格或公式化文字结构；不要交给 `svg-animations` |
@@ -238,9 +238,9 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 
 ## 大文件与超时处理
 
-docling 对大（50+ 页）或纯图片的 PDF 可能超时（>300s）。参考 docling skill 踩坑记录：
+解析器对大（50+ 页）或纯图片的 PDF 可能超时（>300s）。参考 doc-intake routing.md 与 MinerU 官方 Skill 的踩坑记录：
 
-1. **单个大 PDF 超时**：逐个处理，不并行执行 docling
+1. **单个大 PDF 超时**：逐个处理，不并行执行解析
 2. **纯图片 PDF 兜底**：先把少量关键页渲染成图片，再逐张视觉分析。
    - **当前工作机专属**：可用 `~/.venv` 安装/调用 `PyMuPDF` 渲染指定页，例如：
      ```bash

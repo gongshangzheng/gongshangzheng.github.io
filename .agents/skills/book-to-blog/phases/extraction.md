@@ -26,17 +26,16 @@ mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,figures}
 
 ## 1.3 提取工具优先级
 
-按文件类型选择，第一个可用的就用：
+按文件类型选择，第一个可用的就用。底层统一走全局 `doc-intake` 管理层（`~/.agents/skills/doc-intake/scripts/doc_intake.py extract <file> -o <outdir>`，自动路由 MinerU/Office/Docling），下表保留快速通道：
 
 **PDF**：
 1. `pdftotext`（poppler）— 最快，适合文本层 PDF：`pdftotext -layout "<pdf>" ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.txt`
-2. `pypdf` — 文本层 fallback：`~/.venv/bin/python -c "from pypdf import PdfReader; ..."`
-3. `docling` — 技术书（表格/代码/公式）或扫描件 OCR：`~/.venv/bin/python ~/.hanako/skills/docling/scripts/convert.py "<pdf>" --format markdown --output ...`
-4. 扫描件无文本层 → `pdftotext` 出空 → 用 docling `--ocr tesseract --force-ocr`，或 `pdftoppm` 渲染页为 PNG 后视觉确认
+2. `doc_intake.py extract` — 技术书（表格/代码/公式）或扫描件 OCR：`~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract "<pdf>" -o ~/gongshangzheng.github.io/raw/<slug>/sources/`
+3. 扫描件无文本层 → `pdftotext` 出空 → 经 doc_intake 走 Docling OCR 档（`--backend docling`），或 `pdftoppm` 渲染页为 PNG 后视觉确认
 
-**EPUB**：`ebooklib` + `beautifulsoup4` 优先，stdlib `zipfile` fallback。
+**EPUB**：MinerU 直接支持（OPF spine 顺序）；也可用 `ebooklib` + `beautifulsoup4`。
 
-**DOCX/HTML/RTF/TXT/MD**：见 book-to-skill 的提取矩阵；本仓库已有 docling skill。
+**DOCX/HTML/RTF/TXT/MD**：DOCX/RTF 经 doc_intake（Office 内核含公式/媒体）；HTML/TXT/MD 直接读取。
 
 ## 1.4 判断文本层 vs 扫描件
 
@@ -68,7 +67,7 @@ mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,figures}
 
 ## 1.7 大文件处理
 
-- 500 页以上的书：pdftotext 仍秒级，docling 可能超时（~1.5s/页 → 10+ 分钟）
+- 500 页以上的书：pdftotext 仍秒级，MinerU/Docling 可能超时（~1.5s/页 → 10+ 分钟）
 - 超时 → 分批：`pdftotext -f <start> -l <end>` 分段提取
 - 仍超时 → 只提取关键章节（目录 + 各章首尾），中段按需补
 

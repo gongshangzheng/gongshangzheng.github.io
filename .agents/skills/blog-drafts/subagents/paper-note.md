@@ -22,12 +22,13 @@ trigger: 用户明确要求快速读/快读/简记 / blog-drafts paper-note 流�
 
 ### Step 1：提取论文
 
-用 `fetch-arxiv-paper.py` 一键下载 source tarball + 提取图片 + 生成 TeX→Markdown：
+用 deepxiv + doc-intake 双通道下载 source tarball + 提取图片 + 正文（公式无损）：
 
 ```bash
 cd ~/gongshangzheng.github.io
-PYTHONUTF8=1 .cache/read-article/.venv/bin/python \
-  .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <slug>
+deepxiv paper <arxiv-id> --raw > raw/<slug>/sources/<slug>.md
+~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py \
+  arxiv <arxiv-id> --slug <slug> --root ~/gongshangzheng.github.io --assets-only
 ```
 
 脚本输出：

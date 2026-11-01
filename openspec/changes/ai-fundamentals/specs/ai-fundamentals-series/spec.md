@@ -14,11 +14,11 @@ The series MUST have an OpenSpec change before article writing. Each article MUS
 
 ### Requirement: Modern foundations determine content scope
 
-The series SHALL present eight articles in this order: machine-learning introduction, mathematical foundations, neural-network training, CNN, attention and Transformer, pre-training/fine-tuning/distillation, reinforcement learning, and large language models. The mathematical article MUST include probability, Bayes' theorem, Markov chains, sampling, and Monte Carlo estimation. Training MUST explain loss functions and backpropagation. The machine-learning introduction MUST cover history, learning paradigms and task types, linear and kernel methods, ensembles and random forests, and clustering. CNN MUST include activation functions and mathematical principles within a complete model introduction.
+The series SHALL present nine articles in this order: machine-learning introduction, mathematical foundations, neural-network training, CNN, attention and Transformer, Transformer component evolution, pre-training/fine-tuning/distillation, reinforcement learning, and large language models. The mathematical article MUST include probability, Bayes' theorem, Markov chains, sampling, and Monte Carlo estimation. Training MUST explain loss functions, backpropagation, and the activation-function basics needed to understand them. The machine-learning introduction MUST cover history, learning paradigms and task types, linear and kernel methods, ensembles and random forests, and clustering. CNN MUST introduce activation functions and mathematical principles within a complete model introduction. The component-evolution article MUST explain changes to activation functions and FFNs, as well as other important modern Transformer components; its detailed scope and structure remain subject to draft review.
 
 #### Scenario: User reviews series coverage
 - **WHEN** the candidate series and later drafts are presented
-- **THEN** the eight-article order, dedicated machine-learning introduction, CNN activation/mathematics coverage, and combined attention/Transformer article are identifiable
+- **THEN** the nine-article order, CNN activation introduction, combined attention/Transformer article, and subsequent component-evolution article are identifiable
 
 ### Requirement: Mathematical explanations remain traceable and understandable
 

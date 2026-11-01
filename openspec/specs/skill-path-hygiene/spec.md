@@ -19,7 +19,7 @@ skill 文档中出现的 skill 路径引用 MUST 指向该 skill 真实所在的
 
 ### Requirement: 库内、全局与其他 harness 的 skill 路径口径统一
 
-路径写法 MUST 以"该 skill 的 `SKILL.md` 实际位于哪棵树"为判据：库内 skill 用库内锚定路径引用；全局工具 skill（`~/.agents/skills/`）用全局路径引用；仅其他 harness 有的 skill（如 `docling` 在 `~/.hanako/skills/`）MUST 指向其所属树。仓库 MUST NOT 通过软链接把一个树的路径指向另一个树的 skill 来规避修正。
+路径写法 MUST 以"该 skill 的 `SKILL.md` 实际位于哪棵树"为判据：库内 skill 用库内锚定路径引用；全局工具 skill（`~/.agents/skills/`）用全局路径引用；仅其他 harness 有的 skill（如 `org-roam-capture` 在 `~/.hanako/skills/`）MUST 指向其所属树。仓库 MUST NOT 通过软链接把一个树的路径指向另一个树的 skill 来规避修正。文档提取统一走全局 `~/.agents/skills/doc-intake/`（管理层），不再引用任何 harness 私有的 docling skill。
 
 #### Scenario: 全局 skill 的引用保持不动
 
@@ -28,8 +28,8 @@ skill 文档中出现的 skill 路径引用 MUST 指向该 skill 真实所在的
 
 #### Scenario: 仅其他 harness 有的 skill 指向其所属树
 
-- **WHEN** 检查 `docling` 的 7 处引用修正结果
-- **THEN** 全部指向 `~/.hanako/skills/docling/scripts/convert.py`（该 skill 实际所在树，文件存在），而不是被删除或改成条件句
+- **WHEN** 检查 `org-roam-capture` 的引用修正结果
+- **THEN** 全部指向 `~/.hanako/skills/org-roam-capture/`（该 skill 实际所在树，文件存在），而不是被删除或改成条件句
 
 #### Scenario: 库内 skill 的引用改为库内锚定
 
@@ -47,7 +47,7 @@ skill 文档中出现的 skill 路径引用 MUST 指向该 skill 真实所在的
 
 #### Scenario: 多 skill 树不产生误报
 
-- **WHEN** 文档中存在指向 `~/.hanako/skills/docling/...`（该树确实存在该 skill）的引用
+- **WHEN** 文档中存在指向 `~/.hanako/skills/org-roam-capture/...`（该树确实存在该 skill）的引用
 - **THEN** 脚本按 hanako 树解析并判定为有效，不误报为死路径
 
 #### Scenario: 全部可解析时通过

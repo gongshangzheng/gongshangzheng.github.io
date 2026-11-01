@@ -16,7 +16,7 @@
 先阅读所属正文，选择完整表格与必要依赖。脚本接受 `table`/`table*`、`tabular` 等片段，不自动拆整篇论文或推断任意自定义宏。
 
 ```bash
-~/.venv/bin/python .agents/skills/read-article/scripts/render-latex-table.py \
+~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py render-table \
   raw/<paper>/source-tar/tables/table.tex \
   --source-root raw/<paper>/source-tar --table-number 3 \
   -o raw/<paper>/tables/table-03.webp
@@ -25,7 +25,7 @@
 需要自定义宏时加 `--preamble raw/<paper>/tables/table-03-preamble.tex`。中文可选择 `--engine xelatex`，并在 preamble 配置中文包/字体。依赖本机 TeX 和共享转换脚本的 `pymupdf pillow numpy`。
 
 - 页面默认 180×240 mm，可用 `--width-mm` / `--height-mm` 调整；多页或 overfull 警告会停止。跨页表需人工拆成各有表头的片段，或走路线 B。
-- 默认 300 DPI，复用 `scripts/convert-figures.py` 裁白边；`--padding` 默认 0.02。目视检查表头、细线、浅色内容、单位与脚注是否完整。
+- 默认 300 DPI，复用 `convert_figures.py`（doc-intake tools/） 裁白边；`--padding` 默认 0.02。目视检查表头、细线、浅色内容、单位与脚注是否完整。
 - 不默认覆盖产物；重生成用 `--force`。编译失败在 `.failed.tex` / `.failed.log` 保留本次包装源码与日志，保留之前成功产物不变；补充宏/包后重试，或转路线 B，不随意改动数值。
 - 编译禁用 shell escape，有 120 秒超时，但不是安全沙箱，只编译已检查的片段与依赖。相对输入路径按 `--source-root` 解析。
 - 重新编译可能改变字体、列宽与 caption 样式，应称“根据原论文 LaTeX 源码渲染”，不能称“原论文截图”。`--table-number` 保留原表号，其他交叉引用仍需人工处理。

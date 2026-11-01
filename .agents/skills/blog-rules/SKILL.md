@@ -31,7 +31,7 @@ description: |
 |-----------|------|-----|
 | 库内 skill | `~/gongshangzheng.github.io/.agents/skills/<name>/...` | `html-blog`、`read-article`、`blog-rules`、`blog-aliases` |
 | 全局工具 skill | `~/.agents/skills/<name>/...` | `web-search`、`docx`、`asu` |
-| 仅其他 harness 有的 skill | 指向其所属树，如 `~/.hanako/skills/<name>/...` | `docling`、`org-roam-capture`、`send-email` |
+| 仅其他 harness 有的 skill | 指向其所属树，如 `~/.hanako/skills/<name>/...` | `org-roam-capture`、`send-email` |
 
 **禁止**在 `~/.agents/skills/` 下建指向库内 skill 的软链接来"兼容"旧路径：既会与库内 skill 撞名（递归发现同名 skill 会告警），也掩盖真问题。
 

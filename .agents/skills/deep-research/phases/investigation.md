@@ -83,7 +83,7 @@
 6. **内容抽取**
    - 对高价值 URL，先用 `web_fetch` 抽取正文
    - `web_fetch` 不完整时，再考虑 `browser`
-   - 若是 PDF、Office、扫描件或结构复杂网页，转给 `docling` 等文档解析能力
+   - 若是 PDF、Office、扫描件或结构复杂网页，转给全局 `doc-intake`（`~/.agents/skills/doc-intake/scripts/doc_intake.py extract`，自动路由 MinerU/Office/Docling 后端）
 
 7. **结构化整理**
    - 将结果按统一字段整理，至少保留：ID、标题、URL、来源类型、摘要、发布时间、相关性、为何纳入、是否需要进一步抓取或深挖

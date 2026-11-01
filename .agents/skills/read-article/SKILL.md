@@ -33,7 +33,7 @@ metadata:
 
 只要用户要求依据某篇具体论文的**原文**做工作，就必须调用本 skill。这里的“依据原文”包括：参考、阅读、核对、下载、讲解、引用、比较论文，或把论文内容补进笔记/草稿/OpenSpec。不要因为用户把主任务表述为“写草稿”“回答一个问题”或“更新设计”，就跳过论文整理流程。
 
-对于 arXiv 论文，Phase 1 的第一项实质操作必须运行 `fetch-arxiv-paper.py`；先读摘要、网页或先前下载的 PDF 都不能替代这一步。脚本成功后再阅读和写作。若脚本失败，记录失败原因，再按 `phases/extraction.md` 的降级顺序继续；不得静默绕过脚本。若已有资料目录，选用不会覆盖现有文件的论文专属 slug，或者先检查并确认脚本的覆盖范围，再运行。
+对于 arXiv 论文，Phase 1 的第一项实质操作必须走 deepxiv + doc-intake 双通道（见 Phase 1 要点 3）；先读摘要、网页或先前下载的 PDF 都不能替代这一步。成功后（或记录降级后）再阅读和写作。不得静默绕过。
 
 该门禁同样适用于 `draft` 与 `collect` 模式。模式决定 Phase 1 后写入哪里、是否继续分析，不改变“先运行原文提取脚本”的要求。若来源不是 arXiv，按 extraction 阶段相应的网页/PDF 流程执行并记录来源状态。
 
@@ -46,7 +46,7 @@ metadata:
 
 ## 论文表格素材
 
-表格支持两条路径：从选定 LaTeX 片段编译并裁白边生成图片，或回源核对后手工整理为 Markdown / Org 表格。下载源码不会自动生成表格图片。准备表格素材、将原表插入草稿时，读取 [references/tables.md](references/tables.md)，使用 `scripts/render-latex-table.py` 或可编辑整理表；标明来源及删选范围，不把源码渲染图称为 PDF 截图。
+表格支持两条路径：从选定 LaTeX 片段编译并裁白边生成图片（`~/.agents/skills/doc-intake/scripts/doc_intake.py render-table`），或回源核对后手工整理为 Markdown / Org 表格。下载源码不会自动生成表格图片。准备表格素材、将原表插入草稿时，读取 [references/tables.md](references/tables.md)，使用 render-table 或可编辑整理表；标明来源及删选范围，不把源码渲染图称为 PDF 截图。
 
 ## 阅读起点：先回答“为什么需要这篇论文”
 
@@ -155,10 +155,18 @@ Phase 7 · 发布 + Hub + 交叉回链 [full]
    SLUG="<slug>"
    mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,figures/${SLUG},images/${SLUG},analysis}
    ```
-3. **arXiv 读取优先级与强制脚本**：source tarball（`https://arxiv.org/e-print/<id>`）→ arXiv HTML → PDF（Docling + `pdftotext -layout`）。只要用户要求参考某篇 arXiv 论文原文，必须先运行：
-   `~/.venv/bin/python3 .agents/skills/read-article/scripts/fetch-arxiv-paper.py <arxiv-id> --slug <paper-slug> --html --pdf`
-   脚本下载 source、解压、提取正文与图片、转换 WebP 并生成 extraction log。确认脚本产物后再开始原文阅读；不得用手动下载或已有 PDF 代替脚本。脚本失败才按 `phases/extraction.md` 降级，并把失败与替代来源写入 log。
-4. **图片优先级**：用户截图 > arXiv source 原图 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图（`scripts/crop-figures-from-docling.py`）> 代码绘制 > 网络搜图。**AI 生图完全禁止**；Docling 自家 144 DPI referenced 渲染图禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
+3. **arXiv 读取双通道**：正文/章节走 **deepxiv**（公式无损，见 `~/.agents/skills/web-search/SKILL.md` §论文检索与精读）；源码包/原图/TeX 表格走 **doc-intake**（`--assets-only`，不重复产正文）。只要用户要求参考某篇 arXiv 论文原文，必须先执行这两步：
+   ```bash
+   # ① 章节地图 + 正文（deepxiv，公式无损；旧 fetch-arxiv-paper.py 的正则转换已废弃）
+   deepxiv paper <arxiv-id> --head  > raw/<slug>/sources/<slug>.sections.json
+   deepxiv paper <arxiv-id> --raw  > raw/<slug>/sources/<slug>.md
+
+   # ② 源码包/原图/WebP/extraction-log（doc-intake 管理层）
+   ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py \
+     arxiv <arxiv-id> --slug <paper-slug> --root ~/gongshangzheng.github.io --assets-only [--html] [--pdf]
+   ```
+   deepxiv 失败时按 `phases/extraction.md` 降级链继续（source+pandoc → HTML → PDF），并把失败与替代来源写入 log；不得静默绕过。若已有资料目录，选用不会覆盖现有文件的论文专属 slug，或者先检查并确认覆盖范围，再运行。
+4. **图片优先级**：用户截图 > arXiv source 原图 > arXiv HTML 原图 > GitHub repo 图 > PDF 高 DPI bbox 裁图（`doc_intake.py crop-figures`）> 代码绘制 > 网络搜图。**AI 生图完全禁止**；Docling 自家 144 DPI referenced 渲染图禁止。详见 `~/gongshangzheng.github.io/.agents/skills/blog-rules/references/image-priority.md`。
 5. **必须写** `extraction-log.md`：记录每次来源尝试的成功/失败与回源指针。
 6. **必须写** `meta.md`：标题、作者、机构、摘要、发表时间、分类、代码仓库链接、素材索引表。
 7. **核验脚本产物**：不能只看脚本退出码或“提取完成”。确认 source tar、解压源码、Markdown、要求的 HTML/PDF、原图与 WebP 数量；检查转换器 stderr 和遗漏文件。当前转换器遇到单张超大图可能中止后续转换，而 fetch 脚本仍可能继续并返回成功；必须把这种部分失败写进 extraction log，再对失败图单独重试或记录原因。
@@ -289,7 +297,7 @@ Slug：<slug>
 ### 配图
 
 **禁止**：Docling `--image-export-mode referenced` / `_artifacts/` / `docpage/dcoref` 的 144 DPI 渲染图、AI 生图、hotlink 远程 URL。
-**允许**：`scripts/crop-figures-from-docling.py` 的脚本化高清 bbox 裁图（只借 Docling JSON 坐标，渲染交 PyMuPDF）。
+**允许**：`doc_intake.py crop-figures` 的脚本化高清 bbox 裁图（只借 Docling JSON 坐标，渲染交 PyMuPDF）。
 
 ### 写作风格
 
@@ -487,16 +495,14 @@ paper_code: "未开源（截至 2026.06 未找到官方仓库）"
 
 | 已有脚本 | 职责 | 是否可写最终产物 |
 |---|---|---|
-| `.agents/skills/read-article/scripts/fetch-arxiv-paper.py` | 目录初始化 + source tarball 下载解压 + 图片提取 + WebP 转换 + extraction-log | 否，只写 `raw/<slug>/` |
-| `scripts/convert-figures.py` | PDF/EPS/PNG → WebP | 否 |
-| `scripts/crop-figures-from-docling.py` | 按 Docling bbox 高 DPI 裁图（兜底） | 否 |
+| `~/.agents/skills/doc-intake/scripts/doc_intake.py` | 统一提取入口：arXiv 资产/正文、本地文档路由、裁图、表格渲染、图片转换（原 fetch-arxiv-paper.py / convert-figures.py / crop-figures-from-docling.py / render-latex-table.py 已迁移至此） | 否，只写 `raw/<slug>/` |
 | `scripts/check-sub-id.py` | sub_id 冲突检查与建议 | 否 |
 | `scripts/cross-link.py` | `.sources` 与正文交叉回链 | 只改链接，不改正文语义 |
 | `node build.js` / `npm test` / `node lib/lint-html.js` | 构建、测试、标签配对检查 | 否 |
 
 **脚本不得**：判断论文贡献、替 agent 选择文章结构、自动生成或拼接正文、自动确认 OpenSpec、自动提交 Git、在没有显式参数时覆盖或删除用户文件。
 
-**环境**：Python 用 `~/.venv/bin/python`；`fetch-arxiv-paper.py` 用专属 venv `.cache/read-article/.venv`（装 `pymupdf pillow numpy`，`numpy` 供 `crop_whitespace`，缺则转换静默失败）。
+**环境**：Python 用 `~/.venv/bin/python`；底层文档提取全部收口到 `~/.agents/skills/doc-intake/`（全局管理层），本 skill 不再维护私有解析脚本。
 
 ---
 
@@ -526,20 +532,20 @@ paper_code: "未开源（截至 2026.06 未找到官方仓库）"
 
 ## 故障处理
 
-### Docling 超时或失败
+### deepxiv 不可用或解析失败
 
 ```bash
-# 方案 1：下载 PDF 本地提取
-curl -L "<url>" -o /tmp/${SLUG}.pdf
-~/.venv/bin/python ~/.hanako/skills/docling/scripts/convert.py \
-  /tmp/${SLUG}.pdf --format markdown --max-pages 10 \
-  --output ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.md
+# 方案 1：本地文档提取（doc-intake 自动路由：MinerU 首选，失败降级 docling）
+~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract <pdf> -o raw/<slug>/sources/
 
-# 方案 2：OCR 扫描件
-~/.venv/bin/python ~/.hanako/skills/docling/scripts/convert.py \
-  /tmp/${SLUG}.pdf --ocr tesseract --force-ocr \
-  --format markdown --output ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}.md
+# 方案 2：指定 Docling 后端（隔离临时目录，防旧缓存误判）
+~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract <pdf> --backend docling -o raw/<slug>/sources/
+
+# 方案 3：纯文本兜底
+pdftotext -layout <pdf> raw/<slug>/sources/<slug>.md
 ```
+
+MinerU 报 `quality_tier_unavailable` 时属于用户选择点：本地高质量档需要下载模型（`mineru-models-download`，数 GB）或配置 mineru.net API key 走 `--remote`（需用户同意上传）；否则先用 `--tier flash` 本地文本档。
 
 ### 用户只给了标题
 

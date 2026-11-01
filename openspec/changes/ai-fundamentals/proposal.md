@@ -4,7 +4,7 @@
 
 ## What Changes
 
-先建立change，再在草稿中规划文章范围和内容。系列现为八篇正文和一个导航页，新增篇目范围已确认、实质内容待审阅；首篇实质草稿已逐节审阅通过，用户已授权首篇正文写作；其余正文仍需各自审阅。
+先建立change，再在草稿中规划文章范围和内容。系列现为九篇正文和一个导航页；新增Transformer组件演进篇的选题已确定，实质草稿与篇内结构待审阅；首篇实质草稿已逐节审阅通过，用户已授权首篇正文写作；其余正文仍需各自审阅。
 
 ### 文章清单
 
@@ -17,7 +17,10 @@
 | ai-fundamentals-training | AI基础（三）：神经网络如何训练 | 系列章节 | AI/AI基础；待分配 | src/pages/ai-fundamentals-training.html |
 | ai-fundamentals-cnn | AI基础（四）：CNN | 系列章节 | AI/AI基础；待分配 | src/pages/ai-fundamentals-cnn.html |
 | ai-fundamentals-transformer | AI基础（五）：注意力与 Transformer | 系列章节 | AI/AI基础；待分配 | src/pages/ai-fundamentals-transformer.html |
-| ai-fundamentals-learning | AI基础（六）：预训练、微调与蒸馏 | 系列章节 | AI/AI基础；待分配 | src/pages/ai-fundamentals-learning.html |
+| 待定 | AI基础（六）：Transformer组件演进（暂名） | 系列章节 | AI/AI基础；待分配 | 待定 |
+| ai-fundamentals-learning | AI基础（七）：预训练、微调与蒸馏 | 系列章节 | AI/AI基础；待分配 | src/pages/ai-fundamentals-learning.html |
+| ai-fundamentals-reinforcement-learning | AI基础（八）：强化学习 | 系列章节 | AI/AI基础；待分配 | 待定 |
+| ai-fundamentals-llm | AI基础（九）：大语言模型 | 系列章节 | AI/AI基础；待分配 | 待定 |
 | ai-fundamentals-overview | AI基础：系列导航 | Hub | AI/AI基础/index；待核验 | src/pages/ai-fundamentals-overview.html |
 
 - 机器学习引论置于第一篇；第二篇补数学基础；第三篇将数学用于神经网络训练；第四篇介绍CNN，数学原理只是其中一章。
@@ -25,7 +28,7 @@
 - 注意力与Transformer合为一篇；从注意力计算讲到完整模型结构，并专设BERT、GPT、DETR等应用章节（用户“DERT”暂按DETR理解）。
 - 概率与贝叶斯、马尔可夫链和采样合为一篇数学基础，保留推导与例子。
 - 最新范围覆盖早先“传统方法只提一句”的限制：机器学习引论独立介绍历史、学习范式/任务、线性模型与核方法、集成学习与随机森林、聚类；贝叶斯分类/概率图推断不另设长篇。
-- 数学篇必须讲蒙特卡罗估计及其与采样的关系；训练篇必须讲损失函数、反向传播；CNN篇必须讲激活函数及其作用。
+- 数学篇必须讲蒙特卡罗估计及其与采样的关系；训练篇必须讲损失函数、反向传播及所需的激活函数基础；CNN篇介绍激活函数概念及其在网络中的作用。注意力与Transformer之后新增组件演进篇，系统讨论激活函数与FFN的改进以及其他重要组件；具体范围与章节待草稿共写审阅。
 - 草稿位于`drafts/ai-fundamentals/`；保留用户原始要求及后续调整。先审阅系列范围，再共写各篇草稿。
 - 旧机器学习课程文章尽可能完整吸收进新系列，再删除旧页并修复链接；当前先完成迁移台账，不在新正文完成前删除。独立CNN/Transformer/LLM训练文章不在本次删除范围。
 
@@ -57,3 +60,5 @@
 2026-10-28范围更新：用户确认新增第七篇强化学习，位于预训练/微调/蒸馏之后。篇内草稿仍待共写审阅。
 
 2026-10-28继续更新：用户确认第八篇大语言模型，置于强化学习之后，作为基础系列的综合应用；详见Design及对应草稿，未授权跳过实质草稿审阅直接发布。
+
+2026-11-01范围更新：在注意力与Transformer之后插入组件演进篇，原后三篇依次顺延。CNN篇提出激活函数概念；激活函数的发展和FFN改进在新篇系统讨论，不将SwiGLU视为所有模型的统一选择。

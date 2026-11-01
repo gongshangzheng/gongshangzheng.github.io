@@ -12,8 +12,8 @@
 ## 操作
 
 - 用 `find` / `grep` 定位相关文件。
-- PDF/DOCX/PPTX/扫描件统一调用 `docling` skill 转换提取，理解知识点。**docling 的结果只用于写笔记时的内容参考，不作为博客配图来源。**
-- 纯图片 PDF（docling 无文本输出）：先把关键页面渲染为 PNG，再用可用视觉能力分析截图内容（每篇选取 5-15 张代表性页面）。**当前工作机专属**：可使用 `~/.venv` + `PyMuPDF` 渲染指定页，再用 `read_file` 读取图片视觉确认；其他环境需先检查 `pdftoppm` / 视觉 MCP 是否可用。
+- PDF/DOCX/PPTX/扫描件统一经全局 `doc-intake` 管理层提取（`~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract <file> -o <outdir>`，自动路由 MinerU/Office/Docling 后端），理解知识点。**提取结果只用于写笔记时的内容参考，不作为博客配图来源。**
+- 纯图片 PDF（无文本输出）：先把关键页面渲染为 PNG，再用可用视觉能力分析截图内容（每篇选取 5-15 张代表性页面）。**当前工作机专属**：可使用 `~/.venv` + `PyMuPDF` 渲染指定页，再用 `read_file` 读取图片视觉确认；其他环境需先检查 `pdftoppm` / 视觉 MCP 是否可用。
 - 大文件（50+ 页）逐个处理，不并行；参考 SKILL.md §大文件与超时处理。
 - 对每个主题抽取：
   - 关键定义和公式
@@ -22,39 +22,33 @@
   - 例题、作业题、实验步骤
   - 教师强调、目录结构和后续章节线索
 
-### docling 内容分析步骤
+### 文档内容分析步骤
 
 ```bash
-source ~/scripts/py_scripts/.venv/bin/activate
+DOC_INTAKE="$HOME/.venv/bin/python3 $HOME/.agents/skills/doc-intake/scripts/doc_intake.py"
 
-# 单个文件
-python3 ~/.hanako/skills/docling/scripts/convert.py "input.pdf" \
-  -f markdown --image-export-mode referenced -o output.md
+# 单个文件（自动路由：PDF/EPUB/RTF/HTML → MinerU；Office → H-i-m-s 内核含公式/媒体）
+$DOC_INTAKE extract "input.pdf" -o "out/"
 
 # 批量（逐个处理，避免超时）
 for pdf in *.pdf; do
     echo "Converting: $pdf"
-    python3 ~/.hanako/skills/docling/scripts/convert.py "$pdf" \
-      -f markdown --image-export-mode referenced -o "out/${basename}.md"
+    $DOC_INTAKE extract "$pdf" -o "out/"
 done
+
+# 指定 Docling 后端（需要 layout/bbox JSON 或 OCR 档时）
+$DOC_INTAKE extract "input.pdf" --backend docling -o "out/"
 ```
-
-**关键参数**：
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| `-f` | `markdown` | 输出格式 |
-| `--image-export-mode` | `referenced` | 临时图片仅用于定位理解，不作为博客最终配图 |
-| `-o` | 输出路径 | markdown 文件路径 |
 
 **注意事项**：
 
-- docling 导出的 `_artifacts/` 和 referenced 图片仅用于阅读和理解内容。
-- **博客配图不要用 docling 的图片**。博客需要引用课件页时，走 `docpage` shortcode（见 Phase 4）。
+- 解析器导出的 `_artifacts/` 和 referenced 图片仅用于阅读和理解内容。
+- **博客配图不要用解析器的渲染图**。博客需要引用课件页时，走 `docpage` shortcode（见 Phase 4）。
+- MinerU 报 `quality_tier_unavailable` 属用户选择点（本地模型 / 云端授权 / flash 文本档），不静默降级上传。
 
 ### 纯图片 PDF 处理流程
 
-当 docling 超时或返回空内容（如扫描版 PPT 截图），先渲染少量代表性页面为临时 PNG，仅用于分析内容。
+当解析超时或返回空内容（如扫描版 PPT 截图），先渲染少量代表性页面为临时 PNG，仅用于分析内容。
 
 **当前工作机专属**：在 tangwen 当前工作机上，允许使用 `~/.venv` 安装/调用 `PyMuPDF` 渲染指定页，然后用 `read_file` 读取 PNG 做视觉确认。这是当前机器能力，不是通用环境假设。
 
