@@ -36,8 +36,8 @@ for pdf in *.pdf; do
     $DOC_INTAKE extract "$pdf" -o "out/"
 done
 
-# 指定 Docling 后端（需要 layout/bbox JSON 或 OCR 档时）
-$DOC_INTAKE extract "input.pdf" --backend docling -o "out/"
+# 扫描件/复杂版面（云端链，需凭证；MinerU v4 → PaddleOCR → 本地）
+$DOC_INTAKE extract "input.pdf" -o "out/"
 ```
 
 **注意事项**：

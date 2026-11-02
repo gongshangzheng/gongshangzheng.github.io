@@ -8,7 +8,7 @@
 
 ### 1. Phase 2: MATERIALS 失败
 
-**场景**：docling 转换 PDF 超时或失败
+**场景**：doc-intake 解析 PDF 超时或失败
 
 **处理**：
 1. 检查 PDF 文件大小和页数

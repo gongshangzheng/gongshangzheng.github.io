@@ -34,7 +34,7 @@ trigger: read-article Phase 2 配图 lane（按需）；也被 historical-narrat
 | 🥈 | arXiv e-print tarball 原始图 | **arXiv 论文默认首选**。下载 `https://arxiv.org/e-print/<id>`，解压后从 `figures/` 提取 PDF/PNG。用 doc_intake.py convert-figures 一键转 WebP（300 DPI）。详见 Phase 1 extraction.md 优先级 A |
 | 🥉 | arXiv HTML 页面中的配图 | source tarball 不可用或缺图时，从论文 HTML 版提取 figure URL |
 | 第四 | GitHub repo 中的配图 | README/docs/assets/images 中的官方图 |
-| 第五 | PDF 高 DPI bbox 裁图（脚本） | tarball/HTML/repo 都拿不到图时的兜底。用 doc_intake.py crop-figures 读 Docling JSON 的 picture bbox，PyMuPDF 在源 PDF 上 300-400 DPI clip 渲染。详见 Phase 1 extraction.md 优先级 D |
+| 第五 | PDF 高 DPI bbox 裁图（脚本） | tarball/HTML/repo 都拿不到图时的兜底。用 doc_intake.py crop-figures 读版面 JSON（mineru-layout 产物）的 image 块 bbox，PyMuPDF 在源 PDF 上 300-400 DPI clip 渲染。详见 Phase 1 extraction.md 优先级 D |
 | 第六 | 代码绘制（mermaid/jsxgraph） | 用于架构图、流程图、数学示意图的补充绘制 |
 | 第七 | 网络搜图 | 可靠公开来源的补充图，较少使用，必须本地化并标注 |
 | ❌ | Docling 自家渲染图（referenced/_artifacts/docpage/144DPI） | **禁止用于最终配图**。即 `--image-export-mode referenced`、`_artifacts/`、`docpage/dcoref` 产出的 144 DPI 整页/区域截图，遇矢量 PDF figure 会空白或裁错。注意：此禁止集**不含**第五的脚本化裁图——脚本只借 Docling JSON 的 bbox 坐标，渲染由 PyMuPDF 高清完成 |
@@ -77,15 +77,15 @@ ls ~/gongshangzheng.github.io/raw/<slug>/figures/<slug>/
 当 tarball / HTML / repo 都拿不到图时，走 PDF 裁图兜底。**只允许脚本化高清裁图，禁止 Docling 自家渲染产物**：
 
 - ❌ **禁止** Docling `--image-export-mode referenced` / `_artifacts/` / `docpage/dcoref`：这些是编译后 PDF 的 144 DPI 整页/区域截图，遇矢量 figure 会完全空白（文件仅几十字节）或裁切错误。
-- ✅ **允许** doc_intake.py crop-figures：读 Docling JSON 的 `pictures[].prov[0].bbox`（layout 模型给的坐标），用 PyMuPDF 在源 PDF 上 300-400 DPI clip 渲染，矢量内容正确，并产出 `figures-manifest.json`（含 page_no/bbox/caption）。
+- ✅ **允许** doc_intake.py crop-figures：读版面 JSON 的 image 块 bbox（mineru-layout 产物，兼容历史 docling JSON），用 PyMuPDF 在源 PDF 上 300-400 DPI clip 渲染，矢量内容正确，并产出 `figures-manifest.json`（含 page_no/bbox/caption）。
 
 Docling 自家图片产物若不慎生成，必须隔离到 `temp-docling-images/` 并在高质量图片完成后删除。
 
 正确兜底做法（详见 Phase 1 extraction.md 优先级 D）：
 
 ```bash
-# 先有 Docling JSON（Phase 1 步骤 2 已产出则跳过）
-~/.venv/bin/python3 doc_intake.py extract "<pdf>" --backend docling（JSON 档） \
+# 先有版面 JSON（Phase 1 mineru-layout 已产出则跳过）
+~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py mineru-layout "<pdf>" \
   --output ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.json
 
 # 脚本化高清裁图 → PNG → 链式 WebP

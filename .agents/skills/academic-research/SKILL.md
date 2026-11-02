@@ -82,7 +82,7 @@ Phase 2 通过 `read-article` 读取论文全文。`core-survey` 和 `must-read-
 **全文提取优先级**（底层已收口到全局 `~/.agents/skills/doc-intake/`，统一 CLI `scripts/doc_intake.py`）：
 1. 首选 deepxiv 正文（`deepxiv paper <id> --raw`，公式无损）+ arXiv source tarball 资产（`doc_intake.py arxiv <id> --slug <slug> --assets-only`）
 2. 次选 arXiv HTML / 官方 HTML
-3. 第三选择 PDF 结构化提取（`doc_intake.py extract`，MinerU/Docling 自动路由 + pdftotext 兜底）
+3. 第三选择 PDF 结构化提取（`doc_intake.py extract` 自动路由 + pdftotext 兜底）
 
 **配图规则（强制）**：
 1. **必须优先提取论文原图**：所有 `must-read-paper` 必须在 Phase 2 通过 arXiv source tarball 或 PDF 提取至少 1 张核心原图，保存到 `media/images/<slug>/`

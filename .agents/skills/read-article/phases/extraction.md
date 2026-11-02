@@ -33,7 +33,7 @@ mkdir -p ~/gongshangzheng.github.io/raw/${SLUG}/{sources,images/${SLUG},figures/
 
 当用户要求“参考某篇论文原文”或等价表达（如阅读/核对/下载/总结/比较论文，或把论文用于回答问题、更新笔记、草稿、OpenSpec），立即按 `read-article` 执行 Phase 1。对 arXiv 论文，第一项实质操作必须走 **deepxiv + doc-intake 双通道**（见下方 1.3 步骤 1）；不得先手动下载或只凭已有 PDF 开始阅读。运行前检查 `raw/<slug>/` 是否已有内容，必要时为该论文选专属 slug，避免覆盖已有的 topic-level raw 目录。只有 deepxiv 与 source 都失败后，才能按下方降级链继续，并将失败原因与回退来源写入 extraction log。
 
-> 底层提取已收口到全局 `~/.agents/skills/doc-intake/`（管理层，统一 CLI 为 `scripts/doc_intake.py`）。本文件只保留流程与优先级规则，命令一律经 doc_intake.py 或其适配后端（deepxiv / MinerU / Docling）执行。
+> 底层提取已收口到全局 `~/.agents/skills/doc-intake/`（管理层，统一 CLI 为 `scripts/doc_intake.py`）。本文件只保留流程与优先级规则，命令一律经 doc_intake.py 或其适配后端（deepxiv / MinerU v4 云端链 / Office 内核）执行。
 
 默认由主 agent 执行。仅当素材规模确实超出单次上下文处理能力时，才把下面的块作为任务描述
 委派给一个执行型 subagent；委派时其输出只能写入 `raw/<slug>/`，不得改其他目录。
@@ -62,23 +62,16 @@ Slug：<slug>
    - 普通网页 → web_fetch 抓正文；图片下载真实原图，禁止猜 URL。
    - 每次提取都必须写 `sources/extraction-log.md`，记录 deepxiv / source / HTML / PDF / MinerU / Docling / pdftotext 的成功状态、失败原因和回源指针。
 
-2. PDF fallback 文本/结构化提取命令（MinerU/Docling 只负责文本、表格、公式、layout，不负责最终截图）：
+2. PDF fallback 文本/结构化提取命令（解析器只负责文本、表格、公式、layout，不负责最终截图）：
    # 使用全局 venv（见 SKILL.md Python 环境章节）
 
    # Markdown：doc-intake 自动路由（MinerU 首选；本地质量档不可用时报结构化错误，属用户选择点）
    ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract \
      "<url 或本地 pdf>" -o ~/gongshangzheng.github.io/raw/<slug>/sources/
 
-   # JSON（结构化：tables/formulas/layout；pictures[].prov 含 figure 页码+bbox，
-   #   是优先级 D `doc_intake.py crop-figures` 的输入）
-   ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract \
-     "<pdf>" --backend docling -o ~/gongshangzheng.github.io/raw/<slug>/sources/   # fmt=json 经 adapters/docling.py
-
-   # 只有需要临时定位 figure 时，才允许额外跑 referenced；产物不得进入最终 images/ 或博客 assets
-   #（Docling referenced 144 DPI 渲染图禁止作为最终配图，见 image-collection.md）
-
-   # 临时 Docling 图片必须隔离到 temp-docling-images，并在高质量图片完成后删除
-   mkdir -p ~/gongshangzheng.github.io/raw/<slug>/temp-docling-images/
+   # 版面坐标 JSON（优先级 D `doc_intake.py crop-figures` 的输入；MinerU v4 云端）
+   ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py mineru-layout \
+     "<pdf>" -o ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>-layout.json
 
 3. 高质量论文图像提取流程（最终配图唯一来源）：
 
@@ -171,13 +164,13 @@ PY
    **优先级 D：PDF 高 DPI bbox 裁图（脚本化兜底）**
    - 只有当 arXiv source tarball、arXiv/官方 HTML、官方仓库/项目页都拿不到可用图片时，才允许 PDF crop。
    - 使用前必须记录 fallback 原因。
-   - bbox 来自 Docling JSON 的 `pictures[].prov[0].bbox`（layout 模型 `docling-layout-heron` 的 `picture` 检测结果），渲染由 PyMuPDF 按 bbox 在源 PDF 上 300-400 DPI clip 完成。
+   - bbox 来自 `mineru-layout` 产物的 content_list image 块（MinerU v4 云端版面检测），渲染由 PyMuPDF 按 bbox 在源 PDF 上 300-400 DPI clip 完成。
    - **与 ❌ Docling referenced 图片的区别**：本脚本只借 Docling 的 bbox 坐标，**不使用** Docling 自家 `--image-export-mode referenced` 产出的 144 DPI 整页/区域截图（那玩意遇到矢量 figure 会空白，PerformRecast 踩过坑）。PyMuPDF 在源 PDF 上 clip 渲染矢量内容是正确的。
 
    ```bash
-   # 1. 先出结构化 JSON（MinerU/Docling 均可；Docling 示例：）
-   ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract \
-     "<pdf-url 或本地 PDF>" --backend docling -o ~/gongshangzheng.github.io/raw/${SLUG}/sources/
+   # 1. 先出版面坐标 JSON（MinerU v4 云端；docling 已移除）
+   ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py mineru-layout \
+     "<pdf-url 或本地 PDF>" -o ~/gongshangzheng.github.io/raw/${SLUG}/sources/${SLUG}-layout.json
 
    # 2. 用 doc_intake crop-figures 按 picture bbox 高清裁图 → PNG，再链式转 WebP
    ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py crop-figures \
@@ -211,7 +204,6 @@ PY
       ~/gongshangzheng.github.io/raw/<slug>/images/<slug>/ 2>/dev/null || true
 
    # 清理 Docling 临时图，防止误用
-   rm -rf ~/gongshangzheng.github.io/raw/<slug>/temp-docling-images/
    find ~/gongshangzheng.github.io/raw/<slug>/sources/ -name "*_artifacts" -type d -prune -exec rm -rf {} +
    ```
 
@@ -257,11 +249,11 @@ fi
 - 如果是 HuggingFace 无代码仓库，则跳过此步
 - 代码仓下载后，在笔记中记录：核心文件路径、主要类/函数名、训练配置默认值
 
-7. 如果结构化提取失败：
+7. 如果提取失败：
    - 下载 PDF 本地：curl -L "<url>" -o /tmp/<slug>.pdf
-   - 重试本地：~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract \
+   - 重试：~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract \
        /tmp/<slug>.pdf -o ~/gongshangzheng.github.io/raw/<slug>/sources/
-   - 或换 Docling 后端 + OCR 档：同上命令加 --backend docling（OCR 选项经 adapters/docling.py 传 --ocr ocrmac / tesseract）
+   - 最终兜底：pdftotext -layout /tmp/<slug>.pdf ~/gongshangzheng.github.io/raw/<slug>/sources/<slug>.md
 
 强制要求：只做调研，不修改 raw/ 目录以外的任何文件。
 ```

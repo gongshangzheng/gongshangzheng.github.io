@@ -42,3 +42,13 @@
 - [x] 6.2 删除 `~/.hanako/skills/docling/` 与 `~/.hanako/skills/office-documents/`
 - [x] 6.3 代表性端到端：arXiv 2409.05591（10 图 WebP + 元数据 + log）、真实课程 PPTX（正文 + 10 媒体图）、合成 EPUB（MinerU spine 解析）全部通过
 - [x] 6.4 归档准备：核对 design.md 与实施一致性，向用户报告 `~/.hanako/apps/doc-intake/` 处置建议与 MinerU 质量档决策
+
+## 后续追加（实施完成后新增）
+
+- [x] 7.1 配置 MinerU token（`mineru config set parse_server.remote.api_key`，usage 验证 registered ✅）与 PaddleOCR token（`~/.config/doc-intake/config.json`，内核云端 OCR 实测 ✅）
+- [x] 7.2 修复内核 settings None 防护缺口（适配层补 JS 外壳默认参数）；修正图片 OCR 路由至 PaddleOCR 链
+- [x] 7.3 发现 MinerU 4.x `--remote` 对 SaaS 404（v1/tasks 契约未部署），sk-token 走 v4 旧协议有效 → 远程高精度改走 H-i-m-s 内核 MinerU v4 云端链（`mineru-open-sdk` 装入 ~/.venv）
+- [x] 8.1 移除 docling：crop_figures 改读 mineru content-list（新增 `tools/mineru_layout.py` 与 `mineru-layout` 子命令，兼容历史 docling JSON）；路由兜底改为 pdftotext；删除 adapters/docling.py
+- [x] 8.2 卸载 docling CLI 与 docling-core/ibm-models/parse 包；删除 HF 模型缓存（342M+164M）与 ~/.cache/docling
+- [x] 8.3 更新全仓 skill 文档 docling 引用（read-article/course-notes/book-to-blog/blog-rules/deep-research/academic-research）
+- [x] 8.4 验证：mineru-layout→crop-figures 端到端（30 image 块 → 25 张高清裁图）、回归 6/6、check-skill-paths 0 死路径、npm test 231、build 成功

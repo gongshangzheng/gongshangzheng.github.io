@@ -10,9 +10,9 @@
 4. 检查是否已有页面或笔记需要保持风格一致。
 5. 建立任务边界：本次覆盖哪些小节，不覆盖哪些小节。
 6. 评估输入材料类型：
-   - 文本 PDF/PPTX/扫描件 → Phase 2 调用 `docling` skill 转换
+   - 文本 PDF/PPTX/扫描件 → Phase 2 经全局 `doc-intake`（`doc_intake.py extract`）转换
    - 纯图片 PDF（无 OCR 文本） → Phase 2 先渲染关键页为 PNG 再视觉确认；**当前工作机专属**可用 `~/.venv` + `PyMuPDF` 渲染指定页，其他机器需先检查 `pdftoppm` / 视觉 MCP 是否可用
-   - 大文件（50+ 页）→ 注意 docling 可能超时，参考 SKILL.md §大文件与超时处理
+   - 大文件（50+ 页）→ 注意云端解析可能超时，参考 SKILL.md §大文件与超时处理
 
 ## 分类路径规则
 

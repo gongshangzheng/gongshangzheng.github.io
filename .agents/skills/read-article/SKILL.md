@@ -297,7 +297,7 @@ Slug：<slug>
 ### 配图
 
 **禁止**：Docling `--image-export-mode referenced` / `_artifacts/` / `docpage/dcoref` 的 144 DPI 渲染图、AI 生图、hotlink 远程 URL。
-**允许**：`doc_intake.py crop-figures` 的脚本化高清 bbox 裁图（只借 Docling JSON 坐标，渲染交 PyMuPDF）。
+**允许**：`doc_intake.py crop-figures` 的脚本化高清 bbox 裁图（只借版面 JSON 坐标——mineru-layout 产物，兼容历史 docling JSON；渲染交 PyMuPDF）。
 
 ### 写作风格
 
@@ -535,13 +535,10 @@ paper_code: "未开源（截至 2026.06 未找到官方仓库）"
 ### deepxiv 不可用或解析失败
 
 ```bash
-# 方案 1：本地文档提取（doc-intake 自动路由：MinerU 首选，失败降级 docling）
+# 方案 1：文档提取（doc-intake 自动路由：云端凭证 → MinerU v4/PaddleOCR 云端链；无凭证 → MinerU 4.x 本地 flash）
 ~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract <pdf> -o raw/<slug>/sources/
 
-# 方案 2：指定 Docling 后端（隔离临时目录，防旧缓存误判）
-~/.venv/bin/python3 ~/.agents/skills/doc-intake/scripts/doc_intake.py extract <pdf> --backend docling -o raw/<slug>/sources/
-
-# 方案 3：纯文本兜底
+# 方案 2：纯文本兜底
 pdftotext -layout <pdf> raw/<slug>/sources/<slug>.md
 ```
 

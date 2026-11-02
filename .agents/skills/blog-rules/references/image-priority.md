@@ -12,7 +12,7 @@
 | 🥈 | arXiv source tarball 原始图片 | 从 `arxiv.org/e-print/<id>` 提取，质量最高 |
 | 🥉 | arXiv HTML 页面配图 | 论文 HTML 版 figure URL（通常不能直接 curl） |
 | 第四 | GitHub repo 中的配图 | README/docs/assets/images 中的官方图 |
-| 第五 | PDF 高 DPI bbox 裁图（脚本） | `doc_intake.py crop-figures`（`~/.agents/skills/doc-intake/scripts/doc_intake.py`）：读 Docling JSON 的 `pictures[].prov[0].bbox`，PyMuPDF 在源 PDF 上 300-400 DPI clip 渲染。矢量 figure 也能正确渲染。仅当 tarball/HTML/repo 都拿不到图时兜底 |
+| 第五 | PDF 高 DPI bbox 裁图（脚本） | `doc_intake.py crop-figures`（`~/.agents/skills/doc-intake/scripts/doc_intake.py`）：读版面 JSON 坐标（`mineru-layout` 产物，兼容历史 docling JSON），PyMuPDF 在源 PDF 上 300-400 DPI clip 渲染。矢量 figure 也能正确渲染。仅当 tarball/HTML/repo 都拿不到图时兜底 |
 | 第六 | 代码绘制 | mermaid / jsxgraph 架构图、流程图 |
 | 第七 | 网络搜图 | blog-images 搜到的可靠公开图片 |
 | ❌ 禁止 | Docling 自家渲染图（referenced/_artifacts/docpage/144DPI） | `--image-export-mode referenced` / `_artifacts/` / `docpage/dcoref` 的 144 DPI 截图，矢量 figure 会空白。**不含**第五的脚本化裁图（脚本只借 bbox 坐标，渲染交 PyMuPDF） |

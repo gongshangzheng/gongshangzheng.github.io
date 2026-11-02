@@ -230,7 +230,7 @@ HTML 文件：~/gongshangzheng.github.io/src/pages/<slug>.html
 
 | 场景 | 技能 |
 |------|------|
-| 所有 PDF/PPTX/扫描件内容解析 | **doc-intake**（唯一入口：`doc_intake.py extract` 自动路由 MinerU/Office/Docling，只做内容理解，不用于博客配图） |
+| 所有 PDF/PPTX/扫描件内容解析 | **doc-intake**（唯一入口：`doc_intake.py extract` 自动路由云端链/Office 内核，只做内容理解，不用于博客配图） |
 | `.pptx` 编辑/创建 | `pptx` |
 | 生成或发布博客 HTML | **`html-blog`**（最终页面生成、模板、组件、frontmatter、图片/课件页引用、构建与发布的唯一入口） |
 | 需要结构图或信号流图 | 优先使用课件 `docpage`/`docref`、Mermaid、JSXGraph、表格或公式化文字结构；不要交给 `svg-animations` |
